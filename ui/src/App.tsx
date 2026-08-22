@@ -1,38 +1,36 @@
-import { Link, NavLink, Navigate, Route, Routes } from "react-router-dom";
-import Dashboard from "./pages/Dashboard";
-import Files from "./pages/Files";
-import JobDetail from "./pages/JobDetail";
-import Jobs from "./pages/Jobs";
-import Login from "./pages/Login";
-import { api } from "./api";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { ConsoleRail } from "@/components/ConsoleRail";
+import { ConnectionsPage } from "@/pages/ConnectionsPage";
+import { ExtractsPage } from "@/pages/ExtractsPage";
+import { FilesPage } from "@/pages/FilesPage";
+import { JobRunPage } from "@/pages/JobRunPage";
+import { JobsPage } from "@/pages/JobsPage";
+import { OverviewPage } from "@/pages/OverviewPage";
+import { SessionGatePage } from "@/pages/SessionGatePage";
 
-export default function App() {
+function ConsoleShell() {
   return (
-    <>
-      <nav>
-        <Link to="/">BinTL</Link>
-        <NavLink to="/">dashboard</NavLink>
-        <NavLink to="/files">files</NavLink>
-        <NavLink to="/jobs">jobs</NavLink>
-        <button
-          type="button"
-          onClick={() => {
-            void api.logout().finally(() => location.assign("/login"));
-          }}
-        >
-          logout
-        </button>
-      </nav>
-      <main>
+    <div className="grid min-h-screen grid-cols-[13rem_minmax(0,1fr)]">
+      <ConsoleRail />
+      <main className="min-w-0 p-5">
         <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/files" element={<Files />} />
-          <Route path="/jobs" element={<Jobs />} />
-          <Route path="/jobs/:id" element={<JobDetail />} />
+          <Route path="/" element={<OverviewPage />} />
+          <Route path="/files" element={<FilesPage />} />
+          <Route path="/connections" element={<ConnectionsPage />} />
+          <Route path="/extracts" element={<ExtractsPage />} />
+          <Route path="/jobs" element={<JobsPage />} />
+          <Route path="/jobs/:id" element={<JobRunPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
-    </>
+    </div>
   );
+}
+
+export default function App() {
+  const loc = useLocation();
+  if (loc.pathname === "/login") {
+    return <SessionGatePage />;
+  }
+  return <ConsoleShell />;
 }

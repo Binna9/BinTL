@@ -6,6 +6,7 @@ mod api;
 mod auth;
 mod config;
 mod error;
+mod extract;
 mod state;
 mod ui;
 
@@ -44,7 +45,9 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let store = storage::Store::open(&config.data_dir).await.unwrap_or_else(|e| {
+    let store = storage::Store::open(&config.data_dir, &config.session_secret)
+        .await
+        .unwrap_or_else(|e| {
         eprintln!("storage error: {e}");
         std::process::exit(1);
     });
@@ -72,6 +75,7 @@ async fn main() {
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
+            axum::http::Method::DELETE,
             axum::http::Method::OPTIONS,
         ]);
 

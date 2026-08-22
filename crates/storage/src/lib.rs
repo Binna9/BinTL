@@ -1,3 +1,5 @@
+mod secret;
+
 use std::path::{Path, PathBuf};
 
 use chrono::{SecondsFormat, Utc};
@@ -24,6 +26,7 @@ pub enum StorageError {
 pub struct Store {
     pub pool: SqlitePool,
     pub data_dir: PathBuf,
+    secret_key: [u8; 32],
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -56,11 +59,76 @@ pub struct FileMeta {
     pub stored_path: String,
 }
 
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ExtractRow {
+    pub id: String,
+    pub connection_id: String,
+    pub table_name: String,
+    pub delimiter: String,
+    pub header: i64,
+    pub status: String,
+    pub stored_path: Option<String>,
+    pub filename: Option<String>,
+    pub row_count: Option<i64>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub connection_name: String,
+}
+
+const EXTRACT_COLS: &str = "e.id, e.connection_id, e.table_name, e.delimiter, e.header,
+        e.status, e.stored_path, e.filename, e.row_count, e.error_message,
+        e.created_at, e.started_at, e.finished_at,
+        COALESCE(c.name, '') AS connection_name";
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ConnectionRow {
+    pub id: String,
+    pub name: String,
+    pub driver: String,
+    pub host: String,
+    pub port: i64,
+    pub database_name: String,
+    pub username: String,
+    pub ssl: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveConnection {
+    pub id: String,
+    pub name: String,
+    pub driver: String,
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub username: String,
+    pub password: String,
+    pub ssl: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewConnection {
+    pub name: String,
+    pub driver: String,
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub username: String,
+    pub password: String,
+    pub ssl: bool,
+}
+
 impl Store {
-    pub async fn open(data_dir: impl Into<PathBuf>) -> Result<Self, StorageError> {
+    pub async fn open(
+        data_dir: impl Into<PathBuf>,
+        session_secret: &str,
+    ) -> Result<Self, StorageError> {
         let data_dir = data_dir.into();
         tokio::fs::create_dir_all(data_dir.join("uploads")).await?;
         tokio::fs::create_dir_all(data_dir.join("outputs")).await?;
+        tokio::fs::create_dir_all(data_dir.join("extracts")).await?;
 
         let db_path = data_dir.join("etl.db");
         let options = SqliteConnectOptions::new()
@@ -75,7 +143,11 @@ impl Store {
             .await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
-        Ok(Self { pool, data_dir })
+        Ok(Self {
+            pool,
+            data_dir,
+            secret_key: secret::key_from_secret(session_secret),
+        })
     }
 
     pub fn uploads_dir(&self) -> PathBuf {
@@ -278,6 +350,246 @@ impl Store {
         .await?;
         Ok(rows)
     }
+
+    pub async fn insert_connection(
+        &self,
+        new: NewConnection,
+    ) -> Result<ConnectionRow, StorageError> {
+        let driver = new.driver.to_ascii_lowercase();
+        if !supported_driver(&driver) {
+            return Err(StorageError::Invalid(
+                "driver must be postgres, redshift, cockroach, mysql, mariadb, mssql, or sqlite"
+                    .into(),
+            ));
+        }
+        if new.name.trim().is_empty() {
+            return Err(StorageError::Invalid("name required".into()));
+        }
+        if driver == "sqlite" {
+            if new.database.trim().is_empty() && new.host.trim().is_empty() {
+                return Err(StorageError::Invalid("sqlite needs a file path in database".into()));
+            }
+        } else if new.host.trim().is_empty() || new.database.trim().is_empty() {
+            return Err(StorageError::Invalid("host and database required".into()));
+        }
+        let id = Uuid::new_v4().to_string();
+        let created_at = now_rfc3339();
+        let cipher = secret::encrypt(&self.secret_key, &new.password)?;
+        sqlx::query(
+            "INSERT INTO connections
+             (id, name, driver, host, port, database_name, username, password_cipher, ssl, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(new.name.trim())
+        .bind(&driver)
+        .bind(new.host.trim())
+        .bind(new.port as i64)
+        .bind(new.database.trim())
+        .bind(new.username.trim())
+        .bind(&cipher)
+        .bind(i64::from(new.ssl))
+        .bind(&created_at)
+        .execute(&self.pool)
+        .await?;
+        self.get_connection(&id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("connection disappeared after insert".into()))
+    }
+
+    pub async fn get_connection(&self, id: &str) -> Result<Option<ConnectionRow>, StorageError> {
+        let row = sqlx::query_as::<_, ConnectionRow>(
+            "SELECT id, name, driver, host, port, database_name, username, ssl, created_at
+             FROM connections WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_connections(&self) -> Result<Vec<ConnectionRow>, StorageError> {
+        let rows = sqlx::query_as::<_, ConnectionRow>(
+            "SELECT id, name, driver, host, port, database_name, username, ssl, created_at
+             FROM connections ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn delete_connection(&self, id: &str) -> Result<(), StorageError> {
+        let res = sqlx::query("DELETE FROM connections WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(StorageError::NotFound("connection not found".into()));
+        }
+        Ok(())
+    }
+
+    pub fn extracts_dir(&self) -> PathBuf {
+        self.data_dir.join("extracts")
+    }
+
+    pub async fn insert_extract(
+        &self,
+        connection_id: &str,
+        table_name: &str,
+        delimiter: &str,
+        header: bool,
+    ) -> Result<ExtractRow, StorageError> {
+        let _ = self
+            .get_connection(connection_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("connection not found".into()))?;
+        let id = Uuid::new_v4().to_string();
+        let created_at = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO extracts
+             (id, connection_id, table_name, delimiter, header, status, created_at)
+             VALUES (?, ?, ?, ?, ?, 'queued', ?)",
+        )
+        .bind(&id)
+        .bind(connection_id)
+        .bind(table_name)
+        .bind(delimiter)
+        .bind(i64::from(header))
+        .bind(&created_at)
+        .execute(&self.pool)
+        .await?;
+        self.get_extract(&id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("extract disappeared after insert".into()))
+    }
+
+    pub async fn get_extract(&self, id: &str) -> Result<Option<ExtractRow>, StorageError> {
+        let row = sqlx::query_as::<_, ExtractRow>(&format!(
+            "SELECT {EXTRACT_COLS} FROM extracts e
+             LEFT JOIN connections c ON c.id = e.connection_id
+             WHERE e.id = ?"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_extracts(&self, limit: i64) -> Result<Vec<ExtractRow>, StorageError> {
+        let rows = sqlx::query_as::<_, ExtractRow>(&format!(
+            "SELECT {EXTRACT_COLS} FROM extracts e
+             LEFT JOIN connections c ON c.id = e.connection_id
+             ORDER BY e.created_at DESC LIMIT ?"
+        ))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn set_extract_running(&self, id: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE extracts SET status = ?, started_at = ?, error_message = NULL WHERE id = ?",
+        )
+        .bind("running")
+        .bind(now_rfc3339())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn set_extract_succeeded(
+        &self,
+        id: &str,
+        stored_path: &str,
+        filename: &str,
+        row_count: i64,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE extracts
+             SET status = ?, finished_at = ?, stored_path = ?, filename = ?, row_count = ?,
+                 error_message = NULL
+             WHERE id = ?",
+        )
+        .bind("succeeded")
+        .bind(now_rfc3339())
+        .bind(stored_path)
+        .bind(filename)
+        .bind(row_count)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn set_extract_failed(&self, id: &str, error: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE extracts SET status = ?, finished_at = ?, error_message = ? WHERE id = ?",
+        )
+        .bind("failed")
+        .bind(now_rfc3339())
+        .bind(error)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub fn extract_file_rel(id: &str, table: &str, delimiter: &str) -> (String, String) {
+        let ext = match delimiter {
+            "tab" | "\\t" | "\t" => "tsv",
+            "," => "csv",
+            _ => "txt",
+        };
+        let filename = format!("{}.{}", safe_filename(&table.replace('.', "_")), ext);
+        let rel = format!("extracts/{id}/{filename}");
+        (filename, rel)
+    }
+
+    pub async fn live_connection(&self, id: &str) -> Result<LiveConnection, StorageError> {
+        let row = sqlx::query_as::<_, ConnectionSecretRow>(
+            "SELECT id, name, driver, host, port, database_name, username, password_cipher, ssl
+             FROM connections WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| StorageError::NotFound("connection not found".into()))?;
+        let password = secret::decrypt(&self.secret_key, &row.password_cipher)?;
+        Ok(LiveConnection {
+            id: row.id,
+            name: row.name,
+            driver: row.driver,
+            host: row.host,
+            port: u16::try_from(row.port).unwrap_or(0),
+            database: row.database_name,
+            username: row.username,
+            password,
+            ssl: row.ssl != 0,
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ConnectionSecretRow {
+    id: String,
+    name: String,
+    driver: String,
+    host: String,
+    port: i64,
+    database_name: String,
+    username: String,
+    password_cipher: String,
+    ssl: i64,
+}
+
+fn supported_driver(driver: &str) -> bool {
+    matches!(
+        driver,
+        "postgres" | "redshift" | "cockroach" | "mysql" | "mariadb" | "mssql" | "sqlite"
+    )
 }
 
 pub fn now_rfc3339() -> String {

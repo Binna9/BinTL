@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 engine = { path = "../engine" }
 storage = { path = "../storage" }
+connectors = { path = "../connectors" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

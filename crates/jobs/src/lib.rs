@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use connectors::{extract_table, load_table, parse_db_source, ConnectError, ExtractOptions};
 use engine::{Engine, EngineError, PolarsEngine, TransformSpec};
 use storage::Store;
 use tokio::sync::{mpsc, Semaphore};
@@ -88,6 +89,8 @@ enum RunError {
     Storage(#[from] storage::StorageError),
     #[error(transparent)]
     Engine(#[from] EngineError),
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
     #[error("{0}")]
     State(String),
 }
@@ -109,21 +112,67 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
     store.append_log(job_id, "info", "job started").await?;
 
     let spec = TransformSpec::parse_json(&job.spec_json)?;
-    let input = store.resolve(&job.source_path);
+    let input = if let Some((conn_id, table)) = parse_db_source(&job.source_path) {
+        let live = store.live_connection(&conn_id).await?;
+        let csv_rel = format!("uploads/{job_id}/extract.csv");
+        let csv_path = store.resolve(&csv_rel);
+        store
+            .append_log(
+                job_id,
+                "info",
+                &format!("extract {}.{} {}", live.driver, live.name, table),
+            )
+            .await?;
+        let n = extract_table(&live, &table, &csv_path, &ExtractOptions::default()).await?;
+        store
+            .append_log(job_id, "info", &format!("extracted {n} rows"))
+            .await?;
+        csv_path
+    } else {
+        store.resolve(&job.source_path)
+    };
     let output = store.resolve(&output_rel);
 
     store
         .append_log(
             job_id,
             "info",
-            &format!("identity {} -> {}", input.display(), output.display()),
+            &format!("transform {} -> {}", input.display(), output.display()),
         )
         .await?;
 
-    let engine_err = tokio::task::spawn_blocking(move || engine.transform(&input, &output, &spec))
-        .await
-        .map_err(|e| RunError::State(e.to_string()))?;
+    let dest = spec.dest.clone();
+    let csv_out = store.resolve(&format!("outputs/{job_id}/result.csv"));
+    let needs_csv = dest.is_some();
+    let engine_err = tokio::task::spawn_blocking(move || {
+        engine.transform(&input, &output, &spec)?;
+        if needs_csv {
+            PolarsEngine::export_csv(&output, &csv_out)?;
+        }
+        Ok::<(), EngineError>(())
+    })
+    .await
+    .map_err(|e| RunError::State(e.to_string()))?;
     engine_err?;
+
+    if let Some(dest) = dest {
+        let live = store.live_connection(&dest.connection_id).await?;
+        let csv_path = store.resolve(&format!("outputs/{job_id}/result.csv"));
+        store
+            .append_log(
+                job_id,
+                "info",
+                &format!(
+                    "load {}.{} {} ({})",
+                    live.driver, dest.table, dest.mode, live.name
+                ),
+            )
+            .await?;
+        let n = load_table(&live, &dest.table, &csv_path, &dest.mode).await?;
+        store
+            .append_log(job_id, "info", &format!("loaded {n} rows"))
+            .await?;
+    }
 
     transition(JobStatus::Running, JobStatus::Succeeded)
         .map_err(|e| RunError::State(e.to_string()))?;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/server", "crates/engine", "crates/jobs", "crates/storage"]
+members = ["crates/server", "crates/engine", "crates/jobs", "crates/storage", "crates/connectors"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +19,8 @@ sqlx = { version = "0.8.6", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "sqlite",
+    "postgres",
+    "mysql",
     "migrate",
     "macros",
     "chrono",

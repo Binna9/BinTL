@@ -27,7 +27,9 @@ curl -s localhost:8080/api/health
 
 브라우저: `http://localhost:8080`
 
-`data/`가 없으면 기동 시 만든다 (`etl.db`, `uploads/`, `outputs/`).
+`data/`가 없으면 기동 시 만든다 (`etl.db`, `uploads/`, `outputs/`, `extracts/`).
+
+추출(커넥션 → 서버 파일)의 회로·API·화면은 [docs/extract.md](docs/extract.md)에 있다.
 
 기본 계정: `admin` / `admin` (`skip_auth = false`). 개발 편의를 위해 `skip_auth = true` 또는 `ETL_SKIP_AUTH=true`를 허용한다.
 
@@ -50,7 +52,14 @@ cd ui && npm install && npm run dev
 - UI: `http://127.0.0.1:5173` — Vite가 `/api`를 `http://127.0.0.1:8080`으로 프록시한다.
 - 또는 `ETL_UI_DIR=./ui/dist`를 주면 embed 대신 그 폴더를 서빙한다 (프론트를 `just ui`로 다시 빌드한 뒤).
 
-## 수락 테스트 B — 업로드 → job → parquet
+## 수락 테스트 B — 추출 → 서버 파일
+
+1. `/connections`에서 커넥션 저장 후 `browse`
+2. 테이블을 눌러 컬럼·미리보기를 확인
+3. 구분자를 고르고 `extract` → `/extracts`에서 `succeeded` 후 다운로드
+4. `/jobs`에서 그 extract를 소스로 create + run 해도 된다
+
+## 수락 테스트 C — 업로드 → job → parquet
 
 1. `/files`에서 CSV 하나 업로드
 2. `/jobs`에서 해당 파일로 `create + run identity`
@@ -69,6 +78,7 @@ data/          # 없으면 기동 시 생성
   etl.db
   uploads/
   outputs/
+  extracts/
 ```
 
 ```bash
@@ -146,6 +156,7 @@ Restart=on-failure
 ```
 React UI → Axum (bintl) → jobs → engine (Polars)
                        ↘ storage (sqlx sqlite + 디스크)
+                       ↘ connectors (extract / load)
 ```
 
-engine은 axum / sqlx / ui를 모른다. HTTP 핸들러에서 Polars collect를 돌리지 않는다. 워커(`spawn_blocking`) 안에서만 변환한다.
+engine은 axum / sqlx / ui를 모른다. HTTP 핸들러에서 Polars collect를 돌리지 않는다. 워커(`spawn_blocking`) 안에서만 변환한다. 추출은 Polars가 아니라 connectors다.

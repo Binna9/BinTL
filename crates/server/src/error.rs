@@ -40,6 +40,15 @@ impl IntoResponse for AppError {
     }
 }
 
+impl From<connectors::ConnectError> for AppError {
+    fn from(err: connectors::ConnectError) -> Self {
+        match &err {
+            connectors::ConnectError::Invalid(m) => Self::bad(m.clone()),
+            _ => Self::new(StatusCode::BAD_GATEWAY, err.to_string()),
+        }
+    }
+}
+
 impl From<storage::StorageError> for AppError {
     fn from(err: storage::StorageError) -> Self {
         match &err {

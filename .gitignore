@@ -1,7 +1,9 @@
 /target
-ui/node_modules/
-ui/dist/
+/.cursor
+/ui/node_modules/
+/ui/dist/
 /dist/
 /data/
 .env
 .DS_Store
+

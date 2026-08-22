@@ -1,3 +1,17 @@
+import type {
+  ColumnInfo,
+  Connection,
+  ConnectionDraft,
+  EtlJobDraft,
+  ExtractDraft,
+  ExtractItem,
+  FileItem,
+  Health,
+  Job,
+  JobRun,
+  TablePreview,
+} from "@/types/pipeline";
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -26,22 +40,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
-export type Health = { ok: boolean; version: string };
-export type FileItem = { id: string; filename: string; size: number; stored_path: string };
-export type Job = {
-  id: string;
-  status: string;
-  source_path: string;
-  output_path: string | null;
-  spec_json: string;
-  error_message: string | null;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-};
-export type JobLog = { id: number; job_id: string; ts: string; level: string; message: string };
-export type JobDetail = Job & { logs: JobLog[] };
-
 export const api = {
   health: () => request<Health>("/api/health"),
   login: (username: string, password: string) =>
@@ -57,14 +55,40 @@ export const api = {
     return request<FileItem>("/api/files", { method: "POST", body });
   },
   jobs: (limit = 20) => request<{ jobs: Job[] }>(`/api/jobs?limit=${limit}`),
-  job: (id: string) => request<JobDetail>(`/api/jobs/${id}`),
-  createJob: (fileId: string) =>
+  job: (id: string) => request<JobRun>(`/api/jobs/${id}`),
+  connections: () => request<{ connections: Connection[] }>("/api/connections"),
+  createConnection: (body: ConnectionDraft) =>
+    request<Connection>("/api/connections", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteConnection: (id: string) =>
+    request<{ ok: boolean }>(`/api/connections/${id}`, { method: "DELETE" }),
+  testConnection: (id: string) =>
+    request<{ ok: boolean; driver: string }>(`/api/connections/${id}/test`, {
+      method: "POST",
+    }),
+  connectionTables: (id: string) =>
+    request<{ tables: string[] }>(`/api/connections/${id}/tables`),
+  connectionColumns: (id: string, table: string) =>
+    request<{ table: string; columns: ColumnInfo[] }>(
+      `/api/connections/${id}/columns?table=${encodeURIComponent(table)}`,
+    ),
+  connectionPreview: (id: string, table: string, limit = 50) =>
+    request<TablePreview>(
+      `/api/connections/${id}/preview?table=${encodeURIComponent(table)}&limit=${limit}`,
+    ),
+  extracts: (limit = 50) => request<{ extracts: ExtractItem[] }>(`/api/extracts?limit=${limit}`),
+  extract: (id: string) => request<ExtractItem>(`/api/extracts/${id}`),
+  createExtract: (body: ExtractDraft) =>
+    request<ExtractItem>("/api/extracts", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  createEtlJob: (body: EtlJobDraft) =>
     request<Job>("/api/jobs", {
       method: "POST",
-      body: JSON.stringify({
-        file_id: fileId,
-        spec: { version: 1, op: "identity", sink: "parquet" },
-      }),
+      body: JSON.stringify(body),
     }),
   runJob: (id: string) =>
     request<{ ok: boolean; id: string; status: string }>(`/api/jobs/${id}/run`, {
@@ -74,4 +98,8 @@ export const api = {
 
 export function resultUrl(id: string): string {
   return `/api/jobs/${id}/result`;
+}
+
+export function extractFileUrl(id: string): string {
+  return `/api/extracts/${id}/file`;
 }
