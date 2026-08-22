@@ -1,0 +1,33 @@
+[package]
+name = "bintl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "bintl"
+
+[[bin]]
+name = "bintl"
+path = "src/main.rs"
+
+[dependencies]
+jobs = { path = "../jobs" }
+storage = { path = "../storage" }
+axum = { version = "0.8", features = ["multipart", "macros"] }
+tokio = { workspace = true }
+tower-http = { version = "0.6", features = ["fs", "trace", "cors", "limit"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"
+thiserror = { workspace = true }
+uuid = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }

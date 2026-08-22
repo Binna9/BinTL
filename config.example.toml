@@ -1,0 +1,10 @@
+bind = "0.0.0.0:8080"
+data_dir = "./data"
+max_upload_mb = 512
+max_concurrent_jobs = 1
+session_secret = "change-me"
+skip_auth = false
+
+[auth]
+username = "admin"
+password = "admin"
