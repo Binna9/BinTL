@@ -1,8 +1,11 @@
-import { useEffect, useState } from "react";
+import { useConnectionCatalog } from "@/hooks/useConnectionCatalog";
 import { cn } from "@/lib/cn";
-import { api } from "@/lib/api";
 import { selectableClass } from "@/lib/selectable";
-import type { CatalogItem, CatalogLayout, CatalogPick } from "@/types/pipeline";
+import type {
+  CatalogEntry,
+  CatalogLayout,
+  CatalogSelection,
+} from "@/types/connection";
 
 function qualifiedName(layout: CatalogLayout, _database: string, schema: string | null, table: string) {
   if (layout === "database.schema.table") {
@@ -11,7 +14,7 @@ function qualifiedName(layout: CatalogLayout, _database: string, schema: string 
   return table;
 }
 
-function KindIcon({ kind }: { kind: CatalogItem["kind"] }) {
+function KindIcon({ kind }: { kind: CatalogEntry["kind"] }) {
   if (kind === "database") {
     return (
       <svg className="size-3.5 shrink-0 text-accent" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -54,7 +57,7 @@ function RowButton({
   open?: boolean;
   expandable?: boolean;
   active?: boolean;
-  kind: CatalogItem["kind"];
+  kind: CatalogEntry["kind"];
   name: string;
   current?: boolean | null;
   onClick: () => void;
@@ -98,77 +101,26 @@ export function CatalogTree({
   onPick,
 }: {
   connectionId: string;
-  selected?: CatalogPick | null;
-  onPick: (pick: CatalogPick | null) => void;
+  selected?: CatalogSelection | null;
+  onPick: (pick: CatalogSelection | null) => void;
 }) {
-  const [layout, setLayout] = useState<CatalogLayout>("database.schema.table");
-  const [databases, setDatabases] = useState<CatalogItem[]>([]);
-  const [open, setOpen] = useState<Record<string, boolean>>({});
-  const [children, setChildren] = useState<Record<string, CatalogItem[]>>({});
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState("");
+  const {
+    catalogLayout,
+    databases,
+    openNodes,
+    nodeChildren,
+    catalogError,
+    loadingNode,
+    toggleDatabase,
+    toggleSchema,
+  } = useConnectionCatalog(connectionId);
 
-  useEffect(() => {
-    setDatabases([]);
-    setOpen({});
-    setChildren({});
-    setError("");
-    void api
-      .connectionDatabases(connectionId)
-      .then((response) => {
-        setLayout(response.layout);
-        setDatabases(response.databases);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : "카탈로그를 불러오지 못했습니다"));
-  }, [connectionId]);
-
-  async function toggle(key: string, loader: () => Promise<CatalogItem[]>) {
-    if (open[key]) {
-      setOpen((current) => ({ ...current, [key]: false }));
-      return;
-    }
-    if (!children[key]) {
-      setLoading(key);
-      try {
-        const items = await loader();
-        setChildren((current) => ({ ...current, [key]: items }));
-        setError("");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "목록을 불러오지 못했습니다");
-        setLoading("");
-        return;
-      }
-      setLoading("");
-    }
-    setOpen((current) => ({ ...current, [key]: true }));
-  }
-
-  function onDatabase(item: CatalogItem) {
-    const key = `db:${item.name}`;
-    void toggle(key, async () => {
-      if (layout === "database.schema.table") {
-        const response = await api.connectionSchemas(connectionId, item.name);
-        return response.schemas;
-      }
-      const response = await api.connectionRelations(connectionId, item.name);
-      return response.tables;
-    });
-  }
-
-  function onSchema(database: string, item: CatalogItem) {
-    const key = `sc:${database}.${item.name}`;
-    void toggle(key, async () => {
-      const response = await api.connectionRelations(connectionId, database, item.name);
-      return response.tables;
-    });
-  }
-
-  function onTable(database: string, schema: string | null, item: CatalogItem) {
-    const pick: CatalogPick = {
+  function onTable(database: string, schema: string | null, item: CatalogEntry) {
+    const pick: CatalogSelection = {
       database,
       schema,
       table: item.name,
-      qualified: qualifiedName(layout, database, schema, item.name),
+      qualified: qualifiedName(catalogLayout, database, schema, item.name),
     };
     if (selected?.qualified === pick.qualified && selected.database === pick.database) {
       onPick(null);
@@ -177,8 +129,8 @@ export function CatalogTree({
     onPick(pick);
   }
 
-  if (error) {
-    return <p className="p-3 text-xs text-danger">{error}</p>;
+  if (catalogError) {
+    return <p className="p-3 text-xs text-danger">{catalogError}</p>;
   }
   if (databases.length === 0) {
     return <p className="p-3 text-xs text-text-tertiary">데이터베이스를 불러오는 중이거나 없습니다.</p>;
@@ -188,8 +140,8 @@ export function CatalogTree({
     <div className="py-1">
       {databases.map((database) => {
         const dbKey = `db:${database.name}`;
-        const dbOpen = Boolean(open[dbKey]);
-        const dbKids = children[dbKey] ?? [];
+        const dbOpen = Boolean(openNodes[dbKey]);
+        const dbKids = nodeChildren[dbKey] ?? [];
         return (
           <div key={dbKey}>
             <RowButton
@@ -199,17 +151,17 @@ export function CatalogTree({
               kind="database"
               name={database.name}
               current={database.current}
-              onClick={() => onDatabase(database)}
+              onClick={() => toggleDatabase(database)}
             />
-            {loading === dbKey ? (
+            {loadingNode === dbKey ? (
               <p className="px-8 py-1 text-[11px] text-text-tertiary">불러오는 중…</p>
             ) : null}
             {dbOpen
               ? dbKids.map((child) => {
                   if (child.kind === "schema") {
                     const scKey = `sc:${database.name}.${child.name}`;
-                    const scOpen = Boolean(open[scKey]);
-                    const tables = children[scKey] ?? [];
+                    const scOpen = Boolean(openNodes[scKey]);
+                    const tables = nodeChildren[scKey] ?? [];
                     return (
                       <div key={scKey}>
                         <RowButton
@@ -218,14 +170,19 @@ export function CatalogTree({
                           open={scOpen}
                           kind="schema"
                           name={child.name}
-                          onClick={() => onSchema(database.name, child)}
+                          onClick={() => toggleSchema(database.name, child)}
                         />
-                        {loading === scKey ? (
+                        {loadingNode === scKey ? (
                           <p className="px-10 py-1 text-[11px] text-text-tertiary">불러오는 중…</p>
                         ) : null}
                         {scOpen
                           ? tables.map((table) => {
-                              const qualified = qualifiedName(layout, database.name, child.name, table.name);
+                              const qualified = qualifiedName(
+                                catalogLayout,
+                                database.name,
+                                child.name,
+                                table.name,
+                              );
                               return (
                                 <RowButton
                                   key={`${scKey}.${table.name}`}
@@ -241,7 +198,12 @@ export function CatalogTree({
                       </div>
                     );
                   }
-                  const qualified = qualifiedName(layout, database.name, null, child.name);
+                  const qualified = qualifiedName(
+                    catalogLayout,
+                    database.name,
+                    null,
+                    child.name,
+                  );
                   return (
                     <RowButton
                       key={`${dbKey}.${child.name}`}

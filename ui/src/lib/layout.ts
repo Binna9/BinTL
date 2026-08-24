@@ -1,6 +1,6 @@
 export const layout = {
   split: {
-    nav: 208,
+    nav: 240,
     minNav: 148,
     maxNav: 320,
     connections: 176,

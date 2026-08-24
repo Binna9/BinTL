@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useState } from "react";
+import { FormEvent, ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/Button";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
@@ -9,11 +9,12 @@ import { Panel, PanelHeader } from "@/components/Panel";
 import { SplitLayout } from "@/components/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
-import { api } from "@/lib/api";
+import { useJobWorkspace } from "@/hooks/useJobWorkspace";
 import { fmtSqlPreview, fmtWhen } from "@/lib/format";
 import { layout } from "@/lib/layout";
 import { emptyCopy } from "@/mock/emptyStates";
-import type { Connection, ExtractItem, FileItem, Job } from "@/types/pipeline";
+import { connectionApi } from "@/services/connectionApi";
+import { jobApi } from "@/services/jobApi";
 
 function parseRename(raw: string): Record<string, string> | undefined {
   const result: Record<string, string> = {};
@@ -53,33 +54,18 @@ function BuilderSection({
 }
 
 export function JobsPage() {
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [files, setFiles] = useState<FileItem[]>([]);
-  const [extracts, setExtracts] = useState<ExtractItem[]>([]);
-  const [connections, setConnections] = useState<Connection[]>([]);
+  const {
+    jobs,
+    files,
+    extracts,
+    connections,
+    workspaceError,
+    setWorkspaceError,
+    refreshJobWorkspace,
+  } = useJobWorkspace();
   const [sourceTables, setSourceTables] = useState<string[]>([]);
   const [destinationTables, setDestinationTables] = useState<string[]>([]);
-  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-
-  async function refresh() {
-    const [jobResult, fileResult, extractResult, connectionResult] = await Promise.all([
-      api.jobs(50),
-      api.files(),
-      api.extracts(50),
-      api.connections(),
-    ]);
-    setJobs(jobResult.jobs);
-    setFiles(fileResult.files);
-    setExtracts(extractResult.extracts.filter((extract) => extract.status === "succeeded"));
-    setConnections(connectionResult.connections);
-  }
-
-  useEffect(() => {
-    void refresh().catch((err) =>
-      setError(err instanceof Error ? err.message : "작업 정보를 불러오지 못했습니다"),
-    );
-  }, []);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -92,10 +78,10 @@ export function JobsPage() {
       .filter(Boolean);
     const destinationConnectionId = value("dest_connection_id");
 
-    setError("");
+    setWorkspaceError("");
     setBusy(true);
     try {
-      const job = await api.createEtlJob({
+      const job = await jobApi.createJob({
         file_id: value("file_id") || undefined,
         extract_id: value("extract_id") || undefined,
         connection_id: value("connection_id") || undefined,
@@ -107,10 +93,10 @@ export function JobsPage() {
         filter: value("filter") || undefined,
         rename: parseRename(value("rename")),
       });
-      await api.runJob(job.id);
-      await refresh();
+      await jobApi.runJob(job.id);
+      await refreshJobWorkspace();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "작업 생성에 실패했습니다");
+      setWorkspaceError(err instanceof Error ? err.message : "작업 생성에 실패했습니다");
     } finally {
       setBusy(false);
     }
@@ -124,7 +110,7 @@ export function JobsPage() {
         title="작업"
         description="파일 또는 테이블을 소스로 선택하고 변환한 뒤 parquet와 대상 테이블에 적재합니다."
       />
-      {error ? <NoticeBanner>{error}</NoticeBanner> : null}
+      {workspaceError ? <NoticeBanner>{workspaceError}</NoticeBanner> : null}
 
       <Panel>
         <PanelHeader title="작업 정의" description="소스, 변환, 적재 조건을 순서대로 지정합니다." />
@@ -158,7 +144,10 @@ export function JobsPage() {
                   const id = event.target.value;
                   setSourceTables([]);
                   if (!id) return;
-                  void api.connectionTables(id).then((result) => setSourceTables(result.tables)).catch(() => undefined);
+                  void connectionApi
+                    .getTables(id)
+                    .then((result) => setSourceTables(result.tables))
+                    .catch(() => undefined);
                 }}
               >
                 <option value="">선택 안 함</option>
@@ -198,7 +187,10 @@ export function JobsPage() {
                   const id = event.target.value;
                   setDestinationTables([]);
                   if (!id) return;
-                  void api.connectionTables(id).then((result) => setDestinationTables(result.tables)).catch(() => undefined);
+                  void connectionApi
+                    .getTables(id)
+                    .then((result) => setDestinationTables(result.tables))
+                    .catch(() => undefined);
                 }}
               >
                 <option value="">parquet만 생성</option>

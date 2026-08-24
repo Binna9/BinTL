@@ -194,9 +194,9 @@ export function GridRow({
   return (
     <tr
       className={cn(
-        "group cursor-pointer border-b border-border last:border-b-0",
+        "group cursor-pointer border-b border-border/70 last:border-b-0",
         selectableClass(active),
-        !active && "bg-surface",
+        !active && "odd:bg-surface even:bg-subtle/35 hover:bg-accent-subtle/45",
       )}
       onClick={(event) => {
         if (selected !== undefined) return;
@@ -221,7 +221,7 @@ export function GridCell({
   return (
     <td
       className={cn(
-        "h-9 overflow-hidden text-ellipsis whitespace-nowrap px-3 py-1.5 align-middle text-text",
+        "h-9 overflow-hidden text-ellipsis whitespace-nowrap border-r border-border/60 px-3 py-1.5 align-middle text-text last:border-r-0",
         mono && "technical",
         muted && "text-text-secondary",
       )}

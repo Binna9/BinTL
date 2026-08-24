@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import { Button } from "@/components/Button";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { FileDropzone } from "@/components/FileDropzone";
@@ -6,27 +6,15 @@ import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Panel, PanelBody, PanelHeader } from "@/components/Panel";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
-import { api } from "@/lib/api";
+import { useFiles } from "@/hooks/useFiles";
 import { fmtBytes } from "@/lib/format";
 import { emptyCopy } from "@/mock/emptyStates";
-import type { FileItem } from "@/types/pipeline";
+import { fileApi } from "@/services/fileApi";
 
 export function FilesPage() {
-  const [files, setFiles] = useState<FileItem[]>([]);
-  const [error, setError] = useState("");
+  const { files, filesError, setFilesError, refreshFiles } = useFiles();
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
-
-  async function refresh() {
-    const response = await api.files();
-    setFiles(response.files);
-  }
-
-  useEffect(() => {
-    void refresh().catch((err) =>
-      setError(err instanceof Error ? err.message : "파일 목록을 불러오지 못했습니다"),
-    );
-  }, []);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -35,14 +23,14 @@ export function FilesPage() {
     if (!file) return;
 
     setBusy(true);
-    setError("");
+    setFilesError("");
     try {
-      await api.upload(file);
+      await fileApi.uploadFile(file);
       input.value = "";
       setName("");
-      await refresh();
+      await refreshFiles();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "파일 업로드에 실패했습니다");
+      setFilesError(err instanceof Error ? err.message : "파일 업로드에 실패했습니다");
     } finally {
       setBusy(false);
     }
@@ -56,7 +44,7 @@ export function FilesPage() {
         title="파일"
         description="서버에 저장된 입력 파일입니다. 작업 소스로 선택할 수 있습니다."
       />
-      {error ? <NoticeBanner>{error}</NoticeBanner> : null}
+      {filesError ? <NoticeBanner>{filesError}</NoticeBanner> : null}
 
       <Panel>
         <PanelHeader title="파일 업로드" description="CSV 파일을 서버 작업 공간에 추가합니다." />

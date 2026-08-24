@@ -2,20 +2,24 @@ import { KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/Button";
 import { CatalogTree } from "@/components/CatalogTree";
+import { ConnectionInfoPanel } from "@/components/ConnectionInfoPanel";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
-import { MetaField } from "@/components/MetaField";
 import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { PaneHeader } from "@/components/PaneHeader";
 import { Panel } from "@/components/Panel";
 import { SplitLayout } from "@/components/SplitLayout";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
-import { api } from "@/lib/api";
+import { useConnectionColumns } from "@/hooks/useConnectionColumns";
+import { useConnections } from "@/hooks/useConnections";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
 import { selectableClass } from "@/lib/selectable";
 import { emptyCopy } from "@/mock/emptyStates";
-import type { CatalogPick, ColumnInfo, Connection, QueryOutcome } from "@/types/pipeline";
+import { extractApi } from "@/services/extractApi";
+import { queryApi } from "@/services/queryApi";
+import type { CatalogSelection } from "@/types/connection";
+import type { QueryResult } from "@/types/query";
 
 function sqlStorageKey(id: string): string {
   return `bintl.query.sql.${id}`;
@@ -31,10 +35,13 @@ export function QueryPage() {
   const [params] = useSearchParams();
   const editorRef = useRef<HTMLTextAreaElement>(null);
 
-  const [connections, setConnections] = useState<Connection[]>([]);
+  const { connections, connectionsError } = useConnections();
   const [browseId, setBrowseId] = useState(params.get("connection") ?? "");
-  const [selected, setSelected] = useState<CatalogPick | null>(null);
-  const [columns, setColumns] = useState<ColumnInfo[]>([]);
+  const [selected, setSelected] = useState<CatalogSelection | null>(null);
+  const { connectionColumns, connectionColumnsError } = useConnectionColumns(
+    browseId,
+    selected,
+  );
   const [picked, setPicked] = useState<string[]>([]);
   const [sql, setSql] = useState("");
   const [delimiter, setDelimiter] = useState(",");
@@ -42,7 +49,7 @@ export function QueryPage() {
   const [limit, setLimit] = useState(100);
   const [running, setRunning] = useState(false);
   const [extracting, setExtracting] = useState(false);
-  const [result, setResult] = useState<QueryOutcome | null>(null);
+  const [result, setResult] = useState<QueryResult | null>(null);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
 
@@ -52,16 +59,8 @@ export function QueryPage() {
   );
 
   useEffect(() => {
-    void api
-      .connections()
-      .then((response) => setConnections(response.connections))
-      .catch((err) => setError(err instanceof Error ? err.message : "커넥션을 불러오지 못했습니다"));
-  }, []);
-
-  useEffect(() => {
     if (!browseId) {
       setSelected(null);
-      setColumns([]);
       setPicked([]);
       return;
     }
@@ -69,20 +68,7 @@ export function QueryPage() {
     if (saved && !sql) setSql(saved);
   }, [browseId]);
 
-  useEffect(() => {
-    if (!browseId || !selected) {
-      setColumns([]);
-      setPicked([]);
-      return;
-    }
-    void api
-      .connectionColumns(browseId, selected.qualified, selected.database)
-      .then((response) => setColumns(response.columns))
-      .catch((err) => {
-        setColumns([]);
-        setError(err instanceof Error ? err.message : "컬럼을 불러오지 못했습니다");
-      });
-  }, [browseId, selected]);
+  useEffect(() => setPicked([]), [browseId, selected]);
 
   useEffect(() => {
     const table = params.get("table");
@@ -102,7 +88,6 @@ export function QueryPage() {
       if (sql) localStorage.setItem(sqlStorageKey(browseId), sql);
       setBrowseId("");
       setSelected(null);
-      setColumns([]);
       setPicked([]);
       setResult(null);
       return;
@@ -110,7 +95,6 @@ export function QueryPage() {
     if (browseId && sql) localStorage.setItem(sqlStorageKey(browseId), sql);
     setBrowseId(id);
     setSelected(null);
-    setColumns([]);
     setPicked([]);
     setResult(null);
     setError("");
@@ -152,7 +136,7 @@ export function QueryPage() {
     setError("");
     setInfo("");
     try {
-      const outcome = await api.runQuery(browseId, sql, limit, selected?.database);
+      const outcome = await queryApi.runQuery(browseId, sql, limit, selected?.database);
       setResult(outcome);
       setInfo(
         outcome.kind === "exec"
@@ -172,7 +156,7 @@ export function QueryPage() {
     setExtracting(true);
     setError("");
     try {
-      await api.createExtract({
+      await extractApi.createExtract({
         connection_id: browseId,
         table: selected?.qualified || "query",
         database: selected?.database,
@@ -208,11 +192,15 @@ export function QueryPage() {
       <PageHeader
         iconName="query"
         eyebrow="작업 공간"
-        title="쿼리"
+        title="DB"
         description="커넥션과 스키마를 옆에 두고 SQL을 실행한 뒤, 결과 전체를 서버 파일로 받습니다. 각 실행은 새 연결입니다."
       />
       {info ? <NoticeBanner tone="ok">{info}</NoticeBanner> : null}
-      {error ? <NoticeBanner>{error}</NoticeBanner> : null}
+      {error || connectionsError || connectionColumnsError ? (
+        <NoticeBanner>
+          {error || connectionsError || connectionColumnsError}
+        </NoticeBanner>
+      ) : null}
 
       <Panel className="overflow-hidden">
         <SplitLayout
@@ -266,30 +254,10 @@ export function QueryPage() {
           </aside>
 
           <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-            {active ? (
-              <div className="flex h-10 shrink-0 items-center gap-5 overflow-x-auto border-b border-border bg-subtle px-4">
-                <MetaField label="커넥션">{active.name}</MetaField>
-                <MetaField label="드라이버" technical>
-                  {active.driver}
-                </MetaField>
-                <MetaField label="호스트" technical>
-                  {active.host}:{active.port}
-                </MetaField>
-                <MetaField label="데이터베이스" technical>
-                  {active.database_name}
-                </MetaField>
-                <MetaField label="사용자" technical>
-                  {active.username}
-                </MetaField>
-                <MetaField label="선택 테이블" technical>
-                  {selected?.qualified || "—"}
-                </MetaField>
-              </div>
-            ) : (
-              <div className="flex h-10 shrink-0 items-center border-b border-border bg-subtle px-4 text-[13px] text-text-tertiary">
-                왼쪽에서 커넥션을 선택하세요.
-              </div>
-            )}
+            <ConnectionInfoPanel
+              connection={active}
+              selectedTable={selected?.qualified}
+            />
 
             <SplitLayout
               className="min-h-0 flex-1"
@@ -298,13 +266,13 @@ export function QueryPage() {
             >
               <SplitLayout className="min-h-0" defaultSizes={[layout.split.columns]}>
                 <section className="flex h-full min-h-0 flex-col overflow-hidden">
-                  <PaneHeader title="컬럼" meta={`${columns.length}`} />
+                  <PaneHeader title="컬럼" meta={`${connectionColumns.length}`} />
                   <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
-                    {columns.length === 0 ? (
+                    {connectionColumns.length === 0 ? (
                       <p className="p-3 text-xs text-text-tertiary">테이블을 선택하면 컬럼이 표시됩니다.</p>
                     ) : (
                       <ul className="m-0 list-none p-0">
-                        {columns.map((column) => (
+                        {connectionColumns.map((column) => (
                           <li key={column.name} className="border-b border-border last:border-b-0">
                             <label
                               className={cn(
@@ -338,30 +306,30 @@ export function QueryPage() {
                   </div>
                 </section>
                 <section className="flex h-full min-h-0 flex-col">
-                  <Toolbar className="min-h-10 bg-subtle py-1">
-                    <ToolbarGroup>
-                      <span className="text-[13px] font-semibold">SQL</span>
-                      <span className="text-xs text-text-tertiary">Ctrl+Enter 실행</span>
-                    </ToolbarGroup>
-                    <ToolbarGroup>
-                      <Button
-                        type="button"
-                        variant="quiet"
-                        disabled={!selected}
-                        onClick={() => applyDraft(picked)}
-                      >
-                        선택 컬럼으로 초안
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="quiet"
-                        disabled={!selected}
-                        onClick={() => applyDraft([])}
-                      >
-                        SELECT *
-                      </Button>
-                    </ToolbarGroup>
-                  </Toolbar>
+                  <PaneHeader
+                    title="SQL"
+                    description="Ctrl+Enter 실행"
+                    actions={
+                      <>
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          disabled={!selected}
+                          onClick={() => applyDraft(picked)}
+                        >
+                          선택 컬럼으로 초안
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          disabled={!selected}
+                          onClick={() => applyDraft([])}
+                        >
+                          SELECT *
+                        </Button>
+                      </>
+                    }
+                  />
                   <textarea
                     ref={editorRef}
                     className="sql-editor flex-1"

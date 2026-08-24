@@ -1,3 +1,6 @@
+import { Moon, Sun } from "lucide-react";
+import { useTheme } from "@/hooks/useTheme";
+
 const items = [
   {
     id: "dashboard",
@@ -24,14 +27,9 @@ const items = [
     ),
   },
   {
-    id: "help",
-    label: "도움말",
-    icon: (
-      <>
-        <path d="M11.953 2C6.465 2 2 6.486 2 12s4.486 10 10 10 10-4.486 10-10S17.493 2 11.953 2zM12 20c-4.411 0-8-3.589-8-8s3.567-8 7.953-8C16.391 4 20 7.589 20 12s-3.589 8-8 8z" />
-        <path d="M11 7h2v7h-2zm0 8h2v2h-2z" />
-      </>
-    ),
+    id: "theme",
+    label: "테마 전환",
+    isThemeToggle: true,
   },
   {
     id: "settings",
@@ -46,38 +44,61 @@ const items = [
 ] as const;
 
 export function TopSubmenu() {
+  const { theme, toggleTheme } = useTheme();
+  const isDark = theme === "dark";
+
   return (
-    <div className="relative flex h-11 items-center justify-center transition-all duration-[450ms] ease-in-out">
-      <article className="inline-flex h-full flex-row rounded-2xl bg-white shadow-[0_1px_1px_rgba(15,23,42,0.06),0_2px_4px_rgba(15,23,42,0.06),0_8px_16px_rgba(15,23,42,0.08),0_16px_32px_rgba(15,23,42,0.1)] duration-500 ease-in-out">
-        {items.map((item, index) => (
-          <label
-            key={item.id}
-            htmlFor={`top-submenu-${item.id}`}
-            title={item.label}
-            className="group relative flex h-full w-12 cursor-pointer flex-row items-center justify-center text-black"
-          >
-            <input
-              className="peer/expand hidden"
-              type="radio"
-              name="top-submenu-path"
-              id={`top-submenu-${item.id}`}
-              defaultChecked={index === 0}
-            />
-            <span className="flex size-7 items-center justify-center rounded-lg duration-300 ease-in-out peer-checked/expand:bg-white peer-checked/expand:shadow-[0_1px_2px_rgba(15,23,42,0.08),0_3px_8px_rgba(59,130,246,0.25)]">
-              <svg
-                className="duration-300 ease-in-out group-hover:scale-105 group-hover:fill-blue-400 group-hover:text-blue-400 group-has-[:checked]:scale-105 group-has-[:checked]:fill-blue-400 group-has-[:checked]:text-blue-400"
-                xmlns="http://www.w3.org/2000/svg"
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                {item.icon}
-              </svg>
-            </span>
-            <span className="sr-only">{item.label}</span>
-          </label>
-        ))}
+    <div className="relative flex h-12 items-center justify-center">
+      <article className="inline-flex h-full flex-row overflow-hidden rounded-2xl border border-border/80 bg-surface text-text shadow-[3px_4px_8px_-5px_rgba(15,23,42,0.35)] dark:shadow-[3px_4px_10px_-5px_rgba(0,0,0,0.65)]">
+        {items.map((item, index) =>
+          "isThemeToggle" in item ? (
+            <button
+              key={item.id}
+              type="button"
+              onClick={toggleTheme}
+              aria-label={isDark ? "라이트 모드로 전환" : "다크 모드로 전환"}
+              aria-pressed={isDark}
+              title={isDark ? "라이트 모드" : "다크 모드"}
+              className="group grid h-full w-14 place-items-center text-text outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+            >
+              <span className="grid size-8 place-items-center rounded-lg transition-colors duration-200 group-hover:bg-accent-subtle group-hover:text-accent">
+                {isDark ? (
+                  <Sun className="size-[18px]" />
+                ) : (
+                  <Moon className="size-[18px]" />
+                )}
+              </span>
+            </button>
+          ) : (
+            <label
+              key={item.id}
+              htmlFor={`top-submenu-${item.id}`}
+              title={item.label}
+              className="group relative flex h-full w-14 cursor-pointer flex-row items-center justify-center text-text outline-none"
+            >
+              <input
+                className="peer/expand hidden"
+                type="radio"
+                name="top-submenu-path"
+                id={`top-submenu-${item.id}`}
+                defaultChecked={index === 0}
+              />
+              <span className="flex size-8 items-center justify-center rounded-lg transition-[color,background-color,box-shadow] duration-200 group-hover:bg-accent-subtle group-hover:text-accent peer-checked/expand:bg-accent-subtle peer-checked/expand:text-accent peer-checked/expand:shadow-[1px_2px_5px_-2px_rgba(59,130,246,0.45)]">
+                <svg
+                  className="fill-current text-current"
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  {item.icon}
+                </svg>
+              </span>
+              <span className="sr-only">{item.label}</span>
+            </label>
+          )
+        )}
       </article>
     </div>
   );

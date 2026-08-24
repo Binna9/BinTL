@@ -3,7 +3,7 @@ export const emptyCopy = {
   queue: "대기열이 비어 있습니다.",
   uploads: "업로드된 파일이 없습니다.",
   connections: "저장된 커넥션이 없습니다.",
-  extracts: "추출 파일이 없습니다. 커넥션이나 쿼리 편집기에서 시작하세요.",
+  extracts: "추출 결과가 없습니다. DB 메뉴에서 새 추출을 시작하세요.",
   preview: "행이 없습니다",
   query: "커넥션을 선택하고 SQL을 실행하세요.",
   logs: "(없음)",

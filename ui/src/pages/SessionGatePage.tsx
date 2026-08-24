@@ -4,7 +4,7 @@ import { Button } from "@/components/Button";
 import { FormField } from "@/components/FormField";
 import { NoticeBanner } from "@/components/NoticeBanner";
 import { BrandMark } from "@/components/BrandMark";
-import { api } from "@/lib/api";
+import { authApi } from "@/services/authApi";
 
 export function SessionGatePage() {
   const navigate = useNavigate();
@@ -18,7 +18,7 @@ export function SessionGatePage() {
     setError("");
     setBusy(true);
     try {
-      await api.login(username, password);
+      await authApi.login(username, password);
       navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "로그인에 실패했습니다");

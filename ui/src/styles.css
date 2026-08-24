@@ -1,27 +1,69 @@
 @import "tailwindcss";
 @import "pretendard/dist/web/variable/pretendardvariable.css";
 
-@theme {
+@theme inline {
   --font-sans: "Pretendard Variable", Pretendard, sans-serif;
   --font-mono: "Pretendard Variable", Pretendard, sans-serif;
-  --color-workspace: #f6f7f9;
-  --color-surface: #ffffff;
-  --color-subtle: #f1f3f5;
-  --color-raised: #fafbfc;
-  --color-border: #d8dde3;
-  --color-border-strong: #b8c0ca;
-  --color-text: #20242a;
-  --color-text-secondary: #5d6672;
-  --color-text-tertiary: #89919c;
-  --color-accent: #1769c2;
-  --color-accent-hover: #105aa8;
-  --color-accent-subtle: #eaf2fb;
-  --color-success: #287a4b;
-  --color-success-subtle: #eaf5ef;
-  --color-warning: #9a6700;
-  --color-warning-subtle: #fff5d6;
-  --color-danger: #c43835;
-  --color-danger-subtle: #fceceb;
+  --color-workspace: var(--theme-workspace);
+  --color-surface: var(--theme-surface);
+  --color-subtle: var(--theme-subtle);
+  --color-raised: var(--theme-raised);
+  --color-border: var(--theme-border);
+  --color-border-strong: var(--theme-border-strong);
+  --color-text: var(--theme-text);
+  --color-text-secondary: var(--theme-text-secondary);
+  --color-text-tertiary: var(--theme-text-tertiary);
+  --color-accent: var(--theme-accent);
+  --color-accent-hover: var(--theme-accent-hover);
+  --color-accent-subtle: var(--theme-accent-subtle);
+  --color-success: var(--theme-success);
+  --color-success-subtle: var(--theme-success-subtle);
+  --color-warning: var(--theme-warning);
+  --color-warning-subtle: var(--theme-warning-subtle);
+  --color-danger: var(--theme-danger);
+  --color-danger-subtle: var(--theme-danger-subtle);
+}
+
+:root {
+  --theme-workspace: #f9fafb;
+  --theme-surface: #ffffff;
+  --theme-subtle: #f1f3f5;
+  --theme-raised: #fafbfc;
+  --theme-border: #d8dde3;
+  --theme-border-strong: #b8c0ca;
+  --theme-text: #20242a;
+  --theme-text-secondary: #5d6672;
+  --theme-text-tertiary: #89919c;
+  --theme-accent: #1769c2;
+  --theme-accent-hover: #105aa8;
+  --theme-accent-subtle: #eaf2fb;
+  --theme-success: #287a4b;
+  --theme-success-subtle: #eaf5ef;
+  --theme-warning: #9a6700;
+  --theme-warning-subtle: #fff5d6;
+  --theme-danger: #c43835;
+  --theme-danger-subtle: #fceceb;
+}
+
+:root.dark {
+  --theme-workspace: #0f1115;
+  --theme-surface: #171a20;
+  --theme-subtle: #20242b;
+  --theme-raised: #1b1f26;
+  --theme-border: #303640;
+  --theme-border-strong: #47505d;
+  --theme-text: #edf0f4;
+  --theme-text-secondary: #b3bac5;
+  --theme-text-tertiary: #7f8997;
+  --theme-accent: #68aef2;
+  --theme-accent-hover: #8bc2f7;
+  --theme-accent-subtle: #172b40;
+  --theme-success: #67c58d;
+  --theme-success-subtle: #173326;
+  --theme-warning: #e5b95d;
+  --theme-warning-subtle: #372d16;
+  --theme-danger: #ee817d;
+  --theme-danger-subtle: #3b2022;
 }
 
 html,
@@ -32,7 +74,6 @@ body,
 
 body {
   @apply m-0 bg-workspace font-sans text-sm text-text antialiased;
-  color-scheme: light;
   letter-spacing: -0.011em;
 }
 
@@ -77,7 +118,7 @@ a {
 }
 
 .ui-btn:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-accent) 45%, white);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
   outline-offset: 2px;
 }
 
@@ -88,61 +129,62 @@ a {
 
 .ui-btn-primary {
   color: #fff;
-  border-color: #6aabd8;
-  background: linear-gradient(180deg, #b7dbf5 0%, #7ebce8 48%, #62a8dc 100%);
-  text-shadow: 0 1px 0 rgba(55, 110, 150, 0.18);
+  border-color: var(--color-accent-hover);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-accent) 88%, white),
+    var(--color-accent)
+  );
+  text-shadow: 0 1px 0 color-mix(in srgb, var(--color-accent-hover) 60%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.62),
-    inset 0 -1px 0 rgba(70, 130, 175, 0.16),
-    0 1px 0 #4e96c6,
-    0 3px 8px rgba(90, 159, 212, 0.28);
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 1px 0 var(--color-accent-hover),
+    0 3px 8px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
 .ui-btn-primary:hover:not(:disabled) {
   filter: brightness(1.05);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.72),
-    0 2px 0 #4e96c6,
-    0 8px 16px rgba(90, 159, 212, 0.28);
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 2px 0 var(--color-accent-hover),
+    0 8px 16px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
 .ui-btn-secondary {
   color: var(--color-text);
-  border-color: #c5ccd4;
-  background: linear-gradient(180deg, #ffffff 0%, #f4f6f8 100%);
+  border-color: var(--color-border-strong);
+  background: linear-gradient(180deg, var(--color-surface), var(--color-raised));
   box-shadow:
-    inset 0 1px 0 #ffffff,
-    inset 0 -1px 0 rgba(184, 192, 202, 0.35),
-    0 1px 0 #b8c0ca,
-    0 2px 6px rgba(32, 36, 42, 0.08);
+    inset 0 1px 0 color-mix(in srgb, var(--color-text) 8%, transparent),
+    0 1px 0 var(--color-border-strong),
+    0 2px 6px color-mix(in srgb, var(--color-text) 8%, transparent);
 }
 
 .ui-btn-secondary:hover:not(:disabled) {
-  background: linear-gradient(180deg, #ffffff 0%, #eef1f4 100%);
+  background: linear-gradient(180deg, var(--color-surface), var(--color-subtle));
   box-shadow:
-    inset 0 1px 0 #ffffff,
-    0 2px 0 #b8c0ca,
-    0 7px 14px rgba(32, 36, 42, 0.1);
+    inset 0 1px 0 color-mix(in srgb, var(--color-text) 8%, transparent),
+    0 2px 0 var(--color-border-strong),
+    0 7px 14px color-mix(in srgb, var(--color-text) 10%, transparent);
 }
 
 .ui-btn-danger {
-  color: #8a5553;
-  border-color: #e3c4c2;
-  background: linear-gradient(180deg, #fbf3f2 0%, #f1d8d6 100%);
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
+  background: linear-gradient(180deg, var(--color-raised), var(--color-danger-subtle));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    inset 0 -1px 0 rgba(180, 130, 128, 0.16),
-    0 1px 0 #d7b4b2,
-    0 2px 6px rgba(180, 110, 108, 0.12);
+    inset 0 1px 0 color-mix(in srgb, var(--color-text) 8%, transparent),
+    0 1px 0 color-mix(in srgb, var(--color-danger) 35%, var(--color-border)),
+    0 2px 6px color-mix(in srgb, var(--color-danger) 12%, transparent);
 }
 
 .ui-btn-danger:hover:not(:disabled) {
-  color: #7a4846;
-  background: linear-gradient(180deg, #fff8f7 0%, #edd0ce 100%);
+  color: var(--color-danger);
+  background: linear-gradient(180deg, var(--color-surface), var(--color-danger-subtle));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 2px 0 #d7b4b2,
-    0 7px 14px rgba(180, 110, 108, 0.14);
+    inset 0 1px 0 color-mix(in srgb, var(--color-text) 8%, transparent),
+    0 2px 0 color-mix(in srgb, var(--color-danger) 35%, var(--color-border)),
+    0 7px 14px color-mix(in srgb, var(--color-danger) 14%, transparent);
 }
 
 .ui-btn-quiet {
@@ -154,12 +196,12 @@ a {
 
 .ui-btn-quiet:hover:not(:disabled) {
   color: var(--color-text);
-  border-color: #d8dde3;
-  background: linear-gradient(180deg, #ffffff 0%, #f1f3f5 100%);
+  border-color: var(--color-border);
+  background: linear-gradient(180deg, var(--color-surface), var(--color-subtle));
   box-shadow:
-    inset 0 1px 0 #ffffff,
-    0 1px 0 #cdd3da,
-    0 4px 10px rgba(32, 36, 42, 0.07);
+    inset 0 1px 0 color-mix(in srgb, var(--color-text) 8%, transparent),
+    0 1px 0 var(--color-border),
+    0 4px 10px color-mix(in srgb, var(--color-text) 7%, transparent);
 }
 
 .field-control {
@@ -194,7 +236,12 @@ a {
 
 .brand-mark-word {
   @apply block origin-left font-bold tracking-[-0.04em] transition-transform duration-300;
-  background: linear-gradient(120deg, #1c2433 10%, #334155 48%, #0f766e 100%);
+  background: linear-gradient(
+    120deg,
+    var(--color-text) 10%,
+    var(--color-text-secondary) 48%,
+    var(--color-accent) 100%
+  );
   background-size: 160% 100%;
   -webkit-background-clip: text;
   background-clip: text;
@@ -220,45 +267,8 @@ a {
 
 .brand-mark:hover .brand-mark-sub,
 .brand-mark:active .brand-mark-sub {
-  color: #0f766e;
+  color: var(--color-accent);
   transform: translateY(-1px) scale(1.04);
-}
-
-.app-header {
-  position: relative;
-}
-
-.app-header::after {
-  content: "";
-  position: absolute;
-  inset-inline: 0;
-  bottom: 0;
-  height: 2px;
-  background: linear-gradient(
-    90deg,
-    #1c2433 0%,
-    #3a4658 22%,
-    #0f766e 50%,
-    #3a4658 78%,
-    #1c2433 100%
-  );
-}
-
-.app-header::before {
-  content: "";
-  position: absolute;
-  left: 28%;
-  right: 28%;
-  bottom: -3px;
-  height: 6px;
-  pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(15, 118, 110, 0.14) 50%,
-    transparent 100%
-  );
-  filter: blur(5px);
 }
 
 ::selection {

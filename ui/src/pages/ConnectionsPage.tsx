@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/Button";
 import { CatalogTree } from "@/components/CatalogTree";
@@ -10,38 +10,37 @@ import { PaneHeader } from "@/components/PaneHeader";
 import { Panel, PanelBody, PanelHeader } from "@/components/Panel";
 import { SplitLayout } from "@/components/SplitLayout";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
-import { api } from "@/lib/api";
+import { useConnections } from "@/hooks/useConnections";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
 import { selectableClass } from "@/lib/selectable";
 import { driverCatalog } from "@/mock/driverCatalog";
 import { emptyCopy } from "@/mock/emptyStates";
-import type { CatalogPick, ColumnInfo, Connection, TablePreview } from "@/types/pipeline";
+import { connectionApi } from "@/services/connectionApi";
+import { extractApi } from "@/services/extractApi";
+import type {
+  CatalogSelection,
+  DatabaseColumn,
+  TablePreview,
+} from "@/types/connection";
 
 export function ConnectionsPage() {
   const navigate = useNavigate();
-  const [connections, setConnections] = useState<Connection[]>([]);
-  const [error, setError] = useState("");
+  const {
+    connections,
+    connectionsError,
+    setConnectionsError,
+    refreshConnections,
+  } = useConnections();
   const [info, setInfo] = useState("");
   const [saving, setSaving] = useState(false);
   const [browseId, setBrowseId] = useState("");
-  const [selected, setSelected] = useState<CatalogPick | null>(null);
-  const [columns, setColumns] = useState<ColumnInfo[]>([]);
+  const [selected, setSelected] = useState<CatalogSelection | null>(null);
+  const [columns, setColumns] = useState<DatabaseColumn[]>([]);
   const [preview, setPreview] = useState<TablePreview | null>(null);
   const [delimiter, setDelimiter] = useState(",");
   const [header, setHeader] = useState(true);
   const [extracting, setExtracting] = useState(false);
-
-  async function refresh() {
-    const response = await api.connections();
-    setConnections(response.connections);
-  }
-
-  useEffect(() => {
-    void refresh().catch((err) =>
-      setError(err instanceof Error ? err.message : "커넥션 목록을 불러오지 못했습니다"),
-    );
-  }, []);
 
   async function onSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -51,10 +50,10 @@ export function ConnectionsPage() {
     const port = field("port").value;
 
     setSaving(true);
-    setError("");
+    setConnectionsError("");
     setInfo("");
     try {
-      await api.createConnection({
+      await connectionApi.createConnection({
         name: field("name").value,
         driver: field("driver").value,
         host: field("host").value,
@@ -65,23 +64,23 @@ export function ConnectionsPage() {
         ssl: (field("ssl") as HTMLInputElement).checked,
       });
       form.reset();
-      await refresh();
+      await refreshConnections();
       setInfo("커넥션을 etl.db에 저장했습니다");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "커넥션 저장에 실패했습니다");
+      setConnectionsError(err instanceof Error ? err.message : "커넥션 저장에 실패했습니다");
     } finally {
       setSaving(false);
     }
   }
 
   async function onTest(id: string) {
-    setError("");
+    setConnectionsError("");
     setInfo("");
     try {
-      await api.testConnection(id);
+      await connectionApi.testConnection(id);
       setInfo("연결 테스트에 성공했습니다");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "연결 테스트에 실패했습니다");
+      setConnectionsError(err instanceof Error ? err.message : "연결 테스트에 실패했습니다");
     }
   }
 
@@ -97,10 +96,10 @@ export function ConnectionsPage() {
     setSelected(null);
     setColumns([]);
     setPreview(null);
-    setError("");
+    setConnectionsError("");
   }
 
-  async function onSelectTable(pick: CatalogPick | null) {
+  async function onSelectTable(pick: CatalogSelection | null) {
     if (!pick) {
       setSelected(null);
       setColumns([]);
@@ -109,18 +108,20 @@ export function ConnectionsPage() {
     }
     if (!browseId) return;
     setSelected(pick);
-    setError("");
+    setConnectionsError("");
     try {
       const [columnResult, previewResult] = await Promise.all([
-        api.connectionColumns(browseId, pick.qualified, pick.database),
-        api.connectionPreview(browseId, pick.qualified, 50, pick.database),
+        connectionApi.getColumns(browseId, pick.qualified, pick.database),
+        connectionApi.getPreview(browseId, pick.qualified, 50, pick.database),
       ]);
       setColumns(columnResult.columns);
       setPreview(previewResult);
     } catch (err) {
       setColumns([]);
       setPreview(null);
-      setError(err instanceof Error ? err.message : "테이블 정보를 조회하지 못했습니다");
+      setConnectionsError(
+        err instanceof Error ? err.message : "테이블 정보를 조회하지 못했습니다",
+      );
     }
   }
 
@@ -128,9 +129,9 @@ export function ConnectionsPage() {
     event.preventDefault();
     if (!browseId || !selected) return;
     setExtracting(true);
-    setError("");
+    setConnectionsError("");
     try {
-      await api.createExtract({
+      await extractApi.createExtract({
         connection_id: browseId,
         table: selected.qualified,
         database: selected.database,
@@ -139,25 +140,25 @@ export function ConnectionsPage() {
       });
       navigate("/extracts");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "파일 추출에 실패했습니다");
+      setConnectionsError(err instanceof Error ? err.message : "파일 추출에 실패했습니다");
     } finally {
       setExtracting(false);
     }
   }
 
   async function onDelete(id: string) {
-    setError("");
+    setConnectionsError("");
     try {
-      await api.deleteConnection(id);
+      await connectionApi.deleteConnection(id);
       if (browseId === id) {
         setBrowseId("");
         setSelected(null);
         setColumns([]);
         setPreview(null);
       }
-      await refresh();
+      await refreshConnections();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "커넥션 삭제에 실패했습니다");
+      setConnectionsError(err instanceof Error ? err.message : "커넥션 삭제에 실패했습니다");
     }
   }
 
@@ -172,7 +173,7 @@ export function ConnectionsPage() {
         description="데이터베이스 연결을 등록하고 스키마를 조회합니다. 테이블 전체 추출 또는 쿼리 편집기로 이어서 작업할 수 있습니다."
       />
       {info ? <NoticeBanner tone="ok">{info}</NoticeBanner> : null}
-      {error ? <NoticeBanner>{error}</NoticeBanner> : null}
+      {connectionsError ? <NoticeBanner>{connectionsError}</NoticeBanner> : null}
 
       <Panel>
         <PanelHeader title="새 커넥션" description="접속 정보는 암호화되어 로컬 메타데이터 저장소에 보관됩니다." />
@@ -263,7 +264,7 @@ export function ConnectionsPage() {
                         <Button
                           type="button"
                           variant="quiet"
-                          onClick={() => navigate(`/query?connection=${connection.id}`)}
+                          onClick={() => navigate(`/db?connection=${connection.id}`)}
                         >
                           쿼리
                         </Button>
@@ -332,11 +333,11 @@ export function ConnectionsPage() {
                         variant="secondary"
                         onClick={() =>
                           navigate(
-                            `/query?connection=${browseId}&table=${encodeURIComponent(selected.qualified)}&database=${encodeURIComponent(selected.database)}`,
+                            `/db?connection=${browseId}&table=${encodeURIComponent(selected.qualified)}&database=${encodeURIComponent(selected.database)}`,
                           )
                         }
                       >
-                        쿼리 편집
+                        DB 편집
                       </Button>
                       <Button variant="primary" type="submit" disabled={extracting}>
                         {extracting ? "추출 중…" : "파일로 추출"}
