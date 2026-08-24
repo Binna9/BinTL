@@ -47,14 +47,14 @@ const items = [
 
 export function TopSubmenu() {
   return (
-    <div className="relative flex h-12 items-center justify-center transition-all duration-[450ms] ease-in-out">
-      <article className="inline-flex h-full flex-row rounded-2xl border border-solid border-gray-700 bg-white shadow-lg shadow-black/15 duration-500 ease-in-out">
+    <div className="relative flex h-11 items-center justify-center transition-all duration-[450ms] ease-in-out">
+      <article className="inline-flex h-full flex-row rounded-2xl bg-white shadow-[0_1px_1px_rgba(15,23,42,0.06),0_2px_4px_rgba(15,23,42,0.06),0_8px_16px_rgba(15,23,42,0.08),0_16px_32px_rgba(15,23,42,0.1)] duration-500 ease-in-out">
         {items.map((item, index) => (
           <label
             key={item.id}
             htmlFor={`top-submenu-${item.id}`}
             title={item.label}
-            className="group relative flex h-full w-12 cursor-pointer flex-row items-center justify-center gap-3 rounded-xl border-solid border-black/10 p-3 text-black duration-300 ease-in-out has-[:checked]:border has-[:checked]:shadow-lg"
+            className="group relative flex h-full w-12 cursor-pointer flex-row items-center justify-center text-black"
           >
             <input
               className="peer/expand hidden"
@@ -63,16 +63,18 @@ export function TopSubmenu() {
               id={`top-submenu-${item.id}`}
               defaultChecked={index === 0}
             />
-            <svg
-              className="text-2xl duration-300 ease-in-out group-hover:scale-125 group-hover:fill-blue-400 group-hover:text-blue-400 peer-checked/expand:scale-125 peer-checked/expand:fill-blue-400 peer-checked/expand:text-blue-400"
-              xmlns="http://www.w3.org/2000/svg"
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              {item.icon}
-            </svg>
+            <span className="flex size-7 items-center justify-center rounded-lg duration-300 ease-in-out peer-checked/expand:bg-white peer-checked/expand:shadow-[0_1px_2px_rgba(15,23,42,0.08),0_3px_8px_rgba(59,130,246,0.25)]">
+              <svg
+                className="duration-300 ease-in-out group-hover:scale-105 group-hover:fill-blue-400 group-hover:text-blue-400 group-has-[:checked]:scale-105 group-has-[:checked]:fill-blue-400 group-has-[:checked]:text-blue-400"
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                {item.icon}
+              </svg>
+            </span>
             <span className="sr-only">{item.label}</span>
           </label>
         ))}

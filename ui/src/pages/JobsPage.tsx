@@ -6,10 +6,12 @@ import { FormField } from "@/components/FormField";
 import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Panel, PanelHeader } from "@/components/Panel";
+import { SplitLayout } from "@/components/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
 import { api } from "@/lib/api";
 import { fmtSqlPreview, fmtWhen } from "@/lib/format";
+import { layout } from "@/lib/layout";
 import { emptyCopy } from "@/mock/emptyStates";
 import type { Connection, ExtractItem, FileItem, Job } from "@/types/pipeline";
 
@@ -34,14 +36,19 @@ function BuilderSection({
   children: ReactNode;
 }) {
   return (
-    <section className="grid grid-cols-[12rem_minmax(0,1fr)] border-b border-border last:border-b-0">
-      <header className="border-r border-border bg-raised p-4">
+    <SplitLayout
+      fill={false}
+      className="border-b border-border last:border-b-0"
+      defaultSizes={[layout.split.builder]}
+      minSize={layout.split.minBuilder}
+    >
+      <header className="h-full bg-raised p-4">
         <span className="technical text-text-tertiary">{index}</span>
         <h3 className="mt-2 text-sm font-semibold">{title}</h3>
         <p className="mt-1 text-xs leading-5 text-text-secondary">{description}</p>
       </header>
       <div className="grid content-start gap-3 p-4 md:grid-cols-2">{children}</div>
-    </section>
+    </SplitLayout>
   );
 }
 
@@ -112,6 +119,7 @@ export function JobsPage() {
   return (
     <PageShell>
       <PageHeader
+        iconName="jobs"
         eyebrow="파이프라인"
         title="작업"
         description="파일 또는 테이블을 소스로 선택하고 변환한 뒤 parquet와 대상 테이블에 적재합니다."

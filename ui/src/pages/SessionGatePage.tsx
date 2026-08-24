@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/Button";
 import { FormField } from "@/components/FormField";
 import { NoticeBanner } from "@/components/NoticeBanner";
+import { BrandMark } from "@/components/BrandMark";
 import { api } from "@/lib/api";
 
 export function SessionGatePage() {
@@ -29,12 +30,7 @@ export function SessionGatePage() {
   return (
     <main className="grid min-h-screen grid-cols-[minmax(20rem,32rem)_1fr] bg-workspace">
       <section className="flex flex-col justify-between border-r border-border bg-surface p-10">
-        <div className="flex items-center gap-2">
-          <span className="grid size-7 place-items-center rounded bg-text text-[10px] font-semibold text-white">
-            BT
-          </span>
-          <span className="font-semibold">BinTL</span>
-        </div>
+        <BrandMark />
 
         <div className="max-w-80">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-text-tertiary">

@@ -1,5 +1,7 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { BrandMark } from "@/components/BrandMark";
 import { ConsoleRail } from "@/components/ConsoleRail";
+import { SplitLayout } from "@/components/SplitLayout";
 import { TopSubmenu } from "@/components/TopSubmenu";
 import { ConnectionsPage } from "@/pages/ConnectionsPage";
 import { ExtractsPage } from "@/pages/ExtractsPage";
@@ -9,16 +11,23 @@ import { JobsPage } from "@/pages/JobsPage";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { QueryPage } from "@/pages/QueryPage";
 import { SessionGatePage } from "@/pages/SessionGatePage";
+import { layout } from "@/lib/layout";
 
 function ConsoleShell() {
   return (
-    <div className="grid min-h-screen grid-cols-[13rem_minmax(0,1fr)]">
-      <ConsoleRail />
-      <div className="flex min-w-0 flex-col">
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-end border-b border-border bg-surface px-5">
-          <TopSubmenu />
-        </header>
-        <main className="min-w-0 flex-1 p-5">
+    <div className="flex min-h-screen flex-col">
+      <header className="app-header sticky top-0 z-40 flex h-[4.75rem] shrink-0 items-center justify-between bg-surface px-5">
+        <BrandMark to="/" />
+        <TopSubmenu />
+      </header>
+      <SplitLayout
+        className="min-h-0 flex-1"
+        defaultSizes={[layout.split.nav]}
+        minSize={layout.split.minNav}
+        maxSize={layout.split.maxNav}
+      >
+        <ConsoleRail />
+        <main className="min-w-0 p-5">
           <Routes>
             <Route path="/" element={<OverviewPage />} />
             <Route path="/files" element={<FilesPage />} />
@@ -30,7 +39,7 @@ function ConsoleShell() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
-      </div>
+      </SplitLayout>
     </div>
   );
 }

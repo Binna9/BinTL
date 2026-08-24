@@ -53,6 +53,7 @@ export function JobRunPage() {
   return (
     <PageShell>
       <PageHeader
+        iconName="jobs"
         eyebrow="작업 / 실행 상세"
         title={`작업 ${job.id.slice(0, 8)}`}
         description={`${job.source_path} → ${job.output_path ?? "출력 대기 중"}`}

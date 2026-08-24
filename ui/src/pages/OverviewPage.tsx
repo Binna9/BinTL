@@ -44,6 +44,7 @@ export function OverviewPage() {
   return (
     <PageShell>
       <PageHeader
+        iconName="overview"
         eyebrow="운영"
         title="개요"
         description="추출, 변환, 적재 작업의 현재 운영 상태입니다."

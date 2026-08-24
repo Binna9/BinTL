@@ -8,17 +8,13 @@ import { cn } from "@/lib/cn";
 
 type Variant = "primary" | "secondary" | "quiet" | "danger";
 
-const base =
-  "inline-flex h-8 items-center justify-center gap-1.5 rounded border px-3 text-[13px] font-medium no-underline outline-none focus-visible:ring-2 focus-visible:ring-accent/20 disabled:pointer-events-none disabled:opacity-45";
+const base = "ui-btn";
 
 const variantClass: Record<Variant, string> = {
-  primary:
-    "border-accent bg-accent text-white hover:border-accent-hover hover:bg-accent-hover",
-  secondary:
-    "border-border bg-surface text-text hover:border-border-strong hover:bg-subtle",
-  quiet: "border-transparent bg-transparent text-text-secondary hover:bg-subtle hover:text-text",
-  danger:
-    "border-border bg-surface text-danger hover:border-danger/40 hover:bg-danger-subtle",
+  primary: "ui-btn-primary",
+  secondary: "ui-btn-secondary",
+  quiet: "ui-btn-quiet",
+  danger: "ui-btn-danger",
 };
 
 export function Button({

@@ -52,6 +52,7 @@ export function ExtractsPage() {
   return (
     <PageShell>
       <PageHeader
+        iconName="extracts"
         eyebrow="작업 공간"
         title="추출"
         description="테이블 전체 또는 쿼리 결과로 만든 서버 파일과 처리 상태입니다."

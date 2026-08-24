@@ -1,31 +1,171 @@
-import { ReactNode } from "react";
+import {
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { cn } from "@/lib/cn";
+import { layout } from "@/lib/layout";
+import { selectableClass } from "@/lib/selectable";
+
+function widthsFor(headers: string[], previous: number[] = []): number[] {
+  return headers.map((_, index) => previous[index] ?? layout.grid.defaultColumnWidth);
+}
+
+function scaleToFill(widths: number[], available: number): number[] {
+  if (available <= 0 || widths.length === 0) return widths;
+  const sum = widths.reduce((total, width) => total + width, 0);
+  if (sum >= available) return widths;
+  const min = layout.grid.minColumnWidth;
+  const scaled = widths.map((width) => Math.max(min, Math.floor((width / sum) * available)));
+  const used = scaled.slice(0, -1).reduce((total, width) => total + width, 0);
+  scaled[scaled.length - 1] = Math.max(min, available - used);
+  return scaled;
+}
 
 export function DataGrid({
   headers,
   children,
   className,
+  columnWidths,
 }: {
   headers: string[];
   children: ReactNode;
   className?: string;
+  columnWidths?: number[];
 }) {
+  const headerKey = headers.join("\u0001");
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [hostWidth, setHostWidth] = useState(0);
+  const [widths, setWidths] = useState(() =>
+    columnWidths?.length === headers.length ? columnWidths : widthsFor(headers),
+  );
+  const [active, setActive] = useState<number | null>(null);
+  const drag = useRef<{ index: number; startX: number; startWidth: number } | null>(null);
+
+  useEffect(() => {
+    setWidths(
+      columnWidths?.length === headers.length ? columnWidths : widthsFor(headers),
+    );
+  }, [headerKey]);
+
+  useEffect(() => {
+    const node = wrapRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      setHostWidth(Math.floor(width));
+    });
+    observer.observe(node);
+    setHostWidth(Math.floor(node.clientWidth));
+    return () => observer.disconnect();
+  }, [headerKey]);
+
+  const colWidths = useMemo(
+    () => scaleToFill(widths, hostWidth),
+    [widths, hostWidth],
+  );
+
+  useEffect(() => {
+    function onMove(event: MouseEvent) {
+      const current = drag.current;
+      if (!current) return;
+      const next = Math.max(
+        layout.grid.minColumnWidth,
+        current.startWidth + (event.clientX - current.startX),
+      );
+      setWidths((prev) => {
+        const filled = scaleToFill(prev, hostWidth);
+        const copy = [...filled];
+        copy[current.index] = next;
+        return copy;
+      });
+    }
+
+    function onUp() {
+      if (!drag.current) return;
+      drag.current = null;
+      setActive(null);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [hostWidth]);
+
+  function onResizeStart(index: number, event: ReactMouseEvent<HTMLSpanElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    drag.current = {
+      index,
+      startX: event.clientX,
+      startWidth: colWidths[index] ?? layout.grid.defaultColumnWidth,
+    };
+    setActive(index);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }
+
+  const tableMinWidth = colWidths.reduce((sum, width) => sum + width, 0);
+
   return (
-    <div className={cn("overflow-auto", className)}>
-      <table className="w-full border-collapse text-[13px]">
+    <div ref={wrapRef} className={cn("overflow-auto", className)}>
+      <table
+        className="w-full border-collapse text-[13px]"
+        style={{ minWidth: tableMinWidth, tableLayout: "fixed" }}
+      >
+        <colgroup>
+          {headers.map((header, index) => (
+            <col key={`${index}-${header}`} style={{ width: colWidths[index] }} />
+          ))}
+        </colgroup>
         <thead className="sticky top-0 z-10">
           <tr>
-            {headers.map((h) => (
+            {headers.map((header, index) => (
               <th
-                key={h}
-                className="h-8 whitespace-nowrap border-b border-border bg-raised px-3 text-left text-[11px] font-semibold text-text-secondary"
+                key={`${index}-${header}`}
+                className={cn(
+                  "group/th relative h-9 select-none overflow-hidden border-b-2 border-border-strong bg-subtle px-3 text-left text-[11px] font-semibold uppercase tracking-[0.06em] text-text-secondary",
+                  "transition-colors hover:bg-accent-subtle hover:text-accent",
+                  index < headers.length - 1 && "border-r border-border",
+                  active === index && "bg-accent-subtle text-accent",
+                )}
               >
-                {h}
+                <span className="block truncate">{header}</span>
+                <span
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label={`${header} 열 너비 조절`}
+                  className="absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize"
+                  onMouseDown={(event) => onResizeStart(index, event)}
+                  onDoubleClick={() => {
+                    setWidths((prev) => {
+                      const copy = [...prev];
+                      copy[index] = columnWidths?.[index] ?? layout.grid.defaultColumnWidth;
+                      return copy;
+                    });
+                  }}
+                >
+                  <span
+                    className={cn(
+                      "absolute right-0 top-2 h-[calc(100%-1rem)] w-px bg-border-strong/70",
+                      "group-hover/th:bg-accent",
+                      active === index && "bg-accent",
+                    )}
+                  />
+                </span>
               </th>
             ))}
           </tr>
         </thead>
-        <tbody>{children}</tbody>
+        <tbody className="bg-surface">{children}</tbody>
       </table>
     </div>
   );
@@ -48,12 +188,21 @@ export function GridRow({
   children: ReactNode;
   selected?: boolean;
 }) {
+  const [on, setOn] = useState(false);
+  const active = selected ?? on;
+
   return (
     <tr
       className={cn(
-        "group border-b border-border last:border-b-0",
-        selected ? "bg-accent-subtle" : "hover:bg-subtle/70",
+        "group cursor-pointer border-b border-border last:border-b-0",
+        selectableClass(active),
+        !active && "bg-surface",
       )}
+      onClick={(event) => {
+        if (selected !== undefined) return;
+        if ((event.target as HTMLElement).closest("a, button")) return;
+        setOn((value) => !value);
+      }}
     >
       {children}
     </tr>
@@ -72,7 +221,7 @@ export function GridCell({
   return (
     <td
       className={cn(
-        "h-9 whitespace-nowrap px-3 py-1.5 align-middle text-text",
+        "h-9 overflow-hidden text-ellipsis whitespace-nowrap px-3 py-1.5 align-middle text-text",
         mono && "technical",
         muted && "text-text-secondary",
       )}

@@ -6,9 +6,14 @@ import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid
 import { FormField } from "@/components/FormField";
 import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
+import { PaneHeader } from "@/components/PaneHeader";
 import { Panel, PanelBody, PanelHeader } from "@/components/Panel";
+import { SplitLayout } from "@/components/SplitLayout";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import { layout } from "@/lib/layout";
+import { selectableClass } from "@/lib/selectable";
 import { driverCatalog } from "@/mock/driverCatalog";
 import { emptyCopy } from "@/mock/emptyStates";
 import type { CatalogPick, ColumnInfo, Connection, TablePreview } from "@/types/pipeline";
@@ -81,6 +86,13 @@ export function ConnectionsPage() {
   }
 
   async function onBrowse(id: string) {
+    if (browseId === id) {
+      setBrowseId("");
+      setSelected(null);
+      setColumns([]);
+      setPreview(null);
+      return;
+    }
     setBrowseId(id);
     setSelected(null);
     setColumns([]);
@@ -88,7 +100,13 @@ export function ConnectionsPage() {
     setError("");
   }
 
-  async function onSelectTable(pick: CatalogPick) {
+  async function onSelectTable(pick: CatalogPick | null) {
+    if (!pick) {
+      setSelected(null);
+      setColumns([]);
+      setPreview(null);
+      return;
+    }
     if (!browseId) return;
     setSelected(pick);
     setError("");
@@ -148,6 +166,7 @@ export function ConnectionsPage() {
   return (
     <PageShell>
       <PageHeader
+        iconName="connections"
         eyebrow="소스"
         title="커넥션"
         description="데이터베이스 연결을 등록하고 스키마를 조회합니다. 테이블 전체 추출 또는 쿼리 편집기로 이어서 작업할 수 있습니다."
@@ -185,9 +204,12 @@ export function ConnectionsPage() {
               <input className="field-control" name="password" type="password" />
             </FormField>
             <div className="flex h-8 items-center justify-between gap-3">
-              <label className="flex items-center gap-2 text-xs text-text-secondary">
+              <label className="flex min-w-0 items-center gap-2 text-xs text-text-secondary">
                 <input className="field-control" name="ssl" type="checkbox" />
                 SSL 사용
+                <span className="truncate text-[11px] font-normal text-text-tertiary">
+                  데이터베이스와의 연결을 암호화합니다
+                </span>
               </label>
               <Button variant="primary" type="submit" disabled={saving}>
                 {saving ? "저장 중…" : "저장"}
@@ -207,67 +229,64 @@ export function ConnectionsPage() {
           </ToolbarGroup>
         </Toolbar>
 
-        <div className="grid min-h-[31rem] grid-cols-[17rem_minmax(0,1fr)]">
-          <aside className="border-r border-border">
-            <div className="border-b border-border px-3 py-2 text-[11px] font-semibold text-text-secondary">
-              저장된 커넥션 · {connections.length}
-            </div>
-            {connections.length === 0 ? (
-              <p className="p-4 text-xs text-text-tertiary">{emptyCopy.connections}</p>
-            ) : (
-              <ul className="m-0 list-none p-0">
-                {connections.map((connection) => (
-                  <li
-                    key={connection.id}
-                    className={`border-b border-border p-3 ${
-                      connection.id === browseId ? "bg-accent-subtle" : "hover:bg-subtle"
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      className="block w-full text-left"
-                      onClick={() => void onBrowse(connection.id)}
+        <SplitLayout className="min-h-[31rem]" defaultSizes={[layout.split.sidebar]}>
+          <aside className="flex h-full min-h-0 flex-col">
+            <PaneHeader title="커넥션" meta={`${connections.length}개`} />
+            <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+              {connections.length === 0 ? (
+                <p className="p-4 text-xs text-text-tertiary">{emptyCopy.connections}</p>
+              ) : (
+                <ul className="m-0 list-none p-0">
+                  {connections.map((connection) => (
+                    <li
+                      key={connection.id}
+                      className={cn(
+                        "border-b border-border p-3",
+                        selectableClass(connection.id === browseId),
+                      )}
                     >
-                      <span className="block text-[13px] font-medium">{connection.name}</span>
-                      <span className="mt-1 block text-[11px] text-text-tertiary">
-                        {connection.driver} · {connection.host}:{connection.port}
-                      </span>
-                    </button>
-                    <div className="mt-2 flex gap-1">
-                      <Button type="button" variant="quiet" onClick={() => void onTest(connection.id)}>
-                        테스트
-                      </Button>
-                      <Button
+                      <button
                         type="button"
-                        variant="quiet"
-                        onClick={() => navigate(`/query?connection=${connection.id}`)}
+                        title={connection.name}
+                        className="block w-full min-w-0 overflow-hidden text-left"
+                        onClick={() => void onBrowse(connection.id)}
                       >
-                        쿼리
-                      </Button>
-                      <Button type="button" variant="danger" onClick={() => void onDelete(connection.id)}>
-                        삭제
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
+                        <span className="block truncate text-[13px] text-text">{connection.name}</span>
+                        <span className="mt-1 block truncate text-[11px] text-text-tertiary">
+                          {connection.driver} · {connection.host}:{connection.port}
+                        </span>
+                      </button>
+                      <div className="mt-2 flex gap-1">
+                        <Button type="button" variant="quiet" onClick={() => void onTest(connection.id)}>
+                          테스트
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          onClick={() => navigate(`/query?connection=${connection.id}`)}
+                        >
+                          쿼리
+                        </Button>
+                        <Button type="button" variant="danger" onClick={() => void onDelete(connection.id)}>
+                          삭제
+                        </Button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </aside>
 
           {!activeConnection ? (
-            <div className="grid place-items-center text-[13px] text-text-tertiary">
+            <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
               왼쪽에서 커넥션을 선택해 데이터 구조를 조회하세요.
             </div>
           ) : (
-            <div className="grid min-w-0 grid-cols-[16rem_minmax(0,1fr)]">
-              <aside className="flex min-h-0 flex-col border-r border-border bg-raised">
-                <div className="shrink-0 border-b border-border px-3 py-2">
-                  <div className="text-[11px] font-semibold text-text-secondary">카탈로그</div>
-                  <div className="mt-0.5 text-[11px] text-text-tertiary">
-                    데이터베이스 → 스키마 → 테이블
-                  </div>
-                </div>
-                <div className="max-h-[31rem] min-h-0 flex-1 overflow-y-auto">
+            <SplitLayout className="h-full min-w-0" defaultSizes={[layout.split.catalog]}>
+              <aside className="flex h-full min-h-0 flex-col bg-surface">
+                <PaneHeader title="카탈로그" />
+                <div className="min-h-0 flex-1 overflow-y-auto">
                   <CatalogTree
                     connectionId={activeConnection.id}
                     selected={selected}
@@ -277,11 +296,11 @@ export function ConnectionsPage() {
               </aside>
 
               {!selected ? (
-                <div className="grid place-items-center text-[13px] text-text-tertiary">
+                <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
                   데이터베이스를 연 뒤 테이블을 선택하면 컬럼과 샘플 데이터를 표시합니다.
                 </div>
               ) : (
-                <div className="min-w-0">
+                <div className="flex h-full min-w-0 flex-col">
                   <Toolbar>
                     <ToolbarGroup>
                       <span className="technical font-semibold text-text">{selected.qualified}</span>
@@ -325,47 +344,47 @@ export function ConnectionsPage() {
                     </form>
                   </Toolbar>
 
-                  <div className="grid grid-cols-[16rem_minmax(0,1fr)]">
-                    <section className="border-r border-border">
-                      <div className="border-b border-border px-3 py-2 text-[11px] font-semibold text-text-secondary">
-                        컬럼 · {columns.length}
-                      </div>
-                      <DataGrid headers={["이름", "타입", "NULL"]}>
-                        {columns.map((column) => (
-                          <GridRow key={column.name}>
-                            <GridCell mono>{column.name}</GridCell>
-                            <GridCell mono muted>{column.data_type}</GridCell>
-                            <GridCell muted>{column.nullable ? "예" : "아니오"}</GridCell>
-                          </GridRow>
-                        ))}
-                      </DataGrid>
-                    </section>
-                    <section className="min-w-0">
-                      <div className="border-b border-border px-3 py-2 text-[11px] font-semibold text-text-secondary">
-                        데이터 미리보기
-                      </div>
-                      {preview ? (
-                        <DataGrid className="max-h-[27rem]" headers={preview.columns}>
-                          {preview.rows.length === 0 ? (
-                            <EmptyGridRow cols={preview.columns.length || 1} text={emptyCopy.preview} />
-                          ) : (
-                            preview.rows.map((row, rowIndex) => (
-                              <GridRow key={rowIndex}>
-                                {row.map((cell, cellIndex) => (
-                                  <GridCell key={cellIndex} mono>{cell}</GridCell>
-                                ))}
-                              </GridRow>
-                            ))
-                          )}
+                  <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.columns]}>
+                    <section className="flex h-full min-h-0 flex-col overflow-hidden">
+                      <PaneHeader title="컬럼" meta={`${columns.length}`} />
+                      <div className="min-h-0 flex-1 overflow-auto bg-surface">
+                        <DataGrid headers={["이름", "타입", "NULL"]}>
+                          {columns.map((column) => (
+                            <GridRow key={column.name}>
+                              <GridCell mono>{column.name}</GridCell>
+                              <GridCell mono muted>{column.data_type}</GridCell>
+                              <GridCell muted>{column.nullable ? "예" : "아니오"}</GridCell>
+                            </GridRow>
+                          ))}
                         </DataGrid>
-                      ) : null}
+                      </div>
                     </section>
-                  </div>
+                    <section className="flex h-full min-h-0 flex-col overflow-hidden">
+                      <PaneHeader title="데이터 미리보기" />
+                      <div className="min-h-0 flex-1 overflow-auto bg-surface">
+                        {preview ? (
+                          <DataGrid className="h-full" headers={preview.columns}>
+                            {preview.rows.length === 0 ? (
+                              <EmptyGridRow cols={preview.columns.length || 1} text={emptyCopy.preview} />
+                            ) : (
+                              preview.rows.map((row, rowIndex) => (
+                                <GridRow key={rowIndex}>
+                                  {row.map((cell, cellIndex) => (
+                                    <GridCell key={cellIndex} mono>{cell}</GridCell>
+                                  ))}
+                                </GridRow>
+                              ))
+                            )}
+                          </DataGrid>
+                        ) : null}
+                      </div>
+                    </section>
+                  </SplitLayout>
                 </div>
               )}
-            </div>
+            </SplitLayout>
           )}
-        </div>
+        </SplitLayout>
       </Panel>
     </PageShell>
   );

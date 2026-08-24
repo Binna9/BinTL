@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { api } from "@/lib/api";
+import { selectableClass } from "@/lib/selectable";
 import type { CatalogItem, CatalogLayout, CatalogPick } from "@/types/pipeline";
 
 function qualifiedName(layout: CatalogLayout, _database: string, schema: string | null, table: string) {
@@ -10,18 +11,32 @@ function qualifiedName(layout: CatalogLayout, _database: string, schema: string 
   return table;
 }
 
-function KindBadge({ kind }: { kind: CatalogItem["kind"] }) {
-  const map = {
-    database: { label: "DB", className: "bg-accent-subtle text-accent" },
-    schema: { label: "스키마", className: "bg-subtle text-text-secondary" },
-    table: { label: "테이블", className: "bg-success-subtle text-success" },
-    view: { label: "뷰", className: "bg-warning-subtle text-warning" },
-  } as const;
-  const item = map[kind];
+function KindIcon({ kind }: { kind: CatalogItem["kind"] }) {
+  if (kind === "database") {
+    return (
+      <svg className="size-3.5 shrink-0 text-accent" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <ellipse cx="8" cy="4.2" rx="5.2" ry="2.1" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M2.8 4.2v7.5c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V4.2" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M2.8 8s2.2 1.7 5.2 1.7 5.2-1.7 5.2-1.7" stroke="currentColor" strokeWidth="1.3" />
+      </svg>
+    );
+  }
+  if (kind === "schema") {
+    return (
+      <svg className="size-3.5 shrink-0 text-text-secondary" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path
+          d="M2.5 13.2V5.4c0-.5.4-.9.9-.9h3.1L8 5.8h4.6c.5 0 .9.4.9.9v6.5c0 .5-.4.9-.9.9H3.4c-.5 0-.9-.4-.9-.9Z"
+          stroke="currentColor"
+          strokeWidth="1.3"
+        />
+      </svg>
+    );
+  }
   return (
-    <span className={cn("rounded px-1 py-px text-[9px] font-semibold tracking-wide", item.className)}>
-      {item.label}
-    </span>
+    <svg className="size-3.5 shrink-0 text-success" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="2" y="3" width="12" height="10" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M2 6.2h12M2 9.4h12M6.2 6.2V13" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
   );
 }
 
@@ -48,10 +63,11 @@ function RowButton({
     <button
       type="button"
       onClick={onClick}
+      title={name}
       style={{ paddingLeft: 8 + depth * 14 }}
       className={cn(
-        "flex h-8 w-full items-center gap-1.5 pr-2 text-left",
-        active ? "bg-accent-subtle" : "hover:bg-subtle",
+        "flex h-8 w-full min-w-0 items-center gap-1.5 overflow-hidden pr-2 text-left",
+        selectableClass(active),
       )}
     >
       <span
@@ -62,11 +78,16 @@ function RowButton({
       >
         ▶
       </span>
-      <KindBadge kind={kind} />
-      <span className={cn("min-w-0 truncate text-[12px]", active ? "font-medium text-accent" : "text-text")}>
+      <KindIcon kind={kind} />
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-[12px]",
+          active ? "font-medium text-accent" : "text-text",
+        )}
+      >
         {name}
       </span>
-      {current ? <span className="ml-auto shrink-0 text-[10px] text-text-tertiary">현재</span> : null}
+      {current ? <span className="ml-1 shrink-0 text-[10px] text-text-tertiary">현재</span> : null}
     </button>
   );
 }
@@ -78,7 +99,7 @@ export function CatalogTree({
 }: {
   connectionId: string;
   selected?: CatalogPick | null;
-  onPick: (pick: CatalogPick) => void;
+  onPick: (pick: CatalogPick | null) => void;
 }) {
   const [layout, setLayout] = useState<CatalogLayout>("database.schema.table");
   const [databases, setDatabases] = useState<CatalogItem[]>([]);
@@ -143,12 +164,17 @@ export function CatalogTree({
   }
 
   function onTable(database: string, schema: string | null, item: CatalogItem) {
-    onPick({
+    const pick: CatalogPick = {
       database,
       schema,
       table: item.name,
       qualified: qualifiedName(layout, database, schema, item.name),
-    });
+    };
+    if (selected?.qualified === pick.qualified && selected.database === pick.database) {
+      onPick(null);
+      return;
+    }
+    onPick(pick);
   }
 
   if (error) {

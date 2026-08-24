@@ -51,6 +51,7 @@ export function FilesPage() {
   return (
     <PageShell>
       <PageHeader
+        iconName="files"
         eyebrow="작업 공간"
         title="파일"
         description="서버에 저장된 입력 파일입니다. 작업 소스로 선택할 수 있습니다."

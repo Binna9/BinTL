@@ -6,9 +6,14 @@ import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid
 import { MetaField } from "@/components/MetaField";
 import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
+import { PaneHeader } from "@/components/PaneHeader";
 import { Panel } from "@/components/Panel";
+import { SplitLayout } from "@/components/SplitLayout";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import { layout } from "@/lib/layout";
+import { selectableClass } from "@/lib/selectable";
 import { emptyCopy } from "@/mock/emptyStates";
 import type { CatalogPick, ColumnInfo, Connection, QueryOutcome } from "@/types/pipeline";
 
@@ -93,6 +98,15 @@ export function QueryPage() {
   }
 
   function onPickConnection(id: string) {
+    if (browseId === id) {
+      if (sql) localStorage.setItem(sqlStorageKey(browseId), sql);
+      setBrowseId("");
+      setSelected(null);
+      setColumns([]);
+      setPicked([]);
+      setResult(null);
+      return;
+    }
     if (browseId && sql) localStorage.setItem(sqlStorageKey(browseId), sql);
     setBrowseId(id);
     setSelected(null);
@@ -192,6 +206,7 @@ export function QueryPage() {
   return (
     <PageShell>
       <PageHeader
+        iconName="query"
         eyebrow="작업 공간"
         title="쿼리"
         description="커넥션과 스키마를 옆에 두고 SQL을 실행한 뒤, 결과 전체를 서버 파일로 받습니다. 각 실행은 새 연결입니다."
@@ -200,53 +215,59 @@ export function QueryPage() {
       {error ? <NoticeBanner>{error}</NoticeBanner> : null}
 
       <Panel className="overflow-hidden">
-        <div className="grid h-[calc(100vh-12.5rem)] min-h-[32rem] grid-cols-[17rem_minmax(0,1fr)] overflow-hidden">
-          <aside className="flex min-h-0 flex-col overflow-hidden border-r border-border">
-            <div className="shrink-0 border-b border-border px-3 py-2">
-              <div className="text-[11px] font-semibold text-text-secondary">커넥션</div>
-              <div className="mt-0.5 text-[11px] text-text-tertiary">{connections.length}개</div>
-            </div>
-            <div className="max-h-28 shrink-0 overflow-y-auto border-b border-border">
-              {connections.length === 0 ? (
-                <p className="p-3 text-xs text-text-tertiary">{emptyCopy.connections}</p>
-              ) : (
-                connections.map((connection) => (
-                  <button
-                    key={connection.id}
-                    type="button"
-                    className={`block w-full border-b border-border px-3 py-1.5 text-left last:border-b-0 ${
-                      connection.id === browseId ? "bg-accent-subtle" : "hover:bg-subtle"
-                    }`}
-                    onClick={() => onPickConnection(connection.id)}
-                  >
-                    <span className="block truncate text-[13px] font-medium">{connection.name}</span>
-                    <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
-                      {connection.driver} · {connection.database_name}
-                    </span>
-                  </button>
-                ))
-              )}
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="shrink-0 border-b border-border px-3 py-2">
-                <div className="text-[11px] font-semibold text-text-secondary">카탈로그</div>
-                <div className="mt-0.5 truncate text-[11px] text-text-tertiary">
-                  데이터베이스 → 스키마 → 테이블
+        <SplitLayout
+          className="h-[calc(100vh-12.5rem)] min-h-[32rem]"
+          defaultSizes={[layout.split.sidebar]}
+        >
+          <aside className="flex h-full min-h-0 flex-col overflow-hidden">
+            <SplitLayout
+              className="h-full"
+              direction="vertical"
+              defaultSizes={[layout.split.connections]}
+              minSize={layout.split.minStack}
+            >
+              <div className="flex h-full min-h-0 flex-col">
+                <PaneHeader title="커넥션" meta={`${connections.length}개`} />
+                <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+                  {connections.length === 0 ? (
+                    <p className="p-3 text-xs text-text-tertiary">{emptyCopy.connections}</p>
+                  ) : (
+                    connections.map((connection) => (
+                      <button
+                        key={connection.id}
+                        type="button"
+                        title={connection.name}
+                        className={cn(
+                          "block w-full min-w-0 overflow-hidden border-b border-border px-3 py-2 text-left last:border-b-0",
+                          selectableClass(connection.id === browseId),
+                        )}
+                        onClick={() => onPickConnection(connection.id)}
+                      >
+                        <span className="block truncate text-[13px] text-text">{connection.name}</span>
+                        <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
+                          {connection.driver} · {connection.database_name}
+                        </span>
+                      </button>
+                    ))
+                  )}
                 </div>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                {browseId ? (
-                  <CatalogTree connectionId={browseId} selected={selected} onPick={setSelected} />
-                ) : (
-                  <p className="p-3 text-xs text-text-tertiary">{emptyCopy.query}</p>
-                )}
+              <div className="flex h-full min-h-0 flex-col">
+                <PaneHeader title="카탈로그" />
+                <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+                  {browseId ? (
+                    <CatalogTree connectionId={browseId} selected={selected} onPick={setSelected} />
+                  ) : (
+                    <p className="p-3 text-xs text-text-tertiary">{emptyCopy.query}</p>
+                  )}
+                </div>
               </div>
-            </div>
+            </SplitLayout>
           </aside>
 
-          <div className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(10rem,16rem)_auto_minmax(0,1fr)] overflow-hidden">
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
             {active ? (
-              <div className="flex flex-wrap items-start gap-6 border-b border-border px-4 py-3">
+              <div className="flex h-10 shrink-0 items-center gap-5 overflow-x-auto border-b border-border bg-subtle px-4">
                 <MetaField label="커넥션">{active.name}</MetaField>
                 <MetaField label="드라이버" technical>
                   {active.driver}
@@ -265,165 +286,176 @@ export function QueryPage() {
                 </MetaField>
               </div>
             ) : (
-              <div className="grid place-items-center border-b border-border px-4 py-6 text-[13px] text-text-tertiary">
+              <div className="flex h-10 shrink-0 items-center border-b border-border bg-subtle px-4 text-[13px] text-text-tertiary">
                 왼쪽에서 커넥션을 선택하세요.
               </div>
             )}
 
-            <div className="grid min-h-0 grid-cols-[15rem_minmax(0,1fr)] overflow-hidden border-b border-border">
-              <section className="flex min-h-0 flex-col overflow-hidden border-r border-border">
-                <div className="shrink-0 border-b border-border px-3 py-2 text-[11px] font-semibold text-text-secondary">
-                  컬럼 · {columns.length}
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                {columns.length === 0 ? (
-                  <p className="p-3 text-xs text-text-tertiary">테이블을 선택하면 컬럼이 표시됩니다.</p>
-                ) : (
-                  <ul className="m-0 list-none p-0">
-                    {columns.map((column) => (
-                      <li key={column.name} className="border-b border-border last:border-b-0">
-                        <label className="flex cursor-pointer items-start gap-2 px-3 py-1.5 hover:bg-subtle">
-                          <input
-                            className="field-control mt-0.5"
-                            type="checkbox"
-                            checked={picked.includes(column.name)}
-                            onChange={() => toggleColumn(column.name)}
-                          />
-                          <button
-                            type="button"
-                            className="min-w-0 flex-1 text-left"
-                            onDoubleClick={() => insertAtCursor(column.name)}
-                            title="더블클릭하면 편집기에 넣습니다"
-                          >
-                            <span className="block text-xs">{column.name}</span>
-                            <span className="block text-[11px] text-text-tertiary">
-                              {column.data_type}
-                              {column.nullable ? "" : " · NOT NULL"}
-                            </span>
-                          </button>
-                        </label>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                </div>
-              </section>
-              <section className="flex min-h-0 flex-col">
+            <SplitLayout
+              className="min-h-0 flex-1"
+              direction="vertical"
+              defaultSizes={[layout.split.editor]}
+            >
+              <SplitLayout className="min-h-0" defaultSizes={[layout.split.columns]}>
+                <section className="flex h-full min-h-0 flex-col overflow-hidden">
+                  <PaneHeader title="컬럼" meta={`${columns.length}`} />
+                  <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+                    {columns.length === 0 ? (
+                      <p className="p-3 text-xs text-text-tertiary">테이블을 선택하면 컬럼이 표시됩니다.</p>
+                    ) : (
+                      <ul className="m-0 list-none p-0">
+                        {columns.map((column) => (
+                          <li key={column.name} className="border-b border-border last:border-b-0">
+                            <label
+                              className={cn(
+                                "flex cursor-pointer items-start gap-2 overflow-hidden px-3 py-1.5",
+                                selectableClass(picked.includes(column.name)),
+                              )}
+                            >
+                              <input
+                                className="field-control mt-0.5"
+                                type="checkbox"
+                                checked={picked.includes(column.name)}
+                                onChange={() => toggleColumn(column.name)}
+                              />
+                              <button
+                                type="button"
+                                className="min-w-0 flex-1 overflow-hidden text-left"
+                                onDoubleClick={() => insertAtCursor(column.name)}
+                                title="더블클릭하면 편집기에 넣습니다"
+                              >
+                                <span className="block truncate text-xs">{column.name}</span>
+                                <span className="block truncate text-[11px] text-text-tertiary">
+                                  {column.data_type}
+                                  {column.nullable ? "" : " · NOT NULL"}
+                                </span>
+                              </button>
+                            </label>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </section>
+                <section className="flex h-full min-h-0 flex-col">
+                  <Toolbar className="min-h-10 bg-subtle py-1">
+                    <ToolbarGroup>
+                      <span className="text-[13px] font-semibold">SQL</span>
+                      <span className="text-xs text-text-tertiary">Ctrl+Enter 실행</span>
+                    </ToolbarGroup>
+                    <ToolbarGroup>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        disabled={!selected}
+                        onClick={() => applyDraft(picked)}
+                      >
+                        선택 컬럼으로 초안
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        disabled={!selected}
+                        onClick={() => applyDraft([])}
+                      >
+                        SELECT *
+                      </Button>
+                    </ToolbarGroup>
+                  </Toolbar>
+                  <textarea
+                    ref={editorRef}
+                    className="sql-editor flex-1"
+                    spellCheck={false}
+                    value={sql}
+                    onChange={(event) => persistSql(event.target.value)}
+                    onKeyDown={onEditorKey}
+                    placeholder={"SELECT id, name\nFROM public.users\nWHERE active = true"}
+                    disabled={!browseId}
+                  />
+                </section>
+              </SplitLayout>
+
+              <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
                 <Toolbar>
                   <ToolbarGroup>
-                    <span className="text-[13px] font-semibold">SQL</span>
-                    <span className="text-xs text-text-tertiary">Ctrl+Enter 실행</span>
+                    <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+                      미리보기
+                      <input
+                        className="field-control technical w-16 text-center"
+                        type="number"
+                        min={1}
+                        max={500}
+                        value={limit}
+                        onChange={(event) => setLimit(Number(event.target.value) || 100)}
+                      />
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+                      구분자
+                      <input
+                        className="field-control technical w-16 text-center"
+                        value={delimiter}
+                        onChange={(event) => setDelimiter(event.target.value)}
+                        placeholder=","
+                        title="ASCII 한 글자. 탭은 tab"
+                        required
+                      />
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+                      <input
+                        className="field-control"
+                        type="checkbox"
+                        checked={header}
+                        onChange={(event) => setHeader(event.target.checked)}
+                      />
+                      헤더
+                    </label>
                   </ToolbarGroup>
                   <ToolbarGroup>
-                    <Button
-                      type="button"
-                      variant="quiet"
-                      disabled={!selected}
-                      onClick={() => applyDraft(picked)}
-                    >
-                      선택 컬럼으로 초안
+                    <Button type="button" variant="secondary" disabled={!canRun || running} onClick={() => void onRun()}>
+                      {running ? "실행 중…" : "실행"}
                     </Button>
                     <Button
                       type="button"
-                      variant="quiet"
-                      disabled={!selected}
-                      onClick={() => applyDraft([])}
+                      variant="primary"
+                      disabled={!canExtract || extracting}
+                      onClick={() => void onExtract()}
                     >
-                      SELECT *
+                      {extracting ? "추출 중…" : "결과 파일로 받기"}
                     </Button>
                   </ToolbarGroup>
                 </Toolbar>
-                <textarea
-                  ref={editorRef}
-                  className="sql-editor flex-1"
-                  spellCheck={false}
-                  value={sql}
-                  onChange={(event) => persistSql(event.target.value)}
-                  onKeyDown={onEditorKey}
-                  placeholder={"SELECT id, name\nFROM public.users\nWHERE active = true"}
-                  disabled={!browseId}
-                />
-              </section>
-            </div>
 
-            <Toolbar>
-              <ToolbarGroup>
-                <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                  미리보기
-                  <input
-                    className="field-control technical w-16 text-center"
-                    type="number"
-                    min={1}
-                    max={500}
-                    value={limit}
-                    onChange={(event) => setLimit(Number(event.target.value) || 100)}
-                  />
-                </label>
-                <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                  구분자
-                  <input
-                    className="field-control technical w-16 text-center"
-                    value={delimiter}
-                    onChange={(event) => setDelimiter(event.target.value)}
-                    placeholder=","
-                    title="ASCII 한 글자. 탭은 tab"
-                    required
-                  />
-                </label>
-                <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                  <input
-                    className="field-control"
-                    type="checkbox"
-                    checked={header}
-                    onChange={(event) => setHeader(event.target.checked)}
-                  />
-                  헤더
-                </label>
-              </ToolbarGroup>
-              <ToolbarGroup>
-                <Button type="button" variant="secondary" disabled={!canRun || running} onClick={() => void onRun()}>
-                  {running ? "실행 중…" : "실행"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="primary"
-                  disabled={!canExtract || extracting}
-                  onClick={() => void onExtract()}
-                >
-                  {extracting ? "추출 중…" : "결과 파일로 받기"}
-                </Button>
-              </ToolbarGroup>
-            </Toolbar>
-
-            <section className="min-h-0 overflow-hidden">
-              {!result ? (
-                <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
-                  {emptyCopy.query}
-                </div>
-              ) : result.columns.length === 0 ? (
-                <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
-                  {emptyCopy.preview}
-                </div>
-              ) : (
-                <DataGrid className="h-full" headers={result.columns}>
-                  {result.rows.length === 0 ? (
-                    <EmptyGridRow cols={result.columns.length} text={emptyCopy.preview} />
+                <section className="min-h-0 flex-1 overflow-hidden">
+                  {!result ? (
+                    <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
+                      {emptyCopy.query}
+                    </div>
+                  ) : result.columns.length === 0 ? (
+                    <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
+                      {emptyCopy.preview}
+                    </div>
                   ) : (
-                    result.rows.map((row, rowIndex) => (
-                      <GridRow key={rowIndex}>
-                        {row.map((cell, cellIndex) => (
-                          <GridCell key={cellIndex} mono>
-                            {cell}
-                          </GridCell>
-                        ))}
-                      </GridRow>
-                    ))
+                    <DataGrid className="h-full" headers={result.columns}>
+                      {result.rows.length === 0 ? (
+                        <EmptyGridRow cols={result.columns.length} text={emptyCopy.preview} />
+                      ) : (
+                        result.rows.map((row, rowIndex) => (
+                          <GridRow key={rowIndex}>
+                            {row.map((cell, cellIndex) => (
+                              <GridCell key={cellIndex} mono>
+                                {cell}
+                              </GridCell>
+                            ))}
+                          </GridRow>
+                        ))
+                      )}
+                    </DataGrid>
                   )}
-                </DataGrid>
-              )}
-            </section>
+                </section>
+              </div>
+            </SplitLayout>
           </div>
-        </div>
+        </SplitLayout>
       </Panel>
     </PageShell>
   );
