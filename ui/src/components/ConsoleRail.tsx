@@ -6,6 +6,7 @@ const links = [
   { to: "/", label: "개요", end: true },
   { to: "/files", label: "파일" },
   { to: "/connections", label: "커넥션" },
+  { to: "/query", label: "쿼리" },
   { to: "/extracts", label: "추출" },
   { to: "/jobs", label: "작업" },
 ];
@@ -15,9 +16,9 @@ export function ConsoleRail() {
     <aside className="sticky top-0 z-30 flex h-screen w-52 flex-col border-r border-border bg-surface">
       <Link
         to="/"
-        className="flex h-14 items-center border-b border-border px-4 text-text no-underline"
+        className="flex h-16 items-center border-b border-border px-4 text-text no-underline"
       >
-        <span className="mr-2 grid size-6 place-items-center rounded bg-text font-mono text-[10px] font-semibold text-white">
+        <span className="mr-2 grid size-6 place-items-center rounded bg-text text-[10px] font-semibold text-white">
           BT
         </span>
         <span className="text-sm font-semibold tracking-[-0.01em]">BinTL</span>

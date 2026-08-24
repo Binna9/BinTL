@@ -99,7 +99,7 @@ export function JobRunPage() {
 
       <Panel className="min-h-0 flex-1">
         <PanelHeader title="실행 로그" description="작업 상태는 1.5초마다 갱신됩니다." />
-        <pre className="m-0 h-[calc(100vh-22rem)] min-h-72 overflow-auto bg-[#171a1f] p-4 font-mono text-[12px] leading-5 text-[#d7dce2]">
+        <pre className="m-0 h-[calc(100vh-22rem)] min-h-72 overflow-auto bg-[#171a1f] p-4 font-sans text-[12px] leading-5 text-[#d7dce2]">
           {job.logs.map((log) => `${fmtWhen(log.ts)}  ${log.level.padEnd(5)}  ${log.message}`).join("\n") ||
             emptyCopy.logs}
         </pre>

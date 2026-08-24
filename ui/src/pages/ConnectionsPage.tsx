@@ -1,17 +1,17 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/Button";
+import { CatalogTree } from "@/components/CatalogTree";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { FormField } from "@/components/FormField";
 import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Panel, PanelBody, PanelHeader } from "@/components/Panel";
-import { TableChip } from "@/components/TableChip";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
 import { api } from "@/lib/api";
-import { delimiterCatalog, driverCatalog } from "@/mock/driverCatalog";
+import { driverCatalog } from "@/mock/driverCatalog";
 import { emptyCopy } from "@/mock/emptyStates";
-import type { ColumnInfo, Connection, TablePreview } from "@/types/pipeline";
+import type { CatalogPick, ColumnInfo, Connection, TablePreview } from "@/types/pipeline";
 
 export function ConnectionsPage() {
   const navigate = useNavigate();
@@ -20,8 +20,7 @@ export function ConnectionsPage() {
   const [info, setInfo] = useState("");
   const [saving, setSaving] = useState(false);
   const [browseId, setBrowseId] = useState("");
-  const [tables, setTables] = useState<string[]>([]);
-  const [selectedTable, setSelectedTable] = useState("");
+  const [selected, setSelected] = useState<CatalogPick | null>(null);
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [preview, setPreview] = useState<TablePreview | null>(null);
   const [delimiter, setDelimiter] = useState(",");
@@ -83,27 +82,20 @@ export function ConnectionsPage() {
 
   async function onBrowse(id: string) {
     setBrowseId(id);
-    setSelectedTable("");
+    setSelected(null);
     setColumns([]);
     setPreview(null);
     setError("");
-    try {
-      const response = await api.connectionTables(id);
-      setTables(response.tables);
-    } catch (err) {
-      setTables([]);
-      setError(err instanceof Error ? err.message : "테이블 목록을 불러오지 못했습니다");
-    }
   }
 
-  async function onSelectTable(table: string) {
+  async function onSelectTable(pick: CatalogPick) {
     if (!browseId) return;
-    setSelectedTable(table);
+    setSelected(pick);
     setError("");
     try {
       const [columnResult, previewResult] = await Promise.all([
-        api.connectionColumns(browseId, table),
-        api.connectionPreview(browseId, table),
+        api.connectionColumns(browseId, pick.qualified, pick.database),
+        api.connectionPreview(browseId, pick.qualified, 50, pick.database),
       ]);
       setColumns(columnResult.columns);
       setPreview(previewResult);
@@ -116,13 +108,14 @@ export function ConnectionsPage() {
 
   async function onExtract(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!browseId || !selectedTable) return;
+    if (!browseId || !selected) return;
     setExtracting(true);
     setError("");
     try {
       await api.createExtract({
         connection_id: browseId,
-        table: selectedTable,
+        table: selected.qualified,
+        database: selected.database,
         delimiter,
         header,
       });
@@ -140,8 +133,7 @@ export function ConnectionsPage() {
       await api.deleteConnection(id);
       if (browseId === id) {
         setBrowseId("");
-        setTables([]);
-        setSelectedTable("");
+        setSelected(null);
         setColumns([]);
         setPreview(null);
       }
@@ -158,7 +150,7 @@ export function ConnectionsPage() {
       <PageHeader
         eyebrow="소스"
         title="커넥션"
-        description="데이터베이스 연결을 등록하고 스키마와 데이터를 조회한 뒤 서버 파일로 추출합니다."
+        description="데이터베이스 연결을 등록하고 스키마를 조회합니다. 테이블 전체 추출 또는 쿼리 편집기로 이어서 작업할 수 있습니다."
       />
       {info ? <NoticeBanner tone="ok">{info}</NoticeBanner> : null}
       {error ? <NoticeBanner>{error}</NoticeBanner> : null}
@@ -237,13 +229,20 @@ export function ConnectionsPage() {
                       onClick={() => void onBrowse(connection.id)}
                     >
                       <span className="block text-[13px] font-medium">{connection.name}</span>
-                      <span className="mt-1 block font-mono text-[11px] text-text-tertiary">
+                      <span className="mt-1 block text-[11px] text-text-tertiary">
                         {connection.driver} · {connection.host}:{connection.port}
                       </span>
                     </button>
                     <div className="mt-2 flex gap-1">
                       <Button type="button" variant="quiet" onClick={() => void onTest(connection.id)}>
                         테스트
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        onClick={() => navigate(`/query?connection=${connection.id}`)}
+                      >
+                        쿼리
                       </Button>
                       <Button type="button" variant="danger" onClick={() => void onDelete(connection.id)}>
                         삭제
@@ -260,50 +259,45 @@ export function ConnectionsPage() {
               왼쪽에서 커넥션을 선택해 데이터 구조를 조회하세요.
             </div>
           ) : (
-            <div className="grid min-w-0 grid-cols-[14rem_minmax(0,1fr)]">
-              <aside className="border-r border-border bg-raised">
-                <div className="border-b border-border px-3 py-2">
-                  <div className="text-[11px] font-semibold text-text-secondary">테이블</div>
-                  <div className="mt-0.5 text-[11px] text-text-tertiary">{tables.length}개</div>
+            <div className="grid min-w-0 grid-cols-[16rem_minmax(0,1fr)]">
+              <aside className="flex min-h-0 flex-col border-r border-border bg-raised">
+                <div className="shrink-0 border-b border-border px-3 py-2">
+                  <div className="text-[11px] font-semibold text-text-secondary">카탈로그</div>
+                  <div className="mt-0.5 text-[11px] text-text-tertiary">
+                    데이터베이스 → 스키마 → 테이블
+                  </div>
                 </div>
-                <div className="flex max-h-[31rem] flex-col overflow-auto py-1">
-                  {tables.length === 0 ? (
-                    <p className="p-3 text-xs text-text-tertiary">조회 가능한 테이블이 없습니다.</p>
-                  ) : (
-                    tables.map((table) => (
-                      <TableChip
-                        key={table}
-                        label={table}
-                        on={table === selectedTable}
-                        onClick={() => void onSelectTable(table)}
-                      />
-                    ))
-                  )}
+                <div className="max-h-[31rem] min-h-0 flex-1 overflow-y-auto">
+                  <CatalogTree
+                    connectionId={activeConnection.id}
+                    selected={selected}
+                    onPick={(pick) => void onSelectTable(pick)}
+                  />
                 </div>
               </aside>
 
-              {!selectedTable ? (
+              {!selected ? (
                 <div className="grid place-items-center text-[13px] text-text-tertiary">
-                  테이블을 선택하면 컬럼과 샘플 데이터를 표시합니다.
+                  데이터베이스를 연 뒤 테이블을 선택하면 컬럼과 샘플 데이터를 표시합니다.
                 </div>
               ) : (
                 <div className="min-w-0">
                   <Toolbar>
                     <ToolbarGroup>
-                      <span className="technical font-semibold text-text">{selectedTable}</span>
+                      <span className="technical font-semibold text-text">{selected.qualified}</span>
                     </ToolbarGroup>
                     <form className="flex items-center gap-2" onSubmit={(event) => void onExtract(event)}>
                       <label className="flex items-center gap-1.5 text-xs text-text-secondary">
                         구분자
-                        <select
-                          className="field-control w-28"
+                        <input
+                          className="field-control technical w-16 text-center"
                           value={delimiter}
                           onChange={(event) => setDelimiter(event.target.value)}
-                        >
-                          {delimiterCatalog.map((item) => (
-                            <option key={item.value} value={item.value}>{item.label}</option>
-                          ))}
-                        </select>
+                          placeholder=","
+                          title="ASCII 한 글자. 탭은 tab"
+                          aria-label="구분자"
+                          required
+                        />
                       </label>
                       <label className="flex items-center gap-1.5 text-xs text-text-secondary">
                         <input
@@ -314,6 +308,17 @@ export function ConnectionsPage() {
                         />
                         헤더
                       </label>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() =>
+                          navigate(
+                            `/query?connection=${browseId}&table=${encodeURIComponent(selected.qualified)}&database=${encodeURIComponent(selected.database)}`,
+                          )
+                        }
+                      >
+                        쿼리 편집
+                      </Button>
                       <Button variant="primary" type="submit" disabled={extracting}>
                         {extracting ? "추출 중…" : "파일로 추출"}
                       </Button>

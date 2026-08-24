@@ -4,8 +4,9 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse};
 use axum::routing::{get, post};
 use connectors::{
-    db_source_path, list_columns, list_tables, parse_delimiter, parse_table, preview_table,
-    test_connection,
+    catalog_layout, db_source_path, list_columns, list_databases, list_relations, list_schemas,
+    list_tables, normalize_sql, parse_delimiter, parse_ident, parse_table, preview_table, run_sql,
+    sql_kind, test_connection, with_database, SqlKind,
 };
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -30,8 +31,12 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
         .route("/api/connections/{id}", get(get_connection).delete(delete_connection))
         .route("/api/connections/{id}/test", post(test_saved_connection))
         .route("/api/connections/{id}/tables", get(connection_tables))
+        .route("/api/connections/{id}/databases", get(connection_databases))
+        .route("/api/connections/{id}/schemas", get(connection_schemas))
+        .route("/api/connections/{id}/relations", get(connection_relations))
         .route("/api/connections/{id}/columns", get(connection_columns))
         .route("/api/connections/{id}/preview", get(connection_preview))
+        .route("/api/connections/{id}/query", post(connection_query))
         .route("/api/extracts", post(create_extract).get(list_extracts))
         .route("/api/extracts/{id}", get(get_extract))
         .route("/api/extracts/{id}/file", get(extract_file))
@@ -201,10 +206,60 @@ async fn connection_tables(
     Ok(Json(json!({ "tables": tables })))
 }
 
+async fn connection_databases(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let live = state.store.live_connection(&id).await?;
+    let layout = catalog_layout(&live.driver)?;
+    let databases = list_databases(&live).await?;
+    Ok(Json(json!({
+        "layout": layout,
+        "current": live.database,
+        "databases": databases,
+    })))
+}
+
+#[derive(Deserialize)]
+struct CatalogQuery {
+    database: String,
+    schema: Option<String>,
+}
+
+async fn connection_schemas(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<CatalogQuery>,
+) -> Result<Json<Value>, AppError> {
+    parse_ident(&q.database).map_err(|e| AppError::bad(e.to_string()))?;
+    let live = state.store.live_connection(&id).await?;
+    let schemas = list_schemas(&live, &q.database).await?;
+    Ok(Json(json!({ "database": q.database, "schemas": schemas })))
+}
+
+async fn connection_relations(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<CatalogQuery>,
+) -> Result<Json<Value>, AppError> {
+    parse_ident(&q.database).map_err(|e| AppError::bad(e.to_string()))?;
+    if let Some(schema) = q.schema.as_deref() {
+        parse_ident(schema).map_err(|e| AppError::bad(e.to_string()))?;
+    }
+    let live = state.store.live_connection(&id).await?;
+    let tables = list_relations(&live, &q.database, q.schema.as_deref()).await?;
+    Ok(Json(json!({
+        "database": q.database,
+        "schema": q.schema,
+        "tables": tables,
+    })))
+}
+
 #[derive(Deserialize)]
 struct TableQuery {
     table: String,
     limit: Option<u32>,
+    database: Option<String>,
 }
 
 async fn connection_columns(
@@ -213,7 +268,11 @@ async fn connection_columns(
     Query(q): Query<TableQuery>,
 ) -> Result<Json<Value>, AppError> {
     parse_table(&q.table).map_err(|e| AppError::bad(e.to_string()))?;
+    if let Some(database) = q.database.as_deref() {
+        parse_ident(database).map_err(|e| AppError::bad(e.to_string()))?;
+    }
     let live = state.store.live_connection(&id).await?;
+    let live = with_database(&live, q.database.as_deref());
     let columns = list_columns(&live, &q.table).await?;
     Ok(Json(json!({ "table": q.table, "columns": columns })))
 }
@@ -224,7 +283,11 @@ async fn connection_preview(
     Query(q): Query<TableQuery>,
 ) -> Result<Json<Value>, AppError> {
     parse_table(&q.table).map_err(|e| AppError::bad(e.to_string()))?;
+    if let Some(database) = q.database.as_deref() {
+        parse_ident(database).map_err(|e| AppError::bad(e.to_string()))?;
+    }
     let live = state.store.live_connection(&id).await?;
+    let live = with_database(&live, q.database.as_deref());
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let preview = preview_table(&live, &q.table, limit).await?;
     Ok(Json(json!({
@@ -236,29 +299,95 @@ async fn connection_preview(
 }
 
 #[derive(Deserialize)]
+struct RunQueryBody {
+    sql: String,
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    database: Option<String>,
+}
+
+async fn connection_query(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RunQueryBody>,
+) -> Result<Json<Value>, AppError> {
+    let sql = normalize_sql(&body.sql).map_err(|e| AppError::bad(e.to_string()))?;
+    if let Some(database) = body.database.as_deref() {
+        parse_ident(database).map_err(|e| AppError::bad(e.to_string()))?;
+    }
+    let live = state.store.live_connection(&id).await?;
+    let live = with_database(&live, body.database.as_deref());
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    let out = run_sql(&live, &sql, limit).await?;
+    Ok(Json(json!({
+        "kind": out.kind,
+        "columns": out.columns,
+        "rows": out.rows,
+        "row_count": out.row_count,
+        "truncated": out.truncated,
+        "elapsed_ms": out.elapsed_ms,
+        "limit": limit,
+    })))
+}
+
+#[derive(Deserialize)]
 struct CreateExtractBody {
     connection_id: String,
-    table: String,
+    #[serde(default)]
+    table: Option<String>,
+    #[serde(default)]
+    sql: Option<String>,
     #[serde(default)]
     delimiter: Option<String>,
     #[serde(default)]
     header: Option<bool>,
+    #[serde(default)]
+    database: Option<String>,
 }
 
 async fn create_extract(
     State(state): State<AppState>,
     Json(body): Json<CreateExtractBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    parse_table(&body.table).map_err(|e| AppError::bad(e.to_string()))?;
+    let sql = match body.sql.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => {
+            let sql = normalize_sql(raw).map_err(|e| AppError::bad(e.to_string()))?;
+            if sql_kind(&sql) != SqlKind::Rows {
+                return Err(AppError::bad(
+                    "extract needs a result set (SELECT / WITH / SHOW …)",
+                ));
+            }
+            Some(sql)
+        }
+        None => None,
+    };
+    let table = match body.table.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(table) => {
+            parse_table(table).map_err(|e| AppError::bad(e.to_string()))?;
+            table.to_string()
+        }
+        None if sql.is_some() => "query".into(),
+        None => return Err(AppError::bad("table or sql required")),
+    };
     let delimiter = body.delimiter.unwrap_or_else(|| ",".into());
     parse_delimiter(&delimiter).map_err(|e| AppError::bad(e.to_string()))?;
+    let catalog_database = match body.database.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(database) => {
+            parse_ident(database).map_err(|e| AppError::bad(e.to_string()))?;
+            Some(database.to_string())
+        }
+        None => None,
+    };
     let row = state
         .store
         .insert_extract(
             &body.connection_id,
-            &body.table,
+            &table,
             &delimiter,
             body.header.unwrap_or(true),
+            sql.as_deref(),
+            catalog_database.as_deref(),
         )
         .await?;
     crate::extract::spawn(state.store.clone(), row.id.clone());

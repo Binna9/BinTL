@@ -15,7 +15,12 @@ struct Assets;
 pub async fn fallback(State(state): State<AppState>, uri: Uri) -> Response {
     let path = uri.path();
     if path.starts_with("/api") {
-        return (StatusCode::NOT_FOUND, "not found").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"error":"not found"}"#,
+        )
+            .into_response();
     }
     if let Some(dir) = &state.config.ui_dir {
         return serve_disk(dir, path).await;

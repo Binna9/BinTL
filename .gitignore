@@ -2,8 +2,7 @@
 /.cursor
 /ui/node_modules/
 /ui/dist/
-/dist/
 /data/
-.env
+.config.example.toml
 .DS_Store
 

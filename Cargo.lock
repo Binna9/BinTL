@@ -658,6 +658,7 @@ checksum = "510ca239cf13b7f8d16a2b48f263de7b4f8c566f0af58d901031473c76afb1e3"
 name = "connectors"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "csv",
  "futures-util",
  "serde",
@@ -4025,6 +4026,7 @@ dependencies = [
  "asynchronous-codec",
  "byteorder",
  "bytes",
+ "chrono",
  "connection-string",
  "encoding_rs",
  "enumflags2",

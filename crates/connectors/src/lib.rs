@@ -7,11 +7,15 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{MySql, Pool, Postgres, Row, Sqlite};
 use storage::LiveConnection;
 
+mod catalog;
 mod extract;
 mod inspect;
+mod query;
 
+pub use catalog::{catalog_layout, list_databases, list_relations, list_schemas, CatalogItem};
 pub use extract::{extract_table, parse_delimiter, ExtractOptions};
 pub use inspect::{list_columns, preview_table, ColumnInfo, Preview};
+pub use query::{extract_query, normalize_sql, run_sql, sql_kind, QueryOutcome, SqlKind};
 use tiberius::{AuthMethod, Client, Config, EncryptionLevel};
 use tokio::net::TcpStream;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
@@ -72,6 +76,34 @@ pub fn parse_table(raw: &str) -> Result<TableName, ConnectError> {
             table: parts[0].to_string(),
         }
     })
+}
+
+pub fn parse_ident(raw: &str) -> Result<&str, ConnectError> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.len() > 128 {
+        return Err(ConnectError::Invalid("invalid identifier".into()));
+    }
+    if !raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ConnectError::Invalid(
+            "identifier may only contain letters, digits, underscore, hyphen".into(),
+        ));
+    }
+    Ok(raw)
+}
+
+pub fn with_database(c: &LiveConnection, database: Option<&str>) -> LiveConnection {
+    let Some(database) = database.map(str::trim).filter(|s| !s.is_empty()) else {
+        return c.clone();
+    };
+    if driver_family(&c.driver).ok() == Some("sqlite") || database == c.database {
+        return c.clone();
+    }
+    let mut next = c.clone();
+    next.database = database.to_string();
+    next
 }
 
 pub(crate) fn quote_ident(family: &str, ident: &str) -> String {
@@ -211,7 +243,7 @@ pub async fn list_tables(c: &LiveConnection) -> Result<Vec<String>, ConnectError
             let rows = sqlx::query(
                 "SELECT table_schema || '.' || table_name AS q
                  FROM information_schema.tables
-                 WHERE table_type = 'BASE TABLE'
+                 WHERE table_type IN ('BASE TABLE', 'VIEW')
                    AND table_schema NOT IN ('pg_catalog', 'information_schema')
                  ORDER BY 1",
             )
@@ -228,7 +260,7 @@ pub async fn list_tables(c: &LiveConnection) -> Result<Vec<String>, ConnectError
             let rows = sqlx::query(
                 "SELECT table_name
                  FROM information_schema.tables
-                 WHERE table_type = 'BASE TABLE' AND table_schema = DATABASE()
+                 WHERE table_type IN ('BASE TABLE', 'VIEW') AND table_schema = DATABASE()
                  ORDER BY 1",
             )
             .fetch_all(&pool)
@@ -243,7 +275,7 @@ pub async fn list_tables(c: &LiveConnection) -> Result<Vec<String>, ConnectError
             let pool = sqlite_pool(c).await?;
             let rows = sqlx::query(
                 "SELECT name FROM sqlite_master
-                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
                  ORDER BY 1",
             )
             .fetch_all(&pool)
@@ -260,7 +292,7 @@ pub async fn list_tables(c: &LiveConnection) -> Result<Vec<String>, ConnectError
                 .simple_query(
                     "SELECT TABLE_SCHEMA + '.' + TABLE_NAME
                      FROM INFORMATION_SCHEMA.TABLES
-                     WHERE TABLE_TYPE = 'BASE TABLE'
+                     WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW')
                      ORDER BY 1",
                 )
                 .await?;
@@ -292,8 +324,13 @@ where
     String: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
     i64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
     i32: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    i16: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
     f64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    f32: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
     bool: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    chrono::NaiveDateTime: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    chrono::NaiveDate: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    chrono::DateTime<chrono::Utc>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
 {
     if let Ok(v) = row.try_get::<Option<String>, _>(i) {
         return v.unwrap_or_default();
@@ -304,11 +341,26 @@ where
     if let Ok(v) = row.try_get::<Option<i32>, _>(i) {
         return v.map(|n| n.to_string()).unwrap_or_default();
     }
+    if let Ok(v) = row.try_get::<Option<i16>, _>(i) {
+        return v.map(|n| n.to_string()).unwrap_or_default();
+    }
     if let Ok(v) = row.try_get::<Option<f64>, _>(i) {
+        return v.map(|n| n.to_string()).unwrap_or_default();
+    }
+    if let Ok(v) = row.try_get::<Option<f32>, _>(i) {
         return v.map(|n| n.to_string()).unwrap_or_default();
     }
     if let Ok(v) = row.try_get::<Option<bool>, _>(i) {
         return v.map(|n| n.to_string()).unwrap_or_default();
+    }
+    if let Ok(v) = row.try_get::<Option<chrono::NaiveDateTime>, _>(i) {
+        return v.map(|t| t.to_string()).unwrap_or_default();
+    }
+    if let Ok(v) = row.try_get::<Option<chrono::NaiveDate>, _>(i) {
+        return v.map(|t| t.to_string()).unwrap_or_default();
+    }
+    if let Ok(v) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(i) {
+        return v.map(|t| t.to_rfc3339()).unwrap_or_default();
     }
     String::new()
 }
@@ -327,6 +379,12 @@ pub(crate) fn stringify_ms(row: &tiberius::Row, i: usize) -> String {
         return v.to_string();
     }
     if let Ok(Some(v)) = row.try_get::<bool, usize>(i) {
+        return v.to_string();
+    }
+    if let Ok(Some(v)) = row.try_get::<chrono::NaiveDateTime, usize>(i) {
+        return v.to_string();
+    }
+    if let Ok(Some(v)) = row.try_get::<chrono::NaiveDate, usize>(i) {
         return v.to_string();
     }
     String::new()
@@ -557,5 +615,13 @@ mod tests {
         assert_eq!(schema_or("mssql", &t), "dbo");
         let q = parse_table("sales.fact").unwrap();
         assert_eq!(schema_or("postgres", &q), "sales");
+    }
+
+    #[test]
+    fn ident_ok() {
+        assert_eq!(parse_ident("analytics").unwrap(), "analytics");
+        assert_eq!(parse_ident("dw-1").unwrap(), "dw-1");
+        assert!(parse_ident("").is_err());
+        assert!(parse_ident("drop;").is_err());
     }
 }

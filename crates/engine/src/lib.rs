@@ -274,12 +274,16 @@ fn read_any(path: &Path, spec: &TransformSpec) -> Result<DataFrame, EngineError>
 /// Same tokens as `connectors::parse_delimiter`. Duplicated so engine stays
 /// free of sqlx / connectors.
 fn parse_separator(raw: &str) -> Result<u8, EngineError> {
+    if raw.chars().count() == 1 {
+        let c = raw.chars().next().unwrap();
+        return if c.is_ascii() {
+            Ok(c as u8)
+        } else {
+            Err(EngineError::Spec("delimiter must be ascii".into()))
+        };
+    }
     match raw.trim() {
-        "," => Ok(b','),
-        "|" => Ok(b'|'),
-        ";" => Ok(b';'),
-        "^" => Ok(b'^'),
-        "tab" | "\\t" | "\t" => Ok(b'\t'),
+        "tab" | "\\t" => Ok(b'\t'),
         s if s.chars().count() == 1 => {
             let c = s.chars().next().unwrap();
             if c.is_ascii() {

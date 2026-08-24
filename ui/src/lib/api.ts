@@ -2,6 +2,8 @@ import type {
   ColumnInfo,
   Connection,
   ConnectionDraft,
+  CatalogItem,
+  CatalogLayout,
   EtlJobDraft,
   ExtractDraft,
   ExtractItem,
@@ -9,6 +11,7 @@ import type {
   Health,
   Job,
   JobRun,
+  QueryOutcome,
   TablePreview,
 } from "@/types/pipeline";
 
@@ -33,9 +36,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(401, "unauthorized");
   }
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text) as unknown;
+    } catch {
+      throw new ApiError(res.status, text.trim() || res.statusText);
+    }
+  }
   if (!res.ok) {
-    throw new ApiError(res.status, data?.error ?? res.statusText);
+    const message =
+      data && typeof data === "object" && "error" in data && typeof data.error === "string"
+        ? data.error
+        : res.statusText;
+    throw new ApiError(res.status, message);
   }
   return data as T;
 }
@@ -70,14 +84,38 @@ export const api = {
     }),
   connectionTables: (id: string) =>
     request<{ tables: string[] }>(`/api/connections/${id}/tables`),
-  connectionColumns: (id: string, table: string) =>
-    request<{ table: string; columns: ColumnInfo[] }>(
-      `/api/connections/${id}/columns?table=${encodeURIComponent(table)}`,
+  connectionDatabases: (id: string) =>
+    request<{ layout: CatalogLayout; current: string; databases: CatalogItem[] }>(
+      `/api/connections/${id}/databases`,
     ),
-  connectionPreview: (id: string, table: string, limit = 50) =>
-    request<TablePreview>(
-      `/api/connections/${id}/preview?table=${encodeURIComponent(table)}&limit=${limit}`,
+  connectionSchemas: (id: string, database: string) =>
+    request<{ database: string; schemas: CatalogItem[] }>(
+      `/api/connections/${id}/schemas?database=${encodeURIComponent(database)}`,
     ),
+  connectionRelations: (id: string, database: string, schema?: string) => {
+    const query = new URLSearchParams({ database });
+    if (schema) query.set("schema", schema);
+    return request<{ database: string; schema?: string; tables: CatalogItem[] }>(
+      `/api/connections/${id}/relations?${query}`,
+    );
+  },
+  connectionColumns: (id: string, table: string, database?: string) => {
+    const query = new URLSearchParams({ table });
+    if (database) query.set("database", database);
+    return request<{ table: string; columns: ColumnInfo[] }>(
+      `/api/connections/${id}/columns?${query}`,
+    );
+  },
+  connectionPreview: (id: string, table: string, limit = 50, database?: string) => {
+    const query = new URLSearchParams({ table, limit: String(limit) });
+    if (database) query.set("database", database);
+    return request<TablePreview>(`/api/connections/${id}/preview?${query}`);
+  },
+  runQuery: (id: string, sql: string, limit = 100, database?: string) =>
+    request<QueryOutcome>(`/api/connections/${id}/query`, {
+      method: "POST",
+      body: JSON.stringify({ sql, limit, database }),
+    }),
   extracts: (limit = 50) => request<{ extracts: ExtractItem[] }>(`/api/extracts?limit=${limit}`),
   extract: (id: string) => request<ExtractItem>(`/api/extracts/${id}`),
   createExtract: (body: ExtractDraft) =>

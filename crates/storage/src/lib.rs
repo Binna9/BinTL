@@ -74,12 +74,14 @@ pub struct ExtractRow {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub sql_text: Option<String>,
+    pub catalog_database: Option<String>,
     pub connection_name: String,
 }
 
 const EXTRACT_COLS: &str = "e.id, e.connection_id, e.table_name, e.delimiter, e.header,
         e.status, e.stored_path, e.filename, e.row_count, e.error_message,
-        e.created_at, e.started_at, e.finished_at,
+        e.created_at, e.started_at, e.finished_at, e.sql_text, e.catalog_database,
         COALESCE(c.name, '') AS connection_name";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -439,6 +441,8 @@ impl Store {
         table_name: &str,
         delimiter: &str,
         header: bool,
+        sql_text: Option<&str>,
+        catalog_database: Option<&str>,
     ) -> Result<ExtractRow, StorageError> {
         let _ = self
             .get_connection(connection_id)
@@ -448,8 +452,8 @@ impl Store {
         let created_at = now_rfc3339();
         sqlx::query(
             "INSERT INTO extracts
-             (id, connection_id, table_name, delimiter, header, status, created_at)
-             VALUES (?, ?, ?, ?, ?, 'queued', ?)",
+             (id, connection_id, table_name, delimiter, header, status, created_at, sql_text, catalog_database)
+             VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
         )
         .bind(&id)
         .bind(connection_id)
@@ -457,6 +461,8 @@ impl Store {
         .bind(delimiter)
         .bind(i64::from(header))
         .bind(&created_at)
+        .bind(sql_text)
+        .bind(catalog_database)
         .execute(&self.pool)
         .await?;
         self.get_extract(&id)

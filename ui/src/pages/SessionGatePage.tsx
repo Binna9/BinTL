@@ -30,7 +30,7 @@ export function SessionGatePage() {
     <main className="grid min-h-screen grid-cols-[minmax(20rem,32rem)_1fr] bg-workspace">
       <section className="flex flex-col justify-between border-r border-border bg-surface p-10">
         <div className="flex items-center gap-2">
-          <span className="grid size-7 place-items-center rounded bg-text font-mono text-[10px] font-semibold text-white">
+          <span className="grid size-7 place-items-center rounded bg-text text-[10px] font-semibold text-white">
             BT
           </span>
           <span className="font-semibold">BinTL</span>

@@ -1,9 +1,9 @@
 @import "tailwindcss";
+@import "pretendard/dist/web/variable/pretendardvariable.css";
 
 @theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
-    "Apple SD Gothic Neo", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: "Pretendard Variable", Pretendard, sans-serif;
+  --font-mono: "Pretendard Variable", Pretendard, sans-serif;
   --color-workspace: #f6f7f9;
   --color-surface: #ffffff;
   --color-subtle: #f1f3f5;
@@ -33,6 +33,7 @@ body,
 body {
   @apply m-0 bg-workspace font-sans text-sm text-text antialiased;
   color-scheme: light;
+  letter-spacing: -0.011em;
 }
 
 a {
@@ -41,8 +42,10 @@ a {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
+  letter-spacing: inherit;
 }
 
 button,
@@ -61,7 +64,13 @@ a {
 }
 
 .technical {
-  @apply font-mono text-[12px] tabular-nums;
+  @apply text-[12px] tabular-nums;
+}
+
+.sql-editor {
+  @apply min-h-0 w-full resize-none overflow-y-auto border-0 bg-surface p-3 font-sans text-[13px] leading-6 text-text outline-none;
+  @apply placeholder:text-text-tertiary;
+  tab-size: 2;
 }
 
 ::selection {

@@ -29,12 +29,15 @@ impl Default for ExtractOptions {
 }
 
 pub fn parse_delimiter(raw: &str) -> Result<u8, ConnectError> {
+    if raw.chars().count() == 1 {
+        let c = raw.chars().next().unwrap();
+        if !c.is_ascii() {
+            return Err(ConnectError::Invalid("delimiter must be ascii".into()));
+        }
+        return Ok(c as u8);
+    }
     match raw.trim() {
-        "," => Ok(b','),
-        "|" => Ok(b'|'),
-        ";" => Ok(b';'),
-        "^" => Ok(b'^'),
-        "tab" | "\\t" | "\t" => Ok(b'\t'),
+        "tab" | "\\t" => Ok(b'\t'),
         s if s.chars().count() == 1 => {
             let c = s.chars().next().unwrap();
             if !c.is_ascii() {
@@ -43,7 +46,7 @@ pub fn parse_delimiter(raw: &str) -> Result<u8, ConnectError> {
             Ok(c as u8)
         }
         _ => Err(ConnectError::Invalid(
-            "delimiter must be one of , | ; ^ tab or a single character".into(),
+            "delimiter must be a single ascii character, or tab".into(),
         )),
     }
 }
@@ -178,6 +181,8 @@ mod tests {
         assert_eq!(parse_delimiter("\\t").unwrap(), b'\t');
         assert_eq!(parse_delimiter("\t").unwrap(), b'\t');
         assert_eq!(parse_delimiter(":").unwrap(), b':');
+        assert_eq!(parse_delimiter(" ").unwrap(), b' ');
+        assert_eq!(parse_delimiter(" : ").unwrap(), b':');
         assert!(parse_delimiter("").is_err());
         assert!(parse_delimiter("||").is_err());
     }

@@ -8,7 +8,7 @@ import { Panel } from "@/components/Panel";
 import { StatusPill } from "@/components/StatusPill";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
 import { api, extractFileUrl } from "@/lib/api";
-import { fmtWhen } from "@/lib/format";
+import { fmtDelimiter, fmtSqlPreview, fmtWhen } from "@/lib/format";
 import { emptyCopy } from "@/mock/emptyStates";
 import type { ExtractItem } from "@/types/pipeline";
 
@@ -54,7 +54,7 @@ export function ExtractsPage() {
       <PageHeader
         eyebrow="작업 공간"
         title="추출"
-        description="커넥션의 테이블에서 생성한 서버 파일과 처리 상태입니다."
+        description="테이블 전체 또는 쿼리 결과로 만든 서버 파일과 처리 상태입니다."
         actions={activeCount > 0 ? <LiveDot label={`${activeCount}개 기록 중`} /> : null}
       />
       {error ? <NoticeBanner>{error}</NoticeBanner> : null}
@@ -67,16 +67,22 @@ export function ExtractsPage() {
           </ToolbarGroup>
           <span className="text-xs text-text-tertiary">활성 작업은 2초마다 갱신됩니다</span>
         </Toolbar>
-        <DataGrid headers={["테이블", "커넥션", "형식", "상태", "행 수", "생성 시각", "작업"]}>
+        <DataGrid headers={["소스", "커넥션", "형식", "상태", "행 수", "생성 시각", "작업"]}>
           {items.length === 0 ? (
             <EmptyGridRow cols={7} text={emptyCopy.extracts} />
           ) : (
             items.map((extract) => (
               <GridRow key={extract.id}>
-                <GridCell mono>{extract.table_name}</GridCell>
+                <GridCell mono>
+                  {extract.sql_text ? (
+                    <span title={extract.sql_text}>쿼리 · {fmtSqlPreview(extract.sql_text)}</span>
+                  ) : (
+                    extract.table_name
+                  )}
+                </GridCell>
                 <GridCell>{extract.connection_name || extract.connection_id.slice(0, 8)}</GridCell>
                 <GridCell mono muted>
-                  {extract.delimiter === "tab" ? "TAB" : `구분자 ${extract.delimiter}`}
+                  {fmtDelimiter(extract.delimiter)}
                 </GridCell>
                 <GridCell>
                   <StatusPill value={extract.status} />

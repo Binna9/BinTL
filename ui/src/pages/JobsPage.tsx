@@ -5,11 +5,11 @@ import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid
 import { FormField } from "@/components/FormField";
 import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { Panel, PanelBody, PanelHeader } from "@/components/Panel";
+import { Panel, PanelHeader } from "@/components/Panel";
 import { StatusPill } from "@/components/StatusPill";
 import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
 import { api } from "@/lib/api";
-import { fmtWhen } from "@/lib/format";
+import { fmtSqlPreview, fmtWhen } from "@/lib/format";
 import { emptyCopy } from "@/mock/emptyStates";
 import type { Connection, ExtractItem, FileItem, Job } from "@/types/pipeline";
 
@@ -135,7 +135,9 @@ export function JobsPage() {
                 <option value="">선택 안 함</option>
                 {extracts.map((extract) => (
                   <option key={extract.id} value={extract.id}>
-                    {extract.filename || extract.table_name}
+                    {extract.sql_text
+                      ? `${extract.filename || extract.table_name} · ${fmtSqlPreview(extract.sql_text)}`
+                      : extract.filename || extract.table_name}
                   </option>
                 ))}
               </select>

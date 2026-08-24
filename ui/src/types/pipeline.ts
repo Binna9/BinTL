@@ -80,13 +80,41 @@ export type ExtractItem = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  sql_text?: string | null;
+};
+
+export type CatalogItem = {
+  name: string;
+  kind: "database" | "schema" | "table" | "view";
+  current?: boolean | null;
+};
+
+export type CatalogLayout = "database.schema.table" | "database.table";
+
+export type CatalogPick = {
+  database: string;
+  schema: string | null;
+  table: string;
+  qualified: string;
 };
 
 export type ExtractDraft = {
   connection_id: string;
-  table: string;
+  table?: string;
+  sql?: string;
   delimiter?: string;
   header?: boolean;
+  database?: string;
+};
+
+export type QueryOutcome = {
+  kind: "rows" | "exec";
+  columns: string[];
+  rows: string[][];
+  row_count: number;
+  truncated: boolean;
+  elapsed_ms: number;
+  limit: number;
 };
 
 export type EtlJobDraft = {
