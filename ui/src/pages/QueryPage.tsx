@@ -1,21 +1,21 @@
 import { KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Button } from "@/components/Button";
 import { CatalogTree } from "@/components/CatalogTree";
 import { ConnectionInfoPanel } from "@/components/ConnectionInfoPanel";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
-import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { PaneHeader } from "@/components/PaneHeader";
-import { Panel } from "@/components/Panel";
 import { SplitLayout } from "@/components/SplitLayout";
-import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
+import { Button } from "@/components/ui/button";
+import { NoticeBanner } from "@/components/ui/notice-banner";
+import { PaneHeader } from "@/components/ui/pane-header";
+import { Panel } from "@/components/ui/panel";
+import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useConnectionColumns } from "@/hooks/useConnectionColumns";
 import { useConnections } from "@/hooks/useConnections";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
 import { selectableClass } from "@/lib/selectable";
-import { emptyCopy } from "@/mock/emptyStates";
 import { extractApi } from "@/services/extractApi";
 import { queryApi } from "@/services/queryApi";
 import type { CatalogSelection } from "@/types/connection";
@@ -31,6 +31,7 @@ function draftSelect(table: string, columns: string[]): string {
 }
 
 export function QueryPage() {
+  const { messages } = useLanguage();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -140,12 +141,12 @@ export function QueryPage() {
       setResult(outcome);
       setInfo(
         outcome.kind === "exec"
-          ? `실행됨 · 영향 행 ${outcome.row_count} · ${outcome.elapsed_ms}ms`
-          : `${outcome.row_count}행${outcome.truncated ? " (미리보기 제한)" : ""} · ${outcome.elapsed_ms}ms`,
+          ? messages.query.executed(outcome.row_count, outcome.elapsed_ms)
+          : messages.query.result(outcome.row_count, outcome.truncated, outcome.elapsed_ms),
       );
     } catch (err) {
       setResult(null);
-      setError(err instanceof Error ? err.message : "쿼리 실행에 실패했습니다");
+      setError(err instanceof Error ? err.message : messages.errors.query);
     } finally {
       setRunning(false);
     }
@@ -166,7 +167,7 @@ export function QueryPage() {
       });
       navigate("/extracts");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "파일 추출에 실패했습니다");
+      setError(err instanceof Error ? err.message : messages.errors.extract);
     } finally {
       setExtracting(false);
     }
@@ -191,9 +192,9 @@ export function QueryPage() {
     <PageShell>
       <PageHeader
         iconName="query"
-        eyebrow="작업 공간"
-        title="DB"
-        description="커넥션과 스키마를 옆에 두고 SQL을 실행한 뒤, 결과 전체를 서버 파일로 받습니다. 각 실행은 새 연결입니다."
+        eyebrow={messages.query.eyebrow}
+        title={messages.query.title}
+        description={messages.query.description}
       />
       {info ? <NoticeBanner tone="ok">{info}</NoticeBanner> : null}
       {error || connectionsError || connectionColumnsError ? (
@@ -215,10 +216,10 @@ export function QueryPage() {
               minSize={layout.split.minStack}
             >
               <div className="flex h-full min-h-0 flex-col">
-                <PaneHeader title="커넥션" meta={`${connections.length}개`} />
+                <PaneHeader title={messages.common.connections} meta={messages.common.count(connections.length)} />
                 <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
                   {connections.length === 0 ? (
-                    <p className="p-3 text-xs text-text-tertiary">{emptyCopy.connections}</p>
+                    <p className="p-3 text-xs text-text-tertiary">{messages.empty.connections}</p>
                   ) : (
                     connections.map((connection) => (
                       <button
@@ -241,12 +242,12 @@ export function QueryPage() {
                 </div>
               </div>
               <div className="flex h-full min-h-0 flex-col">
-                <PaneHeader title="카탈로그" />
+                <PaneHeader title={messages.common.catalog} />
                 <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
                   {browseId ? (
                     <CatalogTree connectionId={browseId} selected={selected} onPick={setSelected} />
                   ) : (
-                    <p className="p-3 text-xs text-text-tertiary">{emptyCopy.query}</p>
+                    <p className="p-3 text-xs text-text-tertiary">{messages.empty.query}</p>
                   )}
                 </div>
               </div>
@@ -266,10 +267,10 @@ export function QueryPage() {
             >
               <SplitLayout className="min-h-0" defaultSizes={[layout.split.columns]}>
                 <section className="flex h-full min-h-0 flex-col overflow-hidden">
-                  <PaneHeader title="컬럼" meta={`${connectionColumns.length}`} />
+                  <PaneHeader title={messages.common.columns} meta={`${connectionColumns.length}`} />
                   <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
                     {connectionColumns.length === 0 ? (
-                      <p className="p-3 text-xs text-text-tertiary">테이블을 선택하면 컬럼이 표시됩니다.</p>
+                      <p className="p-3 text-xs text-text-tertiary">{messages.query.columnsHint}</p>
                     ) : (
                       <ul className="m-0 list-none p-0">
                         {connectionColumns.map((column) => (
@@ -290,7 +291,7 @@ export function QueryPage() {
                                 type="button"
                                 className="min-w-0 flex-1 overflow-hidden text-left"
                                 onDoubleClick={() => insertAtCursor(column.name)}
-                                title="더블클릭하면 편집기에 넣습니다"
+                                title={messages.query.insertHint}
                               >
                                 <span className="block truncate text-xs">{column.name}</span>
                                 <span className="block truncate text-[11px] text-text-tertiary">
@@ -308,7 +309,7 @@ export function QueryPage() {
                 <section className="flex h-full min-h-0 flex-col">
                   <PaneHeader
                     title="SQL"
-                    description="Ctrl+Enter 실행"
+                    description={messages.query.runHint}
                     actions={
                       <>
                         <Button
@@ -317,7 +318,7 @@ export function QueryPage() {
                           disabled={!selected}
                           onClick={() => applyDraft(picked)}
                         >
-                          선택 컬럼으로 초안
+                          {messages.query.draft}
                         </Button>
                         <Button
                           type="button"
@@ -347,7 +348,7 @@ export function QueryPage() {
                 <Toolbar>
                   <ToolbarGroup>
                     <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                      미리보기
+                      {messages.query.preview}
                       <input
                         className="field-control technical w-16 text-center"
                         type="number"
@@ -358,13 +359,13 @@ export function QueryPage() {
                       />
                     </label>
                     <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                      구분자
+                      {messages.common.delimiter}
                       <input
                         className="field-control technical w-16 text-center"
                         value={delimiter}
                         onChange={(event) => setDelimiter(event.target.value)}
                         placeholder=","
-                        title="ASCII 한 글자. 탭은 tab"
+                        title={messages.connectionsPage.delimiterTitle}
                         required
                       />
                     </label>
@@ -375,12 +376,12 @@ export function QueryPage() {
                         checked={header}
                         onChange={(event) => setHeader(event.target.checked)}
                       />
-                      헤더
+                      {messages.common.header}
                     </label>
                   </ToolbarGroup>
                   <ToolbarGroup>
                     <Button type="button" variant="secondary" disabled={!canRun || running} onClick={() => void onRun()}>
-                      {running ? "실행 중…" : "실행"}
+                      {running ? messages.common.running : messages.common.run}
                     </Button>
                     <Button
                       type="button"
@@ -388,7 +389,7 @@ export function QueryPage() {
                       disabled={!canExtract || extracting}
                       onClick={() => void onExtract()}
                     >
-                      {extracting ? "추출 중…" : "결과 파일로 받기"}
+                      {extracting ? messages.connectionsPage.extracting : messages.query.resultFile}
                     </Button>
                   </ToolbarGroup>
                 </Toolbar>
@@ -396,16 +397,16 @@ export function QueryPage() {
                 <section className="min-h-0 flex-1 overflow-hidden">
                   {!result ? (
                     <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
-                      {emptyCopy.query}
+                      {messages.empty.query}
                     </div>
                   ) : result.columns.length === 0 ? (
                     <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
-                      {emptyCopy.preview}
+                      {messages.empty.preview}
                     </div>
                   ) : (
                     <DataGrid className="h-full" headers={result.columns}>
                       {result.rows.length === 0 ? (
-                        <EmptyGridRow cols={result.columns.length} text={emptyCopy.preview} />
+                        <EmptyGridRow cols={result.columns.length} text={messages.empty.preview} />
                       ) : (
                         result.rows.map((row, rowIndex) => (
                           <GridRow key={rowIndex}>

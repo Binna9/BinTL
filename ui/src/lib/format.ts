@@ -1,13 +1,15 @@
+import type { Messages } from "@/i18n/ko";
+
 export function fmtSqlPreview(sql: string | null | undefined): string {
   if (!sql) return "";
   const line = sql.replace(/\s+/g, " ").trim();
   return line.length > 72 ? `${line.slice(0, 72)}…` : line;
 }
 
-export function fmtDelimiter(raw: string): string {
+export function fmtDelimiter(raw: string, messages: Messages): string {
   if (raw === "tab" || raw === "\\t" || raw === "\t") return "TAB";
-  if (raw === " ") return "공백";
-  return `구분자 ${raw}`;
+  if (raw === " ") return messages.format.space;
+  return messages.format.delimiter(raw);
 }
 
 export function fmtWhen(iso: string): string {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { connectionApi } from "@/services/connectionApi";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import type {
   CatalogSelection,
   DatabaseColumn,
@@ -9,6 +10,7 @@ export function useConnectionColumns(
   connectionId: string,
   selection: CatalogSelection | null,
 ) {
+  const { messages } = useLanguage();
   const [connectionColumns, setConnectionColumns] = useState<DatabaseColumn[]>([]);
   const [connectionColumnsError, setConnectionColumnsError] = useState("");
 
@@ -28,10 +30,10 @@ export function useConnectionColumns(
       .catch((error) => {
         setConnectionColumns([]);
         setConnectionColumnsError(
-          error instanceof Error ? error.message : "컬럼을 불러오지 못했습니다",
+          error instanceof Error ? error.message : messages.errors.columns,
         );
       });
-  }, [connectionId, selection]);
+  }, [connectionId, selection, messages]);
 
   return { connectionColumns, connectionColumnsError };
 }

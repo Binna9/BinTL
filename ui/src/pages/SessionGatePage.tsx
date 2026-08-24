@@ -1,12 +1,14 @@
 import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button } from "@/components/Button";
-import { FormField } from "@/components/FormField";
-import { NoticeBanner } from "@/components/NoticeBanner";
 import { BrandMark } from "@/components/BrandMark";
+import { Button } from "@/components/ui/button";
+import { FormField } from "@/components/ui/form-field";
+import { NoticeBanner } from "@/components/ui/notice-banner";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { authApi } from "@/services/authApi";
 
 export function SessionGatePage() {
+  const { messages } = useLanguage();
   const navigate = useNavigate();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("admin");
@@ -21,7 +23,7 @@ export function SessionGatePage() {
       await authApi.login(username, password);
       navigate("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "로그인에 실패했습니다");
+      setError(err instanceof Error ? err.message : messages.errors.login);
     } finally {
       setBusy(false);
     }
@@ -34,14 +36,14 @@ export function SessionGatePage() {
 
         <div className="max-w-80">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-text-tertiary">
-            데이터 플랫폼
+            {messages.login.platform}
           </p>
-          <h1 className="text-xl font-semibold tracking-[-0.015em]">콘솔 로그인</h1>
+          <h1 className="text-xl font-semibold tracking-[-0.015em]">{messages.login.title}</h1>
           <p className="mt-2 text-[13px] leading-5 text-text-secondary">
-            데이터 추출, 변환 및 적재 작업을 관리하려면 인증 정보를 입력하세요.
+            {messages.login.description}
           </p>
           <form className="mt-7 flex flex-col gap-4" onSubmit={(event) => void onSubmit(event)}>
-            <FormField label="사용자 이름">
+            <FormField label={messages.login.username}>
               <input
                 className="field-control"
                 value={username}
@@ -49,7 +51,7 @@ export function SessionGatePage() {
                 autoComplete="username"
               />
             </FormField>
-            <FormField label="비밀번호">
+            <FormField label={messages.login.password}>
               <input
                 className="field-control"
                 type="password"
@@ -60,12 +62,12 @@ export function SessionGatePage() {
             </FormField>
             {error ? <NoticeBanner>{error}</NoticeBanner> : null}
             <Button variant="primary" type="submit" disabled={busy}>
-              {busy ? "인증 중…" : "로그인"}
+              {busy ? messages.login.authenticating : messages.login.submit}
             </Button>
           </form>
         </div>
 
-        <p className="text-xs text-text-tertiary">BinTL Enterprise Data Workspace</p>
+        <p className="text-xs text-text-tertiary">{messages.login.footer}</p>
       </section>
       <div className="bg-workspace" />
     </main>

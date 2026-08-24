@@ -1,39 +1,30 @@
-import { Moon, Sun } from "lucide-react";
+import { Languages, Moon, Sun } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
+import { useLanguage } from "@/i18n/LanguageProvider";
 
 const items = [
   {
     id: "dashboard",
-    label: "대시보드",
     icon: (
       <path d="M4 13h6a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1zm-1 7a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v4zm10 0a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v7zm1-10h6a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1z" />
     ),
   },
   {
     id: "profile",
-    label: "프로필",
     icon: (
       <path d="M12 2a5 5 0 1 0 5 5 5 5 0 0 0-5-5zm0 8a3 3 0 1 1 3-3 3 3 0 0 1-3 3zm9 11v-1a7 7 0 0 0-7-7h-4a7 7 0 0 0-7 7v1h2v-1a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v1z" />
     ),
   },
   {
-    id: "messages",
-    label: "메시지",
-    icon: (
-      <>
-        <path d="M5 18v3.766l1.515-.909L11.277 18H16c1.103 0 2-.897 2-2V8c0-1.103-.897-2-2-2H4c-1.103 0-2 .897-2 2v8c0 1.103.897 2 2 2h1zM4 8h12v8h-5.277L7 18.234V16H4V8z" />
-        <path d="M20 2H8c-1.103 0-2 .897-2 2h12c1.103 0 2 .897 2 2v8c1.103 0 2-.897 2-2V4c0-1.103-.897-2-2-2z" />
-      </>
-    ),
+    id: "language",
+    isLanguageToggle: true,
   },
   {
     id: "theme",
-    label: "테마 전환",
     isThemeToggle: true,
   },
   {
     id: "settings",
-    label: "설정",
     icon: (
       <>
         <path d="M12 16c2.206 0 4-1.794 4-4s-1.794-4-4-4-4 1.794-4 4 1.794 4 4 4zm0-6c1.084 0 2 .916 2 2s-.916 2-2 2-2-.916-2-2 .916-2 2-2z" />
@@ -45,20 +36,42 @@ const items = [
 
 export function TopSubmenu() {
   const { theme, toggleTheme } = useTheme();
+  const { messages, toggleLocale } = useLanguage();
   const isDark = theme === "dark";
+  const labels = {
+    dashboard: messages.nav.dashboard,
+    profile: messages.nav.profile,
+    settings: messages.nav.settings,
+  };
 
   return (
     <div className="relative flex h-12 items-center justify-center">
       <article className="inline-flex h-full flex-row overflow-hidden rounded-2xl border border-border/80 bg-surface text-text shadow-[3px_4px_8px_-5px_rgba(15,23,42,0.35)] dark:shadow-[3px_4px_10px_-5px_rgba(0,0,0,0.65)]">
         {items.map((item, index) =>
-          "isThemeToggle" in item ? (
+          "isLanguageToggle" in item ? (
+            <button
+              key={item.id}
+              type="button"
+              onClick={toggleLocale}
+              aria-label={messages.language.switchTo}
+              title={messages.language.switchTo}
+              className="group grid h-full w-14 place-items-center text-text outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+            >
+              <span className="relative grid size-8 place-items-center rounded-lg transition-colors duration-200 group-hover:bg-accent-subtle group-hover:text-accent">
+                <Languages className="size-[18px]" />
+                <span className="absolute -bottom-0.5 -right-0.5 rounded bg-surface px-0.5 text-[8px] font-bold leading-3 text-current">
+                  {messages.language.target}
+                </span>
+              </span>
+            </button>
+          ) : "isThemeToggle" in item ? (
             <button
               key={item.id}
               type="button"
               onClick={toggleTheme}
-              aria-label={isDark ? "라이트 모드로 전환" : "다크 모드로 전환"}
+              aria-label={isDark ? messages.theme.toLight : messages.theme.toDark}
               aria-pressed={isDark}
-              title={isDark ? "라이트 모드" : "다크 모드"}
+              title={isDark ? messages.theme.light : messages.theme.dark}
               className="group grid h-full w-14 place-items-center text-text outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
             >
               <span className="grid size-8 place-items-center rounded-lg transition-colors duration-200 group-hover:bg-accent-subtle group-hover:text-accent">
@@ -73,7 +86,7 @@ export function TopSubmenu() {
             <label
               key={item.id}
               htmlFor={`top-submenu-${item.id}`}
-              title={item.label}
+              title={labels[item.id]}
               className="group relative flex h-full w-14 cursor-pointer flex-row items-center justify-center text-text outline-none"
             >
               <input
@@ -95,7 +108,7 @@ export function TopSubmenu() {
                   {item.icon}
                 </svg>
               </span>
-              <span className="sr-only">{item.label}</span>
+              <span className="sr-only">{labels[item.id]}</span>
             </label>
           )
         )}

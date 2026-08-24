@@ -1,16 +1,17 @@
 import { Link } from "react-router-dom";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
-import { LiveDot } from "@/components/LiveDot";
-import { MetaField } from "@/components/MetaField";
-import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { Panel, PanelBody, PanelHeader } from "@/components/Panel";
 import { StatusPill } from "@/components/StatusPill";
+import { LiveDot } from "@/components/ui/live-dot";
+import { MetaField } from "@/components/ui/meta-field";
+import { NoticeBanner } from "@/components/ui/notice-banner";
+import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { useOverviewData } from "@/hooks/useOverviewData";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
-import { emptyCopy } from "@/mock/emptyStates";
 
 export function OverviewPage() {
+  const { messages } = useLanguage();
   const {
     systemHealth,
     recentJobs,
@@ -28,13 +29,13 @@ export function OverviewPage() {
     <PageShell>
       <PageHeader
         iconName="overview"
-        eyebrow="운영"
-        title="개요"
-        description="추출, 변환, 적재 작업의 현재 운영 상태입니다."
+        eyebrow={messages.overview.eyebrow}
+        title={messages.overview.title}
+        description={messages.overview.description}
         actions={
           systemHealth ? (
             <LiveDot
-              label={`${systemHealth.ok ? "서비스 정상" : "서비스 중단"} · v${systemHealth.version}`}
+              label={`${systemHealth.ok ? messages.overview.healthy : messages.overview.down} · v${systemHealth.version}`}
             />
           ) : null
         }
@@ -42,20 +43,20 @@ export function OverviewPage() {
       {overviewError ? <NoticeBanner>{overviewError}</NoticeBanner> : null}
 
       <Panel>
-        <PanelHeader title="운영 요약" description="현재 세션에서 확인한 최근 상태" />
+        <PanelHeader title={messages.overview.summary} description={messages.overview.summaryDescription} />
         <PanelBody className="flex items-start gap-6 py-3">
-          <MetaField label="최근 작업">{recentJobs.length}</MetaField>
-          <MetaField label="실행 중">{runningJobs}</MetaField>
-          <MetaField label="추출 중">{activeExtracts}</MetaField>
-          <MetaField label="실패">{failures}</MetaField>
+          <MetaField label={messages.overview.recentJobs}>{recentJobs.length}</MetaField>
+          <MetaField label={messages.overview.running}>{runningJobs}</MetaField>
+          <MetaField label={messages.overview.extracting}>{activeExtracts}</MetaField>
+          <MetaField label={messages.overview.failed}>{failures}</MetaField>
         </PanelBody>
       </Panel>
 
       <Panel className="min-h-0 flex-1">
-        <PanelHeader title="최근 작업" description="최근 생성된 작업 10건" />
-        <DataGrid headers={["작업 ID", "상태", "소스", "생성 시각"]}>
+        <PanelHeader title={messages.overview.recentJobs} description={messages.overview.recentDescription} />
+        <DataGrid headers={[...messages.overview.headers]}>
           {recentJobs.length === 0 ? (
-            <EmptyGridRow cols={4} text={emptyCopy.jobs} />
+            <EmptyGridRow cols={4} text={messages.empty.jobs} />
           ) : (
             recentJobs.map((job) => (
               <GridRow key={job.id}>

@@ -1,21 +1,21 @@
 import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button } from "@/components/Button";
 import { CatalogTree } from "@/components/CatalogTree";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
-import { FormField } from "@/components/FormField";
-import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { PaneHeader } from "@/components/PaneHeader";
-import { Panel, PanelBody, PanelHeader } from "@/components/Panel";
 import { SplitLayout } from "@/components/SplitLayout";
-import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
+import { Button } from "@/components/ui/button";
+import { FormField } from "@/components/ui/form-field";
+import { NoticeBanner } from "@/components/ui/notice-banner";
+import { PaneHeader } from "@/components/ui/pane-header";
+import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
+import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useConnections } from "@/hooks/useConnections";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
 import { selectableClass } from "@/lib/selectable";
 import { driverCatalog } from "@/mock/driverCatalog";
-import { emptyCopy } from "@/mock/emptyStates";
 import { connectionApi } from "@/services/connectionApi";
 import { extractApi } from "@/services/extractApi";
 import type {
@@ -25,6 +25,7 @@ import type {
 } from "@/types/connection";
 
 export function ConnectionsPage() {
+  const { messages } = useLanguage();
   const navigate = useNavigate();
   const {
     connections,
@@ -65,9 +66,9 @@ export function ConnectionsPage() {
       });
       form.reset();
       await refreshConnections();
-      setInfo("커넥션을 etl.db에 저장했습니다");
+      setInfo(messages.connectionsPage.saved);
     } catch (err) {
-      setConnectionsError(err instanceof Error ? err.message : "커넥션 저장에 실패했습니다");
+      setConnectionsError(err instanceof Error ? err.message : messages.errors.saveConnection);
     } finally {
       setSaving(false);
     }
@@ -78,9 +79,9 @@ export function ConnectionsPage() {
     setInfo("");
     try {
       await connectionApi.testConnection(id);
-      setInfo("연결 테스트에 성공했습니다");
+      setInfo(messages.connectionsPage.testSucceeded);
     } catch (err) {
-      setConnectionsError(err instanceof Error ? err.message : "연결 테스트에 실패했습니다");
+      setConnectionsError(err instanceof Error ? err.message : messages.errors.testConnection);
     }
   }
 
@@ -120,7 +121,7 @@ export function ConnectionsPage() {
       setColumns([]);
       setPreview(null);
       setConnectionsError(
-        err instanceof Error ? err.message : "테이블 정보를 조회하지 못했습니다",
+        err instanceof Error ? err.message : messages.errors.tableInfo,
       );
     }
   }
@@ -140,7 +141,7 @@ export function ConnectionsPage() {
       });
       navigate("/extracts");
     } catch (err) {
-      setConnectionsError(err instanceof Error ? err.message : "파일 추출에 실패했습니다");
+      setConnectionsError(err instanceof Error ? err.message : messages.errors.extract);
     } finally {
       setExtracting(false);
     }
@@ -158,7 +159,7 @@ export function ConnectionsPage() {
       }
       await refreshConnections();
     } catch (err) {
-      setConnectionsError(err instanceof Error ? err.message : "커넥션 삭제에 실패했습니다");
+      setConnectionsError(err instanceof Error ? err.message : messages.errors.deleteConnection);
     }
   }
 
@@ -168,52 +169,52 @@ export function ConnectionsPage() {
     <PageShell>
       <PageHeader
         iconName="connections"
-        eyebrow="소스"
-        title="커넥션"
-        description="데이터베이스 연결을 등록하고 스키마를 조회합니다. 테이블 전체 추출 또는 쿼리 편집기로 이어서 작업할 수 있습니다."
+        eyebrow={messages.connectionsPage.eyebrow}
+        title={messages.connectionsPage.title}
+        description={messages.connectionsPage.description}
       />
       {info ? <NoticeBanner tone="ok">{info}</NoticeBanner> : null}
       {connectionsError ? <NoticeBanner>{connectionsError}</NoticeBanner> : null}
 
       <Panel>
-        <PanelHeader title="새 커넥션" description="접속 정보는 암호화되어 로컬 메타데이터 저장소에 보관됩니다." />
+        <PanelHeader title={messages.connectionsPage.new} description={messages.connectionsPage.newDescription} />
         <PanelBody>
           <form className="grid grid-cols-4 items-end gap-3" onSubmit={(event) => void onSave(event)}>
-            <FormField label="이름">
+            <FormField label={messages.connectionsPage.name}>
               <input className="field-control" name="name" required />
             </FormField>
-            <FormField label="드라이버">
+            <FormField label={messages.connectionsPage.driver}>
               <select className="field-control" name="driver">
                 {driverCatalog.map((driver) => (
                   <option key={driver.value} value={driver.value}>{driver.label}</option>
                 ))}
               </select>
             </FormField>
-            <FormField label="호스트">
+            <FormField label={messages.connectionsPage.host}>
               <input className="field-control" name="host" defaultValue="127.0.0.1" required />
             </FormField>
-            <FormField label="포트">
+            <FormField label={messages.connectionsPage.port}>
               <input className="field-control technical" name="port" placeholder="5432" />
             </FormField>
-            <FormField label="데이터베이스">
-              <input className="field-control" name="database" required placeholder="dbname 또는 /path/to.db" />
+            <FormField label={messages.connectionsPage.database}>
+              <input className="field-control" name="database" required placeholder="dbname / /path/to.db" />
             </FormField>
-            <FormField label="사용자 이름">
+            <FormField label={messages.connectionsPage.username}>
               <input className="field-control" name="username" required />
             </FormField>
-            <FormField label="비밀번호">
+            <FormField label={messages.connectionsPage.password}>
               <input className="field-control" name="password" type="password" />
             </FormField>
             <div className="flex h-8 items-center justify-between gap-3">
               <label className="flex min-w-0 items-center gap-2 text-xs text-text-secondary">
                 <input className="field-control" name="ssl" type="checkbox" />
-                SSL 사용
+                {messages.connectionsPage.useSsl}
                 <span className="truncate text-[11px] font-normal text-text-tertiary">
-                  데이터베이스와의 연결을 암호화합니다
+                  {messages.connectionsPage.sslHint}
                 </span>
               </label>
               <Button variant="primary" type="submit" disabled={saving}>
-                {saving ? "저장 중…" : "저장"}
+                {saving ? messages.common.saving : messages.common.save}
               </Button>
             </div>
           </form>
@@ -223,19 +224,19 @@ export function ConnectionsPage() {
       <Panel className="min-h-[34rem]">
         <Toolbar>
           <ToolbarGroup>
-            <span className="text-[13px] font-semibold">데이터 탐색기</span>
+            <span className="text-[13px] font-semibold">{messages.connectionsPage.explorer}</span>
             <span className="text-xs text-text-tertiary">
-              {activeConnection ? activeConnection.name : "커넥션을 선택하세요"}
+              {activeConnection ? activeConnection.name : messages.connectionsPage.selectConnection}
             </span>
           </ToolbarGroup>
         </Toolbar>
 
         <SplitLayout className="min-h-[31rem]" defaultSizes={[layout.split.sidebar]}>
           <aside className="flex h-full min-h-0 flex-col">
-            <PaneHeader title="커넥션" meta={`${connections.length}개`} />
+            <PaneHeader title={messages.common.connections} meta={messages.common.count(connections.length)} />
             <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
               {connections.length === 0 ? (
-                <p className="p-4 text-xs text-text-tertiary">{emptyCopy.connections}</p>
+                <p className="p-4 text-xs text-text-tertiary">{messages.empty.connections}</p>
               ) : (
                 <ul className="m-0 list-none p-0">
                   {connections.map((connection) => (
@@ -259,17 +260,17 @@ export function ConnectionsPage() {
                       </button>
                       <div className="mt-2 flex gap-1">
                         <Button type="button" variant="quiet" onClick={() => void onTest(connection.id)}>
-                          테스트
+                          {messages.common.test}
                         </Button>
                         <Button
                           type="button"
                           variant="quiet"
                           onClick={() => navigate(`/db?connection=${connection.id}`)}
                         >
-                          쿼리
+                          {messages.connectionsPage.query}
                         </Button>
                         <Button type="button" variant="danger" onClick={() => void onDelete(connection.id)}>
-                          삭제
+                          {messages.common.delete}
                         </Button>
                       </div>
                     </li>
@@ -281,12 +282,12 @@ export function ConnectionsPage() {
 
           {!activeConnection ? (
             <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
-              왼쪽에서 커넥션을 선택해 데이터 구조를 조회하세요.
+              {messages.connectionsPage.selectConnectionHint}
             </div>
           ) : (
             <SplitLayout className="h-full min-w-0" defaultSizes={[layout.split.catalog]}>
               <aside className="flex h-full min-h-0 flex-col bg-surface">
-                <PaneHeader title="카탈로그" />
+                <PaneHeader title={messages.common.catalog} />
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   <CatalogTree
                     connectionId={activeConnection.id}
@@ -298,7 +299,7 @@ export function ConnectionsPage() {
 
               {!selected ? (
                 <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
-                  데이터베이스를 연 뒤 테이블을 선택하면 컬럼과 샘플 데이터를 표시합니다.
+                  {messages.connectionsPage.selectTableHint}
                 </div>
               ) : (
                 <div className="flex h-full min-w-0 flex-col">
@@ -308,14 +309,14 @@ export function ConnectionsPage() {
                     </ToolbarGroup>
                     <form className="flex items-center gap-2" onSubmit={(event) => void onExtract(event)}>
                       <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                        구분자
+                        {messages.common.delimiter}
                         <input
                           className="field-control technical w-16 text-center"
                           value={delimiter}
                           onChange={(event) => setDelimiter(event.target.value)}
                           placeholder=","
-                          title="ASCII 한 글자. 탭은 tab"
-                          aria-label="구분자"
+                          title={messages.connectionsPage.delimiterTitle}
+                          aria-label={messages.common.delimiter}
                           required
                         />
                       </label>
@@ -326,7 +327,7 @@ export function ConnectionsPage() {
                           checked={header}
                           onChange={(event) => setHeader(event.target.checked)}
                         />
-                        헤더
+                        {messages.common.header}
                       </label>
                       <Button
                         type="button"
@@ -337,36 +338,36 @@ export function ConnectionsPage() {
                           )
                         }
                       >
-                        DB 편집
+                        {messages.connectionsPage.dbEdit}
                       </Button>
                       <Button variant="primary" type="submit" disabled={extracting}>
-                        {extracting ? "추출 중…" : "파일로 추출"}
+                        {extracting ? messages.connectionsPage.extracting : messages.connectionsPage.extractFile}
                       </Button>
                     </form>
                   </Toolbar>
 
                   <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.columns]}>
                     <section className="flex h-full min-h-0 flex-col overflow-hidden">
-                      <PaneHeader title="컬럼" meta={`${columns.length}`} />
+                      <PaneHeader title={messages.common.columns} meta={`${columns.length}`} />
                       <div className="min-h-0 flex-1 overflow-auto bg-surface">
-                        <DataGrid headers={["이름", "타입", "NULL"]}>
+                        <DataGrid headers={[...messages.connectionsPage.columnHeaders]}>
                           {columns.map((column) => (
                             <GridRow key={column.name}>
                               <GridCell mono>{column.name}</GridCell>
                               <GridCell mono muted>{column.data_type}</GridCell>
-                              <GridCell muted>{column.nullable ? "예" : "아니오"}</GridCell>
+                              <GridCell muted>{column.nullable ? messages.common.yes : messages.common.no}</GridCell>
                             </GridRow>
                           ))}
                         </DataGrid>
                       </div>
                     </section>
                     <section className="flex h-full min-h-0 flex-col overflow-hidden">
-                      <PaneHeader title="데이터 미리보기" />
+                      <PaneHeader title={messages.connectionsPage.preview} />
                       <div className="min-h-0 flex-1 overflow-auto bg-surface">
                         {preview ? (
                           <DataGrid className="h-full" headers={preview.columns}>
                             {preview.rows.length === 0 ? (
-                              <EmptyGridRow cols={preview.columns.length || 1} text={emptyCopy.preview} />
+                              <EmptyGridRow cols={preview.columns.length || 1} text={messages.empty.preview} />
                             ) : (
                               preview.rows.map((row, rowIndex) => (
                                 <GridRow key={rowIndex}>

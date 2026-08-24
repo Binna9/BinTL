@@ -1,5 +1,5 @@
 import { ReactNode } from "react";
-import { NavIcon, type NavIconName } from "@/components/NavIcons";
+import { NavIcon, type NavIconName } from "@/components/ui/nav-icons";
 
 export function PageShell({ children }: { children: ReactNode }) {
   return <div className="flex min-h-full flex-col gap-4">{children}</div>;

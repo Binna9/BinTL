@@ -1,18 +1,18 @@
 import { FormEvent, ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
-import { Button } from "@/components/Button";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
-import { FormField } from "@/components/FormField";
-import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { Panel, PanelHeader } from "@/components/Panel";
 import { SplitLayout } from "@/components/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
-import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
+import { Button } from "@/components/ui/button";
+import { FormField } from "@/components/ui/form-field";
+import { NoticeBanner } from "@/components/ui/notice-banner";
+import { Panel, PanelHeader } from "@/components/ui/panel";
+import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useJobWorkspace } from "@/hooks/useJobWorkspace";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtSqlPreview, fmtWhen } from "@/lib/format";
 import { layout } from "@/lib/layout";
-import { emptyCopy } from "@/mock/emptyStates";
 import { connectionApi } from "@/services/connectionApi";
 import { jobApi } from "@/services/jobApi";
 
@@ -54,6 +54,7 @@ function BuilderSection({
 }
 
 export function JobsPage() {
+  const { messages } = useLanguage();
   const {
     jobs,
     files,
@@ -96,7 +97,7 @@ export function JobsPage() {
       await jobApi.runJob(job.id);
       await refreshJobWorkspace();
     } catch (err) {
-      setWorkspaceError(err instanceof Error ? err.message : "작업 생성에 실패했습니다");
+      setWorkspaceError(err instanceof Error ? err.message : messages.errors.createJob);
     } finally {
       setBusy(false);
     }
@@ -106,27 +107,27 @@ export function JobsPage() {
     <PageShell>
       <PageHeader
         iconName="jobs"
-        eyebrow="파이프라인"
-        title="작업"
-        description="파일 또는 테이블을 소스로 선택하고 변환한 뒤 parquet와 대상 테이블에 적재합니다."
+        eyebrow={messages.jobs.eyebrow}
+        title={messages.jobs.title}
+        description={messages.jobs.description}
       />
       {workspaceError ? <NoticeBanner>{workspaceError}</NoticeBanner> : null}
 
       <Panel>
-        <PanelHeader title="작업 정의" description="소스, 변환, 적재 조건을 순서대로 지정합니다." />
+        <PanelHeader title={messages.jobs.definition} description={messages.jobs.definitionDescription} />
         <form onSubmit={(event) => void onSubmit(event)}>
-          <BuilderSection index="01" title="소스" description="업로드 파일, 추출 파일, 커넥션 테이블 중 하나를 선택합니다.">
-            <FormField label="업로드 파일">
+          <BuilderSection index="01" title={messages.jobs.source} description={messages.jobs.sourceDescription}>
+            <FormField label={messages.jobs.uploadFile}>
               <select className="field-control" name="file_id">
-                <option value="">선택 안 함</option>
+                <option value="">{messages.jobs.none}</option>
                 {files.map((file) => (
                   <option key={file.id} value={file.id}>{file.filename}</option>
                 ))}
               </select>
             </FormField>
-            <FormField label="추출 파일">
+            <FormField label={messages.jobs.extractFile}>
               <select className="field-control" name="extract_id">
-                <option value="">선택 안 함</option>
+                <option value="">{messages.jobs.none}</option>
                 {extracts.map((extract) => (
                   <option key={extract.id} value={extract.id}>
                     {extract.sql_text
@@ -136,7 +137,7 @@ export function JobsPage() {
                 ))}
               </select>
             </FormField>
-            <FormField label="소스 커넥션">
+            <FormField label={messages.jobs.sourceConnection}>
               <select
                 className="field-control"
                 name="connection_id"
@@ -150,7 +151,7 @@ export function JobsPage() {
                     .catch(() => undefined);
                 }}
               >
-                <option value="">선택 안 함</option>
+                <option value="">{messages.jobs.none}</option>
                 {connections.map((connection) => (
                   <option key={connection.id} value={connection.id}>
                     {connection.name} ({connection.driver})
@@ -158,7 +159,7 @@ export function JobsPage() {
                 ))}
               </select>
             </FormField>
-            <FormField label="소스 테이블">
+            <FormField label={messages.jobs.sourceTable}>
               <input className="field-control" name="table" list="source-tables" placeholder="public.users" />
               <datalist id="source-tables">
                 {sourceTables.map((table) => <option key={table} value={table} />)}
@@ -166,20 +167,20 @@ export function JobsPage() {
             </FormField>
           </BuilderSection>
 
-          <BuilderSection index="02" title="변환" description="필요한 컬럼과 행을 선택하고 출력 컬럼명을 정리합니다.">
-            <FormField label="선택 컬럼">
+          <BuilderSection index="02" title={messages.jobs.transform} description={messages.jobs.transformDescription}>
+            <FormField label={messages.jobs.selectedColumns}>
               <input className="field-control technical" name="select" placeholder="id, amount" />
             </FormField>
-            <FormField label="필터 표현식">
+            <FormField label={messages.jobs.filter}>
               <input className="field-control technical" name="filter" placeholder="amount > 0" />
             </FormField>
-            <FormField label="컬럼명 변경" wide>
+            <FormField label={messages.jobs.rename} wide>
               <input className="field-control technical" name="rename" placeholder="amount:amt, id:user_id" />
             </FormField>
           </BuilderSection>
 
-          <BuilderSection index="03" title="적재" description="parquet는 항상 생성됩니다. 대상 커넥션은 선택 사항입니다.">
-            <FormField label="대상 커넥션">
+          <BuilderSection index="03" title={messages.jobs.load} description={messages.jobs.loadDescription}>
+            <FormField label={messages.jobs.destinationConnection}>
               <select
                 className="field-control"
                 name="dest_connection_id"
@@ -193,7 +194,7 @@ export function JobsPage() {
                     .catch(() => undefined);
                 }}
               >
-                <option value="">parquet만 생성</option>
+                <option value="">{messages.jobs.parquetOnly}</option>
                 {connections.map((connection) => (
                   <option key={connection.id} value={connection.id}>
                     {connection.name} ({connection.driver})
@@ -201,23 +202,23 @@ export function JobsPage() {
                 ))}
               </select>
             </FormField>
-            <FormField label="대상 테이블">
+            <FormField label={messages.jobs.destinationTable}>
               <input className="field-control" name="dest_table" list="destination-tables" placeholder="dw.fact" />
               <datalist id="destination-tables">
                 {destinationTables.map((table) => <option key={table} value={table} />)}
               </datalist>
             </FormField>
-            <FormField label="적재 모드">
+            <FormField label={messages.jobs.mode}>
               <select className="field-control" name="mode">
-                <option value="append">기존 데이터에 추가</option>
-                <option value="replace">기존 데이터 교체</option>
+                <option value="append">{messages.jobs.append}</option>
+                <option value="replace">{messages.jobs.replace}</option>
               </select>
             </FormField>
           </BuilderSection>
 
           <div className="flex justify-end bg-raised p-3">
             <Button variant="primary" type="submit" disabled={busy}>
-              {busy ? "작업 시작 중…" : "작업 생성 및 실행"}
+              {busy ? messages.jobs.starting : messages.jobs.createAndRun}
             </Button>
           </div>
         </form>
@@ -226,13 +227,13 @@ export function JobsPage() {
       <Panel>
         <Toolbar>
           <ToolbarGroup>
-            <span className="text-[13px] font-semibold">실행 이력</span>
-            <span className="text-xs text-text-tertiary">{jobs.length}건</span>
+            <span className="text-[13px] font-semibold">{messages.jobs.history}</span>
+            <span className="text-xs text-text-tertiary">{messages.common.cases(jobs.length)}</span>
           </ToolbarGroup>
         </Toolbar>
-        <DataGrid headers={["작업 ID", "상태", "소스", "생성 시각"]}>
+        <DataGrid headers={[...messages.jobs.headers]}>
           {jobs.length === 0 ? (
-            <EmptyGridRow cols={4} text={emptyCopy.queue} />
+            <EmptyGridRow cols={4} text={messages.empty.queue} />
           ) : (
             jobs.map((job) => (
               <GridRow key={job.id}>

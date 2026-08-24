@@ -2,6 +2,7 @@ import * as React from "react";
 import { AnimatePresence, motion, type Variants } from "framer-motion";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 
 export interface MenuItem {
@@ -41,6 +42,7 @@ const itemVariants: Variants = {
 };
 
 function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }) {
+  const { messages } = useLanguage();
   if (item.disabled) {
     return (
       <div
@@ -49,7 +51,7 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
           nested ? "px-2" : "px-3",
         )}
         aria-disabled="true"
-        title={`${item.label} — 준비 중`}
+        title={`${item.label} — ${messages.common.comingSoon}`}
       >
         <span
           className={cn("shrink-0", nested ? "size-4" : "size-[18px]")}
@@ -58,7 +60,7 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
           {item.icon}
         </span>
         <span className="min-w-0 flex-1 truncate">{item.label}</span>
-        <span className="text-[10px] font-semibold">준비 중</span>
+        <span className="text-[10px] font-semibold">{messages.common.comingSoon}</span>
       </div>
     );
   }
@@ -105,6 +107,7 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
 
 function MenuGroup({ item }: { item: MenuItem }) {
   const location = useLocation();
+  const { messages } = useLanguage();
   const hasActiveChild =
     item.children?.some(
       (child) =>
@@ -158,7 +161,7 @@ function MenuGroup({ item }: { item: MenuItem }) {
           >
             <div
               className="ml-5 space-y-1 border-l border-border py-1 pl-2"
-              aria-label={`${item.label} 하위 메뉴`}
+              aria-label={messages.nav.submenu(item.label)}
             >
               {item.children?.map((child) => (
                 <MenuLink key={child.to} item={child} nested />
@@ -172,7 +175,9 @@ function MenuGroup({ item }: { item: MenuItem }) {
 }
 
 export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
-  ({ items, logoutItem, className }, ref) => (
+  ({ items, logoutItem, className }, ref) => {
+    const { messages } = useLanguage();
+    return (
     <motion.aside
       ref={ref}
       className={cn(
@@ -182,9 +187,9 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
       initial="hidden"
       animate="visible"
       variants={sidebarVariants}
-      aria-label="주 메뉴"
+      aria-label={messages.nav.mainMenu}
     >
-      <nav className="flex-1 space-y-1" aria-label="데이터 플랫폼">
+      <nav className="flex-1 space-y-1" aria-label={messages.nav.platform}>
         {items.map((item) => (
           <motion.div key={item.to} variants={itemVariants}>
             {item.children ? (
@@ -214,7 +219,8 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
         </button>
       </motion.div>
     </motion.aside>
-  ),
+    );
+  },
 );
 
 MenuSidebar.displayName = "MenuSidebar";

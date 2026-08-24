@@ -1,16 +1,17 @@
 import { useParams } from "react-router-dom";
-import { ActionAnchor, ActionLink, Button } from "@/components/Button";
-import { MetaField } from "@/components/MetaField";
-import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { Panel, PanelBody, PanelHeader } from "@/components/Panel";
 import { StatusPill } from "@/components/StatusPill";
+import { ActionAnchor, ActionLink, Button } from "@/components/ui/button";
+import { MetaField } from "@/components/ui/meta-field";
+import { NoticeBanner } from "@/components/ui/notice-banner";
+import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { useJobRun } from "@/hooks/useJobRun";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
-import { emptyCopy } from "@/mock/emptyStates";
 import { jobApi } from "@/services/jobApi";
 
 export function JobRunPage() {
+  const { messages } = useLanguage();
   const { id } = useParams<{ id: string }>();
   const {
     jobRun,
@@ -26,7 +27,7 @@ export function JobRunPage() {
       await jobApi.runJob(id);
       await refreshJobRun();
     } catch (err) {
-      setJobRunError(err instanceof Error ? err.message : "작업 실행에 실패했습니다");
+      setJobRunError(err instanceof Error ? err.message : messages.errors.runJob);
     }
   }
 
@@ -36,7 +37,7 @@ export function JobRunPage() {
         {jobRunError ? (
           <NoticeBanner>{jobRunError}</NoticeBanner>
         ) : (
-          <p className="text-text-secondary">작업을 불러오는 중입니다…</p>
+          <p className="text-text-secondary">{messages.jobRun.loading}</p>
         )}
       </PageShell>
     );
@@ -46,22 +47,22 @@ export function JobRunPage() {
     <PageShell>
       <PageHeader
         iconName="jobs"
-        eyebrow="작업 / 실행 상세"
-        title={`작업 ${jobRun.id.slice(0, 8)}`}
-        description={`${jobRun.source_path} → ${jobRun.output_path ?? "출력 대기 중"}`}
+        eyebrow={messages.jobRun.eyebrow}
+        title={messages.jobRun.title(jobRun.id.slice(0, 8))}
+        description={`${jobRun.source_path} → ${jobRun.output_path ?? messages.jobRun.outputPending}`}
         actions={
           <>
-            <ActionLink to="/jobs">목록으로</ActionLink>
+            <ActionLink to="/jobs">{messages.jobRun.back}</ActionLink>
             <Button
               variant="primary"
               type="button"
               onClick={() => void run()}
               disabled={jobRun.status === "running"}
             >
-              실행
+              {messages.common.run}
             </Button>
             {jobRun.status === "succeeded" ? (
-              <ActionAnchor href={jobApi.getResultUrl(jobRun.id)}>결과 다운로드</ActionAnchor>
+              <ActionAnchor href={jobApi.getResultUrl(jobRun.id)}>{messages.jobRun.resultDownload}</ActionAnchor>
             ) : null}
           </>
         }
@@ -69,19 +70,19 @@ export function JobRunPage() {
       {jobRunError ? <NoticeBanner>{jobRunError}</NoticeBanner> : null}
 
       <Panel>
-        <PanelHeader title="실행 정보" />
+        <PanelHeader title={messages.jobRun.info} />
         <PanelBody className="flex flex-wrap gap-5 py-3">
-          <MetaField label="상태">
+          <MetaField label={messages.jobRun.status}>
             <StatusPill value={jobRun.status} />
           </MetaField>
-          <MetaField label="생성" technical>{fmtWhen(jobRun.created_at)}</MetaField>
-          <MetaField label="시작" technical>
+          <MetaField label={messages.jobRun.created} technical>{fmtWhen(jobRun.created_at)}</MetaField>
+          <MetaField label={messages.jobRun.started} technical>
             {jobRun.started_at ? fmtWhen(jobRun.started_at) : "—"}
           </MetaField>
-          <MetaField label="종료" technical>
+          <MetaField label={messages.jobRun.finished} technical>
             {jobRun.finished_at ? fmtWhen(jobRun.finished_at) : "—"}
           </MetaField>
-          <MetaField label="작업 ID" technical>{jobRun.id}</MetaField>
+          <MetaField label={messages.jobRun.jobId} technical>{jobRun.id}</MetaField>
         </PanelBody>
         {jobRun.error_message ? (
           <div className="border-t border-border p-3">
@@ -91,10 +92,10 @@ export function JobRunPage() {
       </Panel>
 
       <Panel className="min-h-0 flex-1">
-        <PanelHeader title="실행 로그" description="작업 상태는 1.5초마다 갱신됩니다." />
+        <PanelHeader title={messages.jobRun.logs} description={messages.jobRun.refresh} />
         <pre className="m-0 h-[calc(100vh-22rem)] min-h-72 overflow-auto bg-[#171a1f] p-4 font-sans text-[12px] leading-5 text-[#d7dce2]">
           {jobRun.logs.map((log) => `${fmtWhen(log.ts)}  ${log.level.padEnd(5)}  ${log.message}`).join("\n") ||
-            emptyCopy.logs}
+            messages.empty.logs}
         </pre>
       </Panel>
     </PageShell>

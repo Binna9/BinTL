@@ -15,7 +15,7 @@ import { layout } from "@/lib/layout";
 
 function ConsoleShell() {
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex h-screen flex-col overflow-hidden">
       <header className="sticky top-0 z-40 flex h-[4.75rem] shrink-0 items-center justify-between border-b border-border bg-surface px-5 shadow-[0_2px_5px_rgba(15,23,42,0.06)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.28)]">
         <BrandMark to="/" />
         <TopSubmenu />

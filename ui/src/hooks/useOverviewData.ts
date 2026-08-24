@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 import { extractApi } from "@/services/extractApi";
 import { jobApi } from "@/services/jobApi";
 import { systemApi } from "@/services/systemApi";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import type { ExtractRecord } from "@/types/extract";
 import type { EtlJob } from "@/types/job";
 import type { SystemHealth } from "@/types/system";
 
 export function useOverviewData() {
+  const { messages } = useLanguage();
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [recentJobs, setRecentJobs] = useState<EtlJob[]>([]);
   const [recentExtracts, setRecentExtracts] = useState<ExtractRecord[]>([]);
@@ -25,10 +27,10 @@ export function useOverviewData() {
       })
       .catch((error) =>
         setOverviewError(
-          error instanceof Error ? error.message : "운영 정보를 불러오지 못했습니다",
+          error instanceof Error ? error.message : messages.errors.overview,
         ),
       );
-  }, []);
+  }, [messages]);
 
   return { systemHealth, recentJobs, recentExtracts, overviewError };
 }

@@ -1,4 +1,5 @@
 import { useConnectionCatalog } from "@/hooks/useConnectionCatalog";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { selectableClass } from "@/lib/selectable";
 import type {
@@ -62,6 +63,7 @@ function RowButton({
   current?: boolean | null;
   onClick: () => void;
 }) {
+  const { messages } = useLanguage();
   return (
     <button
       type="button"
@@ -90,7 +92,7 @@ function RowButton({
       >
         {name}
       </span>
-      {current ? <span className="ml-1 shrink-0 text-[10px] text-text-tertiary">현재</span> : null}
+      {current ? <span className="ml-1 shrink-0 text-[10px] text-text-tertiary">{messages.catalog.current}</span> : null}
     </button>
   );
 }
@@ -104,6 +106,7 @@ export function CatalogTree({
   selected?: CatalogSelection | null;
   onPick: (pick: CatalogSelection | null) => void;
 }) {
+  const { messages } = useLanguage();
   const {
     catalogLayout,
     databases,
@@ -133,7 +136,7 @@ export function CatalogTree({
     return <p className="p-3 text-xs text-danger">{catalogError}</p>;
   }
   if (databases.length === 0) {
-    return <p className="p-3 text-xs text-text-tertiary">데이터베이스를 불러오는 중이거나 없습니다.</p>;
+    return <p className="p-3 text-xs text-text-tertiary">{messages.catalog.unavailable}</p>;
   }
 
   return (
@@ -154,7 +157,7 @@ export function CatalogTree({
               onClick={() => toggleDatabase(database)}
             />
             {loadingNode === dbKey ? (
-              <p className="px-8 py-1 text-[11px] text-text-tertiary">불러오는 중…</p>
+              <p className="px-8 py-1 text-[11px] text-text-tertiary">{messages.common.loading}</p>
             ) : null}
             {dbOpen
               ? dbKids.map((child) => {
@@ -173,7 +176,7 @@ export function CatalogTree({
                           onClick={() => toggleSchema(database.name, child)}
                         />
                         {loadingNode === scKey ? (
-                          <p className="px-10 py-1 text-[11px] text-text-tertiary">불러오는 중…</p>
+                          <p className="px-10 py-1 text-[11px] text-text-tertiary">{messages.common.loading}</p>
                         ) : null}
                         {scOpen
                           ? tables.map((table) => {

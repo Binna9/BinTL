@@ -1,17 +1,18 @@
 import { FormEvent, useState } from "react";
-import { Button } from "@/components/Button";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { FileDropzone } from "@/components/FileDropzone";
-import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { Panel, PanelBody, PanelHeader } from "@/components/Panel";
-import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
+import { Button } from "@/components/ui/button";
+import { NoticeBanner } from "@/components/ui/notice-banner";
+import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
+import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useFiles } from "@/hooks/useFiles";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes } from "@/lib/format";
-import { emptyCopy } from "@/mock/emptyStates";
 import { fileApi } from "@/services/fileApi";
 
 export function FilesPage() {
+  const { messages } = useLanguage();
   const { files, filesError, setFilesError, refreshFiles } = useFiles();
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
@@ -30,7 +31,7 @@ export function FilesPage() {
       setName("");
       await refreshFiles();
     } catch (err) {
-      setFilesError(err instanceof Error ? err.message : "파일 업로드에 실패했습니다");
+      setFilesError(err instanceof Error ? err.message : messages.errors.upload);
     } finally {
       setBusy(false);
     }
@@ -40,14 +41,14 @@ export function FilesPage() {
     <PageShell>
       <PageHeader
         iconName="files"
-        eyebrow="작업 공간"
-        title="파일"
-        description="서버에 저장된 입력 파일입니다. 작업 소스로 선택할 수 있습니다."
+        eyebrow={messages.files.eyebrow}
+        title={messages.files.title}
+        description={messages.files.description}
       />
       {filesError ? <NoticeBanner>{filesError}</NoticeBanner> : null}
 
       <Panel>
-        <PanelHeader title="파일 업로드" description="CSV 파일을 서버 작업 공간에 추가합니다." />
+        <PanelHeader title={messages.files.uploadTitle} description={messages.files.uploadDescription} />
         <PanelBody>
           <form className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3" onSubmit={(event) => void onSubmit(event)}>
             <FileDropzone
@@ -56,7 +57,7 @@ export function FilesPage() {
               onChange={(event) => setName(event.target.files?.[0]?.name ?? "")}
             />
             <Button variant="primary" type="submit" disabled={busy || !name}>
-              {busy ? "업로드 중…" : "업로드"}
+              {busy ? messages.files.uploading : messages.files.upload}
             </Button>
           </form>
         </PanelBody>
@@ -65,13 +66,13 @@ export function FilesPage() {
       <Panel className="min-h-0 flex-1">
         <Toolbar>
           <ToolbarGroup>
-            <span className="text-[13px] font-semibold">저장된 파일</span>
-            <span className="text-xs text-text-tertiary">{files.length}개</span>
+            <span className="text-[13px] font-semibold">{messages.files.stored}</span>
+            <span className="text-xs text-text-tertiary">{messages.common.count(files.length)}</span>
           </ToolbarGroup>
         </Toolbar>
-        <DataGrid headers={["파일명", "크기", "파일 ID", "저장 경로"]}>
+        <DataGrid headers={[...messages.files.headers]}>
           {files.length === 0 ? (
-            <EmptyGridRow cols={4} text={emptyCopy.uploads} />
+            <EmptyGridRow cols={4} text={messages.empty.uploads} />
           ) : (
             files.map((file) => (
               <GridRow key={`${file.id}-${file.filename}`}>

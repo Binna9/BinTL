@@ -1,3 +1,4 @@
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 
 const tone: Record<string, string> = {
@@ -8,15 +9,9 @@ const tone: Record<string, string> = {
   canceled: "text-text-tertiary before:bg-text-tertiary",
 };
 
-const label: Record<string, string> = {
-  queued: "대기",
-  running: "실행 중",
-  succeeded: "완료",
-  failed: "실패",
-  canceled: "취소",
-};
-
 export function StatusPill({ value }: { value: string }) {
+  const { messages } = useLanguage();
+  const labels: Record<string, string> = messages.status;
   return (
     <span
       className={cn(
@@ -24,7 +19,7 @@ export function StatusPill({ value }: { value: string }) {
         tone[value] ?? "text-text-secondary before:bg-text-tertiary",
       )}
     >
-      {label[value] ?? value}
+      {labels[value] ?? value}
     </span>
   );
 }

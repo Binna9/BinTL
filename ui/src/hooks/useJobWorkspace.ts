@@ -3,12 +3,14 @@ import { connectionApi } from "@/services/connectionApi";
 import { extractApi } from "@/services/extractApi";
 import { fileApi } from "@/services/fileApi";
 import { jobApi } from "@/services/jobApi";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import type { DataConnection } from "@/types/connection";
 import type { ExtractRecord } from "@/types/extract";
 import type { StoredFile } from "@/types/file";
 import type { EtlJob } from "@/types/job";
 
 export function useJobWorkspace() {
+  const { messages } = useLanguage();
   const [jobs, setJobs] = useState<EtlJob[]>([]);
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [extracts, setExtracts] = useState<ExtractRecord[]>([]);
@@ -34,10 +36,10 @@ export function useJobWorkspace() {
   useEffect(() => {
     void refreshJobWorkspace().catch((error) =>
       setWorkspaceError(
-        error instanceof Error ? error.message : "작업 정보를 불러오지 못했습니다",
+        error instanceof Error ? error.message : messages.errors.workspace,
       ),
     );
-  }, [refreshJobWorkspace]);
+  }, [refreshJobWorkspace, messages]);
 
   return {
     jobs,

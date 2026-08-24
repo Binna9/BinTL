@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 
 function DatabaseGlyph() {
@@ -31,6 +32,7 @@ export function BrandMark({
   to?: string;
   compact?: boolean;
 }) {
+  const { messages } = useLanguage();
   const inner = (
     <>
       <span className={cn("brand-mark-icon", compact ? "size-9" : "size-11")}>
@@ -41,7 +43,7 @@ export function BrandMark({
           BinTL
         </span>
         {compact ? null : (
-          <span className="brand-mark-sub">Data workspace</span>
+          <span className="brand-mark-sub">{messages.brand.subtitle}</span>
         )}
       </span>
     </>

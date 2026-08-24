@@ -1,17 +1,18 @@
-import { ActionAnchor } from "@/components/Button";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
-import { LiveDot } from "@/components/LiveDot";
-import { NoticeBanner } from "@/components/NoticeBanner";
 import { PageHeader, PageShell } from "@/components/PageShell";
-import { Panel } from "@/components/Panel";
 import { StatusPill } from "@/components/StatusPill";
-import { Toolbar, ToolbarGroup } from "@/components/Toolbar";
+import { ActionAnchor } from "@/components/ui/button";
+import { LiveDot } from "@/components/ui/live-dot";
+import { NoticeBanner } from "@/components/ui/notice-banner";
+import { Panel } from "@/components/ui/panel";
+import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { isExtractActive, useExtracts } from "@/hooks/useExtracts";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtDelimiter, fmtSqlPreview, fmtWhen } from "@/lib/format";
-import { emptyCopy } from "@/mock/emptyStates";
 import { extractApi } from "@/services/extractApi";
 
 export function ExtractResultsPage() {
+  const { messages } = useLanguage();
   const { extracts, extractsError } = useExtracts();
   const activeCount = extracts.filter((extract) => isExtractActive(extract.status)).length;
 
@@ -19,35 +20,35 @@ export function ExtractResultsPage() {
     <PageShell>
       <PageHeader
         iconName="extracts"
-        eyebrow="추출"
-        title="추출 결과"
-        description="데이터베이스와 쿼리에서 생성한 결과 파일의 진행 상태와 다운로드를 관리합니다."
-        actions={activeCount > 0 ? <LiveDot label={`${activeCount}개 생성 중`} /> : null}
+        eyebrow={messages.extracts.eyebrow}
+        title={messages.extracts.title}
+        description={messages.extracts.description}
+        actions={activeCount > 0 ? <LiveDot label={messages.extracts.generating(activeCount)} /> : null}
       />
       {extractsError ? <NoticeBanner>{extractsError}</NoticeBanner> : null}
 
       <Panel className="min-h-0 flex-1">
         <Toolbar>
           <ToolbarGroup>
-            <span className="text-[13px] font-semibold">결과 파일</span>
-            <span className="text-xs text-text-tertiary">{extracts.length}개</span>
+            <span className="text-[13px] font-semibold">{messages.extracts.resultFiles}</span>
+            <span className="text-xs text-text-tertiary">{messages.common.count(extracts.length)}</span>
           </ToolbarGroup>
           <span className="text-xs text-text-tertiary">
-            진행 중인 결과는 2초마다 갱신됩니다
+            {messages.extracts.refresh}
           </span>
         </Toolbar>
         <DataGrid
-          headers={["추출 소스", "커넥션", "형식", "상태", "행 수", "생성 시각", "결과"]}
+          headers={[...messages.extracts.headers]}
         >
           {extracts.length === 0 ? (
-            <EmptyGridRow cols={7} text={emptyCopy.extracts} />
+            <EmptyGridRow cols={7} text={messages.empty.extracts} />
           ) : (
             extracts.map((extract) => (
               <GridRow key={extract.id}>
                 <GridCell mono>
                   {extract.sql_text ? (
                     <span title={extract.sql_text}>
-                      쿼리 · {fmtSqlPreview(extract.sql_text)}
+                      {messages.extracts.querySource} · {fmtSqlPreview(extract.sql_text)}
                     </span>
                   ) : (
                     extract.table_name
@@ -57,7 +58,7 @@ export function ExtractResultsPage() {
                   {extract.connection_name || extract.connection_id.slice(0, 8)}
                 </GridCell>
                 <GridCell mono muted>
-                  {fmtDelimiter(extract.delimiter)}
+                  {fmtDelimiter(extract.delimiter, messages)}
                 </GridCell>
                 <GridCell>
                   <StatusPill value={extract.status} />
@@ -69,7 +70,7 @@ export function ExtractResultsPage() {
                 <GridCell>
                   {extract.status === "succeeded" ? (
                     <ActionAnchor href={extractApi.getDownloadUrl(extract.id)}>
-                      다운로드
+                      {messages.common.download}
                     </ActionAnchor>
                   ) : extract.error_message ? (
                     <span className="text-xs text-danger">{extract.error_message}</span>

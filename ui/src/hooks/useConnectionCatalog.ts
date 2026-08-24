@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { connectionApi } from "@/services/connectionApi";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import type {
   CatalogEntry,
   CatalogLayout,
 } from "@/types/connection";
 
 export function useConnectionCatalog(connectionId: string) {
+  const { messages } = useLanguage();
   const [catalogLayout, setCatalogLayout] =
     useState<CatalogLayout>("database.schema.table");
   const [databases, setDatabases] = useState<CatalogEntry[]>([]);
@@ -29,10 +31,10 @@ export function useConnectionCatalog(connectionId: string) {
       })
       .catch((error) =>
         setCatalogError(
-          error instanceof Error ? error.message : "카탈로그를 불러오지 못했습니다",
+          error instanceof Error ? error.message : messages.errors.catalog,
         ),
       );
-  }, [connectionId]);
+  }, [connectionId, messages]);
 
   async function toggleNode(
     nodeKey: string,
@@ -50,7 +52,7 @@ export function useConnectionCatalog(connectionId: string) {
         setCatalogError("");
       } catch (error) {
         setCatalogError(
-          error instanceof Error ? error.message : "목록을 불러오지 못했습니다",
+          error instanceof Error ? error.message : messages.errors.list,
         );
         setLoadingNode("");
         return;

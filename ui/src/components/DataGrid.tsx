@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { cn } from "@/lib/cn";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { layout } from "@/lib/layout";
 import { selectableClass } from "@/lib/selectable";
 
@@ -36,6 +37,7 @@ export function DataGrid({
   className?: string;
   columnWidths?: number[];
 }) {
+  const { messages } = useLanguage();
   const headerKey = headers.join("\u0001");
   const wrapRef = useRef<HTMLDivElement>(null);
   const [hostWidth, setHostWidth] = useState(0);
@@ -142,7 +144,7 @@ export function DataGrid({
                 <span
                   role="separator"
                   aria-orientation="vertical"
-                  aria-label={`${header} 열 너비 조절`}
+                  aria-label={messages.common.resizeColumn(header)}
                   className="absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize"
                   onMouseDown={(event) => onResizeStart(index, event)}
                   onDoubleClick={() => {

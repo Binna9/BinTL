@@ -1,4 +1,5 @@
 import { Database } from "lucide-react";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import type { DataConnection } from "@/types/connection";
 
@@ -36,6 +37,7 @@ export function ConnectionInfoPanel({
   connection?: DataConnection;
   selectedTable?: string;
 }) {
+  const { messages } = useLanguage();
   if (!connection) {
     return (
       <div className="flex h-16 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
@@ -43,9 +45,9 @@ export function ConnectionInfoPanel({
           <Database className="size-4" />
         </div>
         <div>
-          <div className="text-[12px] font-medium text-text-secondary">커넥션이 선택되지 않았습니다</div>
+          <div className="text-[12px] font-medium text-text-secondary">{messages.connectionInfo.none}</div>
           <div className="mt-0.5 text-[11px] text-text-tertiary">
-            왼쪽 목록에서 조회할 데이터베이스를 선택하세요.
+            {messages.connectionInfo.hint}
           </div>
         </div>
       </div>
@@ -55,7 +57,7 @@ export function ConnectionInfoPanel({
   return (
     <section
       className="flex h-16 shrink-0 items-center gap-4 overflow-hidden border-b border-border bg-surface px-4"
-      aria-label="선택한 커넥션 정보"
+      aria-label={messages.connectionInfo.aria}
     >
       <div className="flex min-w-40 shrink-0 items-center gap-3 border-r border-border pr-4">
         <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent-subtle text-accent">
@@ -74,13 +76,13 @@ export function ConnectionInfoPanel({
 
       <div className="grid min-w-0 flex-1 grid-cols-4 gap-5 overflow-hidden">
         <ConnectionInfoItem
-          label="Endpoint"
+          label={messages.connectionInfo.endpoint}
           value={`${connection.host}:${connection.port}`}
           technical
         />
-        <ConnectionInfoItem label="Database" value={connection.database_name} technical />
-        <ConnectionInfoItem label="User" value={connection.username} technical />
-        <ConnectionInfoItem label="Selected table" value={selectedTable || "—"} technical />
+        <ConnectionInfoItem label={messages.connectionInfo.database} value={connection.database_name} technical />
+        <ConnectionInfoItem label={messages.connectionInfo.user} value={connection.username} technical />
+        <ConnectionInfoItem label={messages.common.selectedTable} value={selectedTable || "—"} technical />
       </div>
     </section>
   );

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { extractApi } from "@/services/extractApi";
+import { useLanguage } from "@/i18n/LanguageProvider";
 import type { ExtractRecord } from "@/types/extract";
 
 export function isExtractActive(status: string): boolean {
@@ -7,6 +8,7 @@ export function isExtractActive(status: string): boolean {
 }
 
 export function useExtracts() {
+  const { messages } = useLanguage();
   const [extracts, setExtracts] = useState<ExtractRecord[]>([]);
   const [extractsError, setExtractsError] = useState("");
 
@@ -26,7 +28,7 @@ export function useExtracts() {
       } catch (error) {
         if (!cancelled) {
           setExtractsError(
-            error instanceof Error ? error.message : "추출 목록을 불러오지 못했습니다",
+            error instanceof Error ? error.message : messages.errors.extracts,
           );
         }
       }
@@ -37,7 +39,7 @@ export function useExtracts() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, []);
+  }, [messages]);
 
   return { extracts, extractsError };
 }
