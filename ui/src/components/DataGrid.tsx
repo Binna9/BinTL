@@ -9,7 +9,6 @@ import {
 import { cn } from "@/lib/cn";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { layout } from "@/lib/layout";
-import { selectableClass } from "@/lib/selectable";
 
 function widthsFor(headers: string[], previous: number[] = []): number[] {
   return headers.map((_, index) => previous[index] ?? layout.grid.defaultColumnWidth);
@@ -196,8 +195,8 @@ export function GridRow({
   return (
     <tr
       className={cn(
-        "group cursor-pointer border-b border-border/70 last:border-b-0",
-        selectableClass(active),
+        "group cursor-pointer border-b border-border/70 transition-colors duration-150 last:border-b-0",
+        active && "bg-accent-subtle",
         !active && "odd:bg-surface even:bg-subtle/35 hover:bg-accent-subtle/45",
       )}
       onClick={(event) => {

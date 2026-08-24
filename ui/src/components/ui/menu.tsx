@@ -127,7 +127,7 @@ function MenuGroup({ item }: { item: MenuItem }) {
         type="button"
         className={cn(
           "group flex w-full min-w-0 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40",
-          hasActiveChild ? "bg-subtle text-accent" : "text-text hover:bg-subtle",
+          hasActiveChild ? "bg-subtle text-text" : "text-text hover:bg-subtle",
         )}
         aria-expanded={isOpen}
         onClick={() => setIsOpen((open) => !open)}
