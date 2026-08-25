@@ -3,7 +3,6 @@ import { PageHeader, PageShell } from "@/components/PageShell";
 import { StatusPill } from "@/components/StatusPill";
 import { ActionAnchor } from "@/components/ui/button";
 import { LiveDot } from "@/components/ui/live-dot";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { isExtractActive, useExtracts } from "@/hooks/useExtracts";
@@ -13,7 +12,7 @@ import { extractApi } from "@/services/extractApi";
 
 export function ExtractResultsPage() {
   const { messages } = useLanguage();
-  const { extracts, extractsError } = useExtracts();
+  const { extracts } = useExtracts();
   const activeCount = extracts.filter((extract) => isExtractActive(extract.status)).length;
 
   return (
@@ -25,7 +24,6 @@ export function ExtractResultsPage() {
         description={messages.extracts.description}
         actions={activeCount > 0 ? <LiveDot label={messages.extracts.generating(activeCount)} /> : null}
       />
-      {extractsError ? <NoticeBanner>{extractsError}</NoticeBanner> : null}
 
       <Panel tall>
         <Toolbar>

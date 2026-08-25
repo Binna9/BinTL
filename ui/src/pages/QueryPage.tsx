@@ -20,7 +20,6 @@ import { SqlEditor, type SqlEditorHandle } from "@/components/SqlEditor";
 import { Button, ActionAnchor } from "@/components/ui/button";
 import { ResizeGrip } from "@/components/ui/resize-grip";
 import { Select } from "@/components/ui/select";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
 import { useConnectionColumns } from "@/hooks/useConnectionColumns";
@@ -28,7 +27,9 @@ import { useConnections } from "@/hooks/useConnections";
 import { isExtractActive } from "@/hooks/useExtracts";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { DELIMITER_VALUES } from "@/lib/delimiter";
 import { layout } from "@/lib/layout";
+import { toastError } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extractApi";
 import { queryApi } from "@/services/queryApi";
@@ -36,17 +37,12 @@ import type { CatalogSelection } from "@/types/connection";
 import type { ExtractRecord } from "@/types/extract";
 import type { QueryResult } from "@/types/query";
 
-function sqlStorageKey(id: string): string {
-  return `bintl.query.sql.${id}`;
-}
-
 function draftSelect(table: string, columns: string[]): string {
   const list = columns.length ? columns.map((column) => `  ${column}`).join(",\n") : "  *";
   return `SELECT\n${list}\nFROM ${table}`;
 }
 
 const PREVIEW_LIMITS = [10, 20, 50, 100, 1000] as const;
-const DELIMITER_OPTIONS = [",", "|", ";", "tab", "^"] as const;
 const SQL_PLACEHOLDER = "SELECT id, name\nFROM public.users\nWHERE active = true";
 
 function delimiterChar(raw: string): string | null {
@@ -103,23 +99,31 @@ export function QueryPage() {
   const [params] = useSearchParams();
   const editorRef = useRef<SqlEditorHandle>(null);
   const sqlRef = useRef("");
+  const sqlByConnection = useRef<Record<string, string>>({});
 
-  const { connections, connectionsError } = useConnections();
+  const { connections } = useConnections();
   const [browseId, setBrowseId] = useState(params.get("connection") ?? "");
   const [selected, setSelected] = useState<CatalogSelection | null>(null);
-  const { connectionColumns, connectionColumnsError, columnsLoading, refreshColumns } =
+  const { connectionColumns, columnsLoading, refreshColumns } =
     useConnectionColumns(browseId, selected);
   const [picked, setPicked] = useState<string[]>([]);
   const [sql, setSql] = useState("");
   sqlRef.current = sql;
   const [delimiter, setDelimiter] = useState(",");
+  const delimiterOptions = useMemo(
+    () =>
+      DELIMITER_VALUES.map((value) => ({
+        value,
+        label: value === " " ? messages.format.space : value === "tab" ? "tab" : value,
+      })),
+    [messages],
+  );
   const [header, setHeader] = useState(true);
   const [limit, setLimit] = useState(100);
   const [search, setSearch] = useState("");
   const [running, setRunning] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [result, setResult] = useState<QueryResult | null>(null);
-  const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [isResultOpen, setIsResultOpen] = useState(false);
   const [isLogOpen, setIsLogOpen] = useState(false);
@@ -138,6 +142,7 @@ export function QueryPage() {
   } | null>(null);
   const [editorSize, setEditorSize] = useState<{ w: number; h: number } | null>(null);
   const runSeq = useRef(0);
+  const toastedExtractFail = useRef("");
 
   const active = useMemo(
     () => connections.find((connection) => connection.id === browseId),
@@ -148,10 +153,7 @@ export function QueryPage() {
     if (!browseId) {
       setSelected(null);
       setPicked([]);
-      return;
     }
-    const saved = localStorage.getItem(sqlStorageKey(browseId));
-    if (saved && !sql) setSql(saved);
   }, [browseId]);
 
   useEffect(() => setPicked([]), [browseId, selected]);
@@ -160,7 +162,7 @@ export function QueryPage() {
     const table = params.get("table");
     const database = params.get("database");
     if (!browseId || !table || !database) return;
-    if (localStorage.getItem(sqlStorageKey(browseId))) return;
+    if (sqlByConnection.current[browseId]) return;
     persistSql(draftSelect(table, []));
   }, [browseId]);
 
@@ -242,6 +244,13 @@ export function QueryPage() {
   }, [extractId, isResultOpen]);
 
   useEffect(() => {
+    if (!extractRow || extractRow.status !== "failed") return;
+    if (toastedExtractFail.current === extractRow.id) return;
+    toastedExtractFail.current = extractRow.id;
+    toastError(messages.errors.extract, extractRow.error_message);
+  }, [extractRow, messages]);
+
+  useEffect(() => {
     if (!running) {
       setRunElapsed(0);
       return;
@@ -279,29 +288,28 @@ export function QueryPage() {
   function persistSql(next: string) {
     setSql(next);
     sqlRef.current = next;
-    if (!browseId) return;
-    if (next) localStorage.setItem(sqlStorageKey(browseId), next);
-    else localStorage.removeItem(sqlStorageKey(browseId));
+    if (browseId) sqlByConnection.current[browseId] = next;
   }
 
   function onPickConnection(id: string) {
     if (browseId === id) {
-      if (sql) localStorage.setItem(sqlStorageKey(browseId), sql);
+      sqlByConnection.current[browseId] = sql;
       setBrowseId("");
       setSelected(null);
       setPicked([]);
       setResult(null);
+      setSql("");
+      sqlRef.current = "";
       return;
     }
-    if (browseId && sql) localStorage.setItem(sqlStorageKey(browseId), sql);
+    if (browseId) sqlByConnection.current[browseId] = sql;
     setBrowseId(id);
     setSelected(null);
     setPicked([]);
     setResult(null);
-    setError("");
-    const saved = localStorage.getItem(sqlStorageKey(id));
-    setSql(saved ?? "");
-    sqlRef.current = saved ?? "";
+    const saved = sqlByConnection.current[id] ?? "";
+    setSql(saved);
+    sqlRef.current = saved;
   }
 
   function onPickTable(next: CatalogSelection | null) {
@@ -342,7 +350,6 @@ export function QueryPage() {
     }
     setSearch("");
     setRunning(true);
-    setError("");
     setInfo("");
     const logId = crypto.randomUUID();
     setQueryLogId(logId);
@@ -367,7 +374,7 @@ export function QueryPage() {
     } catch (err) {
       if (seq !== runSeq.current) return;
       setResult(null);
-      setError(err instanceof Error ? err.message : messages.errors.query);
+      toastError(messages.errors.query, err);
     } finally {
       if (seq === runSeq.current) setRunning(false);
     }
@@ -380,7 +387,6 @@ export function QueryPage() {
   async function onExtract() {
     if (!browseId) return;
     setExtracting(true);
-    setError("");
     try {
       const created = await extractApi.createExtract({
         connection_id: browseId,
@@ -394,7 +400,7 @@ export function QueryPage() {
       setExtractRow(created);
       setExtractLog("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : messages.errors.extract);
+      toastError(messages.errors.extract, err);
     } finally {
       setExtracting(false);
     }
@@ -465,11 +471,6 @@ export function QueryPage() {
         title={messages.query.title}
         description={messages.query.description}
       />
-      {connectionsError || connectionColumnsError ? (
-        <NoticeBanner>
-          {connectionsError || connectionColumnsError}
-        </NoticeBanner>
-      ) : null}
 
       <Panel tall className="overflow-hidden">
         <SplitLayout
@@ -544,7 +545,7 @@ export function QueryPage() {
                         <li key={column.name} className="border-b border-border last:border-b-0">
                           <label
                             className={cn(
-                              "flex cursor-pointer items-start gap-2 overflow-hidden px-3 py-1.5",
+                              "flex cursor-pointer items-start gap-2 overflow-hidden px-3 py-1.5 select-none",
                               selectableClass(picked.includes(column.name)),
                             )}
                           >
@@ -554,8 +555,7 @@ export function QueryPage() {
                               checked={picked.includes(column.name)}
                               onChange={() => toggleColumn(column.name)}
                             />
-                            <button
-                              type="button"
+                            <span
                               className="min-w-0 flex-1 overflow-hidden text-left"
                               onDoubleClick={() => insertAtCursor(column.name)}
                               title={messages.query.insertHint}
@@ -565,7 +565,7 @@ export function QueryPage() {
                                 {column.data_type}
                                 {column.nullable ? "" : " · NOT NULL"}
                               </span>
-                            </button>
+                            </span>
                           </label>
                         </li>
                       ))}
@@ -722,15 +722,17 @@ export function QueryPage() {
                   }}
                 />
               </div>
-              <div className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-text-secondary">
+              <div
+                className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-text-secondary"
+                title={messages.connectionsPage.delimiterTitle}
+              >
                 <span>{messages.common.delimiter}</span>
                 <Select
+                  editable
                   className="!w-[6.5rem] technical"
                   value={delimiter}
-                  options={DELIMITER_OPTIONS.map((value) => ({
-                    value,
-                    label: value,
-                  }))}
+                  placeholder={messages.query.delimiterPlaceholder}
+                  options={delimiterOptions}
                   onChange={setDelimiter}
                 />
               </div>
@@ -764,11 +766,8 @@ export function QueryPage() {
                 <div className="grid h-full min-h-64 place-items-center text-sm text-text-tertiary">
                   {messages.common.running}
                 </div>
-              ) : error ? (
-                <NoticeBanner>{error}</NoticeBanner>
               ) : result?.columns.length ? (
                 <div className="flex h-full min-h-64 flex-col gap-3">
-                  {info ? <NoticeBanner tone="ok">{info}</NoticeBanner> : null}
                   <DataGrid
                     className="min-h-0 flex-1"
                     headers={[messages.query.rowNo, ...result.columns]}

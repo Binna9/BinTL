@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { connectionApi } from "@/services/connectionApi";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { toastError } from "@/lib/notifications";
 import type {
   CatalogSelection,
   DatabaseColumn,
@@ -12,13 +13,11 @@ export function useConnectionColumns(
 ) {
   const { messages } = useLanguage();
   const [connectionColumns, setConnectionColumns] = useState<DatabaseColumn[]>([]);
-  const [connectionColumnsError, setConnectionColumnsError] = useState("");
   const [columnsLoading, setColumnsLoading] = useState(false);
 
   const refreshColumns = useCallback(async () => {
     if (!connectionId || !selection) {
       setConnectionColumns([]);
-      setConnectionColumnsError("");
       return [];
     }
 
@@ -30,13 +29,10 @@ export function useConnectionColumns(
         selection.database,
       );
       setConnectionColumns(response.columns);
-      setConnectionColumnsError("");
       return response.columns;
     } catch (error) {
       setConnectionColumns([]);
-      setConnectionColumnsError(
-        error instanceof Error ? error.message : messages.errors.columns,
-      );
+      toastError(messages.errors.columns, error);
       return null;
     } finally {
       setColumnsLoading(false);
@@ -49,7 +45,6 @@ export function useConnectionColumns(
 
   return {
     connectionColumns,
-    connectionColumnsError,
     columnsLoading,
     refreshColumns,
   };

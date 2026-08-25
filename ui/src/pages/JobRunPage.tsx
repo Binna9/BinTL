@@ -3,42 +3,32 @@ import { PageHeader, PageShell } from "@/components/PageShell";
 import { StatusPill } from "@/components/StatusPill";
 import { ActionAnchor, ActionLink, Button } from "@/components/ui/button";
 import { MetaField } from "@/components/ui/meta-field";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { useJobRun } from "@/hooks/useJobRun";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
+import { toastError } from "@/lib/notifications";
 import { jobApi } from "@/services/jobApi";
 
 export function JobRunPage() {
   const { messages } = useLanguage();
   const { id } = useParams<{ id: string }>();
-  const {
-    jobRun,
-    jobRunError,
-    setJobRunError,
-    refreshJobRun,
-  } = useJobRun(id);
+  const { jobRun, refreshJobRun } = useJobRun(id);
 
   async function run() {
     if (!id) return;
-    setJobRunError("");
     try {
       await jobApi.runJob(id);
       await refreshJobRun();
     } catch (err) {
-      setJobRunError(err instanceof Error ? err.message : messages.errors.runJob);
+      toastError(messages.errors.runJob, err);
     }
   }
 
   if (!jobRun) {
     return (
       <PageShell>
-        {jobRunError ? (
-          <NoticeBanner>{jobRunError}</NoticeBanner>
-        ) : (
-          <p className="text-text-secondary">{messages.jobRun.loading}</p>
-        )}
+        <p className="text-text-secondary">{messages.jobRun.loading}</p>
       </PageShell>
     );
   }
@@ -67,7 +57,6 @@ export function JobRunPage() {
           </>
         }
       />
-      {jobRunError ? <NoticeBanner>{jobRunError}</NoticeBanner> : null}
 
       <Panel>
         <PanelHeader title={messages.jobRun.info} />
@@ -85,9 +74,9 @@ export function JobRunPage() {
           <MetaField label={messages.jobRun.jobId} technical>{jobRun.id}</MetaField>
         </PanelBody>
         {jobRun.error_message ? (
-          <div className="border-t border-border p-3">
-            <NoticeBanner>{jobRun.error_message}</NoticeBanner>
-          </div>
+          <p className="border-t border-border px-3 py-2 text-[13px] text-danger">
+            {jobRun.error_message}
+          </p>
         ) : null}
       </Panel>
 

@@ -4,6 +4,7 @@ import { extractApi } from "@/services/extractApi";
 import { fileApi } from "@/services/fileApi";
 import { jobApi } from "@/services/jobApi";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { toastError } from "@/lib/notifications";
 import type { DataConnection } from "@/types/connection";
 import type { ExtractRecord } from "@/types/extract";
 import type { StoredFile } from "@/types/file";
@@ -15,7 +16,6 @@ export function useJobWorkspace() {
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [extracts, setExtracts] = useState<ExtractRecord[]>([]);
   const [connections, setConnections] = useState<DataConnection[]>([]);
-  const [workspaceError, setWorkspaceError] = useState("");
 
   const refreshJobWorkspace = useCallback(async () => {
     const [jobResponse, fileResponse, extractResponse, connectionResponse] =
@@ -35,9 +35,7 @@ export function useJobWorkspace() {
 
   useEffect(() => {
     void refreshJobWorkspace().catch((error) =>
-      setWorkspaceError(
-        error instanceof Error ? error.message : messages.errors.workspace,
-      ),
+      toastError(messages.errors.workspace, error),
     );
   }, [refreshJobWorkspace, messages]);
 
@@ -46,8 +44,6 @@ export function useJobWorkspace() {
     files,
     extracts,
     connections,
-    workspaceError,
-    setWorkspaceError,
     refreshJobWorkspace,
   };
 }

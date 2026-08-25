@@ -3,8 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { BrandMark } from "@/components/BrandMark";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { toastError } from "@/lib/notifications";
 import { authApi } from "@/services/authApi";
 
 export function SessionGatePage() {
@@ -12,18 +12,16 @@ export function SessionGatePage() {
   const navigate = useNavigate();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("admin");
-  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
-    setError("");
     setBusy(true);
     try {
       await authApi.login(username, password);
       navigate("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : messages.errors.login);
+      toastError(messages.errors.login, err);
     } finally {
       setBusy(false);
     }
@@ -60,7 +58,6 @@ export function SessionGatePage() {
                 autoComplete="current-password"
               />
             </FormField>
-            {error ? <NoticeBanner>{error}</NoticeBanner> : null}
             <Button variant="primary" type="submit" disabled={busy}>
               {busy ? messages.login.authenticating : messages.login.submit}
             </Button>

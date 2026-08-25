@@ -3,10 +3,10 @@ import { FileSpreadsheet, Save } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Select } from "@/components/ui/select";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { DELIMITER_VALUES, isValidDelimiter } from "@/lib/delimiter";
+import { toastError } from "@/lib/notifications";
 import type {
   StagedWorkbook,
   WorkbookSheetSelection,
@@ -39,7 +39,6 @@ export function ExcelSheetDialog({
   const [selected, setSelected] = useState<string[]>([]);
   const [filenames, setFilenames] = useState<Record<string, string>>({});
   const [delimiter, setDelimiter] = useState(",");
-  const [error, setError] = useState("");
   const delimiterOptions = useMemo(
     () =>
       DELIMITER_VALUES.map((value) => ({
@@ -62,7 +61,6 @@ export function ExcelSheetDialog({
       ),
     );
     setDelimiter(",");
-    setError("");
   }, [workbook]);
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
@@ -72,11 +70,11 @@ export function ExcelSheetDialog({
 
   function submit() {
     if (!workbook || selected.length === 0) {
-      setError(messages.files.noSheetsSelected);
+      toastError(messages.files.noSheetsSelected);
       return;
     }
     if (!isValidDelimiter(delimiter)) {
-      setError(messages.files.invalidDelimiter);
+      toastError(messages.files.invalidDelimiter);
       return;
     }
     onSave(
@@ -148,7 +146,6 @@ export function ExcelSheetDialog({
               {messages.files.selectedSheets(selected.length)}
             </span>
           </div>
-          {error ? <div className="mt-3"><NoticeBanner>{error}</NoticeBanner></div> : null}
           <ul className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border">
             {workbook.sheets.map((sheet) => {
               const checked = selectedSet.has(sheet.name);

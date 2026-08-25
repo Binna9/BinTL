@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { connectionApi } from "@/services/connectionApi";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { toastError } from "@/lib/notifications";
 import type {
   CatalogEntry,
   CatalogLayout,
@@ -15,25 +16,19 @@ export function useConnectionCatalog(connectionId: string) {
   const [nodeChildren, setNodeChildren] = useState<
     Record<string, CatalogEntry[]>
   >({});
-  const [catalogError, setCatalogError] = useState("");
   const [loadingNode, setLoadingNode] = useState("");
 
   useEffect(() => {
     setDatabases([]);
     setOpenNodes({});
     setNodeChildren({});
-    setCatalogError("");
     void connectionApi
       .getDatabases(connectionId)
       .then((response) => {
         setCatalogLayout(response.layout);
         setDatabases(response.databases);
       })
-      .catch((error) =>
-        setCatalogError(
-          error instanceof Error ? error.message : messages.errors.catalog,
-        ),
-      );
+      .catch((error) => toastError(messages.errors.catalog, error));
   }, [connectionId, messages]);
 
   async function toggleNode(
@@ -49,11 +44,8 @@ export function useConnectionCatalog(connectionId: string) {
       try {
         const items = await loader();
         setNodeChildren((current) => ({ ...current, [nodeKey]: items }));
-        setCatalogError("");
       } catch (error) {
-        setCatalogError(
-          error instanceof Error ? error.message : messages.errors.list,
-        );
+        toastError(messages.errors.list, error);
         setLoadingNode("");
         return;
       }
@@ -91,7 +83,6 @@ export function useConnectionCatalog(connectionId: string) {
     databases,
     openNodes,
     nodeChildren,
-    catalogError,
     loadingNode,
     toggleDatabase,
     toggleSchema,

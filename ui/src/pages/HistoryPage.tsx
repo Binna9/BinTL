@@ -2,7 +2,6 @@ import { Link } from "react-router-dom";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { StatusPill } from "@/components/StatusPill";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useJobWorkspace } from "@/hooks/useJobWorkspace";
@@ -11,7 +10,7 @@ import { fmtWhen } from "@/lib/format";
 
 export function HistoryPage() {
   const { messages } = useLanguage();
-  const { jobs, workspaceError } = useJobWorkspace();
+  const { jobs } = useJobWorkspace();
 
   return (
     <PageShell>
@@ -21,7 +20,6 @@ export function HistoryPage() {
         title={messages.history.title}
         description={messages.history.description}
       />
-      {workspaceError ? <NoticeBanner>{workspaceError}</NoticeBanner> : null}
       <Panel tall>
         <Toolbar>
           <ToolbarGroup>

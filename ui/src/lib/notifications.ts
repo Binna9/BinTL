@@ -70,12 +70,18 @@ export function subscribeNotifications(listener: NotificationListener): () => vo
   return () => listeners.delete(listener);
 }
 
+function errorDetail(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "";
+}
+
 export function showToast(
   title: string,
   message = "",
   status: ToastStatus = "default",
   duration = 5000,
-  position: ToastPosition = "top-right",
+  position: ToastPosition = "top-center",
 ): string {
   const id = notificationId();
   publish({
@@ -94,6 +100,18 @@ export function showToast(
 
 export function dismissToast(id: string): void {
   publish({ type: "dismiss-toast", id });
+}
+
+export function toastError(fallback: string, error?: unknown): string {
+  const detail = errorDetail(error);
+  if (detail && detail !== fallback) {
+    return showToast(fallback, detail, "error");
+  }
+  return showToast(detail || fallback, "", "error");
+}
+
+export function toastSuccess(title: string, message = ""): string {
+  return showToast(title, message, "success");
 }
 
 export function showAlert(

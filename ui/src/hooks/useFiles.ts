@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { fileApi } from "@/services/fileApi";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { toastError } from "@/lib/notifications";
 import type { StoredFile } from "@/types/file";
 
 export function useFiles() {
   const { messages } = useLanguage();
   const [files, setFiles] = useState<StoredFile[]>([]);
-  const [filesError, setFilesError] = useState("");
 
   const refreshFiles = useCallback(async () => {
     const response = await fileApi.getFiles();
@@ -15,9 +15,9 @@ export function useFiles() {
 
   useEffect(() => {
     void refreshFiles().catch((error) =>
-      setFilesError(error instanceof Error ? error.message : messages.errors.files),
+      toastError(messages.errors.files, error),
     );
   }, [refreshFiles, messages]);
 
-  return { files, filesError, setFilesError, refreshFiles };
+  return { files, refreshFiles };
 }

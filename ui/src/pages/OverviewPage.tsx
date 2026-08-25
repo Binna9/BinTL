@@ -4,7 +4,6 @@ import { PageHeader, PageShell } from "@/components/PageShell";
 import { StatusPill } from "@/components/StatusPill";
 import { LiveDot } from "@/components/ui/live-dot";
 import { MetaField } from "@/components/ui/meta-field";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { useOverviewData } from "@/hooks/useOverviewData";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -16,7 +15,6 @@ export function OverviewPage() {
     systemHealth,
     recentJobs,
     recentExtracts,
-    overviewError,
   } = useOverviewData();
 
   const runningJobs = recentJobs.filter((job) => job.status === "running").length;
@@ -40,7 +38,6 @@ export function OverviewPage() {
           ) : null
         }
       />
-      {overviewError ? <NoticeBanner>{overviewError}</NoticeBanner> : null}
 
       <Panel>
         <PanelHeader title={messages.overview.summary} description={messages.overview.summaryDescription} />

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { extractApi } from "@/services/extractApi";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { toastError } from "@/lib/notifications";
 import type { ExtractRecord } from "@/types/extract";
 
 export function isExtractActive(status: string): boolean {
@@ -10,7 +11,6 @@ export function isExtractActive(status: string): boolean {
 export function useExtracts() {
   const { messages } = useLanguage();
   const [extracts, setExtracts] = useState<ExtractRecord[]>([]);
-  const [extractsError, setExtractsError] = useState("");
 
   useEffect(() => {
     let timer: number | undefined;
@@ -21,16 +21,11 @@ export function useExtracts() {
         const response = await extractApi.getExtracts();
         if (cancelled) return;
         setExtracts(response.extracts);
-        setExtractsError("");
         if (response.extracts.some((extract) => isExtractActive(extract.status))) {
           timer = window.setTimeout(() => void refreshExtracts(), 2000);
         }
       } catch (error) {
-        if (!cancelled) {
-          setExtractsError(
-            error instanceof Error ? error.message : messages.errors.extracts,
-          );
-        }
+        if (!cancelled) toastError(messages.errors.extracts, error);
       }
     }
 
@@ -41,5 +36,5 @@ export function useExtracts() {
     };
   }, [messages]);
 
-  return { extracts, extractsError };
+  return { extracts };
 }

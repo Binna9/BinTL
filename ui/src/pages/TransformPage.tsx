@@ -5,7 +5,6 @@ import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { SplitLayout } from "@/components/SplitLayout";
 import { Button } from "@/components/ui/button";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
 import { Select } from "@/components/ui/select";
@@ -13,6 +12,7 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
+import { toastError } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { datasetApi } from "@/services/datasetApi";
 import { transformApi } from "@/services/transformApi";
@@ -195,7 +195,6 @@ export function TransformPage() {
   const [steps, setSteps] = useState<TransformStep[]>([]);
   const [sourcePreview, setSourcePreview] = useState<FramePreview | null>(null);
   const [resultPreview, setResultPreview] = useState<FramePreview | null>(null);
-  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const selected = datasets.find((item) => item.id === datasetId) ?? null;
@@ -216,7 +215,7 @@ export function TransformPage() {
 
   useEffect(() => {
     void refreshCatalog().catch((err) =>
-      setError(err instanceof Error ? err.message : messages.errors.workspace),
+      toastError(messages.errors.workspace, err),
     );
   }, [messages]);
 
@@ -237,7 +236,7 @@ export function TransformPage() {
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : messages.errors.workspace);
+          toastError(messages.errors.workspace, err);
         }
       });
     return () => {
@@ -264,7 +263,7 @@ export function TransformPage() {
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : messages.errors.inspect);
+          toastError(messages.errors.inspect, err);
         }
       })
       .finally(() => {
@@ -288,13 +287,12 @@ export function TransformPage() {
 
   async function onPreview() {
     if (!datasetId) return;
-    setError("");
     setBusy(true);
     try {
       const preview = await datasetApi.preview(datasetId, buildSpec(), 50);
       setResultPreview(preview);
     } catch (err) {
-      setError(err instanceof Error ? err.message : messages.errors.previewTransform);
+      toastError(messages.errors.previewTransform, err);
     } finally {
       setBusy(false);
     }
@@ -303,7 +301,6 @@ export function TransformPage() {
   async function onSave() {
     if (!datasetId) return;
     const title = name.trim() || selected?.filename || messages.transform.untitled;
-    setError("");
     setBusy(true);
     try {
       if (transformId) {
@@ -326,14 +323,13 @@ export function TransformPage() {
         navigate(`/transform/${row.id}`, { replace: true });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : messages.errors.saveTransform);
+      toastError(messages.errors.saveTransform, err);
     } finally {
       setBusy(false);
     }
   }
 
   async function onRun() {
-    setError("");
     setBusy(true);
     try {
       let savedId = transformId;
@@ -358,7 +354,7 @@ export function TransformPage() {
       const run = await transformApi.run(savedId);
       navigate(`/jobs/${run.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : messages.errors.runJob);
+      toastError(messages.errors.runJob, err);
     } finally {
       setBusy(false);
     }
@@ -408,7 +404,6 @@ export function TransformPage() {
           </>
         }
       />
-      {error ? <NoticeBanner>{error}</NoticeBanner> : null}
 
       <Panel tall>
         <SplitLayout

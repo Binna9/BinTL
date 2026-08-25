@@ -112,7 +112,6 @@ export function CatalogTree({
     databases,
     openNodes,
     nodeChildren,
-    catalogError,
     loadingNode,
     toggleDatabase,
     toggleSchema,
@@ -132,9 +131,6 @@ export function CatalogTree({
     onPick(pick);
   }
 
-  if (catalogError) {
-    return <p className="p-3 text-xs text-danger">{catalogError}</p>;
-  }
   if (databases.length === 0) {
     return <p className="p-3 text-xs text-text-tertiary">{messages.catalog.unavailable}</p>;
   }

@@ -5,12 +5,12 @@ import { ExcelSheetDialog } from "@/components/ExcelSheetDialog";
 import { FileDropzone } from "@/components/FileDropzone";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useFiles } from "@/hooks/useFiles";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes } from "@/lib/format";
+import { toastError } from "@/lib/notifications";
 import { fileApi } from "@/services/fileApi";
 import type {
   StagedWorkbook,
@@ -44,7 +44,7 @@ function saveAsName(original: string, requested: string): string {
 
 export function FilesPage() {
   const { messages } = useLanguage();
-  const { files, filesError, setFilesError, refreshFiles } = useFiles();
+  const { files, refreshFiles } = useFiles();
   const [busy, setBusy] = useState(false);
   const [readingWorkbook, setReadingWorkbook] = useState(false);
   const [savingWorkbook, setSavingWorkbook] = useState(false);
@@ -70,12 +70,11 @@ export function FilesPage() {
   }
 
   async function addFiles(incoming: File[]) {
-    setFilesError("");
     const accepted = incoming.filter((file) =>
       [".csv", ".xls", ".xlsx"].includes(fileExtension(file.name)),
     );
     if (accepted.length !== incoming.length) {
-      setFilesError(messages.errors.unsupportedUploadType);
+      toastError(messages.errors.unsupportedUploadType);
     }
 
     addCsvFiles(accepted.filter((file) => fileExtension(file.name) === ".csv"));
@@ -91,9 +90,7 @@ export function FilesPage() {
         setWorkbooks((current) => [...current, staged]);
       }
     } catch (err) {
-      setFilesError(
-        err instanceof Error ? err.message : messages.errors.workbookRead,
-      );
+      toastError(messages.errors.workbookRead, err);
     } finally {
       setReadingWorkbook(false);
     }
@@ -112,15 +109,12 @@ export function FilesPage() {
     const workbook = workbooks[0];
     if (!workbook) return;
     setSavingWorkbook(true);
-    setFilesError("");
     try {
       await fileApi.commitWorkbook(workbook.staging_id, sheets, delimiter);
       setWorkbooks((current) => current.slice(1));
       await refreshFiles();
     } catch (err) {
-      setFilesError(
-        err instanceof Error ? err.message : messages.errors.workbookCommit,
-      );
+      toastError(messages.errors.workbookCommit, err);
     } finally {
       setSavingWorkbook(false);
     }
@@ -147,7 +141,6 @@ export function FilesPage() {
     if (queue.length === 0) return;
 
     setBusy(true);
-    setFilesError("");
     try {
       for (const item of queue) {
         await fileApi.uploadFile(item.file, saveAsName(item.file.name, item.name));
@@ -156,7 +149,7 @@ export function FilesPage() {
       }
       await refreshFiles();
     } catch (err) {
-      setFilesError(err instanceof Error ? err.message : messages.errors.upload);
+      toastError(messages.errors.upload, err);
     } finally {
       setBusy(false);
     }
@@ -170,7 +163,6 @@ export function FilesPage() {
         title={messages.files.title}
         description={messages.files.description}
       />
-      {filesError ? <NoticeBanner>{filesError}</NoticeBanner> : null}
 
       <Panel>
         <PanelHeader title={messages.files.uploadTitle} description={messages.files.uploadDescription} />

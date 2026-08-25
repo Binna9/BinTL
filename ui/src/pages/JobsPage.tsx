@@ -6,7 +6,6 @@ import { SplitLayout } from "@/components/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
-import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { Select } from "@/components/ui/select";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
@@ -14,6 +13,7 @@ import { useJobWorkspace } from "@/hooks/useJobWorkspace";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtSqlPreview, fmtWhen } from "@/lib/format";
 import { layout } from "@/lib/layout";
+import { toastError } from "@/lib/notifications";
 import { connectionApi } from "@/services/connectionApi";
 import { jobApi } from "@/services/jobApi";
 
@@ -61,8 +61,6 @@ export function JobsPage() {
     files,
     extracts,
     connections,
-    workspaceError,
-    setWorkspaceError,
     refreshJobWorkspace,
   } = useJobWorkspace();
   const [sourceTables, setSourceTables] = useState<string[]>([]);
@@ -80,7 +78,6 @@ export function JobsPage() {
       .filter(Boolean);
     const destinationConnectionId = value("dest_connection_id");
 
-    setWorkspaceError("");
     setBusy(true);
     try {
       const job = await jobApi.createJob({
@@ -98,7 +95,7 @@ export function JobsPage() {
       await jobApi.runJob(job.id);
       await refreshJobWorkspace();
     } catch (err) {
-      setWorkspaceError(err instanceof Error ? err.message : messages.errors.createJob);
+      toastError(messages.errors.createJob, err);
     } finally {
       setBusy(false);
     }
@@ -112,7 +109,6 @@ export function JobsPage() {
         title={messages.jobs.title}
         description={messages.jobs.description}
       />
-      {workspaceError ? <NoticeBanner>{workspaceError}</NoticeBanner> : null}
 
       <Panel>
         <PanelHeader title={messages.jobs.definition} description={messages.jobs.definitionDescription} />
