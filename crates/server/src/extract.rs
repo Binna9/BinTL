@@ -12,7 +12,7 @@ pub fn spawn(store: Store, id: String) {
     });
 }
 
-async fn run(store: &Store, id: &str) -> Result<(), String> {
+pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
     let row = store
         .get_extract(id)
         .await
@@ -93,11 +93,7 @@ async fn extract_now(
             .map_err(|e| e.to_string())?
     };
     if let Some(log) = log {
-        log.write(
-            "info",
-            "succeeded",
-            &format!("rows={n} file={rel}"),
-        );
+        log.write("info", "succeeded", &format!("rows={n} file={rel}"));
     }
     store
         .set_extract_succeeded(&row.id, &rel, &filename, n as i64)

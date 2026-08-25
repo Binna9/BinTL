@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Play, Plus, Save, Trash2 } from "lucide-react";
+import {
+  Braces,
+  ChevronRight,
+  Database,
+  FileOutput,
+  Play,
+  Plus,
+  Save,
+  Search,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { SplitLayout } from "@/components/SplitLayout";
@@ -36,7 +47,29 @@ const STEP_OPS: StepOp[] = [
 ];
 
 const CAST_TYPES = ["Int64", "Int32", "Float64", "Float32", "String", "Boolean"];
-const KIND_ORDER = ["upload", "database", "api"] as const;
+const KIND_ORDER = ["upload", "database", "transform", "api"] as const;
+const KIND_APPEARANCE = {
+  upload: {
+    icon: Upload,
+    header: "border-accent/20 bg-accent-subtle text-accent",
+    count: "bg-accent/10 text-accent",
+  },
+  database: {
+    icon: Database,
+    header: "border-success/20 bg-success-subtle text-success",
+    count: "bg-success/10 text-success",
+  },
+  transform: {
+    icon: FileOutput,
+    header: "border-accent/20 bg-accent-subtle text-accent",
+    count: "bg-accent/10 text-accent",
+  },
+  api: {
+    icon: Braces,
+    header: "border-warning/20 bg-warning-subtle text-warning",
+    count: "bg-warning/10 text-warning",
+  },
+} as const;
 
 function emptyStep(op: StepOp): TransformStep {
   switch (op) {
@@ -195,12 +228,24 @@ export function TransformPage() {
   const [steps, setSteps] = useState<TransformStep[]>([]);
   const [sourcePreview, setSourcePreview] = useState<FramePreview | null>(null);
   const [resultPreview, setResultPreview] = useState<FramePreview | null>(null);
+  const [expandedKinds, setExpandedKinds] = useState<Set<(typeof KIND_ORDER)[number]>>(
+    new Set(),
+  );
+  const [kindSearch, setKindSearch] = useState<
+    Record<(typeof KIND_ORDER)[number], string>
+  >({
+    upload: "",
+    database: "",
+    transform: "",
+    api: "",
+  });
   const [busy, setBusy] = useState(false);
 
   const selected = datasets.find((item) => item.id === datasetId) ?? null;
   const kindLabel: Record<string, string> = {
     upload: messages.transform.kindUpload,
     database: messages.transform.kindDatabase,
+    transform: messages.transform.kindTransform,
     api: messages.transform.kindApi,
   };
 
@@ -445,36 +490,119 @@ export function TransformPage() {
               {grouped.length === 0 ? (
                 <p className="p-3 text-xs text-text-tertiary">{messages.empty.datasets}</p>
               ) : (
-                grouped.map((group) => (
-                  <div key={group.kind}>
-                    <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-                      {kindLabel[group.kind] ?? group.kind}
-                    </p>
-                    {group.items.map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={cn(
-                          "block w-full min-w-0 overflow-hidden border-b border-border px-3 py-2 text-left last:border-b-0",
-                          selectableClass(item.id === datasetId),
-                        )}
-                        onClick={() => {
-                          setDatasetId(item.id);
-                          if (!transformId) setName((current) => current || item.filename);
-                        }}
+                <div className="space-y-2 p-2">
+                  {grouped.map((group) => {
+                    const appearance = KIND_APPEARANCE[group.kind];
+                    const KindIcon = appearance.icon;
+                    const expanded = expandedKinds.has(group.kind);
+                    const query = kindSearch[group.kind].trim().toLocaleLowerCase();
+                    const visibleItems = query
+                      ? group.items.filter((item) =>
+                          item.filename.toLocaleLowerCase().includes(query),
+                        )
+                      : group.items;
+                    return (
+                      <section
+                        key={group.kind}
+                        className="overflow-hidden rounded-lg border border-border bg-surface"
                       >
-                        <span className="block truncate text-[13px]">{item.filename}</span>
-                        <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
-                          {item.origin?.connection_name
-                            ? `${item.origin.connection_name} · ${item.origin.table_name}`
-                            : item.size_bytes != null
-                              ? fmtBytes(item.size_bytes)
-                              : item.id.slice(0, 8)}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ))
+                        <button
+                          type="button"
+                          aria-expanded={expanded}
+                          className={cn(
+                            "flex w-full items-center gap-2 px-3 py-2.5 text-left transition-[filter] hover:brightness-95",
+                            expanded && "border-b",
+                            appearance.header,
+                          )}
+                          onClick={() =>
+                            setExpandedKinds((current) => {
+                              const next = new Set(current);
+                              if (expanded) next.delete(group.kind);
+                              else next.add(group.kind);
+                              return next;
+                            })
+                          }
+                        >
+                          <KindIcon className="size-4 shrink-0" aria-hidden="true" />
+                          <span className="min-w-0 flex-1 text-sm font-bold">
+                            {kindLabel[group.kind] ?? group.kind}
+                          </span>
+                          <span
+                            className={cn(
+                              "rounded-full px-2 py-0.5 text-[11px] font-bold tabular-nums",
+                              appearance.count,
+                            )}
+                          >
+                            {group.items.length}
+                          </span>
+                          <ChevronRight
+                            className={cn(
+                              "size-4 shrink-0 transition-transform",
+                              expanded && "rotate-90",
+                            )}
+                            aria-hidden="true"
+                          />
+                        </button>
+                        {expanded ? (
+                          <div className="border-b border-border bg-raised p-2.5">
+                            <div className="group flex h-9 items-center overflow-hidden rounded-lg border border-border bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+                              <span className="grid h-full w-9 shrink-0 place-items-center border-r border-border bg-subtle text-text-tertiary transition-colors group-focus-within:text-accent">
+                                <Search className="size-3.5" aria-hidden="true" />
+                              </span>
+                              <input
+                                type="search"
+                                className="min-w-0 flex-1 bg-transparent px-3 text-[13px] text-text outline-none placeholder:text-text-tertiary"
+                                value={kindSearch[group.kind]}
+                                placeholder={messages.transform.searchFiles}
+                                aria-label={`${kindLabel[group.kind]} ${messages.transform.searchFiles}`}
+                                onChange={(event) =>
+                                  setKindSearch((current) => ({
+                                    ...current,
+                                    [group.kind]: event.target.value,
+                                  }))
+                                }
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+                        {expanded && visibleItems.length === 0 ? (
+                          <p className="px-3 py-4 text-center text-xs text-text-tertiary">
+                            {messages.transform.noMatchingFiles}
+                          </p>
+                        ) : null}
+                        {expanded &&
+                          visibleItems.map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className={cn(
+                                "block w-full min-w-0 overflow-hidden border-b border-border px-3 py-2.5 text-left last:border-b-0",
+                                selectableClass(item.id === datasetId),
+                              )}
+                              onClick={() => {
+                                const selecting = datasetId !== item.id;
+                                setDatasetId(selecting ? item.id : undefined);
+                                if (selecting && !transformId) {
+                                  setName((current) => current || item.filename);
+                                }
+                              }}
+                            >
+                              <span className="block truncate text-[13px] font-medium">
+                                {item.filename}
+                              </span>
+                              <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
+                                {item.origin?.connection_name
+                                  ? `${item.origin.connection_name} · ${item.origin.table_name}`
+                                  : item.size_bytes != null
+                                    ? fmtBytes(item.size_bytes)
+                                    : item.id.slice(0, 8)}
+                              </span>
+                            </button>
+                          ))}
+                      </section>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </aside>

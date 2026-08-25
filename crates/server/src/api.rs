@@ -3,13 +3,13 @@ use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, SET_COOKIE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse};
 use axum::routing::{get, post};
+use axum::{Json, Router};
 use connectors::{
     catalog_layout, db_source_path, export_sheet_to_csv, list_columns, list_databases,
     list_relations, list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter,
     parse_ident, parse_table, preview_table, run_sql, spreadsheet_format, sql_kind,
     test_connection, with_database, SqlKind,
 };
-use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -32,8 +32,16 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
         .route("/api/files/stage", post(stage_spreadsheet))
         .route("/api/files/commit", post(commit_spreadsheet))
         .route("/api/files/stage/{id}", axum::routing::delete(cancel_stage))
-        .route("/api/connections", post(create_connection).get(list_connections))
-        .route("/api/connections/{id}", get(get_connection).put(update_connection).delete(delete_connection))
+        .route(
+            "/api/connections",
+            post(create_connection).get(list_connections),
+        )
+        .route(
+            "/api/connections/{id}",
+            get(get_connection)
+                .put(update_connection)
+                .delete(delete_connection),
+        )
         .route("/api/connections/{id}/test", post(test_saved_connection))
         .route("/api/connections/{id}/tables", get(connection_tables))
         .route("/api/connections/{id}/databases", get(connection_databases))
@@ -51,6 +59,8 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/run", post(run_job))
         .route("/api/jobs/{id}/result", get(job_result))
+        .merge(crate::workspace::routes())
+        .merge(crate::task::routes())
         .merge(crate::transform::routes())
         .layer(DefaultBodyLimit::max(max_upload_bytes))
 }
@@ -72,16 +82,11 @@ async fn login(
     State(state): State<AppState>,
     Json(body): Json<LoginBody>,
 ) -> Result<impl IntoResponse, AppError> {
-    if body.username != state.config.auth.username
-        || body.password != state.config.auth.password
-    {
+    if body.username != state.config.auth.username || body.password != state.config.auth.password {
         return Err(AppError::unauthorized());
     }
     let cookie = auth::session_cookie(&state.config.session_secret, &body.username);
-    Ok((
-        [(SET_COOKIE, cookie)],
-        Json(json!({ "ok": true })),
-    ))
+    Ok(([(SET_COOKIE, cookie)], Json(json!({ "ok": true }))))
 }
 
 async fn logout() -> impl IntoResponse {
@@ -122,7 +127,8 @@ async fn upload_file(
             _ => {}
         }
     }
-    let (original, data) = payload.ok_or_else(|| AppError::bad("multipart field `file` required"))?;
+    let (original, data) =
+        payload.ok_or_else(|| AppError::bad("multipart field `file` required"))?;
     require_csv_filename(&original)?;
     let filename = storage::resolve_upload_filename(&original, requested_name.as_deref());
     require_csv_filename(&filename)?;
@@ -282,15 +288,15 @@ fn normalize_commit_sheets(sheets: Vec<CommitSheet>) -> Result<Vec<CommitSheet>,
             return Err(AppError::bad("sheet name required"));
         }
         if !names.insert(name.to_string()) {
-            return Err(AppError::bad(format!("sheet `{name}` selected more than once")));
+            return Err(AppError::bad(format!(
+                "sheet `{name}` selected more than once"
+            )));
         }
         if sheet.filename.trim().is_empty() {
             return Err(AppError::bad("csv filename required"));
         }
-        let filename = storage::resolve_upload_filename(
-            &format!("{name}.csv"),
-            Some(sheet.filename.trim()),
-        );
+        let filename =
+            storage::resolve_upload_filename(&format!("{name}.csv"), Some(sheet.filename.trim()));
         require_csv_filename(&filename)?;
         normalized.push(CommitSheet {
             name: name.to_string(),
@@ -389,7 +395,10 @@ async fn create_connection(
             ssl: body.ssl,
         })
         .await?;
-    Ok((StatusCode::CREATED, Json(serde_json::to_value(row).unwrap())))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(row).unwrap()),
+    ))
 }
 
 async fn update_connection(
@@ -676,7 +685,12 @@ async fn create_extract(
         }
         None => None,
     };
-    let table = match body.table.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let table = match body
+        .table
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(table) => {
             parse_table(table).map_err(|e| AppError::bad(e.to_string()))?;
             table.to_string()
@@ -686,7 +700,12 @@ async fn create_extract(
     };
     let delimiter = body.delimiter.unwrap_or_else(|| ",".into());
     parse_delimiter(&delimiter).map_err(|e| AppError::bad(e.to_string()))?;
-    let catalog_database = match body.database.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let catalog_database = match body
+        .database
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(database) => {
             parse_ident(database).map_err(|e| AppError::bad(e.to_string()))?;
             Some(database.to_string())
@@ -705,7 +724,10 @@ async fn create_extract(
         )
         .await?;
     crate::extract::spawn(state.store.clone(), row.id.clone());
-    Ok((StatusCode::CREATED, Json(serde_json::to_value(row).unwrap())))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(row).unwrap()),
+    ))
 }
 
 async fn list_extracts(
@@ -774,10 +796,7 @@ async fn extract_file(
     Ok((
         AppendHeaders([
             (CONTENT_TYPE, HeaderValue::from_str(ctype).unwrap()),
-            (
-                CONTENT_DISPOSITION,
-                HeaderValue::from_str(&disp).unwrap(),
-            ),
+            (CONTENT_DISPOSITION, HeaderValue::from_str(&disp).unwrap()),
         ]),
         bytes,
     ))
@@ -803,9 +822,10 @@ struct CreateJobBody {
 }
 
 fn merge_spec(body: &CreateJobBody) -> Result<Value, AppError> {
-    let mut spec = body.spec.clone().unwrap_or_else(|| {
-        json!({"version": 1, "op": "pipeline", "sink": "parquet"})
-    });
+    let mut spec = body
+        .spec
+        .clone()
+        .unwrap_or_else(|| json!({"version": 1, "op": "pipeline", "sink": "parquet"}));
     if !spec.is_object() {
         return Err(AppError::bad("spec must be an object"));
     }
@@ -858,11 +878,15 @@ async fn create_job(
         extract_read = Some((row.delimiter.clone(), row.header != 0));
         row.stored_path
             .ok_or_else(|| AppError::not_found("extract file missing"))?
-    } else if let (Some(connection_id), Some(table)) = (body.connection_id.clone(), body.table.clone()) {
+    } else if let (Some(connection_id), Some(table)) =
+        (body.connection_id.clone(), body.table.clone())
+    {
         parse_table(&table).map_err(|e| AppError::bad(e.to_string()))?;
-        let _ = state.store.get_connection(&connection_id).await?.ok_or_else(|| {
-            AppError::not_found("connection not found")
-        })?;
+        let _ = state
+            .store
+            .get_connection(&connection_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("connection not found"))?;
         db_source_path(&connection_id, &table)
     } else if let Some(path) = body.source_path.clone() {
         if path.is_empty() || path.contains("..") {
@@ -894,7 +918,10 @@ async fn create_job(
     }
     let spec_json = serde_json::to_string(&spec).map_err(|e| AppError::bad(e.to_string()))?;
     let job = state.store.insert_job(&source, &spec_json).await?;
-    Ok((StatusCode::CREATED, Json(serde_json::to_value(job).unwrap())))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(job).unwrap()),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -975,10 +1002,7 @@ async fn job_result(
                 CONTENT_TYPE,
                 HeaderValue::from_static("application/vnd.apache.parquet"),
             ),
-            (
-                CONTENT_DISPOSITION,
-                HeaderValue::from_str(&disp).unwrap(),
-            ),
+            (CONTENT_DISPOSITION, HeaderValue::from_str(&disp).unwrap()),
         ]),
         bytes,
     ))

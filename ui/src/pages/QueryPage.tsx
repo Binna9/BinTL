@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ScrollText, Play, RefreshCw, Table2 } from "lucide-react";
+import { BookmarkPlus, FileDown, ScrollText, Play, RefreshCw, Table2 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { CatalogTree } from "@/components/CatalogTree";
 import { ConnectionInfoPanel } from "@/components/ConnectionInfoPanel";
@@ -18,6 +18,7 @@ import { PageHeader, PageShell } from "@/components/PageShell";
 import { SplitLayout } from "@/components/SplitLayout";
 import { SqlEditor, type SqlEditorHandle } from "@/components/SqlEditor";
 import { Button, ActionAnchor } from "@/components/ui/button";
+import { FormField } from "@/components/ui/form-field";
 import { ResizeGrip } from "@/components/ui/resize-grip";
 import { Select } from "@/components/ui/select";
 import { PaneHeader } from "@/components/ui/pane-header";
@@ -29,10 +30,13 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { DELIMITER_VALUES } from "@/lib/delimiter";
 import { layout } from "@/lib/layout";
-import { toastError } from "@/lib/notifications";
+import { toastError, toastSuccess } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extractApi";
 import { queryApi } from "@/services/queryApi";
+import { taskApi } from "@/services/taskApi";
+import { workspaceApi } from "@/services/workspaceApi";
+import type { Workspace } from "@/types/workspace";
 import type { CatalogSelection } from "@/types/connection";
 import type { ExtractRecord } from "@/types/extract";
 import type { QueryResult } from "@/types/query";
@@ -127,6 +131,12 @@ export function QueryPage() {
   const [info, setInfo] = useState("");
   const [isResultOpen, setIsResultOpen] = useState(false);
   const [isLogOpen, setIsLogOpen] = useState(false);
+  const [isRegisterOpen, setIsRegisterOpen] = useState(false);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [registerWorkspaceId, setRegisterWorkspaceId] = useState("");
+  const [registerName, setRegisterName] = useState("");
+  const [registerSql, setRegisterSql] = useState("");
+  const [registerBusy, setRegisterBusy] = useState(false);
   const [extractId, setExtractId] = useState("");
   const [extractRow, setExtractRow] = useState<ExtractRecord | null>(null);
   const [extractLog, setExtractLog] = useState("");
@@ -167,8 +177,33 @@ export function QueryPage() {
   }, [browseId]);
 
   useEffect(() => {
-    if (!isResultOpen) setIsLogOpen(false);
+    if (!isResultOpen) {
+      setIsLogOpen(false);
+      setIsRegisterOpen(false);
+    }
   }, [isResultOpen]);
+
+  useEffect(() => {
+    if (!isRegisterOpen) return;
+    let cancelled = false;
+    void workspaceApi
+      .list()
+      .then((response) => {
+        if (cancelled) return;
+        setWorkspaces(response.workspaces);
+        setRegisterWorkspaceId((current) =>
+          response.workspaces.some((item) => item.id === current)
+            ? current
+            : (response.workspaces[0]?.id ?? ""),
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) toastError(messages.workspace.loadError, err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isRegisterOpen, messages]);
 
   useEffect(() => {
     function maxEditorWidth() {
@@ -406,9 +441,44 @@ export function QueryPage() {
     }
   }
 
+  function openRegister() {
+    setRegisterName(selected?.qualified || messages.workspace.untitledExtract(1));
+    setRegisterSql(sql);
+    setIsRegisterOpen(true);
+  }
+
+  async function onRegisterTask() {
+    if (!browseId || !registerWorkspaceId || !registerName.trim() || !registerSql.trim()) return;
+    setRegisterBusy(true);
+    try {
+      await taskApi.create(registerWorkspaceId, {
+        name: registerName.trim(),
+        kind: "extract",
+        config: {
+          connection_id: browseId,
+          source: {
+            type: "query",
+            sql: registerSql,
+            ...(selected?.database ? { database: selected.database } : {}),
+          },
+          delimiter,
+          header,
+        },
+      });
+      setIsRegisterOpen(false);
+      toastSuccess(messages.query.taskRegistered);
+    } catch (err) {
+      toastError(messages.workspace.saveTaskError, err);
+    } finally {
+      setRegisterBusy(false);
+    }
+  }
+
   const canRun = Boolean(browseId && sql.trim());
   const extractBusy = extracting || (extractRow ? isExtractActive(extractRow.status) : false);
   const canExtract = canRun && result?.kind !== "exec" && !extractBusy;
+  const canRegister =
+    canRun && result?.kind !== "exec" && Boolean(registerName.trim() && registerSql.trim());
   const tickerLive = running || extractBusy;
   const tickerItems = useMemo(() => {
     const items: string[] = [];
@@ -682,9 +752,6 @@ export function QueryPage() {
         }
         footer={
           <>
-            <Button type="button" variant="secondary" onClick={() => setIsResultOpen(false)}>
-              {messages.common.close}
-            </Button>
             {extractRow?.status === "succeeded" ? (
               <ActionAnchor
                 variant="secondary"
@@ -696,10 +763,21 @@ export function QueryPage() {
             <Button
               type="button"
               variant="primary"
+              className="gap-2"
               disabled={!canExtract}
               onClick={() => void onExtract()}
             >
+              <FileDown className="size-3.5" aria-hidden="true" />
               {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
+            </Button>
+            <Button
+              type="button"
+              className="gap-2"
+              disabled={!canRun || result?.kind === "exec"}
+              onClick={openRegister}
+            >
+              <BookmarkPlus className="size-3.5" aria-hidden="true" />
+              {messages.query.registerTask}
             </Button>
           </>
         }
@@ -826,6 +904,68 @@ export function QueryPage() {
                 </div>
               )}
             </div>
+      </AppDialog>
+
+      <AppDialog
+        open={isRegisterOpen}
+        title={messages.query.registerTaskTitle}
+        icon={<BookmarkPlus className="size-4 text-accent" aria-hidden="true" />}
+        className="w-[32rem] max-w-[92vw]"
+        minWidth={420}
+        minHeight={320}
+        zIndex={120}
+        defaultOffset={{ x: 40, y: 28 }}
+        onClose={() => setIsRegisterOpen(false)}
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setIsRegisterOpen(false)}>
+              {messages.common.cancel}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={!canRegister || registerBusy || !registerWorkspaceId}
+              onClick={() => void onRegisterTask()}
+            >
+              {registerBusy ? messages.common.saving : messages.common.save}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3 overflow-auto p-4">
+          <p className="text-sm text-text-secondary">{messages.query.registerTaskHint}</p>
+          {workspaces.length === 0 ? (
+            <p className="text-sm text-text-tertiary">{messages.workspace.noWorkspaces}</p>
+          ) : (
+            <FormField label={messages.workspace.workspace}>
+              <Select
+                value={registerWorkspaceId}
+                placeholder={messages.workspace.selectWorkspace}
+                options={workspaces.map((item) => ({ value: item.id, label: item.name }))}
+                onChange={setRegisterWorkspaceId}
+              />
+            </FormField>
+          )}
+          <FormField label={messages.workspace.taskName}>
+            <input
+              className="field-control"
+              value={registerName}
+              placeholder={messages.query.namePlaceholder}
+              onChange={(event) => setRegisterName(event.target.value)}
+            />
+          </FormField>
+          <FormField label={messages.workspace.connection}>
+            <input className="field-control" value={active?.name ?? ""} readOnly />
+          </FormField>
+          <FormField label={messages.workspace.sql}>
+            <textarea
+              className="field-control technical min-h-28 resize-y"
+              value={registerSql}
+              spellCheck={false}
+              onChange={(event) => setRegisterSql(event.target.value)}
+            />
+          </FormField>
+        </div>
       </AppDialog>
 
       <LogDialog

@@ -314,6 +314,9 @@ async fn stream_pg(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = pg_pool(c).await?;
+    sqlx::query("SET default_transaction_read_only = on")
+        .execute(&pool)
+        .await?;
     let mut stream = sqlx::query(sql).fetch(&pool);
     let mut n = 0u64;
     let mut wrote_header = false;
@@ -346,6 +349,9 @@ async fn stream_my(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = my_pool(c).await?;
+    sqlx::query("SET SESSION TRANSACTION READ ONLY")
+        .execute(&pool)
+        .await?;
     let mut stream = sqlx::query(sql).fetch(&pool);
     let mut n = 0u64;
     let mut wrote_header = false;
@@ -378,6 +384,7 @@ async fn stream_sqlite(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = sqlite_pool(c).await?;
+    sqlx::query("PRAGMA query_only = ON").execute(&pool).await?;
     let mut stream = sqlx::query(sql).fetch(&pool);
     let mut n = 0u64;
     let mut wrote_header = false;
@@ -410,27 +417,40 @@ async fn stream_ms(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let mut client = mssql_client(c).await?;
-    let stream = client.simple_query(sql.to_string()).await?;
-    let mut rows = stream.into_row_stream();
-    let mut n = 0u64;
-    let mut wrote_header = false;
-    while let Some(row) = rows.try_next().await? {
-        let cols: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
-        if header && !wrote_header {
-            wtr.write_record(&cols)?;
-            wrote_header = true;
-        }
-        if let Some(lim) = limit {
-            if n >= lim {
-                break;
+    client.execute("BEGIN TRANSACTION", &[]).await?;
+    let result = async {
+        let stream = client.simple_query(sql.to_string()).await?;
+        let mut rows = stream.into_row_stream();
+        let mut n = 0u64;
+        let mut wrote_header = false;
+        while let Some(row) = rows.try_next().await? {
+            let cols: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
+            if header && !wrote_header {
+                wtr.write_record(&cols)?;
+                wrote_header = true;
             }
+            if let Some(lim) = limit {
+                if n >= lim {
+                    break;
+                }
+            }
+            let rec: Vec<String> = (0..cols.len()).map(|i| stringify_ms(&row, i)).collect();
+            wtr.write_record(&rec)?;
+            n += 1;
+            tick_progress(on_progress, n);
         }
-        let rec: Vec<String> = (0..cols.len()).map(|i| stringify_ms(&row, i)).collect();
-        wtr.write_record(&rec)?;
-        n += 1;
-        tick_progress(on_progress, n);
+        drop(rows);
+        Ok::<u64, ConnectError>(n)
     }
-    Ok(n)
+    .await;
+    let rollback = client
+        .execute("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION", &[])
+        .await;
+    match (result, rollback) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error.into()),
+        (Ok(n), Ok(_)) => Ok(n),
+    }
 }
 
 fn colnames_sqlx<R: sqlx::Row>(row: &R) -> Vec<String> {

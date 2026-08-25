@@ -85,6 +85,7 @@
 | GET | `/api/connections/:id/tables` | 테이블 목록 (기존) |
 | GET | `/api/connections/:id/columns?table=` | 컬럼 |
 | GET | `/api/connections/:id/preview?table=&limit=` | 미리보기 |
+| POST | `/api/connections/:id/query` | SQL 미리보기 |
 | POST | `/api/extracts` | 추출 시작. 201 즉시, 백그라운드 실행 |
 | GET | `/api/extracts` | 목록 (`?limit=`, 기본 50, 최대 200) |
 | GET | `/api/extracts/:id` | 상세·상태 |
@@ -96,10 +97,17 @@
 {
   "connection_id": "…",
   "table": "public.users",
+  "sql": null,
+  "database": null,
   "delimiter": "|",
   "header": true
 }
 ```
+
+`table` 대신 `sql`을 보내면 쿼리 전체를 추출한다. `database`는 다중 데이터베이스
+카탈로그에서 선택한 데이터베이스를 전달할 때 사용한다.
+쿼리 추출은 PostgreSQL·MySQL·SQLite 연결을 읽기 전용 세션으로 전환한다.
+MSSQL은 명시적 트랜잭션에서 실행하고 결과를 읽은 뒤 항상 rollback한다.
 
 `delimiter` 예: `,` `|` `;` `^` `tab`. 생략 시 `,`. `header` 생략 시 `true`.
 
@@ -126,9 +134,11 @@ POST /api/jobs
 
 ### 5. 화면
 
-- `/connections`: 저장/테스트 + **browse** → 테이블 클릭 → 컬럼 + 미리보기 + 추출 폼
+- `/connections`: 저장/테스트 + browse → 테이블 선택 후 `/db`로 이동
+- `/db` (`/query` 호환): 카탈로그·SQL 편집·미리보기. 결과 팝업의 결과 내보내기는 서버 파일을 만들고, 작업 등록은 `task_definitions`에 작업 1건만 INSERT한다.
 - `/extracts`: 서버 파일 목록, queued/running이면 2초 폴링, 성공 시 다운로드
-- `/jobs`: 소스에 완료된 extract 선택 가능
+- `/transform`: 완료된 extract가 Dataset 카탈로그에 등록되어 변환 입력으로 표시
+- `/workspace`: 같은 Extract 설정을 재사용 가능한 작업으로 저장하고 반복 실행
 
 ## 레이어
 
@@ -150,7 +160,6 @@ Polars는 추출에 쓰지 않는다.
 - EUC-KR 등 인코딩 선택
 - quote/escape UI
 - 추출 파일 서버에서 직접 편집하는 에디터
-- 변환 빌더 UI — [docs/transform.md](transform.md)
 - Parquet로 추출. 지금은 사람이 볼 구분자 텍스트가 산출물
 - 추출 스케줄
 - 대용량 다운로드 스트리밍. 지금 `GET …/file`은 job result와 같이 파일을 메모리에 올린다
@@ -169,6 +178,7 @@ Polars는 추출에 쓰지 않는다.
 빌드/실행은 이 작업에서 돌리지 않았다. 기동 후:
 
 1. `/connections`에 커넥션 저장, test
-2. browse → 테이블 클릭 → 컬럼/미리보기 확인
+2. browse → 테이블 선택 → `/db`에서 컬럼/SQL 미리보기 확인
 3. delimiter 고르고 extract → `/extracts`에서 succeeded 후 다운로드
-4. `/jobs`에서 그 extract를 소스로 create + run
+4. `/transform`에서 해당 Dataset을 골라 저장·실행
+5. 반복할 추출은 `/workspace`에서 Extract 작업으로 저장·실행

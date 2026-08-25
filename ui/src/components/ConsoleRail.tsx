@@ -30,7 +30,6 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
     to: "/workspace",
     label: messages.nav.workspace,
     icon: <FolderOpen className={iconClassName} />,
-    disabled: true,
   },
   {
     to: "/extract",

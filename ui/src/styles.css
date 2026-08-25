@@ -5,6 +5,8 @@
   --font-sans: "Pretendard Variable", Pretendard, sans-serif;
   --font-mono: "Pretendard Variable", Pretendard, sans-serif;
   --color-workspace: var(--theme-workspace);
+  --color-canvas: var(--theme-canvas);
+  --color-canvas-dot: var(--theme-canvas-dot);
   --color-surface: var(--theme-surface);
   --color-subtle: var(--theme-subtle);
   --color-raised: var(--theme-raised);
@@ -26,6 +28,8 @@
 
 :root {
   --theme-workspace: #f9fafb;
+  --theme-canvas: #ffffff;
+  --theme-canvas-dot: #dce2ea;
   --theme-surface: #ffffff;
   --theme-subtle: #f1f3f5;
   --theme-raised: #fafbfc;
@@ -47,6 +51,8 @@
 
 :root.dark {
   --theme-workspace: #0f1115;
+  --theme-canvas: #1a1e26;
+  --theme-canvas-dot: #2b323c;
   --theme-surface: #171a20;
   --theme-subtle: #20242b;
   --theme-raised: #1b1f26;

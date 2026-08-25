@@ -13,9 +13,13 @@ import { OverviewPage } from "@/pages/OverviewPage";
 import { QueryPage } from "@/pages/QueryPage";
 import { SessionGatePage } from "@/pages/SessionGatePage";
 import { TransformPage } from "@/pages/TransformPage";
+import { WorkspacePage } from "@/pages/WorkspacePage";
 import { layout } from "@/lib/layout";
+import { cn } from "@/lib/cn";
 
 function ConsoleShell() {
+  const loc = useLocation();
+  const studio = loc.pathname.startsWith("/workspace");
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="sticky top-0 z-40 flex h-[4.75rem] shrink-0 items-center justify-between border-b border-border bg-surface px-5 shadow-[0_2px_5px_rgba(15,23,42,0.06)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.28)]">
@@ -29,11 +33,19 @@ function ConsoleShell() {
         maxSize={layout.split.maxNav}
       >
         <ConsoleRail />
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4">
+        <main
+          className={cn(
+            "min-h-0 min-w-0 flex-1",
+            studio ? "overflow-hidden" : "overflow-y-auto p-4",
+          )}
+        >
           <Routes>
             <Route path="/" element={<OverviewPage />} />
             <Route path="/files" element={<FilesPage />} />
             <Route path="/connections" element={<ConnectionsPage />} />
+            <Route path="/workspace" element={<WorkspacePage />} />
+            <Route path="/workspace/:workspaceId" element={<WorkspacePage />} />
+            <Route path="/workspace/:workspaceId/tasks/:taskId" element={<WorkspacePage />} />
             <Route path="/db" element={<QueryPage />} />
             <Route path="/query" element={<QueryPage />} />
             <Route path="/extracts" element={<ExtractResultsPage />} />

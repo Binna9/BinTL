@@ -16,7 +16,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/datasets/{id}", get(get_dataset))
         .route("/api/datasets/{id}/inspect", post(inspect_dataset))
         .route("/api/datasets/{id}/preview", post(preview_dataset))
-        .route("/api/transforms", get(list_transforms).post(create_transform))
+        .route(
+            "/api/transforms",
+            get(list_transforms).post(create_transform),
+        )
         .route(
             "/api/transforms/{id}",
             get(get_transform).patch(update_transform),
@@ -73,6 +76,8 @@ fn dataset_json(store: &Store, row: &DatasetRow) -> Value {
         "inspected_at": row.inspected_at,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+        "workspace_id": row.workspace_id,
+        "producer_task_run_id": row.producer_task_run_id,
         "available": available,
         "origin": if row.kind == "database" {
             json!({
@@ -99,10 +104,7 @@ fn transform_json(row: &TransformRow) -> Value {
 }
 
 fn read_spec_for(row: &DatasetRow) -> TransformSpec {
-    TransformSpec::v2().with_read(
-        row.delimiter.clone(),
-        row.has_header.map(|h| h != 0),
-    )
+    TransformSpec::v2().with_read(row.delimiter.clone(), row.has_header.map(|h| h != 0))
 }
 
 fn merge_read(spec: TransformSpec, row: &DatasetRow) -> TransformSpec {

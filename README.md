@@ -31,6 +31,8 @@ curl -s localhost:8080/api/health
 
 추출(커넥션 → 서버 파일)의 회로·API·화면은 [docs/extract.md](docs/extract.md)에 있다.
 변환(파일 → parquet)의 회로·API·화면은 [docs/transform.md](docs/transform.md)에 있다.
+반복 가능한 작업과 작업 공간 모델은 [docs/workspace.md](docs/workspace.md)에 있다.
+SQLite 테이블·컬럼 한글 설명은 [docs/schema.md](docs/schema.md)에 있다.
 
 기본 계정: `admin` / `admin` (`skip_auth = false`). 개발 편의를 위해 `skip_auth = true` 또는 `ETL_SKIP_AUTH=true`를 허용한다.
 
@@ -56,8 +58,8 @@ cd ui && npm install && npm run dev
 ## 수락 테스트 B — 추출 → 서버 파일
 
 1. `/connections`에서 커넥션 저장 후 `browse`
-2. 테이블을 눌러 컬럼·미리보기를 확인
-3. 구분자를 고르고 `extract` → `/extracts`에서 `succeeded` 후 다운로드
+2. 테이블을 선택해 `/db`에서 컬럼·SQL 미리보기를 확인
+3. 구분자를 고르고 추출 → `/extracts`에서 `succeeded` 후 다운로드
 4. `/transform`에서 그 파일을 소스로 고른 뒤 스텝을 저장하고 실행한다
 
 ## 수락 테스트 C — 업로드 → 변환 → parquet
@@ -68,6 +70,14 @@ cd ui && npm install && npm run dev
 4. 저장 후 실행. 상태가 `succeeded`가 되면 상세에서 result 다운로드
 
 identity에 해당하는 빈 스텝 spec: `{ "version": 2, "steps": [], "sink": "parquet" }`
+
+## 수락 테스트 D — 작업 공간에서 반복 실행
+
+1. `/workspace`에서 작업 공간을 만들거나 기본 작업 공간을 선택한다
+2. DB 테이블 또는 SQL Extract 작업을 저장하고 두 번 실행한다
+3. 각 실행과 Dataset 산출물이 별도로 기록되는지 확인한다
+4. 산출 Dataset을 입력으로 Transform 작업을 저장·실행한다
+5. 최근 실행에서 상태·오류·입력·출력 Dataset을 확인한다
 
 ## 배포
 

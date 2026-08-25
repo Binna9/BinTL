@@ -8,5 +8,6 @@ use crate::config::Config;
 pub struct AppState {
     pub store: storage::Store,
     pub job_tx: mpsc::Sender<String>,
+    pub task_tx: mpsc::Sender<String>,
     pub config: Arc<Config>,
 }

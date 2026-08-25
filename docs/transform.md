@@ -111,6 +111,8 @@ data/extracts/{uploads,databases,api}
 - `/history`: 실행 목록
 - `/load`: 적재는 다음. 지금은 안내만
 - `/jobs/:id`: 실행 상세 (결과 다운로드)
+- `/workspace`: Dataset과 v2 spec을 재사용 가능한 Transform 작업으로 저장하고 반복 실행.
+  작업 실행 결과 parquet도 Dataset으로 등록되어 후속 작업의 입력이 된다
 
 ## 레이어
 
@@ -132,6 +134,7 @@ jobs worker
 - 변환 스케줄
 - 대용량 lazy scan을 미리보기 경로에 완전히 태우기 (지금은 읽기 상한 후 collect)
 - 변환 중 취소
+- 여러 작업을 잇는 Flow. 작업 단위와 Workspace 설계는 [workspace.md](workspace.md)
 
 ## 로컬에서 확인
 
