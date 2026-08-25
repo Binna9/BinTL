@@ -20,6 +20,7 @@ export interface StagedWorkbook {
 export interface WorkbookSheetSelection {
   name: string;
   filename: string;
+  delimiter?: string;
 }
 
 export interface CommitWorkbookResponse {

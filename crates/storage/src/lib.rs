@@ -256,6 +256,7 @@ impl Store {
         &self,
         filename: &str,
         bytes: &[u8],
+        delimiter: Option<&str>,
     ) -> Result<FileMeta, StorageError> {
         let id = Uuid::new_v4().to_string();
         let filename = safe_filename(filename);
@@ -267,16 +268,16 @@ impl Store {
         tokio::fs::write(&dest, bytes).await?;
         if let Err(error) = self
             .upsert_dataset(&DatasetUpsert {
-            id: id.clone(),
-            kind: "upload".into(),
-            extract_id: None,
-            filename: filename.clone(),
-            stored_path: rel.clone(),
-            size_bytes: Some(bytes.len() as i64),
-            delimiter: None,
-            has_header: None,
-            row_count: None,
-        })
+                id: id.clone(),
+                kind: "upload".into(),
+                extract_id: None,
+                filename: filename.clone(),
+                stored_path: rel.clone(),
+                size_bytes: Some(bytes.len() as i64),
+                delimiter: delimiter.map(str::to_string),
+                has_header: None,
+                row_count: None,
+            })
             .await
         {
             let _ = tokio::fs::remove_dir_all(self.uploads_dir().join(&id)).await;

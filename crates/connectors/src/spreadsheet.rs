@@ -41,7 +41,11 @@ pub fn list_sheets(path: &Path) -> Result<Vec<SheetInfo>, ConnectError> {
         .collect())
 }
 
-pub fn export_sheet_to_csv(path: &Path, sheet_name: &str) -> Result<Vec<u8>, ConnectError> {
+pub fn export_sheet_to_csv(
+    path: &Path,
+    sheet_name: &str,
+    delimiter: u8,
+) -> Result<Vec<u8>, ConnectError> {
     spreadsheet_format(path)?;
     let mut workbook =
         open_workbook_auto(path).map_err(|error| ConnectError::Spreadsheet(error.to_string()))?;
@@ -54,7 +58,9 @@ pub fn export_sheet_to_csv(path: &Path, sheet_name: &str) -> Result<Vec<u8>, Con
     let range = workbook
         .worksheet_range(sheet_name)
         .map_err(|error| ConnectError::Spreadsheet(error.to_string()))?;
-    let mut writer = csv::WriterBuilder::new().from_writer(Vec::new());
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(delimiter)
+        .from_writer(Vec::new());
     for row in range.rows() {
         writer.write_record(row.iter().map(ToString::to_string))?;
     }
@@ -154,8 +160,10 @@ mod tests {
                 name: "Sales".into(),
             }]
         );
-        let csv = export_sheet_to_csv(&path, "Sales").unwrap();
+        let csv = export_sheet_to_csv(&path, "Sales", b',').unwrap();
         assert_eq!(String::from_utf8(csv).unwrap(), "name,value\nalpha,1\n");
+        let piped = export_sheet_to_csv(&path, "Sales", b'|').unwrap();
+        assert_eq!(String::from_utf8(piped).unwrap(), "name|value\nalpha|1\n");
         std::fs::remove_file(path).unwrap();
     }
 }

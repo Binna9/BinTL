@@ -27,6 +27,7 @@ type SelectProps = {
   placeholder?: string;
   disabled?: boolean;
   required?: boolean;
+  editable?: boolean;
   className?: string;
   menuClassName?: string;
   onChange?: (value: string) => void;
@@ -57,6 +58,7 @@ export function Select({
   placeholder,
   disabled,
   required,
+  editable = false,
   className,
   menuClassName,
   onChange,
@@ -75,7 +77,7 @@ export function Select({
   const selected = menuOptions.find((option) => option.value === current);
   const listId = useId();
   const instanceId = useId();
-  const triggerRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<MenuPos | null>(null);
@@ -161,20 +163,19 @@ export function Select({
     return () => form.removeEventListener("reset", onReset);
   }, [name, isControlled, fallback]);
 
-  function onKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+  function onKeyDown(event: KeyboardEvent<HTMLButtonElement | HTMLInputElement>) {
     if (disabled) return;
     const opens =
       event.key === "ArrowDown" ||
       event.key === "ArrowUp" ||
-      event.key === "Enter" ||
-      event.key === " ";
+      (!editable && (event.key === "Enter" || event.key === " "));
     if (opens) {
       event.preventDefault();
       if (!open) {
         setOpen(true);
         return;
       }
-      if (event.key === "Enter" || event.key === " ") {
+      if (!editable && (event.key === "Enter" || event.key === " ")) {
         const pick = enabled.find((option) => option.value === active) ?? enabled[0];
         if (pick) commit(pick.value);
         return;
@@ -186,10 +187,21 @@ export function Select({
           : enabled[Math.max(0, index - 1)];
       if (next) setActive(next.value);
     }
+    if (editable && event.key === "Enter" && open) {
+      event.preventDefault();
+      const pick = enabled.find((option) => option.value === active) ?? enabled[0];
+      if (pick) commit(pick.value);
+      return;
+    }
     if (event.key === "Escape" && open) {
       event.preventDefault();
       setOpen(false);
     }
+  }
+
+  function typeValue(next: string) {
+    if (!isControlled) setInternal(next);
+    onChange?.(next);
   }
 
   const display = selected ? (
@@ -202,32 +214,80 @@ export function Select({
     <span className="text-text-tertiary">{placeholder ?? ""}</span>
   );
 
+  const chevron = (
+    <motion.span
+      className="grid shrink-0 place-items-center text-text-tertiary"
+      animate={{ rotate: open ? 180 : 0 }}
+      transition={{ duration: 0.18 }}
+      aria-hidden="true"
+    >
+      <ChevronDown className="size-3.5" />
+    </motion.span>
+  );
+
   return (
     <div className={cn("relative min-w-0 w-full", className)}>
-      {name ? <input type="hidden" name={name} value={current} required={required} /> : null}
-      <button
-        ref={triggerRef}
-        type="button"
-        className={cn("field-control field-select-trigger", open && "field-select-open")}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={listId}
-        disabled={disabled}
-        onClick={() => {
-          if (!disabled) setOpen((was) => !was);
-        }}
-        onKeyDown={onKeyDown}
-      >
-        <span className="min-w-0 flex-1 truncate">{display}</span>
-        <motion.span
-          className="grid shrink-0 place-items-center text-text-tertiary"
-          animate={{ rotate: open ? 180 : 0 }}
-          transition={{ duration: 0.18 }}
-          aria-hidden="true"
+      {name && !editable ? (
+        <input type="hidden" name={name} value={current} required={required} />
+      ) : null}
+      {editable ? (
+        <div
+          ref={(node) => {
+            triggerRef.current = node;
+          }}
+          className={cn("field-control field-select-trigger", open && "field-select-open")}
         >
-          <ChevronDown className="size-3.5" />
-        </motion.span>
-      </button>
+          <input
+            className="min-w-0 flex-1 bg-transparent outline-none"
+            name={name}
+            value={current}
+            disabled={disabled}
+            required={required}
+            autoComplete="off"
+            spellCheck={false}
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-controls={listId}
+            placeholder={placeholder}
+            onChange={(event) => typeValue(event.target.value)}
+            onFocus={() => {
+              if (!disabled) setOpen(true);
+            }}
+            onKeyDown={onKeyDown}
+          />
+          <button
+            type="button"
+            className="grid size-6 shrink-0 place-items-center rounded text-text-tertiary outline-none hover:bg-subtle"
+            tabIndex={-1}
+            disabled={disabled}
+            aria-label="options"
+            onClick={() => {
+              if (!disabled) setOpen((was) => !was);
+            }}
+          >
+            {chevron}
+          </button>
+        </div>
+      ) : (
+        <button
+          ref={(node) => {
+            triggerRef.current = node;
+          }}
+          type="button"
+          className={cn("field-control field-select-trigger", open && "field-select-open")}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-controls={listId}
+          disabled={disabled}
+          onClick={() => {
+            if (!disabled) setOpen((was) => !was);
+          }}
+          onKeyDown={onKeyDown}
+        >
+          <span className="min-w-0 flex-1 truncate">{display}</span>
+          {chevron}
+        </button>
+      )}
       {createPortal(
         <AnimatePresence>
           {open && pos ? (

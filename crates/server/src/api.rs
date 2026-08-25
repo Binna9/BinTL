@@ -123,10 +123,11 @@ async fn upload_file(
         }
     }
     let (original, data) = payload.ok_or_else(|| AppError::bad("multipart field `file` required"))?;
+    require_csv_filename(&original)?;
     let filename = storage::resolve_upload_filename(&original, requested_name.as_deref());
     require_csv_filename(&filename)?;
-    validate_csv(&data)?;
-    let meta = state.store.save_upload(&filename, &data).await?;
+    validate_csv(&data, b',')?;
+    let meta = state.store.save_upload(&filename, &data, None).await?;
     Ok(Json(json!({
         "id": meta.id,
         "filename": meta.filename,
@@ -204,6 +205,8 @@ struct CommitSheet {
 struct CommitSpreadsheetBody {
     staging_id: String,
     sheets: Vec<CommitSheet>,
+    #[serde(default)]
+    delimiter: Option<String>,
 }
 
 async fn commit_spreadsheet(
@@ -215,6 +218,8 @@ async fn commit_spreadsheet(
     }
     let staged = state.store.staged_file(&body.staging_id).await?;
     let selected = normalize_commit_sheets(body.sheets)?;
+    let delimiter_raw = body.delimiter.unwrap_or_else(|| ",".into());
+    let delimiter = parse_delimiter(&delimiter_raw)?;
     let path = staged.path.clone();
     let exports = tokio::task::spawn_blocking(
         move || -> Result<Vec<(String, Vec<u8>)>, connectors::ConnectError> {
@@ -230,7 +235,7 @@ async fn commit_spreadsheet(
                         sheet.name
                     )));
                 }
-                let csv = export_sheet_to_csv(&path, &sheet.name)?;
+                let csv = export_sheet_to_csv(&path, &sheet.name, delimiter)?;
                 exports.push((sheet.filename, csv));
             }
             Ok(exports)
@@ -245,12 +250,17 @@ async fn commit_spreadsheet(
     })??;
 
     for (_, bytes) in &exports {
-        validate_csv(bytes)?;
+        validate_csv(bytes, delimiter)?;
     }
     state.store.delete_stage(&staged.id).await?;
     let mut files = Vec::with_capacity(exports.len());
     for (filename, bytes) in exports {
-        files.push(state.store.save_upload(&filename, &bytes).await?);
+        files.push(
+            state
+                .store
+                .save_upload(&filename, &bytes, Some(delimiter_raw.as_str()))
+                .await?,
+        );
     }
     Ok((StatusCode::CREATED, Json(json!({ "files": files }))))
 }
@@ -301,11 +311,12 @@ fn require_csv_filename(filename: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_csv(bytes: &[u8]) -> Result<(), AppError> {
+fn validate_csv(bytes: &[u8], delimiter: u8) -> Result<(), AppError> {
     if bytes.is_empty() {
         return Err(AppError::bad("csv must not be empty"));
     }
     let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
         .has_headers(false)
         .flexible(false)
         .from_reader(bytes);
@@ -979,11 +990,12 @@ mod tests {
 
     #[test]
     fn csv_upload_validation_requires_rows_and_consistent_width() {
-        assert!(validate_csv(b"name,amount\nalice,10\n").is_ok());
-        assert!(validate_csv(b"").is_err());
-        assert!(validate_csv(b"\n\n").is_err());
-        assert!(validate_csv(b"a,b\n1\n").is_err());
-        assert!(validate_csv(b"a,b\n\"unterminated\n").is_err());
+        assert!(validate_csv(b"name,amount\nalice,10\n", b',').is_ok());
+        assert!(validate_csv(b"name|amount\nalice|10\n", b'|').is_ok());
+        assert!(validate_csv(b"", b',').is_err());
+        assert!(validate_csv(b"\n\n", b',').is_err());
+        assert!(validate_csv(b"a,b\n1\n", b',').is_err());
+        assert!(validate_csv(b"a,b\n\"unterminated\n", b',').is_err());
     }
 
     #[test]

@@ -108,13 +108,13 @@ export function FilesPage() {
     } catch {}
   }
 
-  async function saveWorkbookSheets(sheets: WorkbookSheetSelection[]) {
+  async function saveWorkbookSheets(sheets: WorkbookSheetSelection[], delimiter: string) {
     const workbook = workbooks[0];
     if (!workbook) return;
     setSavingWorkbook(true);
     setFilesError("");
     try {
-      await fileApi.commitWorkbook(workbook.staging_id, sheets);
+      await fileApi.commitWorkbook(workbook.staging_id, sheets, delimiter);
       setWorkbooks((current) => current.slice(1));
       await refreshFiles();
     } catch (err) {
@@ -287,7 +287,7 @@ export function FilesPage() {
         workbook={workbooks[0] ?? null}
         saving={savingWorkbook}
         onClose={() => void closeWorkbook()}
-        onSave={(sheets) => void saveWorkbookSheets(sheets)}
+        onSave={(sheets, delimiter) => void saveWorkbookSheets(sheets, delimiter)}
       />
     </PageShell>
   );

@@ -27,10 +27,14 @@ export const fileApi = {
       body,
     });
   },
-  commitWorkbook: (stagingId: string, sheets: WorkbookSheetSelection[]) =>
+  commitWorkbook: (stagingId: string, sheets: WorkbookSheetSelection[], delimiter?: string) =>
     httpRequest<CommitWorkbookResponse>("/api/files/commit", {
       method: "POST",
-      body: JSON.stringify({ staging_id: stagingId, sheets }),
+      body: JSON.stringify({
+        staging_id: stagingId,
+        sheets,
+        delimiter: delimiter?.trim() || ",",
+      }),
     }),
   cancelWorkbook: (stagingId: string) =>
     httpRequest<void>(`/api/files/stage/${stagingId}`, { method: "DELETE" }),

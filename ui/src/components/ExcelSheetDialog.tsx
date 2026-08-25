@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { FileSpreadsheet, Save } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { Button } from "@/components/ui/button";
+import { FormField } from "@/components/ui/form-field";
 import { NoticeBanner } from "@/components/ui/notice-banner";
+import { Select } from "@/components/ui/select";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { DELIMITER_VALUES, isValidDelimiter } from "@/lib/delimiter";
 import type {
   StagedWorkbook,
   WorkbookSheetSelection,
@@ -30,12 +33,21 @@ export function ExcelSheetDialog({
   workbook: StagedWorkbook | null;
   saving: boolean;
   onClose: () => void;
-  onSave: (sheets: WorkbookSheetSelection[]) => void;
+  onSave: (sheets: WorkbookSheetSelection[], delimiter: string) => void;
 }) {
   const { messages } = useLanguage();
   const [selected, setSelected] = useState<string[]>([]);
   const [filenames, setFilenames] = useState<Record<string, string>>({});
+  const [delimiter, setDelimiter] = useState(",");
   const [error, setError] = useState("");
+  const delimiterOptions = useMemo(
+    () =>
+      DELIMITER_VALUES.map((value) => ({
+        value,
+        label: value === " " ? messages.format.space : value === "tab" ? "tab" : value,
+      })),
+    [messages],
+  );
 
   useEffect(() => {
     if (!workbook) return;
@@ -49,6 +61,7 @@ export function ExcelSheetDialog({
         ]),
       ),
     );
+    setDelimiter(",");
     setError("");
   }, [workbook]);
 
@@ -62,6 +75,10 @@ export function ExcelSheetDialog({
       setError(messages.files.noSheetsSelected);
       return;
     }
+    if (!isValidDelimiter(delimiter)) {
+      setError(messages.files.invalidDelimiter);
+      return;
+    }
     onSave(
       workbook.sheets
         .filter((sheet) => selectedSet.has(sheet.name))
@@ -69,6 +86,7 @@ export function ExcelSheetDialog({
           name: sheet.name,
           filename: filenames[sheet.name]?.trim() || `${safePart(sheet.name)}.csv`,
         })),
+      delimiter.trim() || delimiter,
     );
   }
 
@@ -100,6 +118,18 @@ export function ExcelSheetDialog({
           <p className="text-xs leading-5 text-text-secondary">
             {messages.files.sheetDialogDescription}
           </p>
+          <div className="mt-3 w-48" title={messages.connectionsPage.delimiterTitle}>
+            <FormField label={messages.common.delimiter}>
+              <Select
+                editable
+                className="technical"
+                value={delimiter}
+                disabled={saving}
+                options={delimiterOptions}
+                onChange={setDelimiter}
+              />
+            </FormField>
+          </div>
           <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-subtle px-3 py-2">
             <label className="flex items-center gap-2 text-xs font-medium text-text">
               <input
