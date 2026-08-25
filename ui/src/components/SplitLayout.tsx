@@ -1,5 +1,6 @@
 import {
   Children,
+  CSSProperties,
   Fragment,
   MouseEvent as ReactMouseEvent,
   ReactNode,
@@ -18,6 +19,7 @@ export function SplitLayout({
   maxSize,
   fill = true,
   className,
+  style,
   children,
 }: {
   direction?: "horizontal" | "vertical";
@@ -26,6 +28,7 @@ export function SplitLayout({
   maxSize?: number;
   fill?: boolean;
   className?: string;
+  style?: CSSProperties;
   children: ReactNode;
 }) {
   const { messages } = useLanguage();
@@ -91,6 +94,7 @@ export function SplitLayout({
         isRow ? "flex-row" : "flex-col",
         className,
       )}
+      style={style}
     >
       {panes.map((pane, index) => {
         const last = index === panes.length - 1;

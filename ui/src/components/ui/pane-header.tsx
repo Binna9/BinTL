@@ -17,13 +17,13 @@ export function PaneHeader({
   return (
     <header
       className={cn(
-        "flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border bg-raised px-3",
+        "flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border bg-surface px-3",
         className,
       )}
     >
       <div className="flex min-w-0 items-center gap-2">
         <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
-        <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
+        <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-text">
           {title}
         </span>
         {meta ? (

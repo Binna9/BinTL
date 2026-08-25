@@ -605,6 +605,7 @@ mod tests {
             parse_db_source(&p).unwrap(),
             ("abc".into(), "public.t".into())
         );
+        assert!(parse_db_source("extracts/uploads/x/y.csv").is_none());
         assert!(parse_db_source("uploads/x/y.csv").is_none());
     }
 

@@ -52,7 +52,7 @@ export function JobRunPage() {
         description={`${jobRun.source_path} → ${jobRun.output_path ?? messages.jobRun.outputPending}`}
         actions={
           <>
-            <ActionLink to="/jobs">{messages.jobRun.back}</ActionLink>
+            <ActionLink to="/history">{messages.jobRun.back}</ActionLink>
             <Button
               variant="primary"
               type="button"
@@ -91,9 +91,9 @@ export function JobRunPage() {
         ) : null}
       </Panel>
 
-      <Panel className="min-h-0 flex-1">
+      <Panel>
         <PanelHeader title={messages.jobRun.logs} description={messages.jobRun.refresh} />
-        <pre className="m-0 h-[calc(100vh-22rem)] min-h-72 overflow-auto bg-[#171a1f] p-4 font-sans text-[12px] leading-5 text-[#d7dce2]">
+        <pre className="m-0 min-h-72 overflow-auto bg-[#171a1f] p-4 font-sans text-[12px] leading-5 text-[#d7dce2]">
           {jobRun.logs.map((log) => `${fmtWhen(log.ts)}  ${log.level.padEnd(5)}  ${log.message}`).join("\n") ||
             messages.empty.logs}
         </pre>

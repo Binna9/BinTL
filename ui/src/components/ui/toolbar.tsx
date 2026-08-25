@@ -11,7 +11,7 @@ export function Toolbar({
   return (
     <div
       className={cn(
-        "flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-border bg-raised px-3 py-1.5",
+        "flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-border bg-surface px-3 py-1.5",
         className,
       )}
     >

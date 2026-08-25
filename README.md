@@ -27,9 +27,10 @@ curl -s localhost:8080/api/health
 
 브라우저: `http://localhost:8080`
 
-`data/`가 없으면 기동 시 만든다 (`etl.db`, `uploads/`, `outputs/`, `extracts/`).
+`data/`가 없으면 기동 시 만든다 (`etl.db`, `extracts/uploads|databases|api`, `outputs/`, `logs/{extracts,jobs,query,files,connections}`).
 
 추출(커넥션 → 서버 파일)의 회로·API·화면은 [docs/extract.md](docs/extract.md)에 있다.
+변환(파일 → parquet)의 회로·API·화면은 [docs/transform.md](docs/transform.md)에 있다.
 
 기본 계정: `admin` / `admin` (`skip_auth = false`). 개발 편의를 위해 `skip_auth = true` 또는 `ETL_SKIP_AUTH=true`를 허용한다.
 
@@ -57,15 +58,16 @@ cd ui && npm install && npm run dev
 1. `/connections`에서 커넥션 저장 후 `browse`
 2. 테이블을 눌러 컬럼·미리보기를 확인
 3. 구분자를 고르고 `extract` → `/extracts`에서 `succeeded` 후 다운로드
-4. `/jobs`에서 그 extract를 소스로 create + run 해도 된다
+4. `/transform`에서 그 파일을 소스로 고른 뒤 스텝을 저장하고 실행한다
 
-## 수락 테스트 C — 업로드 → job → parquet
+## 수락 테스트 C — 업로드 → 변환 → parquet
 
 1. `/files`에서 CSV 하나 업로드
-2. `/jobs`에서 해당 파일로 `create + run identity`
-3. 상태가 `succeeded`가 되면 상세에서 result 다운로드
+2. `/transform`에서 해당 파일을 선택해 내용을 확인한다
+3. (선택) 컬럼 선택·필터 스텝을 넣고 미리보기
+4. 저장 후 실행. 상태가 `succeeded`가 되면 상세에서 result 다운로드
 
-identity spec: `{ "version": 1, "op": "identity", "sink": "parquet" }`
+identity에 해당하는 빈 스텝 spec: `{ "version": 2, "steps": [], "sink": "parquet" }`
 
 ## 배포
 
@@ -76,9 +78,17 @@ bintl
 config.toml
 data/          # 없으면 기동 시 생성
   etl.db
-  uploads/
-  outputs/
   extracts/
+    uploads/     # 올린 파일
+    databases/   # DB 추출
+    api/         # API 추출 (예약)
+  outputs/       # 변환 결과
+  logs/          # 작업 진행 로그 (화면/상황별)
+    extracts/    # 파일 생성
+    jobs/        # 변환·적재
+    query/       # 긴 조회 (예약)
+    files/       # 업로드 (예약)
+    connections/ # 커넥션 테스트 (예약)
 ```
 
 ```bash

@@ -58,3 +58,14 @@ impl From<storage::StorageError> for AppError {
         }
     }
 }
+
+impl From<engine::EngineError> for AppError {
+    fn from(err: engine::EngineError) -> Self {
+        match &err {
+            engine::EngineError::Spec(message) => Self::bad(message.clone()),
+            engine::EngineError::UnsupportedOp(_)
+            | engine::EngineError::UnsupportedSink(_) => Self::bad(err.to_string()),
+            _ => Self::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        }
+    }
+}

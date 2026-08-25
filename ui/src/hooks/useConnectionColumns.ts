@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { connectionApi } from "@/services/connectionApi";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import type {
@@ -13,27 +13,44 @@ export function useConnectionColumns(
   const { messages } = useLanguage();
   const [connectionColumns, setConnectionColumns] = useState<DatabaseColumn[]>([]);
   const [connectionColumnsError, setConnectionColumnsError] = useState("");
+  const [columnsLoading, setColumnsLoading] = useState(false);
 
-  useEffect(() => {
+  const refreshColumns = useCallback(async () => {
     if (!connectionId || !selection) {
       setConnectionColumns([]);
       setConnectionColumnsError("");
-      return;
+      return [];
     }
 
-    void connectionApi
-      .getColumns(connectionId, selection.qualified, selection.database)
-      .then((response) => {
-        setConnectionColumns(response.columns);
-        setConnectionColumnsError("");
-      })
-      .catch((error) => {
-        setConnectionColumns([]);
-        setConnectionColumnsError(
-          error instanceof Error ? error.message : messages.errors.columns,
-        );
-      });
+    setColumnsLoading(true);
+    try {
+      const response = await connectionApi.getColumns(
+        connectionId,
+        selection.qualified,
+        selection.database,
+      );
+      setConnectionColumns(response.columns);
+      setConnectionColumnsError("");
+      return response.columns;
+    } catch (error) {
+      setConnectionColumns([]);
+      setConnectionColumnsError(
+        error instanceof Error ? error.message : messages.errors.columns,
+      );
+      return null;
+    } finally {
+      setColumnsLoading(false);
+    }
   }, [connectionId, selection, messages]);
 
-  return { connectionColumns, connectionColumnsError };
+  useEffect(() => {
+    void refreshColumns();
+  }, [refreshColumns]);
+
+  return {
+    connectionColumns,
+    connectionColumnsError,
+    columnsLoading,
+    refreshColumns,
+  };
 }

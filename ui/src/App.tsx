@@ -6,11 +6,13 @@ import { TopSubmenu } from "@/components/TopSubmenu";
 import { ConnectionsPage } from "@/pages/ConnectionsPage";
 import { ExtractResultsPage } from "@/pages/ExtractResultsPage";
 import { FilesPage } from "@/pages/FilesPage";
+import { HistoryPage } from "@/pages/HistoryPage";
 import { JobRunPage } from "@/pages/JobRunPage";
-import { JobsPage } from "@/pages/JobsPage";
+import { LoadPage } from "@/pages/LoadPage";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { QueryPage } from "@/pages/QueryPage";
 import { SessionGatePage } from "@/pages/SessionGatePage";
+import { TransformPage } from "@/pages/TransformPage";
 import { layout } from "@/lib/layout";
 
 function ConsoleShell() {
@@ -27,7 +29,7 @@ function ConsoleShell() {
         maxSize={layout.split.maxNav}
       >
         <ConsoleRail />
-        <main className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto p-5">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-5">
           <Routes>
             <Route path="/" element={<OverviewPage />} />
             <Route path="/files" element={<FilesPage />} />
@@ -35,10 +37,11 @@ function ConsoleShell() {
             <Route path="/db" element={<QueryPage />} />
             <Route path="/query" element={<QueryPage />} />
             <Route path="/extracts" element={<ExtractResultsPage />} />
-            <Route path="/jobs" element={<JobsPage />} />
-            <Route path="/transform" element={<JobsPage />} />
-            <Route path="/load" element={<JobsPage />} />
-            <Route path="/history" element={<JobsPage />} />
+            <Route path="/transform" element={<TransformPage />} />
+            <Route path="/transform/:id" element={<TransformPage />} />
+            <Route path="/load" element={<LoadPage />} />
+            <Route path="/history" element={<HistoryPage />} />
+            <Route path="/jobs" element={<Navigate to="/history" replace />} />
             <Route path="/jobs/:id" element={<JobRunPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

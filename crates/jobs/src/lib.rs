@@ -114,7 +114,7 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
     let spec = TransformSpec::parse_json(&job.spec_json)?;
     let input = if let Some((conn_id, table)) = parse_db_source(&job.source_path) {
         let live = store.live_connection(&conn_id).await?;
-        let csv_rel = format!("uploads/{job_id}/extract.csv");
+        let csv_rel = storage::job_db_extract_rel(job_id);
         let csv_path = store.resolve(&csv_rel);
         store
             .append_log(
@@ -123,7 +123,25 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
                 &format!("extract {}.{} {}", live.driver, live.name, table),
             )
             .await?;
-        let n = extract_table(&live, &table, &csv_path, &ExtractOptions::default()).await?;
+        let store_progress = store.clone();
+        let job_progress_id = job_id.to_string();
+        let on_progress = move |n: u64| {
+            let store = store_progress.clone();
+            let id = job_progress_id.clone();
+            tokio::spawn(async move {
+                let _ = store
+                    .append_log(&id, "info", &format!("extracting {n} rows"))
+                    .await;
+            });
+        };
+        let n = extract_table(
+            &live,
+            &table,
+            &csv_path,
+            &ExtractOptions::default(),
+            Some(&on_progress),
+        )
+        .await?;
         store
             .append_log(job_id, "info", &format!("extracted {n} rows"))
             .await?;

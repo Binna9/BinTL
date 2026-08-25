@@ -16,4 +16,6 @@ export const extractApi = {
       body: JSON.stringify(request),
     }),
   getDownloadUrl: (extractId: string) => `/api/extracts/${extractId}/file`,
+  getLogs: (extractId: string) =>
+    httpRequest<{ id: string; text: string }>(`/api/extracts/${extractId}/logs`),
 };

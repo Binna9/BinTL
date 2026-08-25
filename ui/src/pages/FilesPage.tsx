@@ -63,7 +63,7 @@ export function FilesPage() {
         </PanelBody>
       </Panel>
 
-      <Panel className="min-h-0 flex-1">
+      <Panel>
         <Toolbar>
           <ToolbarGroup>
             <span className="text-[13px] font-semibold">{messages.files.stored}</span>

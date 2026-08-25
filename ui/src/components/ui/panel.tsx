@@ -29,7 +29,7 @@ export function PanelHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="flex min-h-11 items-center justify-between gap-4 border-b border-border px-4 py-2.5">
+    <header className="flex min-h-11 items-center justify-between gap-4 border-b border-border bg-surface px-4 py-2.5">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-text">{title}</h2>
         {description ? (

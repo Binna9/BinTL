@@ -13,7 +13,7 @@
 커넥션
   → 테이블 / 컬럼 / 미리보기 (클라이언트처럼)
   → 구분자·헤더 선택
-  → 서버 파일 생성  (data/extracts/{id}/…)
+  → 서버 파일 생성  (data/extracts/databases/{id}/…)
   → 그 파일을 변환(Polars) · 적재의 입력으로 사용
 ```
 
@@ -55,12 +55,18 @@
 
 - 마이그레이션 `0003_extracts.sql`
 - 테이블 `extracts`는 접속정보와 같이 `data/etl.db`에 영구 보관
-- 파일 위치: `{data_dir}/extracts/{extract_id}/{filename}`
+- 파일 위치: `{data_dir}/extracts/{kind}/{id}/{filename}`
+  - `uploads/` — 브라우저에서 올린 파일
+  - `databases/` — DB 테이블/쿼리 추출
+  - `api/` — HTTP 소스 (아직 비어 있음, 기동 시 디렉터리만 생성)
 - 파일 내용 자체는 DB BLOB에 넣지 않는다
-- `Store::open`이 `extracts/` 디렉터리를 만든다
+- `Store::open`이 `extracts/{uploads,databases,api}` 와 `outputs/` 를 만든다
+- 예전 `data/uploads/` · `data/extracts/{id}/` 는 기동 시 새 경로로 옮긴다
 - connections 삭제와 FK를 걸지 않았다. 커넥션을 지워도 추출 파일은 남는다. 목록의 `connection_name`만 빈 문자열이 된다
 
 상태: `queued` → `running` → `succeeded` | `failed`
+
+진행 로그: `data/logs/extracts/{id}.log`. 1행, 이후 1만 행마다 기록. `running` 중 `row_count`를 2초마다 갱신해 `/extracts` 목록에서 쓰는 중 행 수를 보여준다. `GET /api/extracts/:id/logs`로 파일 내용을 읽을 수 있다.
 
 파일 이름:
 
@@ -110,7 +116,7 @@ POST /api/jobs
 
 `extract_id`로 잡을 만들면 spec에 `delimiter` / `has_header`를 넣는다. 엔진이 파이프·탭 파일을 콤마로 오독하지 않게 하기 위함이다.
 
-파이프라인 잡이 `db:{uuid}/{table}` 소스를 쓸 때는 같은 `extract_table` + `ExtractOptions::default()`(콤마, 헤더 있음)를 쓴다. 산출은 `uploads/{job_id}/extract.csv` (기존 경로). 추출 전용 화면의 파일과는 별개다.
+파이프라인 잡이 `db:{uuid}/{table}` 소스를 쓸 때는 같은 `extract_table` + `ExtractOptions::default()`(콤마, 헤더 있음)를 쓴다. 산출은 `extracts/databases/{job_id}/extract.csv`. 추출 전용 화면의 파일과는 별개다.
 
 ### 4. 엔진
 
@@ -144,7 +150,7 @@ Polars는 추출에 쓰지 않는다.
 - EUC-KR 등 인코딩 선택
 - quote/escape UI
 - 추출 파일 서버에서 직접 편집하는 에디터
-- 변환 빌더 UI (select/filter/rename 이상은 다음)
+- 변환 빌더 UI — [docs/transform.md](transform.md)
 - Parquet로 추출. 지금은 사람이 볼 구분자 텍스트가 산출물
 - 추출 스케줄
 - 대용량 다운로드 스트리밍. 지금 `GET …/file`은 job result와 같이 파일을 메모리에 올린다

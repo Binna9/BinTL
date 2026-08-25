@@ -28,7 +28,7 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
     Router::new()
         .route("/api/files", post(upload_file).get(list_files))
         .route("/api/connections", post(create_connection).get(list_connections))
-        .route("/api/connections/{id}", get(get_connection).delete(delete_connection))
+        .route("/api/connections/{id}", get(get_connection).put(update_connection).delete(delete_connection))
         .route("/api/connections/{id}/test", post(test_saved_connection))
         .route("/api/connections/{id}/tables", get(connection_tables))
         .route("/api/connections/{id}/databases", get(connection_databases))
@@ -37,13 +37,16 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
         .route("/api/connections/{id}/columns", get(connection_columns))
         .route("/api/connections/{id}/preview", get(connection_preview))
         .route("/api/connections/{id}/query", post(connection_query))
+        .route("/api/logs/{area}/{id}", get(process_logs))
         .route("/api/extracts", post(create_extract).get(list_extracts))
         .route("/api/extracts/{id}", get(get_extract))
+        .route("/api/extracts/{id}/logs", get(extract_logs))
         .route("/api/extracts/{id}/file", get(extract_file))
         .route("/api/jobs", post(create_job).get(list_jobs))
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/run", post(run_job))
         .route("/api/jobs/{id}/result", get(job_result))
+        .merge(crate::transform::routes())
         .layer(DefaultBodyLimit::max(max_upload_bytes))
 }
 
@@ -128,6 +131,7 @@ struct CreateConnectionBody {
     port: Option<u16>,
     database: String,
     username: String,
+    #[serde(default)]
     password: String,
     #[serde(default)]
     ssl: bool,
@@ -161,6 +165,31 @@ async fn create_connection(
         })
         .await?;
     Ok((StatusCode::CREATED, Json(serde_json::to_value(row).unwrap())))
+}
+
+async fn update_connection(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CreateConnectionBody>,
+) -> Result<Json<Value>, AppError> {
+    let driver = body.driver.to_ascii_lowercase();
+    let row = state
+        .store
+        .update_connection(
+            &id,
+            storage::NewConnection {
+                name: body.name,
+                driver: driver.clone(),
+                host: body.host,
+                port: default_port(&driver, body.port),
+                database: body.database,
+                username: body.username,
+                password: body.password,
+                ssl: body.ssl,
+            },
+        )
+        .await?;
+    Ok(Json(serde_json::to_value(row).unwrap()))
 }
 
 async fn list_connections(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
@@ -305,6 +334,8 @@ struct RunQueryBody {
     limit: Option<u32>,
     #[serde(default)]
     database: Option<String>,
+    #[serde(default)]
+    log_id: Option<String>,
 }
 
 async fn connection_query(
@@ -318,17 +349,75 @@ async fn connection_query(
     }
     let live = state.store.live_connection(&id).await?;
     let live = with_database(&live, body.database.as_deref());
-    let limit = body.limit.unwrap_or(100).clamp(1, 500);
-    let out = run_sql(&live, &sql, limit).await?;
-    Ok(Json(json!({
-        "kind": out.kind,
-        "columns": out.columns,
-        "rows": out.rows,
-        "row_count": out.row_count,
-        "truncated": out.truncated,
-        "elapsed_ms": out.elapsed_ms,
-        "limit": limit,
-    })))
+    let limit = body.limit.unwrap_or(100).clamp(1, 1000);
+    let log_id = body
+        .log_id
+        .as_deref()
+        .filter(|value| storage::safe_log_id(value))
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let log = storage::ProcessLog::create(&state.store.data_dir, storage::LOG_QUERY, &log_id).ok();
+    if let Some(log) = &log {
+        log.write(
+            "info",
+            "started",
+            &format!(
+                "preview_limit={limit} driver={} database={} sql={}",
+                live.driver,
+                live.database,
+                compact_sql(&sql)
+            ),
+        );
+    }
+    let progress_log = log.clone();
+    let on_progress = move |n: u64| {
+        if let Some(log) = &progress_log {
+            log.write("info", "reading", &format!("rows={n}"));
+        }
+    };
+    match run_sql(&live, &sql, limit, Some(&on_progress)).await {
+        Ok(out) => {
+            if let Some(log) = &log {
+                log.write(
+                    "info",
+                    "succeeded",
+                    &format!("rows={} elapsed_ms={}", out.row_count, out.elapsed_ms),
+                );
+            }
+            Ok(Json(json!({
+                "kind": out.kind,
+                "columns": out.columns,
+                "rows": out.rows,
+                "row_count": out.row_count,
+                "truncated": out.truncated,
+                "elapsed_ms": out.elapsed_ms,
+                "limit": limit,
+                "log_id": log_id,
+            })))
+        }
+        Err(err) => {
+            if let Some(log) = &log {
+                log.write("error", "failed", &err.to_string());
+            }
+            Err(err.into())
+        }
+    }
+}
+
+async fn process_logs(
+    State(state): State<AppState>,
+    Path((area, id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    let text = state.store.read_process_log(&area, &id).await?;
+    Ok(Json(json!({ "area": area, "id": id, "text": text })))
+}
+
+fn compact_sql(sql: &str) -> String {
+    let compact = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= 240 {
+        return compact;
+    }
+    format!("{}…", compact.chars().take(240).collect::<String>())
 }
 
 #[derive(Deserialize)]
@@ -413,6 +502,22 @@ async fn get_extract(
         .await?
         .ok_or_else(|| AppError::not_found("extract not found"))?;
     Ok(Json(serde_json::to_value(row).unwrap()))
+}
+
+async fn extract_logs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let _row = state
+        .store
+        .get_extract(&id)
+        .await?
+        .ok_or_else(|| AppError::not_found("extract not found"))?;
+    let text = state
+        .store
+        .read_process_log(storage::LOG_EXTRACTS, &id)
+        .await?;
+    Ok(Json(json!({ "id": id, "text": text })))
 }
 
 async fn extract_file(

@@ -13,6 +13,7 @@ path = "src/main.rs"
 jobs = { path = "../jobs" }
 storage = { path = "../storage" }
 connectors = { path = "../connectors" }
+engine = { path = "../engine" }
 axum = { version = "0.8", features = ["multipart", "macros"] }
 tokio = { workspace = true }
 tower-http = { version = "0.6", features = ["fs", "trace", "cors", "limit"] }

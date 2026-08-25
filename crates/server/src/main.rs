@@ -8,6 +8,7 @@ mod config;
 mod error;
 mod extract;
 mod state;
+mod transform;
 mod ui;
 
 use std::sync::Arc;
@@ -75,6 +76,8 @@ async fn main() {
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
             axum::http::Method::DELETE,
             axum::http::Method::OPTIONS,
         ]);

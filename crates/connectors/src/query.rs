@@ -8,6 +8,7 @@ use serde::Serialize;
 use sqlx::Column;
 use storage::LiveConnection;
 
+use crate::extract::{tick_progress, tick_progress_at};
 use crate::{
     driver_family, mssql_client, my_pool, pg_pool, sqlite_pool, stringify_ms, stringify_my,
     stringify_pg, stringify_sqlite, ConnectError, ExtractOptions,
@@ -61,14 +62,16 @@ pub async fn run_sql(
     c: &LiveConnection,
     sql: &str,
     limit: u32,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<QueryOutcome, ConnectError> {
     let sql = normalize_sql(sql)?;
     let started = Instant::now();
     let family = driver_family(&c.driver)?;
     let outcome = match sql_kind(&sql) {
         SqlKind::Rows => {
-            let limit = u64::from(limit.clamp(1, 500));
-            fetch_rows(c, family, &sql, Some(limit)).await?
+            let limit = u64::from(limit.clamp(1, 1000));
+            let capped = apply_preview_limit(family, &sql, limit);
+            fetch_rows(c, family, &capped, Some(limit), on_progress).await?
         }
         SqlKind::Exec => exec_sql(c, family, &sql).await?,
     };
@@ -83,6 +86,7 @@ pub async fn extract_query(
     sql: &str,
     dest: &Path,
     opts: &ExtractOptions,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let sql = normalize_sql(sql)?;
     if sql_kind(&sql) != SqlKind::Rows {
@@ -99,10 +103,10 @@ pub async fn extract_query(
         .from_path(dest)?;
     let family = driver_family(&c.driver)?;
     let n = match family {
-        "postgres" => stream_pg(c, &sql, &mut wtr, opts.header, None).await?,
-        "mysql" => stream_my(c, &sql, &mut wtr, opts.header, None).await?,
-        "sqlite" => stream_sqlite(c, &sql, &mut wtr, opts.header, None).await?,
-        "mssql" => stream_ms(c, &sql, &mut wtr, opts.header, None).await?,
+        "postgres" => stream_pg(c, &sql, &mut wtr, opts.header, None, on_progress).await?,
+        "mysql" => stream_my(c, &sql, &mut wtr, opts.header, None, on_progress).await?,
+        "sqlite" => stream_sqlite(c, &sql, &mut wtr, opts.header, None, on_progress).await?,
+        "mssql" => stream_ms(c, &sql, &mut wtr, opts.header, None, on_progress).await?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     wtr.flush()?;
@@ -114,13 +118,14 @@ async fn fetch_rows(
     family: &str,
     sql: &str,
     limit: Option<u64>,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<QueryOutcome, ConnectError> {
     let mut sink = RowSink::new(limit);
     match family {
-        "postgres" => collect_pg(c, sql, &mut sink).await?,
-        "mysql" => collect_my(c, sql, &mut sink).await?,
-        "sqlite" => collect_sqlite(c, sql, &mut sink).await?,
-        "mssql" => collect_ms(c, sql, &mut sink).await?,
+        "postgres" => collect_pg(c, sql, &mut sink, on_progress).await?,
+        "mysql" => collect_my(c, sql, &mut sink, on_progress).await?,
+        "sqlite" => collect_sqlite(c, sql, &mut sink, on_progress).await?,
+        "mssql" => collect_ms(c, sql, &mut sink, on_progress).await?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
     Ok(sink.into_outcome())
@@ -215,6 +220,7 @@ async fn collect_pg(
     c: &LiveConnection,
     sql: &str,
     sink: &mut RowSink,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<(), ConnectError> {
     let pool = pg_pool(c).await?;
     let mut stream = sqlx::query(sql).fetch(&pool);
@@ -224,6 +230,7 @@ async fn collect_pg(
         if !sink.push(cols, rec) {
             break;
         }
+        tick_progress_at(on_progress, sink.rows.len() as u64, 10);
     }
     pool.close().await;
     Ok(())
@@ -233,6 +240,7 @@ async fn collect_my(
     c: &LiveConnection,
     sql: &str,
     sink: &mut RowSink,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<(), ConnectError> {
     let pool = my_pool(c).await?;
     let mut stream = sqlx::query(sql).fetch(&pool);
@@ -242,6 +250,7 @@ async fn collect_my(
         if !sink.push(cols, rec) {
             break;
         }
+        tick_progress_at(on_progress, sink.rows.len() as u64, 10);
     }
     pool.close().await;
     Ok(())
@@ -251,6 +260,7 @@ async fn collect_sqlite(
     c: &LiveConnection,
     sql: &str,
     sink: &mut RowSink,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<(), ConnectError> {
     let pool = sqlite_pool(c).await?;
     let mut stream = sqlx::query(sql).fetch(&pool);
@@ -260,6 +270,7 @@ async fn collect_sqlite(
         if !sink.push(cols, rec) {
             break;
         }
+        tick_progress_at(on_progress, sink.rows.len() as u64, 10);
     }
     pool.close().await;
     Ok(())
@@ -269,8 +280,14 @@ async fn collect_ms(
     c: &LiveConnection,
     sql: &str,
     sink: &mut RowSink,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<(), ConnectError> {
     let mut client = mssql_client(c).await?;
+    if let Some(n) = sink.limit {
+        client
+            .execute(format!("SET ROWCOUNT {n}"), &[])
+            .await?;
+    }
     let stream = client.simple_query(sql.to_string()).await?;
     let mut rows = stream.into_row_stream();
     while let Some(row) = rows.try_next().await? {
@@ -279,6 +296,11 @@ async fn collect_ms(
         if !sink.push(cols, rec) {
             break;
         }
+        tick_progress_at(on_progress, sink.rows.len() as u64, 10);
+    }
+    drop(rows);
+    if sink.limit.is_some() {
+        let _ = client.execute("SET ROWCOUNT 0", &[]).await;
     }
     Ok(())
 }
@@ -289,6 +311,7 @@ async fn stream_pg(
     wtr: &mut csv::Writer<File>,
     header: bool,
     limit: Option<u64>,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = pg_pool(c).await?;
     let mut stream = sqlx::query(sql).fetch(&pool);
@@ -308,6 +331,7 @@ async fn stream_pg(
         let rec: Vec<String> = (0..cols.len()).map(|i| stringify_pg(&row, i)).collect();
         wtr.write_record(&rec)?;
         n += 1;
+        tick_progress(on_progress, n);
     }
     pool.close().await;
     Ok(n)
@@ -319,6 +343,7 @@ async fn stream_my(
     wtr: &mut csv::Writer<File>,
     header: bool,
     limit: Option<u64>,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = my_pool(c).await?;
     let mut stream = sqlx::query(sql).fetch(&pool);
@@ -338,6 +363,7 @@ async fn stream_my(
         let rec: Vec<String> = (0..cols.len()).map(|i| stringify_my(&row, i)).collect();
         wtr.write_record(&rec)?;
         n += 1;
+        tick_progress(on_progress, n);
     }
     pool.close().await;
     Ok(n)
@@ -349,6 +375,7 @@ async fn stream_sqlite(
     wtr: &mut csv::Writer<File>,
     header: bool,
     limit: Option<u64>,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = sqlite_pool(c).await?;
     let mut stream = sqlx::query(sql).fetch(&pool);
@@ -368,6 +395,7 @@ async fn stream_sqlite(
         let rec: Vec<String> = (0..cols.len()).map(|i| stringify_sqlite(&row, i)).collect();
         wtr.write_record(&rec)?;
         n += 1;
+        tick_progress(on_progress, n);
     }
     pool.close().await;
     Ok(n)
@@ -379,6 +407,7 @@ async fn stream_ms(
     wtr: &mut csv::Writer<File>,
     header: bool,
     limit: Option<u64>,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let mut client = mssql_client(c).await?;
     let stream = client.simple_query(sql.to_string()).await?;
@@ -399,12 +428,25 @@ async fn stream_ms(
         let rec: Vec<String> = (0..cols.len()).map(|i| stringify_ms(&row, i)).collect();
         wtr.write_record(&rec)?;
         n += 1;
+        tick_progress(on_progress, n);
     }
     Ok(n)
 }
 
 fn colnames_sqlx<R: sqlx::Row>(row: &R) -> Vec<String> {
     row.columns().iter().map(|c| c.name().to_string()).collect()
+}
+
+/// Cap a preview SELECT at the DB so large tables do not stream unbounded rows.
+pub fn apply_preview_limit(family: &str, sql: &str, limit: u64) -> String {
+    match first_keyword(sql).as_str() {
+        "show" | "explain" | "pragma" | "describe" | "desc" | "table" => sql.to_string(),
+        "select" | "with" | "values" => match family {
+            "mssql" => sql.to_string(),
+            _ => format!("SELECT * FROM (\n{sql}\n) AS _bintl_preview LIMIT {limit}"),
+        },
+        _ => sql.to_string(),
+    }
 }
 
 fn strip_trailing_semicolons(sql: &str) -> String {
@@ -514,5 +556,16 @@ mod tests {
         assert_eq!(sql_kind("/* x */ -- y\nWITH a AS (SELECT 1) SELECT * FROM a"), SqlKind::Rows);
         assert_eq!(sql_kind("UPDATE t SET a = 1"), SqlKind::Exec);
         assert!(normalize_sql("SELECT ';'").is_ok());
+    }
+
+    #[test]
+    fn preview_limit_wraps_select() {
+        let sql = apply_preview_limit("postgres", "SELECT * FROM public.orders", 100);
+        assert!(sql.contains("LIMIT 100"));
+        assert!(sql.contains("public.orders"));
+        let show = apply_preview_limit("postgres", "SHOW search_path", 100);
+        assert_eq!(show, "SHOW search_path");
+        let ms = apply_preview_limit("mssql", "SELECT * FROM dbo.t", 50);
+        assert_eq!(ms, "SELECT * FROM dbo.t");
     }
 }

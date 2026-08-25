@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Panel, PanelHeader } from "@/components/ui/panel";
+import { Select } from "@/components/ui/select";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useJobWorkspace } from "@/hooks/useJobWorkspace";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -43,7 +44,7 @@ function BuilderSection({
       defaultSizes={[layout.split.builder]}
       minSize={layout.split.minBuilder}
     >
-      <header className="h-full bg-raised p-4">
+      <header className="h-full bg-surface p-4">
         <span className="technical text-text-tertiary">{index}</span>
         <h3 className="mt-2 text-sm font-semibold">{title}</h3>
         <p className="mt-1 text-xs leading-5 text-text-secondary">{description}</p>
@@ -118,31 +119,36 @@ export function JobsPage() {
         <form onSubmit={(event) => void onSubmit(event)}>
           <BuilderSection index="01" title={messages.jobs.source} description={messages.jobs.sourceDescription}>
             <FormField label={messages.jobs.uploadFile}>
-              <select className="field-control" name="file_id">
-                <option value="">{messages.jobs.none}</option>
-                {files.map((file) => (
-                  <option key={file.id} value={file.id}>{file.filename}</option>
-                ))}
-              </select>
+              <Select
+                name="file_id"
+                placeholder={messages.jobs.none}
+                options={files.map((file) => ({
+                  value: file.id,
+                  label: file.filename,
+                }))}
+              />
             </FormField>
             <FormField label={messages.jobs.extractFile}>
-              <select className="field-control" name="extract_id">
-                <option value="">{messages.jobs.none}</option>
-                {extracts.map((extract) => (
-                  <option key={extract.id} value={extract.id}>
-                    {extract.sql_text
-                      ? `${extract.filename || extract.table_name} · ${fmtSqlPreview(extract.sql_text)}`
-                      : extract.filename || extract.table_name}
-                  </option>
-                ))}
-              </select>
+              <Select
+                name="extract_id"
+                placeholder={messages.jobs.none}
+                options={extracts.map((extract) => ({
+                  value: extract.id,
+                  label: extract.sql_text
+                    ? `${extract.filename || extract.table_name} · ${fmtSqlPreview(extract.sql_text)}`
+                    : extract.filename || extract.table_name,
+                }))}
+              />
             </FormField>
             <FormField label={messages.jobs.sourceConnection}>
-              <select
-                className="field-control"
+              <Select
                 name="connection_id"
-                onChange={(event) => {
-                  const id = event.target.value;
+                placeholder={messages.jobs.none}
+                options={connections.map((connection) => ({
+                  value: connection.id,
+                  label: `${connection.name} (${connection.driver})`,
+                }))}
+                onChange={(id) => {
                   setSourceTables([]);
                   if (!id) return;
                   void connectionApi
@@ -150,14 +156,7 @@ export function JobsPage() {
                     .then((result) => setSourceTables(result.tables))
                     .catch(() => undefined);
                 }}
-              >
-                <option value="">{messages.jobs.none}</option>
-                {connections.map((connection) => (
-                  <option key={connection.id} value={connection.id}>
-                    {connection.name} ({connection.driver})
-                  </option>
-                ))}
-              </select>
+              />
             </FormField>
             <FormField label={messages.jobs.sourceTable}>
               <input className="field-control" name="table" list="source-tables" placeholder="public.users" />
@@ -181,11 +180,14 @@ export function JobsPage() {
 
           <BuilderSection index="03" title={messages.jobs.load} description={messages.jobs.loadDescription}>
             <FormField label={messages.jobs.destinationConnection}>
-              <select
-                className="field-control"
+              <Select
                 name="dest_connection_id"
-                onChange={(event) => {
-                  const id = event.target.value;
+                placeholder={messages.jobs.parquetOnly}
+                options={connections.map((connection) => ({
+                  value: connection.id,
+                  label: `${connection.name} (${connection.driver})`,
+                }))}
+                onChange={(id) => {
                   setDestinationTables([]);
                   if (!id) return;
                   void connectionApi
@@ -193,14 +195,7 @@ export function JobsPage() {
                     .then((result) => setDestinationTables(result.tables))
                     .catch(() => undefined);
                 }}
-              >
-                <option value="">{messages.jobs.parquetOnly}</option>
-                {connections.map((connection) => (
-                  <option key={connection.id} value={connection.id}>
-                    {connection.name} ({connection.driver})
-                  </option>
-                ))}
-              </select>
+              />
             </FormField>
             <FormField label={messages.jobs.destinationTable}>
               <input className="field-control" name="dest_table" list="destination-tables" placeholder="dw.fact" />
@@ -209,10 +204,13 @@ export function JobsPage() {
               </datalist>
             </FormField>
             <FormField label={messages.jobs.mode}>
-              <select className="field-control" name="mode">
-                <option value="append">{messages.jobs.append}</option>
-                <option value="replace">{messages.jobs.replace}</option>
-              </select>
+              <Select
+                name="mode"
+                options={[
+                  { value: "append", label: messages.jobs.append },
+                  { value: "replace", label: messages.jobs.replace },
+                ]}
+              />
             </FormField>
           </BuilderSection>
 

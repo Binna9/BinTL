@@ -1,11 +1,14 @@
 import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { CircleCheck, Pencil, PlugZap, Save, SquarePen, Trash2, X } from "lucide-react";
+import { AppDialog } from "@/components/AppDialog";
 import { CatalogTree } from "@/components/CatalogTree";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { SplitLayout } from "@/components/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
+import { Select } from "@/components/ui/select";
 import { NoticeBanner } from "@/components/ui/notice-banner";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
@@ -17,12 +20,12 @@ import { layout } from "@/lib/layout";
 import { selectableClass } from "@/lib/selectable";
 import { driverCatalog } from "@/mock/driverCatalog";
 import { connectionApi } from "@/services/connectionApi";
-import { extractApi } from "@/services/extractApi";
-import type {
-  CatalogSelection,
-  DatabaseColumn,
-  TablePreview,
-} from "@/types/connection";
+import type { CatalogSelection, DataConnection, DatabaseColumn } from "@/types/connection";
+
+function dash(value?: string | null): string {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : "—";
+}
 
 export function ConnectionsPage() {
   const { messages } = useLanguage();
@@ -38,10 +41,11 @@ export function ConnectionsPage() {
   const [browseId, setBrowseId] = useState("");
   const [selected, setSelected] = useState<CatalogSelection | null>(null);
   const [columns, setColumns] = useState<DatabaseColumn[]>([]);
-  const [preview, setPreview] = useState<TablePreview | null>(null);
-  const [delimiter, setDelimiter] = useState(",");
-  const [header, setHeader] = useState(true);
-  const [extracting, setExtracting] = useState(false);
+  const [editing, setEditing] = useState<DataConnection | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState("");
+  const [testingId, setTestingId] = useState("");
+  const [testStatus, setTestStatus] = useState<Record<string, "ok" | "fail">>({});
 
   async function onSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -75,13 +79,44 @@ export function ConnectionsPage() {
   }
 
   async function onTest(id: string) {
-    setConnectionsError("");
-    setInfo("");
+    setTestingId(id);
     try {
       await connectionApi.testConnection(id);
-      setInfo(messages.connectionsPage.testSucceeded);
+      setTestStatus((current) => ({ ...current, [id]: "ok" }));
+    } catch {
+      setTestStatus((current) => ({ ...current, [id]: "fail" }));
+    } finally {
+      setTestingId("");
+    }
+  }
+
+  async function onUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editing) return;
+    const form = event.currentTarget;
+    const field = (name: string) =>
+      form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
+    const port = field("port").value;
+
+    setEditSaving(true);
+    setEditError("");
+    try {
+      await connectionApi.updateConnection(editing.id, {
+        name: field("name").value,
+        driver: field("driver").value,
+        host: field("host").value,
+        port: port ? Number(port) : undefined,
+        database: field("database").value,
+        username: field("username").value,
+        password: field("password").value,
+        ssl: (field("ssl") as HTMLInputElement).checked,
+      });
+      setEditing(null);
+      await refreshConnections();
     } catch (err) {
-      setConnectionsError(err instanceof Error ? err.message : messages.errors.testConnection);
+      setEditError(err instanceof Error ? err.message : messages.errors.saveConnection);
+    } finally {
+      setEditSaving(false);
     }
   }
 
@@ -90,13 +125,11 @@ export function ConnectionsPage() {
       setBrowseId("");
       setSelected(null);
       setColumns([]);
-      setPreview(null);
       return;
     }
     setBrowseId(id);
     setSelected(null);
     setColumns([]);
-    setPreview(null);
     setConnectionsError("");
   }
 
@@ -104,46 +137,23 @@ export function ConnectionsPage() {
     if (!pick) {
       setSelected(null);
       setColumns([]);
-      setPreview(null);
       return;
     }
     if (!browseId) return;
     setSelected(pick);
     setConnectionsError("");
     try {
-      const [columnResult, previewResult] = await Promise.all([
-        connectionApi.getColumns(browseId, pick.qualified, pick.database),
-        connectionApi.getPreview(browseId, pick.qualified, 50, pick.database),
-      ]);
+      const columnResult = await connectionApi.getColumns(
+        browseId,
+        pick.qualified,
+        pick.database,
+      );
       setColumns(columnResult.columns);
-      setPreview(previewResult);
     } catch (err) {
       setColumns([]);
-      setPreview(null);
       setConnectionsError(
         err instanceof Error ? err.message : messages.errors.tableInfo,
       );
-    }
-  }
-
-  async function onExtract(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!browseId || !selected) return;
-    setExtracting(true);
-    setConnectionsError("");
-    try {
-      await extractApi.createExtract({
-        connection_id: browseId,
-        table: selected.qualified,
-        database: selected.database,
-        delimiter,
-        header,
-      });
-      navigate("/extracts");
-    } catch (err) {
-      setConnectionsError(err instanceof Error ? err.message : messages.errors.extract);
-    } finally {
-      setExtracting(false);
     }
   }
 
@@ -155,7 +165,6 @@ export function ConnectionsPage() {
         setBrowseId("");
         setSelected(null);
         setColumns([]);
-        setPreview(null);
       }
       await refreshConnections();
     } catch (err) {
@@ -176,19 +185,21 @@ export function ConnectionsPage() {
       {info ? <NoticeBanner tone="ok">{info}</NoticeBanner> : null}
       {connectionsError ? <NoticeBanner>{connectionsError}</NoticeBanner> : null}
 
-      <Panel>
+      <Panel className="shrink-0">
         <PanelHeader title={messages.connectionsPage.new} description={messages.connectionsPage.newDescription} />
-        <PanelBody>
+        <PanelBody className="py-3">
           <form className="grid grid-cols-4 items-end gap-3" onSubmit={(event) => void onSave(event)}>
             <FormField label={messages.connectionsPage.name}>
               <input className="field-control" name="name" required />
             </FormField>
             <FormField label={messages.connectionsPage.driver}>
-              <select className="field-control" name="driver">
-                {driverCatalog.map((driver) => (
-                  <option key={driver.value} value={driver.value}>{driver.label}</option>
-                ))}
-              </select>
+              <Select
+                name="driver"
+                options={driverCatalog.map((driver) => ({
+                  value: driver.value,
+                  label: driver.label,
+                }))}
+              />
             </FormField>
             <FormField label={messages.connectionsPage.host}>
               <input className="field-control" name="host" defaultValue="127.0.0.1" required />
@@ -214,6 +225,7 @@ export function ConnectionsPage() {
                 </span>
               </label>
               <Button variant="primary" type="submit" disabled={saving}>
+                <Save className="size-3.5" aria-hidden="true" />
                 {saving ? messages.common.saving : messages.common.save}
               </Button>
             </div>
@@ -221,7 +233,7 @@ export function ConnectionsPage() {
         </PanelBody>
       </Panel>
 
-      <Panel className="min-h-[34rem]">
+      <Panel>
         <Toolbar>
           <ToolbarGroup>
             <span className="text-[13px] font-semibold">{messages.connectionsPage.explorer}</span>
@@ -231,10 +243,10 @@ export function ConnectionsPage() {
           </ToolbarGroup>
         </Toolbar>
 
-        <SplitLayout className="min-h-[31rem]" defaultSizes={[layout.split.sidebar]}>
-          <aside className="flex h-full min-h-0 flex-col">
+        <SplitLayout fill={false} className="min-h-[36rem]" defaultSizes={[layout.split.sidebar]}>
+          <aside className="flex min-h-[36rem] flex-col">
             <PaneHeader title={messages.common.connections} meta={messages.common.count(connections.length)} />
-            <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+            <div className="bg-surface">
               {connections.length === 0 ? (
                 <p className="p-4 text-xs text-text-tertiary">{messages.empty.connections}</p>
               ) : (
@@ -243,10 +255,33 @@ export function ConnectionsPage() {
                     <li
                       key={connection.id}
                       className={cn(
-                        "border-b border-border p-3",
+                        "relative border-b border-border p-3 pr-16",
                         selectableClass(connection.id === browseId),
                       )}
                     >
+                      <div className="absolute right-2 top-2 flex gap-0.5">
+                        <button
+                          type="button"
+                          className="grid size-7 place-items-center rounded-md text-text-tertiary outline-none hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
+                          aria-label={messages.common.edit}
+                          title={messages.common.edit}
+                          onClick={() => {
+                            setEditError("");
+                            setEditing(connection);
+                          }}
+                        >
+                          <Pencil className="size-3.5" aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className="grid size-7 place-items-center rounded-md text-text-tertiary outline-none hover:bg-danger-subtle hover:text-danger focus-visible:ring-2 focus-visible:ring-accent/40"
+                          aria-label={messages.common.delete}
+                          title={messages.common.delete}
+                          onClick={() => void onDelete(connection.id)}
+                        >
+                          <Trash2 className="size-3.5" aria-hidden="true" />
+                        </button>
+                      </div>
                       <button
                         type="button"
                         title={connection.name}
@@ -258,20 +293,27 @@ export function ConnectionsPage() {
                           {connection.driver} · {connection.host}:{connection.port}
                         </span>
                       </button>
-                      <div className="mt-2 flex gap-1">
-                        <Button type="button" variant="quiet" onClick={() => void onTest(connection.id)}>
-                          {messages.common.test}
-                        </Button>
+                      <div className="mt-2 flex items-center gap-2">
                         <Button
                           type="button"
                           variant="quiet"
-                          onClick={() => navigate(`/db?connection=${connection.id}`)}
+                          disabled={testingId === connection.id}
+                          onClick={() => void onTest(connection.id)}
                         >
-                          {messages.connectionsPage.query}
+                          <PlugZap className="size-3.5" aria-hidden="true" />
+                          {testingId === connection.id ? messages.common.running : messages.common.test}
                         </Button>
-                        <Button type="button" variant="danger" onClick={() => void onDelete(connection.id)}>
-                          {messages.common.delete}
-                        </Button>
+                        {testStatus[connection.id] === "ok" ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-success">
+                            <CircleCheck className="size-3.5" aria-hidden="true" />
+                            {messages.connectionsPage.testOk}
+                          </span>
+                        ) : testStatus[connection.id] === "fail" ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-danger">
+                            <X className="size-3.5" aria-hidden="true" />
+                            {messages.connectionsPage.testFail}
+                          </span>
+                        ) : null}
                       </div>
                     </li>
                   ))}
@@ -281,14 +323,14 @@ export function ConnectionsPage() {
           </aside>
 
           {!activeConnection ? (
-            <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
+            <div className="grid min-h-[36rem] place-items-center text-[13px] text-text-tertiary">
               {messages.connectionsPage.selectConnectionHint}
             </div>
           ) : (
-            <SplitLayout className="h-full min-w-0" defaultSizes={[layout.split.catalog]}>
-              <aside className="flex h-full min-h-0 flex-col bg-surface">
+            <SplitLayout fill={false} className="min-h-[36rem] min-w-0" defaultSizes={[layout.split.catalog]}>
+              <aside className="flex min-h-[36rem] flex-col bg-surface">
                 <PaneHeader title={messages.common.catalog} />
-                <div className="min-h-0 flex-1 overflow-y-auto">
+                <div>
                   <CatalogTree
                     connectionId={activeConnection.id}
                     selected={selected}
@@ -298,96 +340,152 @@ export function ConnectionsPage() {
               </aside>
 
               {!selected ? (
-                <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
+                <div className="grid min-h-[36rem] place-items-center text-[13px] text-text-tertiary">
                   {messages.connectionsPage.selectTableHint}
                 </div>
               ) : (
-                <div className="flex h-full min-w-0 flex-col">
+                <div className="flex min-w-0 flex-col">
                   <Toolbar>
                     <ToolbarGroup>
                       <span className="technical font-semibold text-text">{selected.qualified}</span>
                     </ToolbarGroup>
-                    <form className="flex items-center gap-2" onSubmit={(event) => void onExtract(event)}>
-                      <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                        {messages.common.delimiter}
-                        <input
-                          className="field-control technical w-16 text-center"
-                          value={delimiter}
-                          onChange={(event) => setDelimiter(event.target.value)}
-                          placeholder=","
-                          title={messages.connectionsPage.delimiterTitle}
-                          aria-label={messages.common.delimiter}
-                          required
-                        />
-                      </label>
-                      <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                        <input
-                          className="field-control"
-                          type="checkbox"
-                          checked={header}
-                          onChange={(event) => setHeader(event.target.checked)}
-                        />
-                        {messages.common.header}
-                      </label>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() =>
-                          navigate(
-                            `/db?connection=${browseId}&table=${encodeURIComponent(selected.qualified)}&database=${encodeURIComponent(selected.database)}`,
-                          )
-                        }
-                      >
-                        {messages.connectionsPage.dbEdit}
-                      </Button>
-                      <Button variant="primary" type="submit" disabled={extracting}>
-                        {extracting ? messages.connectionsPage.extracting : messages.connectionsPage.extractFile}
-                      </Button>
-                    </form>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      onClick={() =>
+                        navigate(
+                          `/db?connection=${browseId}&table=${encodeURIComponent(selected.qualified)}&database=${encodeURIComponent(selected.database)}`,
+                        )
+                      }
+                    >
+                      <SquarePen className="size-3.5" aria-hidden="true" />
+                      {messages.connectionsPage.queryExtract}
+                    </Button>
                   </Toolbar>
-
-                  <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.columns]}>
-                    <section className="flex h-full min-h-0 flex-col overflow-hidden">
-                      <PaneHeader title={messages.common.columns} meta={`${columns.length}`} />
-                      <div className="min-h-0 flex-1 overflow-auto bg-surface">
-                        <DataGrid headers={[...messages.connectionsPage.columnHeaders]}>
-                          {columns.map((column) => (
+                  <section className="flex flex-col">
+                    <PaneHeader title={messages.common.columns} meta={`${columns.length}`} />
+                    <div className="bg-surface">
+                      <DataGrid headers={[...messages.connectionsPage.columnHeaders]}>
+                        {columns.length === 0 ? (
+                          <EmptyGridRow
+                            cols={messages.connectionsPage.columnHeaders.length}
+                            text={messages.query.columnsHint}
+                          />
+                        ) : (
+                          columns.map((column, index) => (
                             <GridRow key={column.name}>
+                              <GridCell mono muted>{column.ordinal ?? index + 1}</GridCell>
                               <GridCell mono>{column.name}</GridCell>
                               <GridCell mono muted>{column.data_type}</GridCell>
-                              <GridCell muted>{column.nullable ? messages.common.yes : messages.common.no}</GridCell>
+                              <GridCell muted>
+                                {column.nullable ? messages.common.yes : messages.common.no}
+                              </GridCell>
+                              <GridCell muted>
+                                {column.primary_key ? messages.common.yes : messages.common.no}
+                              </GridCell>
+                              <GridCell mono muted>{dash(column.default_value)}</GridCell>
+                              <GridCell muted>{dash(column.extra)}</GridCell>
                             </GridRow>
-                          ))}
-                        </DataGrid>
-                      </div>
-                    </section>
-                    <section className="flex h-full min-h-0 flex-col overflow-hidden">
-                      <PaneHeader title={messages.connectionsPage.preview} />
-                      <div className="min-h-0 flex-1 overflow-auto bg-surface">
-                        {preview ? (
-                          <DataGrid className="h-full" headers={preview.columns}>
-                            {preview.rows.length === 0 ? (
-                              <EmptyGridRow cols={preview.columns.length || 1} text={messages.empty.preview} />
-                            ) : (
-                              preview.rows.map((row, rowIndex) => (
-                                <GridRow key={rowIndex}>
-                                  {row.map((cell, cellIndex) => (
-                                    <GridCell key={cellIndex} mono>{cell}</GridCell>
-                                  ))}
-                                </GridRow>
-                              ))
-                            )}
-                          </DataGrid>
-                        ) : null}
-                      </div>
-                    </section>
-                  </SplitLayout>
+                          ))
+                        )}
+                      </DataGrid>
+                    </div>
+                  </section>
                 </div>
               )}
             </SplitLayout>
           )}
         </SplitLayout>
       </Panel>
+
+      <AppDialog
+        open={Boolean(editing)}
+        title={messages.connectionsPage.editConnection}
+        icon={<Pencil className="size-4 text-accent" aria-hidden="true" />}
+        className="w-[min(42rem,94vw)] max-h-[90vh]"
+        minWidth={360}
+        minHeight={280}
+        onClose={() => setEditing(null)}
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setEditing(null)}>
+              {messages.common.close}
+            </Button>
+            <Button
+              type="submit"
+              form="edit-connection-form"
+              variant="primary"
+              disabled={editSaving}
+            >
+              <Save className="size-3.5" aria-hidden="true" />
+              {editSaving ? messages.common.saving : messages.common.save}
+            </Button>
+          </>
+        }
+      >
+        {editing ? (
+          <form
+            id="edit-connection-form"
+            key={editing.id}
+            className="grid min-h-0 flex-1 grid-cols-2 content-start gap-3 overflow-auto p-4"
+            onSubmit={(event) => void onUpdate(event)}
+          >
+            {editError ? <div className="col-span-2"><NoticeBanner>{editError}</NoticeBanner></div> : null}
+            <FormField label={messages.connectionsPage.name}>
+              <input className="field-control" name="name" defaultValue={editing.name} required />
+            </FormField>
+            <FormField label={messages.connectionsPage.driver}>
+              <Select
+                name="driver"
+                defaultValue={editing.driver}
+                options={driverCatalog.map((driver) => ({
+                  value: driver.value,
+                  label: driver.label,
+                }))}
+              />
+            </FormField>
+            <FormField label={messages.connectionsPage.host}>
+              <input className="field-control" name="host" defaultValue={editing.host} required />
+            </FormField>
+            <FormField label={messages.connectionsPage.port}>
+              <input
+                className="field-control technical"
+                name="port"
+                defaultValue={editing.port || ""}
+                placeholder="5432"
+              />
+            </FormField>
+            <FormField label={messages.connectionsPage.database} wide>
+              <input
+                className="field-control"
+                name="database"
+                defaultValue={editing.database_name}
+                required
+              />
+            </FormField>
+            <FormField label={messages.connectionsPage.username}>
+              <input className="field-control" name="username" defaultValue={editing.username} required />
+            </FormField>
+            <FormField label={messages.connectionsPage.password}>
+              <input
+                className="field-control"
+                name="password"
+                type="password"
+                placeholder={messages.connectionsPage.passwordKeep}
+              />
+            </FormField>
+            <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
+              <input
+                className="field-control"
+                name="ssl"
+                type="checkbox"
+                defaultChecked={editing.ssl !== 0}
+              />
+              {messages.connectionsPage.useSsl}
+            </label>
+          </form>
+        ) : null}
+      </AppDialog>
     </PageShell>
   );
 }

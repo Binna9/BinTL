@@ -61,6 +61,7 @@ pub async fn extract_table(
     table: &str,
     dest: &Path,
     opts: &ExtractOptions,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let family = driver_family(&c.driver)?;
     let parsed = parse_table(table)?;
@@ -82,14 +83,30 @@ pub async fn extract_table(
     }
     let ncols = cols.len();
     let n = match family {
-        "postgres" => stream_pg(c, &q, &mut wtr, ncols).await?,
-        "mysql" => stream_my(c, &q, &mut wtr, ncols).await?,
-        "sqlite" => stream_sqlite(c, &q, &mut wtr, ncols).await?,
-        "mssql" => stream_ms(c, &q, &mut wtr, ncols).await?,
+        "postgres" => stream_pg(c, &q, &mut wtr, ncols, on_progress).await?,
+        "mysql" => stream_my(c, &q, &mut wtr, ncols, on_progress).await?,
+        "sqlite" => stream_sqlite(c, &q, &mut wtr, ncols, on_progress).await?,
+        "mssql" => stream_ms(c, &q, &mut wtr, ncols, on_progress).await?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     wtr.flush()?;
     Ok(n)
+}
+
+pub(crate) fn tick_progress_at(
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+    n: u64,
+    every: u64,
+) {
+    if n == 1 || (every > 0 && n % every == 0) {
+        if let Some(cb) = on_progress {
+            cb(n);
+        }
+    }
+}
+
+pub(crate) fn tick_progress(on_progress: Option<&(dyn Fn(u64) + Send + Sync)>, n: u64) {
+    tick_progress_at(on_progress, n, 10_000);
 }
 
 async fn stream_pg(
@@ -97,6 +114,7 @@ async fn stream_pg(
     q: &str,
     wtr: &mut csv::Writer<File>,
     ncols: usize,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = pg_pool(c).await?;
     let sql = format!("SELECT * FROM {q}");
@@ -106,6 +124,7 @@ async fn stream_pg(
         let rec: Vec<String> = (0..ncols).map(|i| stringify_pg(&row, i)).collect();
         wtr.write_record(&rec)?;
         n += 1;
+        tick_progress(on_progress, n);
     }
     pool.close().await;
     Ok(n)
@@ -116,6 +135,7 @@ async fn stream_my(
     q: &str,
     wtr: &mut csv::Writer<File>,
     ncols: usize,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = my_pool(c).await?;
     let sql = format!("SELECT * FROM {q}");
@@ -125,6 +145,7 @@ async fn stream_my(
         let rec: Vec<String> = (0..ncols).map(|i| stringify_my(&row, i)).collect();
         wtr.write_record(&rec)?;
         n += 1;
+        tick_progress(on_progress, n);
     }
     pool.close().await;
     Ok(n)
@@ -135,6 +156,7 @@ async fn stream_sqlite(
     q: &str,
     wtr: &mut csv::Writer<File>,
     ncols: usize,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = sqlite_pool(c).await?;
     let sql = format!("SELECT * FROM {q}");
@@ -144,6 +166,7 @@ async fn stream_sqlite(
         let rec: Vec<String> = (0..ncols).map(|i| stringify_sqlite(&row, i)).collect();
         wtr.write_record(&rec)?;
         n += 1;
+        tick_progress(on_progress, n);
     }
     pool.close().await;
     Ok(n)
@@ -154,6 +177,7 @@ async fn stream_ms(
     q: &str,
     wtr: &mut csv::Writer<File>,
     ncols: usize,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let mut client = mssql_client(c).await?;
     let stream = client.simple_query(format!("SELECT * FROM {q}")).await?;
@@ -163,6 +187,7 @@ async fn stream_ms(
         let rec: Vec<String> = (0..ncols).map(|i| stringify_ms(&row, i)).collect();
         wtr.write_record(&rec)?;
         n += 1;
+        tick_progress(on_progress, n);
     }
     Ok(n)
 }

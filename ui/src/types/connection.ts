@@ -25,6 +25,13 @@ export interface DatabaseColumn {
   name: string;
   data_type: string;
   nullable: boolean;
+  ordinal?: number;
+  primary_key?: boolean;
+  default_value?: string | null;
+  max_length?: number | null;
+  numeric_precision?: number | null;
+  numeric_scale?: number | null;
+  extra?: string | null;
 }
 
 export interface TablePreview {

@@ -11,9 +11,9 @@ export function FormField({
   children: ReactNode;
 }) {
   return (
-    <label className={cn("flex flex-col gap-1", wide && "md:col-span-2")}>
+    <div className={cn("flex flex-col gap-1", wide && "md:col-span-2")}>
       <span className="text-xs font-medium text-text-secondary">{label}</span>
       {children}
-    </label>
+    </div>
   );
 }

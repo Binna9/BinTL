@@ -6,6 +6,7 @@ export const layout = {
     connections: 176,
     sidebar: 272,
     catalog: 256,
+    inspect: 420,
     columns: 240,
     editor: 256,
     builder: 192,
@@ -16,5 +17,8 @@ export const layout = {
   grid: {
     minColumnWidth: 80,
     defaultColumnWidth: 160,
+  },
+  page: {
+    workspaceHeight: "calc(100vh - 14.25rem)",
   },
 } as const;

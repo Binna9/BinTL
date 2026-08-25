@@ -214,17 +214,23 @@ export function GridCell({
   children,
   mono,
   muted,
+  warn,
+  title,
 }: {
   children: ReactNode;
   mono?: boolean;
   muted?: boolean;
+  warn?: boolean;
+  title?: string;
 }) {
   return (
     <td
+      title={title}
       className={cn(
         "h-9 overflow-hidden text-ellipsis whitespace-nowrap border-r border-border/60 px-3 py-1.5 align-middle text-text last:border-r-0",
         mono && "technical",
         muted && "text-text-secondary",
+        warn && "bg-warning-subtle text-warning",
       )}
     >
       {children}

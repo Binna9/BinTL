@@ -72,6 +72,10 @@ body,
   min-height: 100%;
 }
 
+html {
+  overflow-y: auto;
+}
+
 body {
   @apply m-0 bg-workspace font-sans text-sm text-text antialiased;
   letter-spacing: -0.011em;
@@ -206,10 +210,88 @@ a {
     0 4px 10px color-mix(in srgb, var(--color-text) 7%, transparent);
 }
 
+.page-section-rule {
+  height: 1px;
+  margin: 1.35rem 0 0.1rem;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-border) 10%,
+    var(--color-border-strong) 50%,
+    var(--color-border) 90%,
+    transparent 100%
+  );
+}
+
+.page-section-rule::after {
+  content: "";
+  display: block;
+  height: 1px;
+  width: min(11rem, 38%);
+  margin: 0 auto;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-accent) 55%, var(--color-border-strong)),
+    transparent
+  );
+}
+
 .field-control {
   @apply h-8 w-full rounded border border-border bg-surface px-2.5 text-[13px] text-text outline-none;
   @apply placeholder:text-text-tertiary focus:border-accent focus:ring-2 focus:ring-accent/15;
   @apply disabled:cursor-not-allowed disabled:bg-subtle disabled:text-text-tertiary;
+}
+
+.field-select-trigger {
+  @apply inline-flex w-full cursor-pointer items-center gap-2 pr-2 text-left;
+  appearance: none;
+}
+
+.field-select-trigger.field-select-open,
+.field-select-trigger[aria-expanded="true"] {
+  @apply border-accent ring-2 ring-accent/15;
+}
+
+.field-select-menu {
+  @apply fixed z-[220] overflow-y-auto rounded-lg border border-border bg-surface py-1;
+  box-shadow:
+    0 1px 0 var(--color-border),
+    0 10px 28px color-mix(in srgb, var(--color-text) 14%, transparent);
+}
+
+:root.dark .field-select-menu {
+  box-shadow:
+    0 1px 0 var(--color-border),
+    0 14px 32px rgba(0, 0, 0, 0.48);
+}
+
+.field-select-option {
+  @apply mx-1 flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-text;
+}
+
+.field-select-option.is-active {
+  background: var(--color-subtle);
+}
+
+.field-select-option.is-selected {
+  color: var(--color-accent);
+  font-weight: 600;
+  background: var(--color-accent-subtle);
+}
+
+.field-select-option.is-selected.is-active {
+  background: color-mix(in srgb, var(--color-accent-subtle) 80%, var(--color-subtle));
+}
+
+.field-select-option.is-placeholder {
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+}
+
+.field-select-option.is-disabled {
+  @apply cursor-not-allowed text-text-tertiary;
+  opacity: 0.55;
 }
 
 .field-control[type="checkbox"] {
@@ -224,6 +306,30 @@ a {
   @apply min-h-0 w-full resize-none overflow-y-auto border-0 bg-surface p-3 font-sans text-[13px] leading-6 text-text outline-none;
   @apply placeholder:text-text-tertiary;
   tab-size: 2;
+}
+
+.query-ticker {
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent, #000 10px, #000 calc(100% - 10px), transparent);
+}
+
+.query-ticker-track {
+  display: inline-block;
+  padding-inline: 10px;
+  white-space: nowrap;
+}
+
+.query-ticker-track.is-running {
+  animation: query-ticker 16s linear infinite;
+}
+
+@keyframes query-ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
 }
 
 .brand-mark {

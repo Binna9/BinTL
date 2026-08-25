@@ -348,6 +348,7 @@ dependencies = [
  "axum",
  "clap",
  "connectors",
+ "engine",
  "hex",
  "hmac",
  "jobs",

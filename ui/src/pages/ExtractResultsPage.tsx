@@ -27,7 +27,7 @@ export function ExtractResultsPage() {
       />
       {extractsError ? <NoticeBanner>{extractsError}</NoticeBanner> : null}
 
-      <Panel className="min-h-0 flex-1">
+      <Panel>
         <Toolbar>
           <ToolbarGroup>
             <span className="text-[13px] font-semibold">{messages.extracts.resultFiles}</span>
@@ -63,7 +63,15 @@ export function ExtractResultsPage() {
                 <GridCell>
                   <StatusPill value={extract.status} />
                 </GridCell>
-                <GridCell mono>{extract.row_count ?? "—"}</GridCell>
+                <GridCell mono>
+                  {extract.status === "queued" || extract.status === "running"
+                    ? extract.row_count != null
+                      ? messages.extracts.writing(extract.row_count)
+                      : extract.status === "running"
+                        ? messages.common.running
+                        : "—"
+                    : extract.row_count ?? "—"}
+                </GridCell>
                 <GridCell mono muted>
                   {fmtWhen(extract.created_at)}
                 </GridCell>

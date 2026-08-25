@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
+
+const PREVIEW_READ_CAP: usize = 50_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -32,19 +35,55 @@ fn default_mode() -> String {
     "append".into()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ReadHint {
+    #[serde(default)]
+    pub delimiter: Option<String>,
+    #[serde(default)]
+    pub has_header: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Step {
+    Select {
+        columns: Vec<String>,
+    },
+    Drop {
+        columns: Vec<String>,
+    },
+    Rename {
+        map: BTreeMap<String, String>,
+    },
+    Filter {
+        expr: String,
+    },
+    Cast {
+        columns: BTreeMap<String, String>,
+    },
+    FillNull {
+        value: String,
+        columns: Vec<String>,
+    },
+    Sort {
+        by: Vec<SortBy>,
+    },
+    Unique {
+        #[serde(default)]
+        subset: Option<Vec<String>>,
+        #[serde(default)]
+        keep: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SortBy {
+    pub column: String,
+    #[serde(default)]
+    pub descending: bool,
+}
+
 /// ETL transform spec. UI/API produce this JSON; only the engine interprets it.
-///
-/// ```json
-/// {
-///   "version": 1,
-///   "op": "pipeline",
-///   "select": ["id", "amount"],
-///   "filter": "amount > 0",
-///   "rename": {"amount": "amt"},
-///   "sink": "parquet",
-///   "dest": {"connection_id": "...", "table": "dw.fact", "mode": "replace"}
-/// }
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformSpec {
     pub version: u32,
@@ -60,11 +99,14 @@ pub struct TransformSpec {
     pub sink: String,
     #[serde(default)]
     pub dest: Option<LoadDest>,
-    /// Delimited-text read hint. Same tokens as extract (`","`, `"|"`, `"tab"`).
     #[serde(default)]
     pub delimiter: Option<String>,
     #[serde(default)]
     pub has_header: Option<bool>,
+    #[serde(default)]
+    pub read: Option<ReadHint>,
+    #[serde(default)]
+    pub steps: Vec<Step>,
 }
 
 fn default_op() -> String {
@@ -87,29 +129,140 @@ impl TransformSpec {
             dest: None,
             delimiter: None,
             has_header: None,
+            read: None,
+            steps: Vec::new(),
         }
+    }
+
+    pub fn v2() -> Self {
+        Self {
+            version: 2,
+            op: "pipeline".into(),
+            select: Vec::new(),
+            filter: None,
+            rename: BTreeMap::new(),
+            sink: "parquet".into(),
+            dest: None,
+            delimiter: None,
+            has_header: None,
+            read: None,
+            steps: Vec::new(),
+        }
+    }
+
+    pub fn with_read(mut self, delimiter: Option<String>, has_header: Option<bool>) -> Self {
+        self.read = Some(ReadHint {
+            delimiter: delimiter.clone(),
+            has_header,
+        });
+        self.delimiter = delimiter;
+        self.has_header = has_header;
+        self
+    }
+
+    pub fn delimiter(&self) -> Option<&str> {
+        self.read
+            .as_ref()
+            .and_then(|r| r.delimiter.as_deref())
+            .or(self.delimiter.as_deref())
+    }
+
+    pub fn has_header(&self) -> Option<bool> {
+        self.read
+            .as_ref()
+            .and_then(|r| r.has_header)
+            .or(self.has_header)
     }
 
     pub fn parse_json(json: &str) -> Result<Self, EngineError> {
         let spec: Self = serde_json::from_str(json).map_err(|e| EngineError::Spec(e.to_string()))?;
-        if spec.version != 1 {
-            return Err(EngineError::Spec(format!(
-                "unsupported version {}",
-                spec.version
-            )));
+        spec.validate()?;
+        Ok(spec)
+    }
+
+    fn validate(&self) -> Result<(), EngineError> {
+        match self.version {
+            1 => {
+                if !matches!(self.op.as_str(), "identity" | "pipeline") {
+                    return Err(EngineError::UnsupportedOp(self.op.clone()));
+                }
+            }
+            2 => {
+                if self.dest.is_some() {
+                    return Err(EngineError::Spec(
+                        "version 2 spec cannot include dest; load is a separate stage".into(),
+                    ));
+                }
+                for step in &self.steps {
+                    validate_step(step)?;
+                }
+            }
+            other => {
+                return Err(EngineError::Spec(format!("unsupported version {other}")));
+            }
         }
-        if !matches!(spec.op.as_str(), "identity" | "pipeline") {
-            return Err(EngineError::UnsupportedOp(spec.op.clone()));
+        if self.sink != "parquet" {
+            return Err(EngineError::UnsupportedSink(self.sink.clone()));
         }
-        if let Some(dest) = &spec.dest {
+        if let Some(dest) = &self.dest {
             if dest.mode != "append" && dest.mode != "replace" {
                 return Err(EngineError::Spec(
                     "dest.mode must be append or replace".into(),
                 ));
             }
         }
-        Ok(spec)
+        Ok(())
     }
+}
+
+fn validate_step(step: &Step) -> Result<(), EngineError> {
+    match step {
+        Step::Select { columns } if columns.is_empty() => {
+            Err(EngineError::Spec("select needs columns".into()))
+        }
+        Step::Drop { columns } if columns.is_empty() => {
+            Err(EngineError::Spec("drop needs columns".into()))
+        }
+        Step::Rename { map } if map.is_empty() => {
+            Err(EngineError::Spec("rename needs a map".into()))
+        }
+        Step::Filter { expr } if expr.trim().is_empty() => {
+            Err(EngineError::Spec("filter needs an expr".into()))
+        }
+        Step::Cast { columns } if columns.is_empty() => {
+            Err(EngineError::Spec("cast needs columns".into()))
+        }
+        Step::FillNull { columns, .. } if columns.is_empty() => {
+            Err(EngineError::Spec("fill_null needs columns".into()))
+        }
+        Step::Sort { by } if by.is_empty() => Err(EngineError::Spec("sort needs by".into())),
+        Step::Unique { keep, .. } => {
+            if let Some(keep) = keep {
+                if !matches!(keep.as_str(), "first" | "last" | "none" | "any") {
+                    return Err(EngineError::Spec(
+                        "unique.keep must be first, last, none, or any".into(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewColumn {
+    pub name: String,
+    pub dtype: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FramePreview {
+    pub columns: Vec<PreviewColumn>,
+    pub rows: Vec<Vec<String>>,
+    pub sampled_rows: usize,
+    pub row_count: Option<u64>,
+    pub truncated: bool,
 }
 
 /// Engine knows files and a spec. It does not know HTTP, SQLite, or the UI.
@@ -132,13 +285,11 @@ impl Engine for PolarsEngine {
         output: &Path,
         spec: &TransformSpec,
     ) -> Result<(), EngineError> {
-        if spec.sink != "parquet" {
-            return Err(EngineError::UnsupportedSink(spec.sink.clone()));
-        }
+        spec.validate()?;
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
         }
-        let df = apply(read_any(input, spec)?, spec)?;
+        let df = apply(read_any(input, spec, None)?, spec)?;
         write_parquet(df, output)
     }
 }
@@ -153,13 +304,61 @@ impl PolarsEngine {
             fs::create_dir_all(parent)?;
         }
         let mut file = fs::File::create(csv)?;
-        CsvWriter::new(&mut file).include_header(true).finish(&mut df)?;
+        CsvWriter::new(&mut file)
+            .include_header(true)
+            .finish(&mut df)?;
         Ok(())
+    }
+
+    /// Schema + sample rows. Does not apply transform steps.
+    pub fn inspect(
+        &self,
+        input: &Path,
+        spec: &TransformSpec,
+        limit: usize,
+    ) -> Result<FramePreview, EngineError> {
+        let limit = limit.max(1);
+        let infer = limit.max(128);
+        let df = read_any(input, spec, Some(infer))?;
+        let row_count = count_rows(input, spec);
+        Ok(dataframe_to_preview(df, row_count, limit))
+    }
+
+    /// Apply spec to a capped scan and return the head. Does not write parquet.
+    pub fn preview(
+        &self,
+        input: &Path,
+        spec: &TransformSpec,
+        limit: usize,
+    ) -> Result<FramePreview, EngineError> {
+        spec.validate()?;
+        let limit = limit.max(1);
+        let df = apply(read_any(input, spec, Some(PREVIEW_READ_CAP))?, spec)?;
+        let sampled = df.height();
+        let truncated = sampled >= PREVIEW_READ_CAP || sampled > limit;
+        Ok(dataframe_to_preview(df, None, limit).with_truncated(truncated))
+    }
+}
+
+impl FramePreview {
+    fn with_truncated(mut self, truncated: bool) -> Self {
+        self.truncated = truncated || self.truncated;
+        self
     }
 }
 
 fn apply(df: DataFrame, spec: &TransformSpec) -> Result<DataFrame, EngineError> {
-    let mut lf = df.lazy();
+    let lf = apply_lazy(df.lazy(), spec)?;
+    Ok(lf.collect()?)
+}
+
+fn apply_lazy(mut lf: LazyFrame, spec: &TransformSpec) -> Result<LazyFrame, EngineError> {
+    if spec.version >= 2 {
+        for step in &spec.steps {
+            lf = apply_step(lf, step)?;
+        }
+        return Ok(lf);
+    }
     if let Some(raw) = spec.filter.as_deref().filter(|s| !s.trim().is_empty()) {
         lf = lf.filter(parse_filter(raw)?);
     }
@@ -172,7 +371,71 @@ fn apply(df: DataFrame, spec: &TransformSpec) -> Result<DataFrame, EngineError> 
         let new: Vec<String> = spec.rename.values().cloned().collect();
         lf = lf.rename(&old, &new, true);
     }
-    Ok(lf.collect()?)
+    Ok(lf)
+}
+
+fn apply_step(lf: LazyFrame, step: &Step) -> Result<LazyFrame, EngineError> {
+    match step {
+        Step::Select { columns } => {
+            let cols: Vec<Expr> = columns.iter().map(|c| col(c)).collect();
+            Ok(lf.select(cols))
+        }
+        Step::Drop { columns } => Ok(lf.drop(cols(columns.clone()))),
+        Step::Rename { map } => {
+            let old: Vec<String> = map.keys().cloned().collect();
+            let new: Vec<String> = map.values().cloned().collect();
+            Ok(lf.rename(&old, &new, true))
+        }
+        Step::Filter { expr } => Ok(lf.filter(parse_filter(expr)?)),
+        Step::Cast { columns } => {
+            let exprs: Result<Vec<Expr>, EngineError> = columns
+                .iter()
+                .map(|(name, dtype)| Ok(col(name).cast(parse_dtype(dtype)?)))
+                .collect();
+            Ok(lf.with_columns(exprs?))
+        }
+        Step::FillNull { value, columns } => {
+            let fill = parse_lit(value)?;
+            let exprs: Vec<Expr> = columns
+                .iter()
+                .map(|name| col(name).fill_null(fill.clone()))
+                .collect();
+            Ok(lf.with_columns(exprs))
+        }
+        Step::Sort { by } => {
+            let names: Vec<String> = by.iter().map(|s| s.column.clone()).collect();
+            let descending: Vec<bool> = by.iter().map(|s| s.descending).collect();
+            Ok(lf.sort(
+                names,
+                SortMultipleOptions::default().with_order_descending_multi(descending),
+            ))
+        }
+        Step::Unique { subset, keep } => {
+            let strategy = match keep.as_deref().unwrap_or("first") {
+                "last" => UniqueKeepStrategy::Last,
+                "none" => UniqueKeepStrategy::None,
+                "any" => UniqueKeepStrategy::Any,
+                _ => UniqueKeepStrategy::First,
+            };
+            let subset = subset
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .map(|s| cols(s.clone()));
+            Ok(lf.unique(subset, strategy))
+        }
+    }
+}
+
+fn parse_dtype(raw: &str) -> Result<DataType, EngineError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "int64" | "i64" | "int" | "integer" => Ok(DataType::Int64),
+        "int32" | "i32" => Ok(DataType::Int32),
+        "float64" | "f64" | "float" | "double" => Ok(DataType::Float64),
+        "float32" | "f32" => Ok(DataType::Float32),
+        "string" | "utf8" | "str" | "text" => Ok(DataType::String),
+        "bool" | "boolean" => Ok(DataType::Boolean),
+        other => Err(EngineError::Spec(format!("unsupported dtype `{other}`"))),
+    }
 }
 
 fn parse_filter(raw: &str) -> Result<Expr, EngineError> {
@@ -209,11 +472,7 @@ fn parse_lit(raw: &str) -> Result<Expr, EngineError> {
     if let Ok(n) = raw.parse::<f64>() {
         return Ok(lit(n));
     }
-    let t = raw
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .to_string();
+    let t = raw.trim().trim_matches('"').trim_matches('\'').to_string();
     Ok(lit(t))
 }
 
@@ -233,16 +492,20 @@ fn write_parquet(mut df: DataFrame, output: &Path) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn read_any(path: &Path, spec: &TransformSpec) -> Result<DataFrame, EngineError> {
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+fn read_any(
+    path: &Path,
+    spec: &TransformSpec,
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    let ext = extension(path);
     let df = match ext.as_str() {
         "parquet" => {
             let file = fs::File::open(path)?;
-            ParquetReader::new(file).finish()?
+            let mut reader = ParquetReader::new(file);
+            if let Some(n) = n_rows {
+                reader = reader.with_slice(Some((0, n)));
+            }
+            reader.finish()?
         }
         "json" => {
             let file = fs::File::open(path)?;
@@ -255,20 +518,109 @@ fn read_any(path: &Path, spec: &TransformSpec) -> Result<DataFrame, EngineError>
                 .finish()?
         }
         _ => {
-            let separator = match spec.delimiter.as_deref() {
+            let separator = match spec.delimiter() {
                 Some(raw) => parse_separator(raw)?,
                 None if ext == "tsv" => b'\t',
                 None => b',',
             };
-            let has_header = spec.has_header.unwrap_or(true);
-            CsvReadOptions::default()
+            let has_header = spec.has_header().unwrap_or(true);
+            let mut opts = CsvReadOptions::default()
                 .with_has_header(has_header)
-                .map_parse_options(|o| o.with_separator(separator))
-                .try_into_reader_with_file_path(Some(path.to_path_buf()))?
+                .map_parse_options(|o| o.with_separator(separator));
+            if let Some(n) = n_rows {
+                opts = opts.with_n_rows(Some(n));
+            }
+            opts.try_into_reader_with_file_path(Some(path.to_path_buf()))?
                 .finish()?
         }
     };
     Ok(df)
+}
+
+fn extension(path: &Path) -> String {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+fn count_rows(path: &Path, spec: &TransformSpec) -> Option<u64> {
+    match extension(path).as_str() {
+        "parquet" => parquet_row_count(path),
+        "json" | "jsonl" | "ndjson" => None,
+        _ => count_delimited_rows(path, spec.has_header().unwrap_or(true)).ok(),
+    }
+}
+
+fn parquet_row_count(path: &Path) -> Option<u64> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = ParquetReader::new(file);
+    reader.num_rows().ok().map(|n| n as u64)
+}
+
+fn count_delimited_rows(path: &Path, has_header: bool) -> Result<u64, EngineError> {
+    let file = fs::File::open(path)?;
+    let mut n = 0u64;
+    for line in BufReader::new(file).lines() {
+        line?;
+        n += 1;
+    }
+    if has_header && n > 0 {
+        n -= 1;
+    }
+    Ok(n)
+}
+
+fn dataframe_to_preview(df: DataFrame, row_count: Option<u64>, limit: usize) -> FramePreview {
+    let height = df.height();
+    let truncated = height > limit;
+    let df = if truncated {
+        df.slice(0, limit)
+    } else {
+        df
+    };
+    let columns: Vec<PreviewColumn> = df
+        .get_columns()
+        .iter()
+        .map(|c| PreviewColumn {
+            name: c.name().to_string(),
+            dtype: c.dtype().to_string(),
+        })
+        .collect();
+    let shown = df.height();
+    let mut rows = Vec::with_capacity(shown);
+    for i in 0..shown {
+        let mut row = Vec::with_capacity(columns.len());
+        for col in df.get_columns() {
+            let value = match col.get(i) {
+                Ok(v) => v,
+                Err(_) => AnyValue::Null,
+            };
+            row.push(any_to_string(value));
+        }
+        rows.push(row);
+    }
+    let sampled_rows = rows.len();
+    let truncated = truncated
+        || row_count
+            .map(|n| n as usize > sampled_rows)
+            .unwrap_or(false);
+    FramePreview {
+        columns,
+        rows,
+        sampled_rows,
+        row_count,
+        truncated,
+    }
+}
+
+fn any_to_string(value: AnyValue<'_>) -> String {
+    match value {
+        AnyValue::Null => String::new(),
+        AnyValue::String(s) => s.to_string(),
+        AnyValue::StringOwned(s) => s.to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Same tokens as `connectors::parse_delimiter`. Duplicated so engine stays
@@ -358,5 +710,65 @@ mod tests {
         assert_eq!(back.height(), 2);
         assert_eq!(back.get_column_names(), &["a", "b"]);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inspect_counts_csv_rows() {
+        let dir = tmp("inspect");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "a,b\n1,2\n3,4\n5,6\n").unwrap();
+        let preview = PolarsEngine
+            .inspect(&csv, &TransformSpec::identity(), 2)
+            .unwrap();
+        assert_eq!(preview.columns.len(), 2);
+        assert_eq!(preview.rows.len(), 2);
+        assert_eq!(preview.row_count, Some(3));
+        assert!(preview.truncated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_steps_filter_select_rename() {
+        let dir = tmp("v2");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "a,b,flag\n1,2,y\n3,4,n\n5,6,y\n").unwrap();
+        let spec = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [
+                    {"op": "filter", "expr": "a >= 3"},
+                    {"op": "select", "columns": ["a", "b"]},
+                    {"op": "rename", "map": {"a": "id"}}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &spec, 10).unwrap();
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id", "b"]
+        );
+        assert_eq!(preview.rows.len(), 2);
+        let out = dir.join("out.parquet");
+        PolarsEngine.transform(&csv, &out, &spec).unwrap();
+        let back = ParquetReader::new(fs::File::open(&out).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(back.height(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_rejects_dest() {
+        let err = TransformSpec::parse_json(
+            r#"{"version":2,"sink":"parquet","dest":{"connection_id":"x","table":"t"}}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("dest"));
     }
 }

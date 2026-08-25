@@ -46,6 +46,11 @@ export const connectionApi = {
       method: "POST",
       body: JSON.stringify(request),
     }),
+  updateConnection: (connectionId: string, request: CreateConnectionRequest) =>
+    httpRequest<DataConnection>(`/api/connections/${connectionId}`, {
+      method: "PUT",
+      body: JSON.stringify(request),
+    }),
   deleteConnection: (connectionId: string) =>
     httpRequest<ApiSuccess>(`/api/connections/${connectionId}`, { method: "DELETE" }),
   testConnection: (connectionId: string) =>
