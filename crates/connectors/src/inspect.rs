@@ -19,6 +19,7 @@ pub struct ColumnInfo {
     pub numeric_precision: Option<i64>,
     pub numeric_scale: Option<i64>,
     pub extra: Option<String>,
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,7 +66,24 @@ pub async fn list_columns(
                         AND kcu.table_name = c.table_name
                         AND kcu.column_name = c.column_name
                     ),
-                    CASE WHEN c.is_identity = 'YES' THEN 'identity' ELSE NULL END
+                    CASE WHEN c.is_identity = 'YES' THEN 'identity' ELSE NULL END,
+                    (
+                      SELECT d.description
+                      FROM pg_catalog.pg_namespace nsp
+                      JOIN pg_catalog.pg_class cls
+                        ON cls.relnamespace = nsp.oid
+                      JOIN pg_catalog.pg_attribute att
+                        ON att.attrelid = cls.oid
+                       AND att.attname = c.column_name
+                       AND att.attnum > 0
+                       AND NOT att.attisdropped
+                      LEFT JOIN pg_catalog.pg_description d
+                        ON d.objoid = cls.oid
+                       AND d.objsubid = att.attnum
+                      WHERE nsp.nspname = c.table_schema
+                        AND cls.relname = c.table_name
+                      LIMIT 1
+                    )
                  FROM information_schema.columns c
                  WHERE c.table_schema = $1 AND c.table_name = $2
                  ORDER BY c.ordinal_position",
@@ -89,7 +107,8 @@ pub async fn list_columns(
                     NUMERIC_PRECISION,
                     NUMERIC_SCALE,
                     COLUMN_KEY = 'PRI',
-                    NULLIF(EXTRA, '')
+                    NULLIF(EXTRA, ''),
+                    NULLIF(COLUMN_COMMENT, '')
                  FROM information_schema.columns
                  WHERE table_schema = ? AND table_name = ?
                  ORDER BY ORDINAL_POSITION";
@@ -111,7 +130,8 @@ pub async fn list_columns(
                     NUMERIC_PRECISION,
                     NUMERIC_SCALE,
                     COLUMN_KEY = 'PRI',
-                    NULLIF(EXTRA, '')
+                    NULLIF(EXTRA, ''),
+                    NULLIF(COLUMN_COMMENT, '')
                  FROM information_schema.columns
                  WHERE table_schema = DATABASE() AND table_name = ?
                  ORDER BY ORDINAL_POSITION",
@@ -147,6 +167,7 @@ pub async fn list_columns(
                         numeric_precision: None,
                         numeric_scale: None,
                         extra: None,
+                        comment: None,
                     }
                 })
                 .collect())
@@ -172,7 +193,20 @@ pub async fn list_columns(
                     c.NUMERIC_PRECISION,
                     c.NUMERIC_SCALE,
                     CASE WHEN pk.COLUMN_NAME IS NULL THEN N'NO' ELSE N'YES' END,
-                    CASE WHEN COLUMNPROPERTY(OBJECT_ID(QUOTENAME(N'{schema}') + N'.' + QUOTENAME(N'{}')), c.COLUMN_NAME, 'IsIdentity') = 1 THEN N'identity' ELSE NULL END
+                    CASE WHEN COLUMNPROPERTY(OBJECT_ID(QUOTENAME(N'{schema}') + N'.' + QUOTENAME(N'{}')), c.COLUMN_NAME, 'IsIdentity') = 1 THEN N'identity' ELSE NULL END,
+                    (
+                      SELECT CAST(ep.value AS nvarchar(4000))
+                      FROM sys.extended_properties ep
+                      INNER JOIN sys.columns sc
+                        ON ep.major_id = sc.object_id AND ep.minor_id = sc.column_id
+                      INNER JOIN sys.objects so ON so.object_id = sc.object_id
+                      INNER JOIN sys.schemas ss ON ss.schema_id = so.schema_id
+                      WHERE ep.class = 1
+                        AND ep.name = N'MS_Description'
+                        AND ss.name = c.TABLE_SCHEMA
+                        AND so.name = c.TABLE_NAME
+                        AND sc.name = c.COLUMN_NAME
+                    )
                  FROM INFORMATION_SCHEMA.COLUMNS c
                  LEFT JOIN (
                    SELECT kcu.COLUMN_NAME
@@ -229,6 +263,11 @@ pub async fn list_columns(
                         .unwrap_or(false),
                     extra: r
                         .try_get::<&str, usize>(9)
+                        .ok()
+                        .flatten()
+                        .map(str::to_string),
+                    comment: r
+                        .try_get::<&str, usize>(10)
                         .ok()
                         .flatten()
                         .map(str::to_string),
@@ -331,6 +370,7 @@ where
         numeric_scale: sqlx_opt_i64(row, 7),
         primary_key: sqlx_bool(row, 8),
         extra: sqlx_opt_string(row, 9),
+        comment: sqlx_opt_string(row, 10),
     }
 }
 

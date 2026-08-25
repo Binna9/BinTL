@@ -1,18 +1,31 @@
 import { HTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/cn";
+import { layout } from "@/lib/layout";
 
 export function Panel({
   children,
   className,
+  tall = false,
+  style,
   ...props
-}: HTMLAttributes<HTMLDivElement> & { children: ReactNode }) {
+}: HTMLAttributes<HTMLDivElement> & { children: ReactNode; tall?: boolean }) {
   return (
     <section
       {...props}
       className={cn(
         "overflow-hidden rounded-xl bg-surface shadow-[0_1px_3px_rgba(15,23,42,0.045)] dark:border dark:border-white/15 dark:shadow-[0_2px_8px_rgba(0,0,0,0.16)]",
+        tall && "flex flex-col",
         className,
       )}
+      style={
+        tall
+          ? {
+              minHeight: layout.page.workspaceHeight,
+              height: layout.page.workspaceHeight,
+              ...style,
+            }
+          : style
+      }
     >
       {children}
     </section>

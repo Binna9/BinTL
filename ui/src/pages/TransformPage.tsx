@@ -410,10 +410,9 @@ export function TransformPage() {
       />
       {error ? <NoticeBanner>{error}</NoticeBanner> : null}
 
-      <Panel>
+      <Panel tall>
         <SplitLayout
-          fill={false}
-          style={{ minHeight: layout.page.workspaceHeight }}
+          className="min-h-0 flex-1"
           defaultSizes={[layout.split.catalog]}
         >
           <aside className="flex min-h-0 flex-col overflow-hidden">

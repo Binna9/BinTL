@@ -1,5 +1,4 @@
 import {
-  KeyboardEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
   useEffect,
@@ -17,6 +16,7 @@ import { LiveTicker } from "@/components/LiveTicker";
 import { LogDialog } from "@/components/LogDialog";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { SplitLayout } from "@/components/SplitLayout";
+import { SqlEditor, type SqlEditorHandle } from "@/components/SqlEditor";
 import { Button, ActionAnchor } from "@/components/ui/button";
 import { ResizeGrip } from "@/components/ui/resize-grip";
 import { Select } from "@/components/ui/select";
@@ -47,7 +47,7 @@ function draftSelect(table: string, columns: string[]): string {
 
 const PREVIEW_LIMITS = [10, 20, 50, 100, 1000] as const;
 const DELIMITER_OPTIONS = [",", "|", ";", "tab", "^"] as const;
-const SQL_PANE_CHROME = 96;
+const SQL_PLACEHOLDER = "SELECT id, name\nFROM public.users\nWHERE active = true";
 
 function delimiterChar(raw: string): string | null {
   const trimmed = raw.trim();
@@ -101,7 +101,8 @@ function highlightMatch(text: string, query: string): ReactNode {
 export function QueryPage() {
   const { messages } = useLanguage();
   const [params] = useSearchParams();
-  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<SqlEditorHandle>(null);
+  const sqlRef = useRef("");
 
   const { connections, connectionsError } = useConnections();
   const [browseId, setBrowseId] = useState(params.get("connection") ?? "");
@@ -110,6 +111,7 @@ export function QueryPage() {
     useConnectionColumns(browseId, selected);
   const [picked, setPicked] = useState<string[]>([]);
   const [sql, setSql] = useState("");
+  sqlRef.current = sql;
   const [delimiter, setDelimiter] = useState(",");
   const [header, setHeader] = useState(true);
   const [limit, setLimit] = useState(100);
@@ -276,7 +278,10 @@ export function QueryPage() {
 
   function persistSql(next: string) {
     setSql(next);
-    if (browseId) localStorage.setItem(sqlStorageKey(browseId), next);
+    sqlRef.current = next;
+    if (!browseId) return;
+    if (next) localStorage.setItem(sqlStorageKey(browseId), next);
+    else localStorage.removeItem(sqlStorageKey(browseId));
   }
 
   function onPickConnection(id: string) {
@@ -296,6 +301,7 @@ export function QueryPage() {
     setError("");
     const saved = localStorage.getItem(sqlStorageKey(id));
     setSql(saved ?? "");
+    sqlRef.current = saved ?? "";
   }
 
   function onPickTable(next: CatalogSelection | null) {
@@ -304,20 +310,7 @@ export function QueryPage() {
   }
 
   function insertAtCursor(text: string) {
-    const el = editorRef.current;
-    if (!el) {
-      persistSql(sql + text);
-      return;
-    }
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const next = `${sql.slice(0, start)}${text}${sql.slice(end)}`;
-    persistSql(next);
-    requestAnimationFrame(() => {
-      el.focus();
-      const pos = start + text.length;
-      el.setSelectionRange(pos, pos);
-    });
+    editorRef.current?.insertAtCursor(text);
   }
 
   function applyDraft(columnsToUse: string[]) {
@@ -326,13 +319,12 @@ export function QueryPage() {
   }
 
   async function onRefreshSql() {
+    persistSql("");
     if (!selected) return;
     const columns = await refreshColumns();
     if (!columns) return;
     const names = new Set(columns.map((column) => column.name));
-    const nextPicked = picked.filter((name) => names.has(name));
-    setPicked(nextPicked);
-    persistSql(draftSelect(selected.qualified, nextPicked));
+    setPicked(picked.filter((name) => names.has(name)));
   }
 
   function toggleColumn(name: string) {
@@ -342,7 +334,7 @@ export function QueryPage() {
   }
 
   async function runQuery(previewLimit: number, openFresh: boolean) {
-    if (!browseId || !sql.trim()) return;
+    if (!browseId || !sqlRef.current.trim()) return;
     const seq = ++runSeq.current;
     if (openFresh) {
       setIsResultOpen(true);
@@ -360,7 +352,7 @@ export function QueryPage() {
     try {
       const outcome = await queryApi.runQuery(
         browseId,
-        sql,
+        sqlRef.current,
         previewLimit,
         selected?.database,
         logId,
@@ -394,7 +386,7 @@ export function QueryPage() {
         connection_id: browseId,
         table: selected?.qualified || "query",
         database: selected?.database,
-        sql,
+        sql: sqlRef.current,
         delimiter,
         header,
       });
@@ -405,23 +397,6 @@ export function QueryPage() {
       setError(err instanceof Error ? err.message : messages.errors.extract);
     } finally {
       setExtracting(false);
-    }
-  }
-
-  function onEditorKey(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Tab") {
-      event.preventDefault();
-      insertAtCursor("  ");
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-      event.preventDefault();
-      void onRun();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key === "Backspace") {
-      event.preventDefault();
-      void onRefreshSql();
     }
   }
 
@@ -496,27 +471,21 @@ export function QueryPage() {
         </NoticeBanner>
       ) : null}
 
-      <Panel>
+      <Panel tall className="overflow-hidden">
         <SplitLayout
-          fill={false}
-          style={{
-            minHeight: editorSize
-              ? `max(${layout.page.workspaceHeight}, ${editorSize.h + SQL_PANE_CHROME}px)`
-              : layout.page.workspaceHeight,
-          }}
+          className="min-h-0 flex-1"
           defaultSizes={[layout.split.sidebar]}
         >
-          <aside className="flex min-h-0 flex-col">
+          <aside className="flex h-full min-h-0 flex-col overflow-hidden">
             <SplitLayout
-              fill={false}
-              className="min-h-full"
+              className="h-full"
               direction="vertical"
               defaultSizes={[layout.split.connections]}
               minSize={layout.split.minStack}
             >
-              <div className="flex flex-col">
+              <div className="flex h-full min-h-0 flex-col overflow-hidden">
                 <PaneHeader title={messages.common.connections} meta={messages.common.count(connections.length)} />
-                <div className="bg-surface">
+                <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
                   {connections.length === 0 ? (
                     <p className="p-3 text-xs text-text-tertiary">{messages.empty.connections}</p>
                   ) : (
@@ -540,9 +509,9 @@ export function QueryPage() {
                   )}
                 </div>
               </div>
-              <div className="flex flex-col">
+              <div className="flex h-full min-h-0 flex-col overflow-hidden">
                 <PaneHeader title={messages.common.catalog} />
-                <div className="bg-surface">
+                <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
                   {browseId ? (
                     <CatalogTree
                       connectionId={browseId}
@@ -557,16 +526,16 @@ export function QueryPage() {
             </SplitLayout>
           </aside>
 
-          <div className="flex min-h-0 min-w-0 flex-col">
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
             <ConnectionInfoPanel
               connection={active}
               selectedTable={selected?.qualified}
             />
 
-            <SplitLayout fill={false} className="min-h-[28rem]" defaultSizes={[layout.split.columns]}>
-              <section className="flex flex-col">
+            <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.columns]}>
+              <section className="flex h-full min-h-0 flex-col overflow-hidden">
                 <PaneHeader title={messages.common.columns} meta={`${connectionColumns.length}`} />
-                <div className="bg-surface">
+                <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
                   {connectionColumns.length === 0 ? (
                     <p className="p-3 text-xs text-text-tertiary">{messages.query.columnsHint}</p>
                   ) : (
@@ -605,16 +574,16 @@ export function QueryPage() {
                 </div>
               </section>
 
-              <section className="flex min-h-[28rem] flex-col bg-raised p-3">
+              <section className="flex h-full min-h-0 flex-col overflow-hidden bg-raised p-3">
                 <div
                   ref={editorBoxRef}
                   className={cn(
-                    "flex max-w-full flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/10",
-                    editorSize ? "shrink-0" : "min-h-[24rem] flex-1",
+                    "flex max-w-full min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/10",
+                    editorSize ? "shrink-0" : undefined,
                   )}
                   style={
                     editorSize
-                      ? { width: editorSize.w, height: editorSize.h, maxWidth: "100%" }
+                      ? { width: editorSize.w, height: editorSize.h, maxWidth: "100%", maxHeight: "100%" }
                       : undefined
                   }
                 >
@@ -634,34 +603,36 @@ export function QueryPage() {
                         <Button
                           type="button"
                           variant="quiet"
-                          disabled={!selected || columnsLoading}
+                          disabled={!selected}
+                          onClick={() => applyDraft([])}
+                        >
+                          {messages.query.applyStar}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          disabled={!browseId || columnsLoading}
                           title={messages.common.refresh}
                           onClick={() => void onRefreshSql()}
                         >
                           <RefreshCw className="size-3.5" aria-hidden="true" />
                           {messages.common.refresh}
                         </Button>
-                        <Button
-                          type="button"
-                          variant="quiet"
-                          disabled={!selected}
-                          onClick={() => applyDraft([])}
-                        >
-                          SELECT *
-                        </Button>
                       </>
                     }
                   />
                   <div className="relative min-h-0 flex-1">
-                    <textarea
+                    <SqlEditor
                       ref={editorRef}
-                      className="sql-editor h-full min-h-0 pb-6"
-                      spellCheck={false}
                       value={sql}
-                      onChange={(event) => persistSql(event.target.value)}
-                      onKeyDown={onEditorKey}
-                      placeholder={"SELECT id, name\nFROM public.users\nWHERE active = true"}
+                      placeholder={SQL_PLACEHOLDER}
                       disabled={!browseId}
+                      driver={active?.driver}
+                      table={selected?.qualified}
+                      columns={connectionColumns}
+                      onChange={persistSql}
+                      onRun={() => void onRun()}
+                      onClear={() => void onRefreshSql()}
                     />
                     <ResizeGrip
                       label={messages.common.resizeEditor}

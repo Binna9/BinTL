@@ -12,9 +12,9 @@ export function LoadPage() {
         title={messages.load.title}
         description={messages.load.description}
       />
-      <Panel>
+      <Panel tall>
         <PanelHeader title={messages.load.pending} />
-        <PanelBody>
+        <PanelBody className="min-h-0 flex-1">
           <p className="text-sm leading-6 text-text-secondary">{messages.load.hint}</p>
         </PanelBody>
       </Panel>

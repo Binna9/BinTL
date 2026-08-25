@@ -35,6 +35,7 @@ pub const REL_DATABASES: &str = "extracts/databases";
 pub const REL_API: &str = "extracts/api";
 pub const REL_OUTPUTS: &str = "outputs";
 pub const REL_LOGS: &str = "logs";
+pub const REL_STAGING: &str = "staging";
 
 const EXTRACT_KINDS: [&str; 3] = ["uploads", "databases", "api"];
 
@@ -127,6 +128,13 @@ pub struct FileMeta {
     pub filename: String,
     pub size: u64,
     pub stored_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct StagedFile {
+    pub id: String,
+    pub original_filename: String,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -231,6 +239,10 @@ impl Store {
         self.data_dir.join(REL_OUTPUTS)
     }
 
+    pub fn staging_dir(&self) -> PathBuf {
+        self.data_dir.join(REL_STAGING)
+    }
+
     pub fn resolve(&self, stored: &str) -> PathBuf {
         let p = Path::new(stored);
         if p.is_absolute() {
@@ -253,7 +265,8 @@ impl Store {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::write(&dest, bytes).await?;
-        self.upsert_dataset(&DatasetUpsert {
+        if let Err(error) = self
+            .upsert_dataset(&DatasetUpsert {
             id: id.clone(),
             kind: "upload".into(),
             extract_id: None,
@@ -264,13 +277,76 @@ impl Store {
             has_header: None,
             row_count: None,
         })
-        .await?;
+            .await
+        {
+            let _ = tokio::fs::remove_dir_all(self.uploads_dir().join(&id)).await;
+            return Err(error);
+        }
         Ok(FileMeta {
             id,
             filename,
             size: bytes.len() as u64,
             stored_path: rel,
         })
+    }
+
+    pub async fn stage_spreadsheet(
+        &self,
+        original_filename: &str,
+        bytes: &[u8],
+    ) -> Result<StagedFile, StorageError> {
+        let id = Uuid::new_v4().to_string();
+        let original_filename = safe_filename(original_filename);
+        let dir = self.staging_dir().join(&id);
+        let path = dir.join(&original_filename);
+        tokio::fs::create_dir_all(&dir).await?;
+        if let Err(error) = tokio::fs::write(&path, bytes).await {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return Err(error.into());
+        }
+        Ok(StagedFile {
+            id,
+            original_filename,
+            path,
+        })
+    }
+
+    pub async fn staged_file(&self, id: &str) -> Result<StagedFile, StorageError> {
+        validate_uuid(id, "staging_id")?;
+        let dir = self.staging_dir().join(id);
+        let mut entries = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => {
+                    StorageError::NotFound("staging file not found".into())
+                }
+                _ => error.into(),
+            })?;
+        let mut staged = None;
+        while let Some(entry) = entries.next_entry().await? {
+            if !entry.file_type().await?.is_file() || staged.is_some() {
+                return Err(StorageError::Invalid("invalid staging directory".into()));
+            }
+            staged = Some(StagedFile {
+                id: id.to_string(),
+                original_filename: entry.file_name().to_string_lossy().into_owned(),
+                path: entry.path(),
+            });
+        }
+        staged.ok_or_else(|| StorageError::NotFound("staging file not found".into()))
+    }
+
+    pub async fn delete_stage(&self, id: &str) -> Result<(), StorageError> {
+        validate_uuid(id, "staging_id")?;
+        let dir = self.staging_dir().join(id);
+        tokio::fs::remove_dir_all(dir)
+            .await
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => {
+                    StorageError::NotFound("staging file not found".into())
+                }
+                _ => error.into(),
+            })
     }
 
     pub async fn list_uploads(&self) -> Result<Vec<FileMeta>, StorageError> {
@@ -286,6 +362,9 @@ impl Store {
                 continue;
             }
             let id = entry.file_name().to_string_lossy().into_owned();
+            if Uuid::parse_str(&id).is_err() {
+                continue;
+            }
             let mut files = tokio::fs::read_dir(entry.path()).await?;
             while let Some(file) = files.next_entry().await? {
                 if !file.file_type().await?.is_file() {
@@ -1081,6 +1160,7 @@ pub fn job_db_extract_rel(job_id: &str) -> String {
 
 async fn ensure_data_layout(data_dir: &Path) -> Result<(), StorageError> {
     tokio::fs::create_dir_all(data_dir.join(REL_OUTPUTS)).await?;
+    tokio::fs::create_dir_all(data_dir.join(REL_STAGING)).await?;
     for kind in EXTRACT_KINDS {
         tokio::fs::create_dir_all(data_dir.join("extracts").join(kind)).await?;
     }
@@ -1169,8 +1249,32 @@ fn supported_driver(driver: &str) -> bool {
     )
 }
 
+fn validate_uuid(id: &str, field: &str) -> Result<(), StorageError> {
+    Uuid::parse_str(id)
+        .map(|_| ())
+        .map_err(|_| StorageError::Invalid(format!("invalid {field}")))
+}
+
 pub fn now_rfc3339() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+pub fn resolve_upload_filename(original: &str, requested: Option<&str>) -> String {
+    let source = requested
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(original);
+    let mut name = safe_filename(source);
+    let orig_ext = Path::new(original)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| !ext.is_empty());
+    if Path::new(&name).extension().is_none() {
+        if let Some(ext) = orig_ext {
+            name = safe_filename(&format!("{name}.{ext}"));
+        }
+    }
+    name
 }
 
 fn safe_filename(name: &str) -> String {
@@ -1182,13 +1286,15 @@ fn safe_filename(name: &str) -> String {
     let cleaned: String = base
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
                 '_'
+            } else {
+                c
             }
         })
-        .collect();
+        .collect::<String>()
+        .trim_matches(|c: char| c == ' ' || c == '.')
+        .to_string();
     if cleaned.is_empty() {
         "upload.bin".into()
     } else {
@@ -1215,5 +1321,54 @@ mod tests {
         );
         let (_, tsv) = Store::extract_file_rel("id", "t", "tab");
         assert_eq!(tsv, "extracts/databases/id/t.tsv");
+    }
+
+    #[test]
+    fn upload_filename_uses_requested_name() {
+        assert_eq!(
+            resolve_upload_filename("a.csv", Some("sales")),
+            "sales.csv"
+        );
+        assert_eq!(
+            resolve_upload_filename("a.csv", Some("매출자료.csv")),
+            "매출자료.csv"
+        );
+        assert_eq!(resolve_upload_filename("a.csv", Some("  ")), "a.csv");
+        assert_eq!(
+            resolve_upload_filename("a.csv", Some("../x.csv")),
+            "x.csv"
+        );
+    }
+
+    #[test]
+    fn staging_ids_must_be_uuids() {
+        assert!(validate_uuid(&Uuid::new_v4().to_string(), "staging_id").is_ok());
+        assert!(validate_uuid("../escape", "staging_id").is_err());
+    }
+
+    #[tokio::test]
+    async fn stages_reads_and_deletes_a_spreadsheet() {
+        let root = std::env::temp_dir().join(format!("bintl-storage-test-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-session-secret").await.unwrap();
+        let staged = store
+            .stage_spreadsheet("../report.xlsx", b"spreadsheet")
+            .await
+            .unwrap();
+        assert_eq!(staged.original_filename, "report.xlsx");
+        assert_eq!(
+            store
+                .staged_file(&staged.id)
+                .await
+                .unwrap()
+                .original_filename,
+            "report.xlsx"
+        );
+        store.delete_stage(&staged.id).await.unwrap();
+        assert!(matches!(
+            store.staged_file(&staged.id).await,
+            Err(StorageError::NotFound(_))
+        ));
+        store.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

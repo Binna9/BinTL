@@ -27,7 +27,7 @@ export function ExtractResultsPage() {
       />
       {extractsError ? <NoticeBanner>{extractsError}</NoticeBanner> : null}
 
-      <Panel>
+      <Panel tall>
         <Toolbar>
           <ToolbarGroup>
             <span className="text-[13px] font-semibold">{messages.extracts.resultFiles}</span>
@@ -38,6 +38,7 @@ export function ExtractResultsPage() {
           </span>
         </Toolbar>
         <DataGrid
+          className="min-h-0 flex-1"
           headers={[...messages.extracts.headers]}
         >
           {extracts.length === 0 ? (

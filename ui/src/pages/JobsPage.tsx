@@ -222,14 +222,14 @@ export function JobsPage() {
         </form>
       </Panel>
 
-      <Panel>
+      <Panel tall>
         <Toolbar>
           <ToolbarGroup>
             <span className="text-[13px] font-semibold">{messages.jobs.history}</span>
             <span className="text-xs text-text-tertiary">{messages.common.cases(jobs.length)}</span>
           </ToolbarGroup>
         </Toolbar>
-        <DataGrid headers={[...messages.jobs.headers]}>
+        <DataGrid className="min-h-0 flex-1" headers={[...messages.jobs.headers]}>
           {jobs.length === 0 ? (
             <EmptyGridRow cols={4} text={messages.empty.queue} />
           ) : (

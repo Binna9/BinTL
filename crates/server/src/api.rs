@@ -4,14 +4,16 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse};
 use axum::routing::{get, post};
 use connectors::{
-    catalog_layout, db_source_path, list_columns, list_databases, list_relations, list_schemas,
-    list_tables, normalize_sql, parse_delimiter, parse_ident, parse_table, preview_table, run_sql,
-    sql_kind, test_connection, with_database, SqlKind,
+    catalog_layout, db_source_path, export_sheet_to_csv, list_columns, list_databases,
+    list_relations, list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter,
+    parse_ident, parse_table, preview_table, run_sql, spreadsheet_format, sql_kind,
+    test_connection, with_database, SqlKind,
 };
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path as FsPath;
 
 use crate::auth;
 use crate::error::AppError;
@@ -27,6 +29,9 @@ pub fn public_routes() -> Router<AppState> {
 pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
     Router::new()
         .route("/api/files", post(upload_file).get(list_files))
+        .route("/api/files/stage", post(stage_spreadsheet))
+        .route("/api/files/commit", post(commit_spreadsheet))
+        .route("/api/files/stage/{id}", axum::routing::delete(cancel_stage))
         .route("/api/connections", post(create_connection).get(list_connections))
         .route("/api/connections/{id}", get(get_connection).put(update_connection).delete(delete_connection))
         .route("/api/connections/{id}/test", post(test_saved_connection))
@@ -90,31 +95,240 @@ async fn upload_file(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<Value>, AppError> {
+    let mut requested_name: Option<String> = None;
+    let mut payload: Option<(String, Vec<u8>)> = None;
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::bad(e.to_string()))?
     {
-        if field.name() != Some("file") {
-            continue;
+        match field.name() {
+            Some("filename") => {
+                requested_name = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError::bad(e.to_string()))?,
+                );
+            }
+            Some("file") => {
+                let original = field.file_name().unwrap_or("upload.bin").to_string();
+                let data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::bad(e.to_string()))?;
+                payload = Some((original, data.to_vec()));
+            }
+            _ => {}
         }
-        let filename = field
-            .file_name()
-            .unwrap_or("upload.bin")
-            .to_string();
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| AppError::bad(e.to_string()))?;
-        let meta = state.store.save_upload(&filename, &data).await?;
-        return Ok(Json(json!({
-            "id": meta.id,
-            "filename": meta.filename,
-            "size": meta.size,
-            "stored_path": meta.stored_path,
-        })));
     }
-    Err(AppError::bad("multipart field `file` required"))
+    let (original, data) = payload.ok_or_else(|| AppError::bad("multipart field `file` required"))?;
+    let filename = storage::resolve_upload_filename(&original, requested_name.as_deref());
+    require_csv_filename(&filename)?;
+    validate_csv(&data)?;
+    let meta = state.store.save_upload(&filename, &data).await?;
+    Ok(Json(json!({
+        "id": meta.id,
+        "filename": meta.filename,
+        "size": meta.size,
+        "stored_path": meta.stored_path,
+    })))
+}
+
+async fn stage_spreadsheet(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let mut payload: Option<(String, Vec<u8>)> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?
+    {
+        if field.name() == Some("file") {
+            let original_filename = field
+                .file_name()
+                .ok_or_else(|| AppError::bad("uploaded spreadsheet needs a filename"))?
+                .to_string();
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|error| AppError::bad(error.to_string()))?;
+            payload = Some((original_filename, bytes.to_vec()));
+        }
+    }
+    let (original_filename, bytes) =
+        payload.ok_or_else(|| AppError::bad("multipart field `file` required"))?;
+    let format = spreadsheet_format(FsPath::new(&original_filename))?.to_string();
+    let staged = state
+        .store
+        .stage_spreadsheet(&original_filename, &bytes)
+        .await?;
+    let path = staged.path.clone();
+    let sheets = match tokio::task::spawn_blocking(move || list_sheets(&path)).await {
+        Ok(Ok(sheets)) => sheets,
+        Ok(Err(error)) => {
+            let _ = state.store.delete_stage(&staged.id).await;
+            return Err(error.into());
+        }
+        Err(error) => {
+            let _ = state.store.delete_stage(&staged.id).await;
+            return Err(AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("spreadsheet task failed: {error}"),
+            ));
+        }
+    };
+    if sheets.is_empty() {
+        let _ = state.store.delete_stage(&staged.id).await;
+        return Err(AppError::bad("spreadsheet contains no worksheets"));
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "staging_id": staged.id,
+            "original_filename": staged.original_filename,
+            "format": format,
+            "sheets": sheets,
+        })),
+    ))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CommitSheet {
+    name: String,
+    filename: String,
+}
+
+#[derive(Deserialize)]
+struct CommitSpreadsheetBody {
+    staging_id: String,
+    sheets: Vec<CommitSheet>,
+}
+
+async fn commit_spreadsheet(
+    State(state): State<AppState>,
+    Json(body): Json<CommitSpreadsheetBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    if body.sheets.is_empty() {
+        return Err(AppError::bad("at least one sheet must be selected"));
+    }
+    let staged = state.store.staged_file(&body.staging_id).await?;
+    let selected = normalize_commit_sheets(body.sheets)?;
+    let path = staged.path.clone();
+    let exports = tokio::task::spawn_blocking(
+        move || -> Result<Vec<(String, Vec<u8>)>, connectors::ConnectError> {
+            let available: HashSet<String> = list_sheets(&path)?
+                .into_iter()
+                .map(|sheet| sheet.name)
+                .collect();
+            let mut exports = Vec::with_capacity(selected.len());
+            for sheet in selected {
+                if !available.contains(&sheet.name) {
+                    return Err(connectors::ConnectError::Invalid(format!(
+                        "sheet `{}` not found",
+                        sheet.name
+                    )));
+                }
+                let csv = export_sheet_to_csv(&path, &sheet.name)?;
+                exports.push((sheet.filename, csv));
+            }
+            Ok(exports)
+        },
+    )
+    .await
+    .map_err(|error| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("spreadsheet task failed: {error}"),
+        )
+    })??;
+
+    for (_, bytes) in &exports {
+        validate_csv(bytes)?;
+    }
+    state.store.delete_stage(&staged.id).await?;
+    let mut files = Vec::with_capacity(exports.len());
+    for (filename, bytes) in exports {
+        files.push(state.store.save_upload(&filename, &bytes).await?);
+    }
+    Ok((StatusCode::CREATED, Json(json!({ "files": files }))))
+}
+
+async fn cancel_stage(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    state.store.delete_stage(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+fn normalize_commit_sheets(sheets: Vec<CommitSheet>) -> Result<Vec<CommitSheet>, AppError> {
+    let mut names = HashSet::new();
+    let mut normalized = Vec::with_capacity(sheets.len());
+    for sheet in sheets {
+        let name = sheet.name.trim();
+        if name.is_empty() {
+            return Err(AppError::bad("sheet name required"));
+        }
+        if !names.insert(name.to_string()) {
+            return Err(AppError::bad(format!("sheet `{name}` selected more than once")));
+        }
+        if sheet.filename.trim().is_empty() {
+            return Err(AppError::bad("csv filename required"));
+        }
+        let filename = storage::resolve_upload_filename(
+            &format!("{name}.csv"),
+            Some(sheet.filename.trim()),
+        );
+        require_csv_filename(&filename)?;
+        normalized.push(CommitSheet {
+            name: name.to_string(),
+            filename,
+        });
+    }
+    Ok(normalized)
+}
+
+fn require_csv_filename(filename: &str) -> Result<(), AppError> {
+    let is_csv = FsPath::new(filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"));
+    if !is_csv {
+        return Err(AppError::bad("only .csv files are accepted"));
+    }
+    Ok(())
+}
+
+fn validate_csv(bytes: &[u8]) -> Result<(), AppError> {
+    if bytes.is_empty() {
+        return Err(AppError::bad("csv must not be empty"));
+    }
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(false)
+        .from_reader(bytes);
+    let mut expected_width = None;
+    let mut row_count = 0usize;
+    for record in reader.records() {
+        let record = record.map_err(|error| AppError::bad(format!("invalid csv: {error}")))?;
+        if record.is_empty() {
+            return Err(AppError::bad("csv rows must not be empty"));
+        }
+        match expected_width {
+            Some(width) if width != record.len() => {
+                return Err(AppError::bad("csv rows must have a consistent width"));
+            }
+            None => expected_width = Some(record.len()),
+            _ => {}
+        }
+        row_count += 1;
+    }
+    if row_count == 0 {
+        return Err(AppError::bad("csv must contain at least one row"));
+    }
+    Ok(())
 }
 
 async fn list_files(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
@@ -757,4 +971,45 @@ async fn job_result(
         ]),
         bytes,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csv_upload_validation_requires_rows_and_consistent_width() {
+        assert!(validate_csv(b"name,amount\nalice,10\n").is_ok());
+        assert!(validate_csv(b"").is_err());
+        assert!(validate_csv(b"\n\n").is_err());
+        assert!(validate_csv(b"a,b\n1\n").is_err());
+        assert!(validate_csv(b"a,b\n\"unterminated\n").is_err());
+    }
+
+    #[test]
+    fn commit_sheet_validation_requires_unique_names_and_csv_filenames() {
+        let valid = normalize_commit_sheets(vec![CommitSheet {
+            name: "Sales".into(),
+            filename: "sales.csv".into(),
+        }])
+        .unwrap();
+        assert_eq!(valid[0].filename, "sales.csv");
+
+        assert!(normalize_commit_sheets(vec![CommitSheet {
+            name: "Sales".into(),
+            filename: "sales.xlsx".into(),
+        }])
+        .is_err());
+        assert!(normalize_commit_sheets(vec![
+            CommitSheet {
+                name: "Sales".into(),
+                filename: "sales.csv".into(),
+            },
+            CommitSheet {
+                name: "Sales".into(),
+                filename: "sales-copy.csv".into(),
+            },
+        ])
+        .is_err());
+    }
 }

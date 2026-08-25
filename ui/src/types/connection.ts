@@ -32,6 +32,7 @@ export interface DatabaseColumn {
   numeric_precision?: number | null;
   numeric_scale?: number | null;
   extra?: string | null;
+  comment?: string | null;
 }
 
 export interface TablePreview {

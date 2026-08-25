@@ -91,9 +91,9 @@ export function JobRunPage() {
         ) : null}
       </Panel>
 
-      <Panel>
+      <Panel tall>
         <PanelHeader title={messages.jobRun.logs} description={messages.jobRun.refresh} />
-        <pre className="m-0 min-h-72 overflow-auto bg-[#171a1f] p-4 font-sans text-[12px] leading-5 text-[#d7dce2]">
+        <pre className="m-0 min-h-0 flex-1 overflow-auto bg-[#171a1f] p-4 font-sans text-[12px] leading-5 text-[#d7dce2]">
           {jobRun.logs.map((log) => `${fmtWhen(log.ts)}  ${log.level.padEnd(5)}  ${log.message}`).join("\n") ||
             messages.empty.logs}
         </pre>

@@ -233,7 +233,7 @@ export function ConnectionsPage() {
         </PanelBody>
       </Panel>
 
-      <Panel>
+      <Panel tall className="overflow-hidden">
         <Toolbar>
           <ToolbarGroup>
             <span className="text-[13px] font-semibold">{messages.connectionsPage.explorer}</span>
@@ -243,10 +243,10 @@ export function ConnectionsPage() {
           </ToolbarGroup>
         </Toolbar>
 
-        <SplitLayout fill={false} className="min-h-[36rem]" defaultSizes={[layout.split.sidebar]}>
-          <aside className="flex min-h-[36rem] flex-col">
+        <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.sidebar]}>
+          <aside className="flex h-full min-h-0 flex-col overflow-hidden">
             <PaneHeader title={messages.common.connections} meta={messages.common.count(connections.length)} />
-            <div className="bg-surface">
+            <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
               {connections.length === 0 ? (
                 <p className="p-4 text-xs text-text-tertiary">{messages.empty.connections}</p>
               ) : (
@@ -323,14 +323,14 @@ export function ConnectionsPage() {
           </aside>
 
           {!activeConnection ? (
-            <div className="grid min-h-[36rem] place-items-center text-[13px] text-text-tertiary">
+            <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
               {messages.connectionsPage.selectConnectionHint}
             </div>
           ) : (
-            <SplitLayout fill={false} className="min-h-[36rem] min-w-0" defaultSizes={[layout.split.catalog]}>
-              <aside className="flex min-h-[36rem] flex-col bg-surface">
+            <SplitLayout className="h-full min-w-0" defaultSizes={[layout.split.catalog]}>
+              <aside className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
                 <PaneHeader title={messages.common.catalog} />
-                <div>
+                <div className="min-h-0 flex-1 overflow-y-auto">
                   <CatalogTree
                     connectionId={activeConnection.id}
                     selected={selected}
@@ -340,57 +340,57 @@ export function ConnectionsPage() {
               </aside>
 
               {!selected ? (
-                <div className="grid min-h-[36rem] place-items-center text-[13px] text-text-tertiary">
+                <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
                   {messages.connectionsPage.selectTableHint}
                 </div>
               ) : (
-                <div className="flex min-w-0 flex-col">
-                  <Toolbar>
-                    <ToolbarGroup>
-                      <span className="technical font-semibold text-text">{selected.qualified}</span>
-                    </ToolbarGroup>
-                    <Button
-                      type="button"
-                      variant="primary"
-                      onClick={() =>
-                        navigate(
-                          `/db?connection=${browseId}&table=${encodeURIComponent(selected.qualified)}&database=${encodeURIComponent(selected.database)}`,
-                        )
-                      }
-                    >
-                      <SquarePen className="size-3.5" aria-hidden="true" />
-                      {messages.connectionsPage.queryExtract}
-                    </Button>
-                  </Toolbar>
-                  <section className="flex flex-col">
-                    <PaneHeader title={messages.common.columns} meta={`${columns.length}`} />
-                    <div className="bg-surface">
-                      <DataGrid headers={[...messages.connectionsPage.columnHeaders]}>
-                        {columns.length === 0 ? (
-                          <EmptyGridRow
-                            cols={messages.connectionsPage.columnHeaders.length}
-                            text={messages.query.columnsHint}
-                          />
-                        ) : (
-                          columns.map((column, index) => (
-                            <GridRow key={column.name}>
-                              <GridCell mono muted>{column.ordinal ?? index + 1}</GridCell>
-                              <GridCell mono>{column.name}</GridCell>
-                              <GridCell mono muted>{column.data_type}</GridCell>
-                              <GridCell muted>
-                                {column.nullable ? messages.common.yes : messages.common.no}
-                              </GridCell>
-                              <GridCell muted>
-                                {column.primary_key ? messages.common.yes : messages.common.no}
-                              </GridCell>
-                              <GridCell mono muted>{dash(column.default_value)}</GridCell>
-                              <GridCell muted>{dash(column.extra)}</GridCell>
-                            </GridRow>
-                          ))
-                        )}
-                      </DataGrid>
-                    </div>
-                  </section>
+                <div className="flex h-full min-w-0 flex-col overflow-hidden">
+                  <PaneHeader
+                    title={messages.connectionsPage.columnDetails}
+                    meta={`${columns.length}`}
+                    description={selected.qualified}
+                    actions={
+                      <Button
+                        type="button"
+                        variant="primary"
+                        onClick={() =>
+                          navigate(
+                            `/db?connection=${browseId}&table=${encodeURIComponent(selected.qualified)}&database=${encodeURIComponent(selected.database)}`,
+                          )
+                        }
+                      >
+                        <SquarePen className="size-3.5" aria-hidden="true" />
+                        {messages.connectionsPage.queryExtract}
+                      </Button>
+                    }
+                  />
+                  <div className="min-h-0 flex-1 overflow-auto bg-surface">
+                    <DataGrid headers={[...messages.connectionsPage.columnHeaders]}>
+                      {columns.length === 0 ? (
+                        <EmptyGridRow
+                          cols={messages.connectionsPage.columnHeaders.length}
+                          text={messages.query.columnsHint}
+                        />
+                      ) : (
+                        columns.map((column, index) => (
+                          <GridRow key={column.name}>
+                            <GridCell mono muted>{column.ordinal ?? index + 1}</GridCell>
+                            <GridCell mono>{column.name}</GridCell>
+                            <GridCell mono muted>{column.data_type}</GridCell>
+                            <GridCell muted>
+                              {column.nullable ? messages.common.yes : messages.common.no}
+                            </GridCell>
+                            <GridCell muted>
+                              {column.primary_key ? messages.common.yes : messages.common.no}
+                            </GridCell>
+                            <GridCell mono muted>{dash(column.default_value)}</GridCell>
+                            <GridCell muted>{dash(column.comment)}</GridCell>
+                            <GridCell mono muted>{dash(column.extra)}</GridCell>
+                          </GridRow>
+                        ))
+                      )}
+                    </DataGrid>
+                  </div>
                 </div>
               )}
             </SplitLayout>

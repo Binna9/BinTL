@@ -11,11 +11,13 @@ mod catalog;
 mod extract;
 mod inspect;
 mod query;
+mod spreadsheet;
 
 pub use catalog::{catalog_layout, list_databases, list_relations, list_schemas, CatalogItem};
 pub use extract::{extract_table, parse_delimiter, ExtractOptions};
 pub use inspect::{list_columns, preview_table, ColumnInfo, Preview};
 pub use query::{extract_query, normalize_sql, run_sql, sql_kind, QueryOutcome, SqlKind};
+pub use spreadsheet::{export_sheet_to_csv, list_sheets, spreadsheet_format, SheetInfo};
 use tiberius::{AuthMethod, Client, Config, EncryptionLevel};
 use tokio::net::TcpStream;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
@@ -34,6 +36,8 @@ pub enum ConnectError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Csv(#[from] csv::Error),
+    #[error("spreadsheet error: {0}")]
+    Spreadsheet(String),
 }
 
 /// Wire-protocol family. One compiled driver covers many server versions.

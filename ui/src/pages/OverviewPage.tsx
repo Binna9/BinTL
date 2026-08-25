@@ -52,9 +52,9 @@ export function OverviewPage() {
         </PanelBody>
       </Panel>
 
-      <Panel>
+      <Panel tall>
         <PanelHeader title={messages.overview.recentJobs} description={messages.overview.recentDescription} />
-        <DataGrid headers={[...messages.overview.headers]}>
+        <DataGrid className="min-h-0 flex-1" headers={[...messages.overview.headers]}>
           {recentJobs.length === 0 ? (
             <EmptyGridRow cols={4} text={messages.empty.jobs} />
           ) : (

@@ -19,6 +19,6 @@ export const layout = {
     defaultColumnWidth: 160,
   },
   page: {
-    workspaceHeight: "calc(100vh - 14.25rem)",
+    workspaceHeight: "calc(100vh - 8rem)",
   },
 } as const;

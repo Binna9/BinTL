@@ -212,7 +212,7 @@ a {
 
 .page-section-rule {
   height: 1px;
-  margin: 1.35rem 0 0.1rem;
+  margin: 1.5rem 0 0;
   background: linear-gradient(
     90deg,
     transparent 0%,
@@ -298,14 +298,40 @@ a {
   @apply size-3.5 accent-accent;
 }
 
+.file-dropzone {
+  --dropzone-stroke: var(--theme-border-strong);
+  @apply relative flex h-20 cursor-pointer items-center justify-center rounded-lg border border-dashed bg-raised px-6 text-[13px] text-text-secondary;
+  border-color: var(--dropzone-stroke);
+}
+
+.file-dropzone:hover,
+.file-dropzone:focus-within,
+.file-dropzone.is-over {
+  --dropzone-stroke: color-mix(in srgb, var(--theme-accent) 48%, var(--theme-border-strong));
+  border-color: var(--dropzone-stroke);
+}
+
 .technical {
   @apply text-[12px] tabular-nums;
 }
 
 .sql-editor {
-  @apply min-h-0 w-full resize-none overflow-y-auto border-0 bg-surface p-3 font-sans text-[13px] leading-6 text-text outline-none;
-  @apply placeholder:text-text-tertiary;
-  tab-size: 2;
+  @apply flex h-full min-h-0 w-full flex-col overflow-hidden bg-surface text-[13px] leading-6 text-text;
+}
+
+.sql-editor .cm-editor {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: transparent;
+}
+
+.sql-editor .cm-editor .cm-scroller {
+  font-family: inherit;
+}
+
+.sql-editor .cm-editor .cm-gutters {
+  font-family: inherit;
 }
 
 .query-ticker {
