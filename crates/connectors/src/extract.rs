@@ -16,6 +16,7 @@ pub struct ExtractOptions {
     pub delimiter: u8,
     pub header: bool,
     pub quote: u8,
+    pub add_sequence: bool,
 }
 
 impl Default for ExtractOptions {
@@ -24,8 +25,25 @@ impl Default for ExtractOptions {
             delimiter: b',',
             header: true,
             quote: b'"',
+            add_sequence: false,
         }
     }
+}
+
+pub const SEQUENCE_HEADER: &str = "#";
+
+pub(crate) fn with_sequence_header(add_sequence: bool, mut headers: Vec<String>) -> Vec<String> {
+    if add_sequence {
+        headers.insert(0, SEQUENCE_HEADER.into());
+    }
+    headers
+}
+
+pub(crate) fn with_sequence(add_sequence: bool, seq: u64, mut fields: Vec<String>) -> Vec<String> {
+    if add_sequence {
+        fields.insert(0, seq.to_string());
+    }
+    fields
 }
 
 pub fn parse_delimiter(raw: &str) -> Result<u8, ConnectError> {
@@ -78,15 +96,18 @@ pub async fn extract_table(
         .quote(opts.quote)
         .from_path(dest)?;
     if opts.header {
-        let headers: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+        let headers = with_sequence_header(
+            opts.add_sequence,
+            cols.iter().map(|c| c.name.clone()).collect(),
+        );
         wtr.write_record(&headers)?;
     }
     let ncols = cols.len();
     let n = match family {
-        "postgres" => stream_pg(c, &q, &mut wtr, ncols, on_progress).await?,
-        "mysql" => stream_my(c, &q, &mut wtr, ncols, on_progress).await?,
-        "sqlite" => stream_sqlite(c, &q, &mut wtr, ncols, on_progress).await?,
-        "mssql" => stream_ms(c, &q, &mut wtr, ncols, on_progress).await?,
+        "postgres" => stream_pg(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
+        "mysql" => stream_my(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
+        "sqlite" => stream_sqlite(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
+        "mssql" => stream_ms(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     wtr.flush()?;
@@ -114,6 +135,7 @@ async fn stream_pg(
     q: &str,
     wtr: &mut csv::Writer<File>,
     ncols: usize,
+    add_sequence: bool,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = pg_pool(c).await?;
@@ -121,9 +143,9 @@ async fn stream_pg(
     let mut stream = sqlx::query(&sql).fetch(&pool);
     let mut n = 0u64;
     while let Some(row) = stream.try_next().await? {
-        let rec: Vec<String> = (0..ncols).map(|i| stringify_pg(&row, i)).collect();
-        wtr.write_record(&rec)?;
         n += 1;
+        let rec: Vec<String> = (0..ncols).map(|i| stringify_pg(&row, i)).collect();
+        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
         tick_progress(on_progress, n);
     }
     pool.close().await;
@@ -135,6 +157,7 @@ async fn stream_my(
     q: &str,
     wtr: &mut csv::Writer<File>,
     ncols: usize,
+    add_sequence: bool,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = my_pool(c).await?;
@@ -142,9 +165,9 @@ async fn stream_my(
     let mut stream = sqlx::query(&sql).fetch(&pool);
     let mut n = 0u64;
     while let Some(row) = stream.try_next().await? {
-        let rec: Vec<String> = (0..ncols).map(|i| stringify_my(&row, i)).collect();
-        wtr.write_record(&rec)?;
         n += 1;
+        let rec: Vec<String> = (0..ncols).map(|i| stringify_my(&row, i)).collect();
+        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
         tick_progress(on_progress, n);
     }
     pool.close().await;
@@ -156,6 +179,7 @@ async fn stream_sqlite(
     q: &str,
     wtr: &mut csv::Writer<File>,
     ncols: usize,
+    add_sequence: bool,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = sqlite_pool(c).await?;
@@ -163,9 +187,9 @@ async fn stream_sqlite(
     let mut stream = sqlx::query(&sql).fetch(&pool);
     let mut n = 0u64;
     while let Some(row) = stream.try_next().await? {
-        let rec: Vec<String> = (0..ncols).map(|i| stringify_sqlite(&row, i)).collect();
-        wtr.write_record(&rec)?;
         n += 1;
+        let rec: Vec<String> = (0..ncols).map(|i| stringify_sqlite(&row, i)).collect();
+        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
         tick_progress(on_progress, n);
     }
     pool.close().await;
@@ -177,6 +201,7 @@ async fn stream_ms(
     q: &str,
     wtr: &mut csv::Writer<File>,
     ncols: usize,
+    add_sequence: bool,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let mut client = mssql_client(c).await?;
@@ -184,9 +209,9 @@ async fn stream_ms(
     let mut rows = stream.into_row_stream();
     let mut n = 0u64;
     while let Some(row) = rows.try_next().await? {
-        let rec: Vec<String> = (0..ncols).map(|i| stringify_ms(&row, i)).collect();
-        wtr.write_record(&rec)?;
         n += 1;
+        let rec: Vec<String> = (0..ncols).map(|i| stringify_ms(&row, i)).collect();
+        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
         tick_progress(on_progress, n);
     }
     Ok(n)
@@ -210,5 +235,16 @@ mod tests {
         assert_eq!(parse_delimiter(" : ").unwrap(), b':');
         assert!(parse_delimiter("").is_err());
         assert!(parse_delimiter("||").is_err());
+    }
+
+    #[test]
+    fn sequence_is_opt_in() {
+        assert_eq!(with_sequence(false, 1, vec!["a".into()]), vec!["a"]);
+        assert_eq!(with_sequence(true, 3, vec!["a".into()]), vec!["3", "a"]);
+        assert_eq!(
+            with_sequence_header(true, vec!["name".into()]),
+            vec!["#", "name"]
+        );
+        assert_eq!(with_sequence_header(false, vec!["name".into()]), vec!["name"]);
     }
 }

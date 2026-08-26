@@ -17,6 +17,7 @@ export const layout = {
   grid: {
     minColumnWidth: 80,
     defaultColumnWidth: 160,
+    maxColumnWidth: 2400,
   },
   page: {
     workspaceHeight: "calc(100vh - 8rem)",

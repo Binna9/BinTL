@@ -1,19 +1,29 @@
 import { FormEvent, useMemo, useState } from "react";
-import { Trash2, Upload } from "lucide-react";
-import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
+import { FileSpreadsheet, Trash2, Upload } from "lucide-react";
+import {
+  columnWidthsForContent,
+  DataGrid,
+  EmptyGridRow,
+  GridCell,
+  GridRow,
+} from "@/components/DataGrid";
 import { ExcelSheetDialog } from "@/components/ExcelSheetDialog";
 import { FileDropzone } from "@/components/FileDropzone";
+import { AppDialog } from "@/components/AppDialog";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
+import { MetaField } from "@/components/ui/meta-field";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useFiles } from "@/hooks/useFiles";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes } from "@/lib/format";
-import { toastError } from "@/lib/notifications";
+import { showConfirm, toastError } from "@/lib/notifications";
 import { fileApi } from "@/services/fileApi";
 import type {
+  FilePreview,
   StagedWorkbook,
+  StoredFile,
   WorkbookSheetSelection,
 } from "@/types/file";
 
@@ -50,10 +60,20 @@ export function FilesPage() {
   const [savingWorkbook, setSavingWorkbook] = useState(false);
   const [queue, setQueue] = useState<QueuedFile[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
+  const [storedSelected, setStoredSelected] = useState<string[]>([]);
   const [workbooks, setWorkbooks] = useState<StagedWorkbook[]>([]);
+  const [previewing, setPreviewing] = useState<StoredFile | null>(null);
+  const [preview, setPreview] = useState<FilePreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const allSelected = queue.length > 0 && selected.length === queue.length;
   const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const storedSelectedSet = useMemo(() => new Set(storedSelected), [storedSelected]);
+  const allStoredSelected = files.length > 0 && storedSelected.length === files.length;
+  const previewWidths = useMemo(
+    () => (preview ? columnWidthsForContent(preview.columns, preview.rows) : undefined),
+    [preview],
+  );
 
   function addCsvFiles(incoming: File[]) {
     setQueue((current) => {
@@ -105,12 +125,15 @@ export function FilesPage() {
     } catch {}
   }
 
-  async function saveWorkbookSheets(sheets: WorkbookSheetSelection[], delimiter: string) {
+  async function saveWorkbookSheets(
+    sheets: WorkbookSheetSelection[],
+    options: { delimiter: string; header: boolean; addSequence: boolean },
+  ) {
     const workbook = workbooks[0];
     if (!workbook) return;
     setSavingWorkbook(true);
     try {
-      await fileApi.commitWorkbook(workbook.staging_id, sheets, delimiter);
+      await fileApi.commitWorkbook(workbook.staging_id, sheets, options);
       setWorkbooks((current) => current.slice(1));
       await refreshFiles();
     } catch (err) {
@@ -134,6 +157,64 @@ export function FilesPage() {
     const removing = new Set(selected);
     setQueue((current) => current.filter((item) => !removing.has(item.id)));
     setSelected([]);
+  }
+
+  function toggleStoredOne(id: string) {
+    setStoredSelected((current) =>
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+    );
+  }
+
+  function toggleStoredAll() {
+    setStoredSelected(allStoredSelected ? [] : files.map((file) => file.id));
+  }
+
+  async function deleteStored() {
+    if (storedSelected.length === 0) return;
+    const confirmed = await showConfirm(
+      messages.files.deleteConfirmTitle,
+      messages.files.deleteConfirmMessage(storedSelected.length),
+      { tone: "danger" },
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      for (const id of storedSelected) {
+        await fileApi.deleteFile(id);
+      }
+      if (previewing && storedSelectedSet.has(previewing.id)) {
+        setPreviewing(null);
+        setPreview(null);
+      }
+      setStoredSelected([]);
+      await refreshFiles();
+    } catch (err) {
+      toastError(messages.errors.deleteFile, err);
+      await refreshFiles();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openPreview(file: StoredFile) {
+    setPreviewing(file);
+    setPreview(null);
+    setPreviewLoading(true);
+    try {
+      const next = await fileApi.previewFile(file.id);
+      setPreview(next);
+    } catch (err) {
+      setPreviewing(null);
+      toastError(messages.errors.filePreview, err);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  function closePreview() {
+    setPreviewing(null);
+    setPreview(null);
+    setPreviewLoading(false);
   }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -255,16 +336,56 @@ export function FilesPage() {
       <Panel tall>
         <Toolbar>
           <ToolbarGroup>
-            <span className="text-[13px] font-semibold">{messages.files.stored}</span>
+            <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
+              <input
+                className="field-control"
+                type="checkbox"
+                checked={allStoredSelected}
+                disabled={files.length === 0 || busy}
+                onChange={toggleStoredAll}
+                aria-label={messages.files.selectAll}
+              />
+              <span>{messages.files.stored}</span>
+            </label>
             <span className="text-xs text-text-tertiary">{messages.common.count(files.length)}</span>
           </ToolbarGroup>
+          <ToolbarGroup>
+            <Button
+              type="button"
+              variant="danger"
+              disabled={storedSelected.length === 0 || busy}
+              onClick={() => void deleteStored()}
+            >
+              <Trash2 className="size-3.5" aria-hidden="true" />
+              {messages.files.deleteStored}
+            </Button>
+          </ToolbarGroup>
         </Toolbar>
-        <DataGrid className="min-h-0 flex-1" headers={[...messages.files.headers]}>
+        <DataGrid
+          className="min-h-0 flex-1"
+          headers={[...messages.files.headers]}
+          columnWidths={[80, 220, 120, 140, 280]}
+        >
           {files.length === 0 ? (
-            <EmptyGridRow cols={4} text={messages.empty.uploads} />
+            <EmptyGridRow cols={5} text={messages.empty.uploads} />
           ) : (
             files.map((file) => (
-              <GridRow key={`${file.id}-${file.filename}`}>
+              <GridRow
+                key={`${file.id}-${file.filename}`}
+                selected={storedSelectedSet.has(file.id)}
+                onClick={() => void openPreview(file)}
+              >
+                <GridCell>
+                  <input
+                    className="field-control"
+                    type="checkbox"
+                    checked={storedSelectedSet.has(file.id)}
+                    disabled={busy}
+                    aria-label={file.filename}
+                    onChange={() => toggleStoredOne(file.id)}
+                    onClick={(event) => event.stopPropagation()}
+                  />
+                </GridCell>
                 <GridCell>{file.filename}</GridCell>
                 <GridCell mono>{fmtBytes(file.size)}</GridCell>
                 <GridCell mono muted>{file.id.slice(0, 8)}</GridCell>
@@ -279,8 +400,81 @@ export function FilesPage() {
         workbook={workbooks[0] ?? null}
         saving={savingWorkbook}
         onClose={() => void closeWorkbook()}
-        onSave={(sheets, delimiter) => void saveWorkbookSheets(sheets, delimiter)}
+        onSave={(sheets, options) => void saveWorkbookSheets(sheets, options)}
       />
+
+      <AppDialog
+        open={Boolean(previewing)}
+        title={previewing?.filename ?? messages.files.previewTitle}
+        icon={<FileSpreadsheet className="size-4 text-accent" aria-hidden="true" />}
+        className="h-[min(42rem,88vh)] w-[min(72rem,94vw)]"
+        minWidth={520}
+        minHeight={360}
+        onClose={closePreview}
+        footer={
+          <Button type="button" variant="secondary" onClick={closePreview}>
+            {messages.common.close}
+          </Button>
+        }
+      >
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {preview ? (
+            <div className="flex min-w-0 shrink-0 flex-wrap items-start gap-5 border-b border-border px-4 py-2.5">
+              <MetaField label={messages.files.previewRows} technical>
+                {messages.common.rows(preview.rows.length)}
+              </MetaField>
+              <MetaField label={messages.files.totalRows} technical>
+                {messages.common.rows(preview.row_count)}
+              </MetaField>
+              {preview.columns.length > 0 ? (
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] font-medium leading-none text-text-tertiary">
+                    {messages.common.columns}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {preview.columns.map((column, index) => (
+                      <span
+                        key={`${index}-${column}`}
+                        title={column}
+                        className="max-w-full truncate rounded-full border border-border bg-raised px-2 py-0.5 text-[11px] font-medium text-text"
+                      >
+                        {column}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden p-4">
+            {previewLoading || !preview ? (
+              <div className="grid h-full min-h-64 place-items-center text-sm text-text-tertiary">
+                {previewLoading ? messages.files.previewLoading : messages.files.previewEmpty}
+              </div>
+            ) : (
+              <DataGrid
+                className="h-full min-h-64"
+                headers={preview.columns}
+                columnWidths={previewWidths}
+              >
+                {preview.rows.length === 0 ? (
+                  <EmptyGridRow cols={preview.columns.length} text={messages.files.previewEmpty} />
+                ) : (
+                  preview.rows.map((row, index) => (
+                    <GridRow key={index}>
+                      {preview.columns.map((_, cellIndex) => (
+                        <GridCell key={cellIndex} mono title={row[cellIndex] ?? ""}>
+                          {row[cellIndex] ?? ""}
+                        </GridCell>
+                      ))}
+                    </GridRow>
+                  ))
+                )}
+              </DataGrid>
+            )}
+          </div>
+        </div>
+      </AppDialog>
     </PageShell>
   );
 }

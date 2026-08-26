@@ -10,7 +10,13 @@ import { BookmarkPlus, FileDown, ScrollText, Play, RefreshCw, Table2 } from "luc
 import { useSearchParams } from "react-router-dom";
 import { CatalogTree } from "@/components/CatalogTree";
 import { ConnectionInfoPanel } from "@/components/ConnectionInfoPanel";
-import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
+import {
+  columnWidthsForContent,
+  DataGrid,
+  EmptyGridRow,
+  GridCell,
+  GridRow,
+} from "@/components/DataGrid";
 import { AppDialog } from "@/components/AppDialog";
 import { LiveTicker } from "@/components/LiveTicker";
 import { LogDialog } from "@/components/LogDialog";
@@ -123,6 +129,7 @@ export function QueryPage() {
     [messages],
   );
   const [header, setHeader] = useState(true);
+  const [addSequence, setAddSequence] = useState(false);
   const [limit, setLimit] = useState(100);
   const [search, setSearch] = useState("");
   const [running, setRunning] = useState(false);
@@ -430,6 +437,7 @@ export function QueryPage() {
         sql: sqlRef.current,
         delimiter,
         header,
+        add_sequence: addSequence,
       });
       setExtractId(created.id);
       setExtractRow(created);
@@ -507,13 +515,18 @@ export function QueryPage() {
   const visibleRows = useMemo(() => {
     if (!result?.rows) return [];
     return result.rows
-      .map((row, index) => ({ row, index, line: fileLine(index, header) }))
-      .filter(({ row, line }) => {
+      .map((row, index) => ({ row, index, line: fileLine(index, header), seq: index + 1 }))
+      .filter(({ row, seq }) => {
         if (!searchLower) return true;
-        if (String(line).includes(searchNeedle)) return true;
+        if (addSequence && String(seq).includes(searchNeedle)) return true;
         return row.some((cell) => cell.toLowerCase().includes(searchLower));
       });
-  }, [header, result, searchLower, searchNeedle]);
+  }, [addSequence, header, result, searchLower, searchNeedle]);
+  const resultWidths = useMemo(() => {
+    if (!result?.columns.length) return undefined;
+    const dataWidths = columnWidthsForContent(result.columns, result.rows);
+    return addSequence ? [layout.grid.minColumnWidth, ...dataWidths] : dataWidths;
+  }, [addSequence, result]);
 
   function onEditorResizeDown(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -662,31 +675,43 @@ export function QueryPage() {
                     description={messages.query.runHint}
                     actions={
                       <>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            disabled={!selected}
+                            onClick={() => applyDraft(picked)}
+                          >
+                            {messages.query.draft}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            disabled={!selected}
+                            onClick={() => applyDraft([])}
+                          >
+                            {messages.query.applyStar}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="quiet"
+                            disabled={!browseId || columnsLoading}
+                            title={messages.common.refresh}
+                            onClick={() => void onRefreshSql()}
+                          >
+                            <RefreshCw className="size-3.5" aria-hidden="true" />
+                            {messages.common.refresh}
+                          </Button>
+                        </div>
                         <Button
                           type="button"
-                          variant="quiet"
-                          disabled={!selected}
-                          onClick={() => applyDraft(picked)}
+                          variant="primary"
+                          className="ml-6 shrink-0 gap-2"
+                          disabled={!canRun || running}
+                          onClick={() => void onRun()}
                         >
-                          {messages.query.draft}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="quiet"
-                          disabled={!selected}
-                          onClick={() => applyDraft([])}
-                        >
-                          {messages.query.applyStar}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="quiet"
-                          disabled={!browseId || columnsLoading}
-                          title={messages.common.refresh}
-                          onClick={() => void onRefreshSql()}
-                        >
-                          <RefreshCw className="size-3.5" aria-hidden="true" />
-                          {messages.common.refresh}
+                          <Play className="size-3.5 fill-current" aria-hidden="true" />
+                          {running ? messages.common.running : messages.common.run}
                         </Button>
                       </>
                     }
@@ -709,18 +734,6 @@ export function QueryPage() {
                       onPointerDown={onEditorResizeDown}
                       onDoubleClick={() => setEditorSize(null)}
                     />
-                  </div>
-                  <div className="flex shrink-0 justify-end border-t border-border bg-raised p-2">
-                    <Button
-                      type="button"
-                      variant="primary"
-                      className="gap-2"
-                      disabled={!canRun || running}
-                      onClick={() => void onRun()}
-                    >
-                      <Play className="size-3.5 fill-current" aria-hidden="true" />
-                      {running ? messages.common.running : messages.common.run}
-                    </Button>
                   </div>
                 </div>
               </section>
@@ -823,6 +836,15 @@ export function QueryPage() {
                 />
                 {messages.common.header}
               </label>
+              <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-text-secondary">
+                <input
+                  className="field-control"
+                  type="checkbox"
+                  checked={addSequence}
+                  onChange={(event) => setAddSequence(event.target.checked)}
+                />
+                {messages.common.addSequence}
+              </label>
               <label className="ml-auto flex min-w-48 flex-1 items-center gap-2 whitespace-nowrap text-xs text-text-secondary sm:max-w-xs">
                 <span>{messages.query.search}</span>
                 <input
@@ -839,26 +861,30 @@ export function QueryPage() {
               </label>
             </div>
 
-            <div className="min-h-72 flex-1 overflow-hidden p-4">
+            <div className="min-h-72 min-w-0 flex-1 overflow-hidden p-4">
               {running ? (
                 <div className="grid h-full min-h-64 place-items-center text-sm text-text-tertiary">
                   {messages.common.running}
                 </div>
               ) : result?.columns.length ? (
-                <div className="flex h-full min-h-64 flex-col gap-3">
+                <div className="flex h-full min-h-64 min-w-0 flex-col gap-3">
                   <DataGrid
-                    className="min-h-0 flex-1"
-                    headers={[messages.query.rowNo, ...result.columns]}
-                    columnWidths={[
-                      layout.grid.minColumnWidth,
-                      ...result.columns.map(() => layout.grid.defaultColumnWidth),
-                    ]}
+                    className="min-h-0 min-w-0 flex-1"
+                    headers={
+                      addSequence
+                        ? [messages.query.rowNo, ...result.columns]
+                        : result.columns
+                    }
+                    columnWidths={resultWidths}
                   >
                     {result.rows.length === 0 ? (
-                      <EmptyGridRow cols={result.columns.length + 1} text={messages.empty.preview} />
+                      <EmptyGridRow
+                        cols={result.columns.length + (addSequence ? 1 : 0)}
+                        text={messages.empty.preview}
+                      />
                     ) : visibleRows.length === 0 ? (
                       <EmptyGridRow
-                        cols={result.columns.length + 1}
+                        cols={result.columns.length + (addSequence ? 1 : 0)}
                         text={
                           searchedLine > result.rows.length
                             ? messages.query.searchBeyondPreview(searchedLine, result.rows.length)
@@ -866,11 +892,13 @@ export function QueryPage() {
                         }
                       />
                     ) : (
-                      visibleRows.map(({ row, index, line }) => (
+                      visibleRows.map(({ row, index, seq }) => (
                         <GridRow key={index}>
-                          <GridCell mono muted>
-                            {highlightMatch(String(line), searchNeedle)}
-                          </GridCell>
+                          {addSequence ? (
+                            <GridCell mono muted>
+                              {highlightMatch(String(seq), searchNeedle)}
+                            </GridCell>
+                          ) : null}
                           {row.map((cell, cellIndex) => {
                             const warn = Boolean(
                               delimiterNeedle &&

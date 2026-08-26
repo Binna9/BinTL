@@ -25,6 +25,8 @@ export const taskApi = {
       method: "PATCH",
       body: JSON.stringify(request),
     }),
+  remove: (id: string) =>
+    httpRequest<{ ok: true }>(`/api/tasks/${id}`, { method: "DELETE" }),
   run: (id: string, request: RunTaskRequest = {}) =>
     httpRequest<RunTaskResponse>(`/api/tasks/${id}/run`, {
       method: "POST",

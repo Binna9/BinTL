@@ -32,6 +32,8 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
         .route("/api/files/stage", post(stage_spreadsheet))
         .route("/api/files/commit", post(commit_spreadsheet))
         .route("/api/files/stage/{id}", axum::routing::delete(cancel_stage))
+        .route("/api/files/{id}", axum::routing::delete(delete_file))
+        .route("/api/files/{id}/preview", get(preview_file))
         .route(
             "/api/connections",
             post(create_connection).get(list_connections),
@@ -133,7 +135,7 @@ async fn upload_file(
     let filename = storage::resolve_upload_filename(&original, requested_name.as_deref());
     require_csv_filename(&filename)?;
     validate_csv(&data, b',')?;
-    let meta = state.store.save_upload(&filename, &data, None).await?;
+    let meta = state.store.save_upload(&filename, &data, None, None).await?;
     Ok(Json(json!({
         "id": meta.id,
         "filename": meta.filename,
@@ -213,6 +215,10 @@ struct CommitSpreadsheetBody {
     sheets: Vec<CommitSheet>,
     #[serde(default)]
     delimiter: Option<String>,
+    #[serde(default)]
+    header: Option<bool>,
+    #[serde(default)]
+    add_sequence: Option<bool>,
 }
 
 async fn commit_spreadsheet(
@@ -226,6 +232,8 @@ async fn commit_spreadsheet(
     let selected = normalize_commit_sheets(body.sheets)?;
     let delimiter_raw = body.delimiter.unwrap_or_else(|| ",".into());
     let delimiter = parse_delimiter(&delimiter_raw)?;
+    let header = body.header.unwrap_or(true);
+    let add_sequence = body.add_sequence.unwrap_or(false);
     let path = staged.path.clone();
     let exports = tokio::task::spawn_blocking(
         move || -> Result<Vec<(String, Vec<u8>)>, connectors::ConnectError> {
@@ -241,7 +249,7 @@ async fn commit_spreadsheet(
                         sheet.name
                     )));
                 }
-                let csv = export_sheet_to_csv(&path, &sheet.name, delimiter)?;
+                let csv = export_sheet_to_csv(&path, &sheet.name, delimiter, header, add_sequence)?;
                 exports.push((sheet.filename, csv));
             }
             Ok(exports)
@@ -264,7 +272,12 @@ async fn commit_spreadsheet(
         files.push(
             state
                 .store
-                .save_upload(&filename, &bytes, Some(delimiter_raw.as_str()))
+                .save_upload(
+                    &filename,
+                    &bytes,
+                    Some(delimiter_raw.as_str()),
+                    Some(header),
+                )
                 .await?,
         );
     }
@@ -351,6 +364,109 @@ fn validate_csv(bytes: &[u8], delimiter: u8) -> Result<(), AppError> {
 async fn list_files(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let files = state.store.list_uploads().await?;
     Ok(Json(json!({ "files": files })))
+}
+
+async fn delete_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    state.store.delete_upload(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn preview_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let meta = state.store.get_upload(&id).await?;
+    let path = state.store.upload_path(&id).await?;
+    let dataset = state.store.get_dataset(&id).await?;
+    let delimiter_raw = dataset
+        .as_ref()
+        .and_then(|row| row.delimiter.clone())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| ",".into());
+    let delimiter = parse_delimiter(&delimiter_raw)?;
+    let has_header = dataset
+        .as_ref()
+        .and_then(|row| row.has_header)
+        .map(|value| value != 0)
+        .unwrap_or(true);
+    let limit = query.limit.unwrap_or(200).clamp(1, 1000) as usize;
+    let preview = tokio::task::spawn_blocking(move || {
+        read_upload_preview(&path, delimiter, has_header, limit)
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("file preview failed: {error}"),
+        )
+    })??;
+    Ok(Json(json!({
+        "id": meta.id,
+        "filename": meta.filename,
+        "stored_path": meta.stored_path,
+        "delimiter": delimiter_raw,
+        "has_header": has_header,
+        "columns": preview.columns,
+        "rows": preview.rows,
+        "row_count": preview.row_count,
+        "truncated": preview.truncated,
+    })))
+}
+
+struct UploadPreview {
+    columns: Vec<String>,
+    rows: Vec<Vec<String>>,
+    row_count: u64,
+    truncated: bool,
+}
+
+fn read_upload_preview(
+    path: &FsPath,
+    delimiter: u8,
+    has_header: bool,
+    limit: usize,
+) -> Result<UploadPreview, AppError> {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .has_headers(has_header)
+        .flexible(true)
+        .from_path(path)
+        .map_err(|error| AppError::bad(format!("invalid csv: {error}")))?;
+    let mut columns: Vec<String> = if has_header {
+        reader
+            .headers()
+            .map_err(|error| AppError::bad(format!("invalid csv: {error}")))?
+            .iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut rows = Vec::new();
+    let mut row_count = 0u64;
+    for record in reader.records() {
+        let record = record.map_err(|error| AppError::bad(format!("invalid csv: {error}")))?;
+        row_count += 1;
+        if columns.is_empty() {
+            columns = (0..record.len()).map(|index| format!("{}", index + 1)).collect();
+        }
+        if rows.len() < limit {
+            rows.push(record.iter().map(str::to_string).collect());
+        }
+    }
+    if columns.is_empty() {
+        return Err(AppError::bad("csv must contain at least one row"));
+    }
+    Ok(UploadPreview {
+        columns,
+        rows,
+        row_count,
+        truncated: row_count as usize > limit,
+    })
 }
 
 #[derive(Deserialize)]
@@ -666,6 +782,8 @@ struct CreateExtractBody {
     #[serde(default)]
     header: Option<bool>,
     #[serde(default)]
+    add_sequence: Option<bool>,
+    #[serde(default)]
     database: Option<String>,
 }
 
@@ -719,6 +837,7 @@ async fn create_extract(
             &table,
             &delimiter,
             body.header.unwrap_or(true),
+            body.add_sequence.unwrap_or(false),
             sql.as_deref(),
             catalog_database.as_deref(),
         )

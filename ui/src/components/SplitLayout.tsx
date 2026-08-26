@@ -14,6 +14,7 @@ import { layout } from "@/lib/layout";
 
 export function SplitLayout({
   direction = "horizontal",
+  reverse = false,
   defaultSizes,
   minSize,
   maxSize,
@@ -23,6 +24,7 @@ export function SplitLayout({
   children,
 }: {
   direction?: "horizontal" | "vertical";
+  reverse?: boolean;
   defaultSizes: number[];
   minSize?: number;
   maxSize?: number;
@@ -46,7 +48,8 @@ export function SplitLayout({
       const pos = isRow ? event.clientX : event.clientY;
       setSizes((prev) => {
         const next = [...prev];
-        const raw = active.size + (pos - active.start);
+        const delta = reverse ? active.start - pos : pos - active.start;
+        const raw = active.size + delta;
         const hostSize = isRow
           ? hostRef.current?.clientWidth
           : hostRef.current?.clientHeight;
@@ -72,7 +75,7 @@ export function SplitLayout({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [floor, isRow, maxSize, panes.length]);
+  }, [floor, isRow, maxSize, panes.length, reverse]);
 
   function onGutterDown(index: number, event: ReactMouseEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -91,7 +94,7 @@ export function SplitLayout({
       className={cn(
         "flex",
         fill && "min-h-0 min-w-0 overflow-hidden",
-        isRow ? "flex-row" : "flex-col",
+        isRow ? (reverse ? "flex-row-reverse" : "flex-row") : reverse ? "flex-col-reverse" : "flex-col",
         className,
       )}
       style={style}

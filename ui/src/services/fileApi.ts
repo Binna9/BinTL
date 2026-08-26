@@ -1,6 +1,7 @@
 import { httpRequest } from "@/services/httpClient";
 import type {
   CommitWorkbookResponse,
+  FilePreview,
   StagedWorkbook,
   StoredFile,
   WorkbookSheetSelection,
@@ -27,15 +28,25 @@ export const fileApi = {
       body,
     });
   },
-  commitWorkbook: (stagingId: string, sheets: WorkbookSheetSelection[], delimiter?: string) =>
+  commitWorkbook: (
+    stagingId: string,
+    sheets: WorkbookSheetSelection[],
+    options?: { delimiter?: string; header?: boolean; addSequence?: boolean },
+  ) =>
     httpRequest<CommitWorkbookResponse>("/api/files/commit", {
       method: "POST",
       body: JSON.stringify({
         staging_id: stagingId,
         sheets,
-        delimiter: delimiter?.trim() || ",",
+        delimiter: options?.delimiter?.trim() || ",",
+        header: options?.header ?? true,
+        add_sequence: options?.addSequence ?? false,
       }),
     }),
   cancelWorkbook: (stagingId: string) =>
     httpRequest<void>(`/api/files/stage/${stagingId}`, { method: "DELETE" }),
+  deleteFile: (id: string) =>
+    httpRequest<{ ok: boolean }>(`/api/files/${id}`, { method: "DELETE" }),
+  previewFile: (id: string, limit = 200) =>
+    httpRequest<FilePreview>(`/api/files/${id}/preview?limit=${limit}`),
 };

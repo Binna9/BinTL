@@ -1,0 +1,1 @@
+ALTER TABLE extracts ADD COLUMN add_sequence INTEGER NOT NULL DEFAULT 0;

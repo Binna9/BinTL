@@ -33,12 +33,17 @@ export function ExcelSheetDialog({
   workbook: StagedWorkbook | null;
   saving: boolean;
   onClose: () => void;
-  onSave: (sheets: WorkbookSheetSelection[], delimiter: string) => void;
+  onSave: (
+    sheets: WorkbookSheetSelection[],
+    options: { delimiter: string; header: boolean; addSequence: boolean },
+  ) => void;
 }) {
   const { messages } = useLanguage();
   const [selected, setSelected] = useState<string[]>([]);
   const [filenames, setFilenames] = useState<Record<string, string>>({});
   const [delimiter, setDelimiter] = useState(",");
+  const [header, setHeader] = useState(true);
+  const [addSequence, setAddSequence] = useState(false);
   const delimiterOptions = useMemo(
     () =>
       DELIMITER_VALUES.map((value) => ({
@@ -61,6 +66,8 @@ export function ExcelSheetDialog({
       ),
     );
     setDelimiter(",");
+    setHeader(true);
+    setAddSequence(false);
   }, [workbook]);
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
@@ -84,7 +91,11 @@ export function ExcelSheetDialog({
           name: sheet.name,
           filename: filenames[sheet.name]?.trim() || `${safePart(sheet.name)}.csv`,
         })),
-      delimiter.trim() || delimiter,
+      {
+        delimiter: delimiter.trim() || delimiter,
+        header,
+        addSequence,
+      },
     );
   }
 
@@ -116,17 +127,39 @@ export function ExcelSheetDialog({
           <p className="text-xs leading-5 text-text-secondary">
             {messages.files.sheetDialogDescription}
           </p>
-          <div className="mt-3 w-48" title={messages.connectionsPage.delimiterTitle}>
-            <FormField label={messages.common.delimiter}>
-              <Select
-                editable
-                className="technical"
-                value={delimiter}
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <div className="w-48" title={messages.connectionsPage.delimiterTitle}>
+              <FormField label={messages.common.delimiter}>
+                <Select
+                  editable
+                  className="technical"
+                  value={delimiter}
+                  disabled={saving}
+                  options={delimiterOptions}
+                  onChange={setDelimiter}
+                />
+              </FormField>
+            </div>
+            <label className="mb-1 flex shrink-0 items-center gap-2 whitespace-nowrap text-xs font-medium text-text">
+              <input
+                className="field-control"
+                type="checkbox"
+                checked={header}
                 disabled={saving}
-                options={delimiterOptions}
-                onChange={setDelimiter}
+                onChange={(event) => setHeader(event.target.checked)}
               />
-            </FormField>
+              {messages.common.header}
+            </label>
+            <label className="mb-1 flex shrink-0 items-center gap-2 whitespace-nowrap text-xs font-medium text-text">
+              <input
+                className="field-control"
+                type="checkbox"
+                checked={addSequence}
+                disabled={saving}
+                onChange={(event) => setAddSequence(event.target.checked)}
+              />
+              {messages.common.addSequence}
+            </label>
           </div>
           <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-subtle px-3 py-2">
             <label className="flex items-center gap-2 text-xs font-medium text-text">

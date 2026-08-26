@@ -24,6 +24,9 @@
   --color-warning-subtle: var(--theme-warning-subtle);
   --color-danger: var(--theme-danger);
   --color-danger-subtle: var(--theme-danger-subtle);
+  --color-dock: var(--theme-dock);
+  --color-dock-icon: var(--theme-dock-icon);
+  --color-dock-glow: var(--theme-dock-glow);
 }
 
 :root {
@@ -47,6 +50,11 @@
   --theme-warning-subtle: #fff5d6;
   --theme-danger: #c43835;
   --theme-danger-subtle: #fceceb;
+  --theme-dock: #eceff3;
+  --theme-dock-well: #e3e7ee;
+  --theme-dock-icon: #5d6570;
+  --theme-dock-icon-hi: #ffffff;
+  --theme-dock-glow: #2f7dff;
 }
 
 :root.dark {
@@ -70,6 +78,11 @@
   --theme-warning-subtle: #372d16;
   --theme-danger: #ee817d;
   --theme-danger-subtle: #3b2022;
+  --theme-dock: #1a1c1e;
+  --theme-dock-well: #121416;
+  --theme-dock-icon: #c8ced6;
+  --theme-dock-icon-hi: #f4f6f8;
+  --theme-dock-glow: #3b8bff;
 }
 
 html,
@@ -442,6 +455,235 @@ a {
   transform-origin: left;
 }
 
-::selection {
-  @apply bg-accent/15;
+.dock-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.62rem;
+  margin: 0;
+  padding: 1.05rem 0.58rem;
+  list-style: none;
+  border-radius: 1.7rem;
+  background: var(--theme-dock);
+  box-shadow:
+    0 14px 32px color-mix(in srgb, var(--theme-text) 12%, transparent),
+    0 2px 6px color-mix(in srgb, var(--theme-text) 8%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 72%, transparent);
 }
+
+:root.dark .dock-rail {
+  box-shadow:
+    0 16px 36px rgba(0, 0, 0, 0.55),
+    0 2px 8px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.dock-rail > li {
+  position: relative;
+}
+
+.dock-rail > li:last-child {
+  margin-top: 0.28rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid color-mix(in srgb, var(--theme-text) 10%, transparent);
+}
+
+.dock-btn {
+  position: relative;
+  display: grid;
+  width: 2.55rem;
+  height: 2.55rem;
+  place-items: center;
+  padding: 0;
+  appearance: none;
+  border: 0;
+  border-radius: 0.82rem;
+  background: color-mix(in srgb, var(--theme-dock) 55%, white);
+  color: var(--theme-dock-icon);
+  box-shadow:
+    -1px -1px 2px color-mix(in srgb, white 90%, transparent),
+    2px 3px 7px color-mix(in srgb, var(--theme-text) 16%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 80%, transparent);
+  user-select: none;
+  cursor: pointer;
+  transition:
+    color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease,
+    background 0.18s ease;
+}
+
+:root.dark .dock-btn {
+  background: color-mix(in srgb, var(--theme-dock) 70%, white 12%);
+  box-shadow:
+    -1px -1px 1.5px rgba(255, 255, 255, 0.12),
+    3px 5px 10px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.dock-btn svg {
+  width: 1.18rem;
+  height: 1.18rem;
+  stroke-width: 2.15;
+  filter:
+    drop-shadow(-0.7px -0.8px 0.4px var(--theme-dock-icon-hi))
+    drop-shadow(1.3px 1.8px 1.4px rgb(0 0 0 / 0.42));
+}
+
+:root.dark .dock-btn svg {
+  filter:
+    drop-shadow(-0.65px -0.75px 0.35px rgb(255 255 255 / 0.6))
+    drop-shadow(1.4px 1.9px 1.6px rgb(0 0 0 / 0.75));
+}
+
+.dock-btn[draggable="true"] {
+  cursor: grab;
+}
+
+.dock-btn:hover:not(:disabled),
+.dock-btn:focus-visible:not(:disabled) {
+  color: var(--theme-dock-glow);
+  transform: translateY(-1px);
+  box-shadow:
+    -1px -1px 2px color-mix(in srgb, white 90%, transparent),
+    3px 6px 10px color-mix(in srgb, var(--theme-text) 18%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 85%, transparent);
+}
+
+:root.dark .dock-btn:hover:not(:disabled),
+:root.dark .dock-btn:focus-visible:not(:disabled) {
+  box-shadow:
+    -1px -1px 1.5px rgba(255, 255, 255, 0.16),
+    4px 7px 12px rgba(0, 0, 0, 0.62),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.dock-btn:hover:not(:disabled)::before,
+.dock-btn:focus-visible:not(:disabled)::before {
+  position: absolute;
+  top: 22%;
+  bottom: 22%;
+  left: 0.32rem;
+  width: 1.5px;
+  border-radius: 99px;
+  background: var(--theme-dock-glow);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--theme-dock-glow) 70%, transparent);
+  content: "";
+}
+
+.dock-btn:hover:not(:disabled) svg,
+.dock-btn:focus-visible:not(:disabled) svg {
+  filter:
+    drop-shadow(-0.5px -0.6px 0.35px rgb(255 255 255 / 0.8))
+    drop-shadow(0 0 6px color-mix(in srgb, var(--theme-dock-glow) 55%, transparent));
+}
+
+.dock-btn:focus-visible {
+  outline: none;
+}
+
+.dock-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.dock-tip {
+  position: absolute;
+  left: calc(100% + 1.2rem);
+  top: 50%;
+  z-index: 30;
+  width: max-content;
+  max-width: 13rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--theme-border);
+  border-radius: 0.7rem;
+  background: var(--theme-surface);
+  box-shadow:
+    0 8px 20px color-mix(in srgb, var(--theme-text) 12%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(0.15rem);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+
+:root.dark .dock-tip {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.42);
+}
+
+.dock-tip.is-open {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+.dock-drag-ghost {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  display: grid;
+  width: 4.25rem;
+  height: 4.25rem;
+  place-items: center;
+  border-radius: 1.05rem;
+  background: color-mix(in srgb, var(--theme-dock) 55%, white);
+  color: var(--theme-dock-icon);
+  opacity: 0.48;
+  pointer-events: none;
+}
+
+:root.dark .dock-drag-ghost {
+  background: color-mix(in srgb, var(--theme-dock) 70%, white 12%);
+}
+
+.dock-drag-ghost svg {
+  width: 2rem;
+  height: 2rem;
+  stroke-width: 2.15;
+}
+
+.workspace-node {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--theme-surface) 42%, white) 0%,
+      var(--theme-surface) 52%,
+      color-mix(in srgb, var(--theme-surface) 86%, var(--theme-text) 8%) 100%
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 82%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--theme-text) 7%, transparent),
+    2px 4px 0 0 color-mix(in srgb, var(--theme-border-strong) 70%, transparent),
+    4px 10px 18px color-mix(in srgb, var(--theme-text) 14%, transparent);
+}
+
+:root.dark .workspace-node {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--theme-surface) 78%, white 14%) 0%,
+      var(--theme-surface) 48%,
+      color-mix(in srgb, var(--theme-surface) 82%, black) 100%
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.35),
+    2px 4px 0 0 rgba(0, 0, 0, 0.45),
+    5px 12px 22px rgba(0, 0, 0, 0.48);
+}
+
+.workspace-node.is-selected {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 82%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--theme-text) 7%, transparent),
+    2px 4px 0 0 color-mix(in srgb, var(--theme-accent) 42%, var(--theme-border-strong)),
+    4px 12px 20px color-mix(in srgb, var(--theme-accent) 22%, transparent);
+}
+
+:root.dark .workspace-node.is-selected {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.35),
+    2px 4px 0 0 color-mix(in srgb, var(--theme-accent) 45%, black),
+    5px 12px 22px rgba(0, 0, 0, 0.55);
+}
+

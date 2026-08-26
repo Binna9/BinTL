@@ -14,6 +14,28 @@ function widthsFor(headers: string[], previous: number[] = []): number[] {
   return headers.map((_, index) => previous[index] ?? layout.grid.defaultColumnWidth);
 }
 
+function measureText(text: string): number {
+  let units = 0;
+  for (const char of text) {
+    units += char.charCodeAt(0) > 127 ? 2 : 1;
+  }
+  return units;
+}
+
+export function columnWidthsForContent(headers: string[], rows: string[][]): number[] {
+  const sample = rows.slice(0, 80);
+  return headers.map((header, index) => {
+    let units = measureText(header);
+    for (const row of sample) {
+      units = Math.max(units, measureText(row[index] ?? ""));
+    }
+    return Math.min(
+      layout.grid.maxColumnWidth,
+      Math.max(layout.grid.minColumnWidth, units * 8 + 24),
+    );
+  });
+}
+
 function scaleToFill(widths: number[], available: number): number[] {
   if (available <= 0 || widths.length === 0) return widths;
   const sum = widths.reduce((total, width) => total + width, 0);
@@ -117,10 +139,10 @@ export function DataGrid({
   const tableMinWidth = colWidths.reduce((sum, width) => sum + width, 0);
 
   return (
-    <div ref={wrapRef} className={cn("overflow-auto", className)}>
+    <div ref={wrapRef} className={cn("min-w-0 w-full overflow-auto", className)}>
       <table
-        className="w-full border-collapse text-[13px]"
-        style={{ minWidth: tableMinWidth, tableLayout: "fixed" }}
+        className="border-collapse text-[13px]"
+        style={{ width: tableMinWidth, minWidth: tableMinWidth, tableLayout: "fixed" }}
       >
         <colgroup>
           {headers.map((header, index) => (
@@ -185,9 +207,11 @@ export function EmptyGridRow({ cols, text }: { cols: number; text: string }) {
 export function GridRow({
   children,
   selected,
+  onClick,
 }: {
   children: ReactNode;
   selected?: boolean;
+  onClick?: (event: ReactMouseEvent<HTMLTableRowElement>) => void;
 }) {
   const [on, setOn] = useState(false);
   const active = selected ?? on;
@@ -200,8 +224,12 @@ export function GridRow({
         !active && "odd:bg-surface even:bg-subtle/35 hover:bg-accent-subtle/45",
       )}
       onClick={(event) => {
+        if ((event.target as HTMLElement).closest("a, button, input, label")) return;
+        if (onClick) {
+          onClick(event);
+          return;
+        }
         if (selected !== undefined) return;
-        if ((event.target as HTMLElement).closest("a, button")) return;
         setOn((value) => !value);
       }}
     >

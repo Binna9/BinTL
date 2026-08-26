@@ -8,7 +8,7 @@ use serde::Serialize;
 use sqlx::Column;
 use storage::LiveConnection;
 
-use crate::extract::{tick_progress, tick_progress_at};
+use crate::extract::{tick_progress, tick_progress_at, with_sequence, with_sequence_header};
 use crate::{
     driver_family, mssql_client, my_pool, pg_pool, sqlite_pool, stringify_ms, stringify_my,
     stringify_pg, stringify_sqlite, ConnectError, ExtractOptions,
@@ -103,10 +103,10 @@ pub async fn extract_query(
         .from_path(dest)?;
     let family = driver_family(&c.driver)?;
     let n = match family {
-        "postgres" => stream_pg(c, &sql, &mut wtr, opts.header, None, on_progress).await?,
-        "mysql" => stream_my(c, &sql, &mut wtr, opts.header, None, on_progress).await?,
-        "sqlite" => stream_sqlite(c, &sql, &mut wtr, opts.header, None, on_progress).await?,
-        "mssql" => stream_ms(c, &sql, &mut wtr, opts.header, None, on_progress).await?,
+        "postgres" => stream_pg(c, &sql, &mut wtr, opts.header, opts.add_sequence, None, on_progress).await?,
+        "mysql" => stream_my(c, &sql, &mut wtr, opts.header, opts.add_sequence, None, on_progress).await?,
+        "sqlite" => stream_sqlite(c, &sql, &mut wtr, opts.header, opts.add_sequence, None, on_progress).await?,
+        "mssql" => stream_ms(c, &sql, &mut wtr, opts.header, opts.add_sequence, None, on_progress).await?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     wtr.flush()?;
@@ -310,6 +310,7 @@ async fn stream_pg(
     sql: &str,
     wtr: &mut csv::Writer<File>,
     header: bool,
+    add_sequence: bool,
     limit: Option<u64>,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
@@ -323,7 +324,7 @@ async fn stream_pg(
     while let Some(row) = stream.try_next().await? {
         let cols = colnames_sqlx(&row);
         if header && !wrote_header {
-            wtr.write_record(&cols)?;
+            wtr.write_record(&with_sequence_header(add_sequence, cols.clone()))?;
             wrote_header = true;
         }
         if let Some(lim) = limit {
@@ -331,9 +332,9 @@ async fn stream_pg(
                 break;
             }
         }
-        let rec: Vec<String> = (0..cols.len()).map(|i| stringify_pg(&row, i)).collect();
-        wtr.write_record(&rec)?;
         n += 1;
+        let rec: Vec<String> = (0..cols.len()).map(|i| stringify_pg(&row, i)).collect();
+        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
         tick_progress(on_progress, n);
     }
     pool.close().await;
@@ -345,6 +346,7 @@ async fn stream_my(
     sql: &str,
     wtr: &mut csv::Writer<File>,
     header: bool,
+    add_sequence: bool,
     limit: Option<u64>,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
@@ -358,7 +360,7 @@ async fn stream_my(
     while let Some(row) = stream.try_next().await? {
         let cols = colnames_sqlx(&row);
         if header && !wrote_header {
-            wtr.write_record(&cols)?;
+            wtr.write_record(&with_sequence_header(add_sequence, cols.clone()))?;
             wrote_header = true;
         }
         if let Some(lim) = limit {
@@ -366,9 +368,9 @@ async fn stream_my(
                 break;
             }
         }
-        let rec: Vec<String> = (0..cols.len()).map(|i| stringify_my(&row, i)).collect();
-        wtr.write_record(&rec)?;
         n += 1;
+        let rec: Vec<String> = (0..cols.len()).map(|i| stringify_my(&row, i)).collect();
+        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
         tick_progress(on_progress, n);
     }
     pool.close().await;
@@ -380,6 +382,7 @@ async fn stream_sqlite(
     sql: &str,
     wtr: &mut csv::Writer<File>,
     header: bool,
+    add_sequence: bool,
     limit: Option<u64>,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
@@ -391,7 +394,7 @@ async fn stream_sqlite(
     while let Some(row) = stream.try_next().await? {
         let cols = colnames_sqlx(&row);
         if header && !wrote_header {
-            wtr.write_record(&cols)?;
+            wtr.write_record(&with_sequence_header(add_sequence, cols.clone()))?;
             wrote_header = true;
         }
         if let Some(lim) = limit {
@@ -399,9 +402,9 @@ async fn stream_sqlite(
                 break;
             }
         }
-        let rec: Vec<String> = (0..cols.len()).map(|i| stringify_sqlite(&row, i)).collect();
-        wtr.write_record(&rec)?;
         n += 1;
+        let rec: Vec<String> = (0..cols.len()).map(|i| stringify_sqlite(&row, i)).collect();
+        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
         tick_progress(on_progress, n);
     }
     pool.close().await;
@@ -413,6 +416,7 @@ async fn stream_ms(
     sql: &str,
     wtr: &mut csv::Writer<File>,
     header: bool,
+    add_sequence: bool,
     limit: Option<u64>,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
@@ -426,7 +430,7 @@ async fn stream_ms(
         while let Some(row) = rows.try_next().await? {
             let cols: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
             if header && !wrote_header {
-                wtr.write_record(&cols)?;
+                wtr.write_record(&with_sequence_header(add_sequence, cols.clone()))?;
                 wrote_header = true;
             }
             if let Some(lim) = limit {
@@ -434,9 +438,9 @@ async fn stream_ms(
                     break;
                 }
             }
-            let rec: Vec<String> = (0..cols.len()).map(|i| stringify_ms(&row, i)).collect();
-            wtr.write_record(&rec)?;
             n += 1;
+            let rec: Vec<String> = (0..cols.len()).map(|i| stringify_ms(&row, i)).collect();
+            wtr.write_record(&with_sequence(add_sequence, n, rec))?;
             tick_progress(on_progress, n);
         }
         drop(rows);

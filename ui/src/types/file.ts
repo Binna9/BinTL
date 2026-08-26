@@ -26,3 +26,15 @@ export interface WorkbookSheetSelection {
 export interface CommitWorkbookResponse {
   files: StoredFile[];
 }
+
+export interface FilePreview {
+  id: string;
+  filename: string;
+  stored_path: string;
+  delimiter: string;
+  has_header: boolean;
+  columns: string[];
+  rows: string[][];
+  row_count: number;
+  truncated: boolean;
+}

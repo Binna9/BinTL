@@ -37,9 +37,10 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
             "info",
             "started",
             &format!(
-                "{source} delimiter={} header={}",
+                "{source} delimiter={} header={} sequence={}",
                 row.delimiter,
-                row.header != 0
+                row.header != 0,
+                row.add_sequence != 0
             ),
         );
     }
@@ -78,6 +79,7 @@ async fn extract_now(
         delimiter,
         header: row.header != 0,
         quote: b'"',
+        add_sequence: row.add_sequence != 0,
     };
     let (filename, rel) = Store::extract_file_rel(&row.id, &row.table_name, &row.delimiter);
     let dest = store.resolve(&rel);

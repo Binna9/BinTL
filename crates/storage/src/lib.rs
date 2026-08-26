@@ -206,6 +206,7 @@ pub struct ExtractRow {
     pub table_name: String,
     pub delimiter: String,
     pub header: i64,
+    pub add_sequence: i64,
     pub status: String,
     pub stored_path: Option<String>,
     pub filename: Option<String>,
@@ -220,7 +221,7 @@ pub struct ExtractRow {
 }
 
 const EXTRACT_COLS: &str = "e.id, e.connection_id, e.table_name, e.delimiter, e.header,
-        e.status, e.stored_path, e.filename, e.row_count, e.error_message,
+        e.add_sequence, e.status, e.stored_path, e.filename, e.row_count, e.error_message,
         e.created_at, e.started_at, e.finished_at, e.sql_text, e.catalog_database,
         COALESCE(c.name, '') AS connection_name";
 
@@ -650,6 +651,34 @@ impl Store {
             .ok_or_else(|| StorageError::NotFound("task disappeared after update".into()))
     }
 
+    pub async fn delete_task_definition(&self, id: &str) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        let found: Option<String> = sqlx::query_scalar("SELECT id FROM task_definitions WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if found.is_none() {
+            return Err(StorageError::NotFound("task not found".into()));
+        }
+        sqlx::query(
+            "UPDATE datasets SET producer_task_run_id = NULL
+             WHERE producer_task_run_id IN (SELECT id FROM task_runs WHERE task_id = ?)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM task_runs WHERE task_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM task_definitions WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn create_task_run(
         &self,
         task_id: &str,
@@ -824,6 +853,7 @@ impl Store {
         filename: &str,
         bytes: &[u8],
         delimiter: Option<&str>,
+        has_header: Option<bool>,
     ) -> Result<FileMeta, StorageError> {
         let id = Uuid::new_v4().to_string();
         let filename = safe_filename(filename);
@@ -842,7 +872,7 @@ impl Store {
                 stored_path: rel.clone(),
                 size_bytes: Some(bytes.len() as i64),
                 delimiter: delimiter.map(str::to_string),
-                has_header: None,
+                has_header,
                 row_count: None,
             })
             .await
@@ -950,6 +980,62 @@ impl Store {
         }
         out.sort_by(|a, b| b.id.cmp(&a.id));
         Ok(out)
+    }
+
+    async fn first_upload_file(&self, id: &str) -> Result<(String, PathBuf, u64), StorageError> {
+        validate_uuid(id, "file_id")?;
+        let dir = self.uploads_dir().join(id);
+        let mut files = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => {
+                    StorageError::NotFound(format!("file {id} not found"))
+                }
+                _ => error.into(),
+            })?;
+        while let Some(file) = files.next_entry().await? {
+            if file.file_type().await?.is_file() {
+                let filename = file.file_name().to_string_lossy().into_owned();
+                let size = file.metadata().await?.len();
+                return Ok((filename, file.path(), size));
+            }
+        }
+        Err(StorageError::NotFound(format!("file {id} not found")))
+    }
+
+    pub async fn get_upload(&self, id: &str) -> Result<FileMeta, StorageError> {
+        let (filename, _, size) = self.first_upload_file(id).await?;
+        Ok(FileMeta {
+            id: id.to_string(),
+            filename: filename.clone(),
+            size,
+            stored_path: upload_rel(id, &filename),
+        })
+    }
+
+    pub async fn upload_path(&self, id: &str) -> Result<PathBuf, StorageError> {
+        let (_, path, _) = self.first_upload_file(id).await?;
+        Ok(path)
+    }
+
+    pub async fn delete_upload(&self, id: &str) -> Result<(), StorageError> {
+        validate_uuid(id, "file_id")?;
+        let dir = self.uploads_dir().join(id);
+        let removed = match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        let prefix = format!("{REL_UPLOADS}/{id}/%");
+        let deleted = sqlx::query("DELETE FROM datasets WHERE id = ? OR stored_path LIKE ?")
+            .bind(id)
+            .bind(&prefix)
+            .execute(&self.pool)
+            .await?;
+        if !removed && deleted.rows_affected() == 0 {
+            return Err(StorageError::NotFound(format!("file {id} not found")));
+        }
+        Ok(())
     }
 
     pub async fn source_for_file_id(&self, file_id: &str) -> Result<String, StorageError> {
@@ -1272,6 +1358,7 @@ impl Store {
         table_name: &str,
         delimiter: &str,
         header: bool,
+        add_sequence: bool,
         sql_text: Option<&str>,
         catalog_database: Option<&str>,
     ) -> Result<ExtractRow, StorageError> {
@@ -1283,14 +1370,15 @@ impl Store {
         let created_at = now_rfc3339();
         sqlx::query(
             "INSERT INTO extracts
-             (id, connection_id, table_name, delimiter, header, status, created_at, sql_text, catalog_database)
-             VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+             (id, connection_id, table_name, delimiter, header, add_sequence, status, created_at, sql_text, catalog_database)
+             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
         )
         .bind(&id)
         .bind(connection_id)
         .bind(table_name)
         .bind(delimiter)
         .bind(i64::from(header))
+        .bind(i64::from(add_sequence))
         .bind(&created_at)
         .bind(sql_text)
         .bind(catalog_database)
@@ -2255,6 +2343,24 @@ mod tests {
         ));
         store.pool.close().await;
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn deletes_upload_directory_and_dataset() {
+        let root = std::env::temp_dir().join(format!("bintl-storage-test-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-session-secret").await.unwrap();
+        let meta = store
+            .save_upload("sales.csv", b"name,amount\na,1\n", Some(","), Some(true))
+            .await
+            .unwrap();
+        let dir = store.uploads_dir().join(&meta.id);
+        assert!(dir.is_dir());
+        assert!(store.get_dataset(&meta.id).await.unwrap().is_some());
+        store.delete_upload(&meta.id).await.unwrap();
+        assert!(!dir.exists());
+        assert!(store.get_dataset(&meta.id).await.unwrap().is_none());
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

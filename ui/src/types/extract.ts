@@ -5,6 +5,7 @@ export interface ExtractRecord {
   table_name: string;
   delimiter: string;
   header: number;
+  add_sequence?: number;
   status: string;
   stored_path: string | null;
   filename: string | null;
@@ -22,5 +23,6 @@ export interface CreateExtractRequest {
   sql?: string;
   delimiter?: string;
   header?: boolean;
+  add_sequence?: boolean;
   database?: string;
 }

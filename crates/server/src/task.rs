@@ -19,7 +19,10 @@ pub fn routes() -> Router<AppState> {
             "/api/workspaces/{id}/tasks",
             get(list_tasks).post(create_task),
         )
-        .route("/api/tasks/{id}", get(get_task).patch(update_task))
+        .route(
+            "/api/tasks/{id}",
+            get(get_task).patch(update_task).delete(delete_task),
+        )
         .route("/api/tasks/{id}/run", post(run_task))
         .route("/api/workspaces/{id}/runs", get(list_runs))
         .route("/api/task-runs/{id}", get(get_run))
@@ -188,6 +191,15 @@ async fn update_task(
         )
         .await?;
     Ok(Json(task_json(&task)?))
+}
+
+async fn delete_task(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let _task = require_task(&state.store, &id).await?;
+    state.store.delete_task_definition(&id).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn run_task(
@@ -550,6 +562,7 @@ async fn run_extract(store: &Store, run: &TaskRunRow) -> Result<(), String> {
             &table,
             &delimiter,
             header,
+            false,
             sql.as_deref(),
             database.as_deref(),
         )

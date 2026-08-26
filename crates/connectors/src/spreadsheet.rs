@@ -3,6 +3,7 @@ use std::path::Path;
 use calamine::{open_workbook_auto, Reader};
 use serde::Serialize;
 
+use crate::extract::{with_sequence, with_sequence_header};
 use crate::ConnectError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -45,6 +46,8 @@ pub fn export_sheet_to_csv(
     path: &Path,
     sheet_name: &str,
     delimiter: u8,
+    header: bool,
+    add_sequence: bool,
 ) -> Result<Vec<u8>, ConnectError> {
     spreadsheet_format(path)?;
     let mut workbook =
@@ -61,8 +64,14 @@ pub fn export_sheet_to_csv(
     let mut writer = csv::WriterBuilder::new()
         .delimiter(delimiter)
         .from_writer(Vec::new());
-    for row in range.rows() {
-        writer.write_record(row.iter().map(ToString::to_string))?;
+    for (index, row) in range.rows().enumerate() {
+        let cells: Vec<String> = row.iter().map(ToString::to_string).collect();
+        if header && index == 0 {
+            writer.write_record(&with_sequence_header(add_sequence, cells))?;
+        } else {
+            let seq = if header { index as u64 } else { index as u64 + 1 };
+            writer.write_record(&with_sequence(add_sequence, seq, cells))?;
+        }
     }
     writer
         .into_inner()
@@ -160,9 +169,11 @@ mod tests {
                 name: "Sales".into(),
             }]
         );
-        let csv = export_sheet_to_csv(&path, "Sales", b',').unwrap();
+        let csv = export_sheet_to_csv(&path, "Sales", b',', true, false).unwrap();
         assert_eq!(String::from_utf8(csv).unwrap(), "name,value\nalpha,1\n");
-        let piped = export_sheet_to_csv(&path, "Sales", b'|').unwrap();
+        let sequenced = export_sheet_to_csv(&path, "Sales", b',', true, true).unwrap();
+        assert_eq!(String::from_utf8(sequenced).unwrap(), "#,name,value\n1,alpha,1\n");
+        let piped = export_sheet_to_csv(&path, "Sales", b'|', true, false).unwrap();
         assert_eq!(String::from_utf8(piped).unwrap(), "name|value\nalpha|1\n");
         std::fs::remove_file(path).unwrap();
     }
