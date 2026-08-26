@@ -1,17 +1,21 @@
 import { Languages, LogOut, Moon, Settings, Sun, User } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
+import { SettingsDialog } from "@/components/SettingsDialog";
 import { useTheme } from "@/hooks/useTheme";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { cn } from "@/lib/cn";
 import { authApi } from "@/services/authApi";
 
 function IconButton({
   label,
   pressed,
+  danger,
   onClick,
   children,
 }: {
   label: string;
   pressed?: boolean;
+  danger?: boolean;
   onClick?: () => void;
   children: ReactNode;
 }) {
@@ -22,9 +26,19 @@ function IconButton({
       aria-label={label}
       aria-pressed={pressed}
       title={label}
-      className="group grid h-full w-14 place-items-center text-text outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+      className={cn(
+        "group grid h-full w-14 place-items-center text-text outline-none focus-visible:ring-2 focus-visible:ring-inset",
+        danger ? "focus-visible:ring-danger/40" : "focus-visible:ring-accent/40",
+      )}
     >
-      <span className="relative grid size-8 place-items-center rounded-lg transition-colors duration-200 group-hover:bg-accent-subtle group-hover:text-accent">
+      <span
+        className={cn(
+          "relative grid size-8 place-items-center rounded-lg transition-colors duration-200",
+          danger
+            ? "group-hover:bg-danger-subtle group-hover:text-danger"
+            : "group-hover:bg-accent-subtle group-hover:text-accent",
+        )}
+      >
         {children}
       </span>
     </button>
@@ -34,6 +48,7 @@ function IconButton({
 export function TopSubmenu({ prefsOnly = false }: { prefsOnly?: boolean }) {
   const { theme, toggleTheme } = useTheme();
   const { messages, toggleLocale } = useLanguage();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const isDark = theme === "dark";
 
   function logout() {
@@ -63,15 +78,18 @@ export function TopSubmenu({ prefsOnly = false }: { prefsOnly?: boolean }) {
         </IconButton>
         {prefsOnly ? null : (
           <>
-            <IconButton label={messages.nav.settings}>
+            <IconButton label={messages.nav.settings} onClick={() => setSettingsOpen(true)}>
               <Settings className="size-[18px]" />
             </IconButton>
-            <IconButton label={messages.nav.logout} onClick={logout}>
+            <IconButton danger label={messages.nav.logout} onClick={logout}>
               <LogOut className="size-[18px]" />
             </IconButton>
           </>
         )}
       </article>
+      {prefsOnly ? null : (
+        <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      )}
     </div>
   );
 }

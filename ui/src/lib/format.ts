@@ -6,10 +6,17 @@ export function fmtSqlPreview(sql: string | null | undefined): string {
   return line.length > 72 ? `${line.slice(0, 72)}…` : line;
 }
 
-export function fmtDelimiter(raw: string, messages: Messages): string {
+export function fmtDelimiterGlyph(raw: string, messages: Messages): string {
   if (raw === "tab" || raw === "\\t" || raw === "\t") return "TAB";
   if (raw === " ") return messages.format.space;
-  return messages.format.delimiter(raw);
+  return raw;
+}
+
+export function fmtDelimiter(raw: string, messages: Messages): string {
+  const glyph = fmtDelimiterGlyph(raw, messages);
+  return glyph === "TAB" || glyph === messages.format.space
+    ? glyph
+    : messages.format.delimiter(raw);
 }
 
 export function fmtWhen(iso: string): string {

@@ -1,12 +1,4 @@
-import {
-  Cable,
-  Database,
-  DatabaseZap,
-  FileText,
-  LayoutDashboard,
-  Workflow,
-  type LucideIcon,
-} from "lucide-react";
+import { Cable, CalendarClock, Database, DatabaseZap, FileText, LayoutDashboard, Workflow, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 export type NavIconName =
@@ -15,7 +7,8 @@ export type NavIconName =
   | "connections"
   | "query"
   | "extracts"
-  | "jobs";
+  | "jobs"
+  | "schedule";
 
 const icons: Record<NavIconName, LucideIcon> = {
   overview: LayoutDashboard,
@@ -24,6 +17,7 @@ const icons: Record<NavIconName, LucideIcon> = {
   query: Database,
   extracts: DatabaseZap,
   jobs: Workflow,
+  schedule: CalendarClock,
 };
 
 export function NavIcon({

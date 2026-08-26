@@ -16,11 +16,6 @@ export interface MenuItem {
 
 interface MenuSidebarProps {
   items: MenuItem[];
-  logoutItem: {
-    icon: React.ReactNode;
-    label: string;
-    onClick: () => void;
-  };
   className?: string;
 }
 
@@ -47,12 +42,13 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
     return (
       <div
         className={cn(
-          "flex min-w-0 cursor-default items-center gap-3 rounded-lg py-2.5 text-sm font-medium text-text-tertiary",
+          "flex min-w-0 cursor-default items-center gap-2.5 rounded-lg py-2.5 text-sm font-medium text-text-tertiary",
           nested ? "px-2" : "px-3",
         )}
         aria-disabled="true"
         title={`${item.label} — ${messages.common.comingSoon}`}
       >
+        <span className="h-5 w-[3px] shrink-0 rounded-full bg-transparent" aria-hidden="true" />
         <span
           className={cn("shrink-0", nested ? "size-4" : "size-[18px]")}
           aria-hidden="true"
@@ -72,7 +68,7 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
       title={item.label}
       className={({ isActive }) =>
         cn(
-          "group flex min-w-0 items-center gap-3 rounded-lg py-2.5 text-sm font-medium !text-text no-underline outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40",
+          "group flex min-w-0 items-center gap-2.5 rounded-lg py-2.5 text-sm font-medium !text-text no-underline outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40",
           nested ? "px-2" : "px-3",
           isActive ? "bg-accent-subtle" : "hover:bg-subtle",
         )
@@ -80,6 +76,13 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
     >
       {({ isActive }) => (
         <>
+          <span
+            className={cn(
+              "h-5 w-[3px] shrink-0 rounded-full",
+              isActive ? "bg-accent" : "bg-transparent",
+            )}
+            aria-hidden="true"
+          />
           <span
             className={cn(
               "shrink-0 transition-transform duration-150 group-hover:scale-110",
@@ -126,12 +129,19 @@ function MenuGroup({ item }: { item: MenuItem }) {
       <button
         type="button"
         className={cn(
-          "group flex w-full min-w-0 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40",
-          hasActiveChild ? "bg-subtle text-text" : "text-text hover:bg-subtle",
+          "group flex w-full min-w-0 items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40",
+          hasActiveChild ? "bg-accent-subtle text-text" : "text-text hover:bg-subtle",
         )}
         aria-expanded={isOpen}
         onClick={() => setIsOpen((open) => !open)}
       >
+        <span
+          className={cn(
+            "h-5 w-[3px] shrink-0 rounded-full",
+            hasActiveChild ? "bg-accent" : "bg-transparent",
+          )}
+          aria-hidden="true"
+        />
         <span
           className="size-[18px] shrink-0 transition-transform duration-150 group-hover:scale-110"
           aria-hidden="true"
@@ -175,7 +185,7 @@ function MenuGroup({ item }: { item: MenuItem }) {
 }
 
 export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
-  ({ items, logoutItem, className }, ref) => {
+  ({ items, className }, ref) => {
     const { messages } = useLanguage();
     return (
     <motion.aside
@@ -200,24 +210,6 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
           </motion.div>
         ))}
       </nav>
-
-      <motion.div variants={itemVariants} className="mt-3 border-t border-border pt-3">
-        <button
-          type="button"
-          onClick={logoutItem.onClick}
-          className="group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-danger outline-none transition-colors hover:bg-danger-subtle focus-visible:ring-2 focus-visible:ring-danger/30"
-        >
-          <span
-            className="size-[18px] shrink-0 transition-transform duration-150 group-hover:scale-110"
-            aria-hidden="true"
-          >
-            {logoutItem.icon}
-          </span>
-          <span className="min-w-0 origin-left truncate transition-transform duration-150 group-hover:scale-110 group-hover:font-bold">
-            {logoutItem.label}
-          </span>
-        </button>
-      </motion.div>
     </motion.aside>
     );
   },

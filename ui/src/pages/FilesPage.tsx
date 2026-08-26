@@ -17,7 +17,7 @@ import { MetaField } from "@/components/ui/meta-field";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useFiles } from "@/hooks/useFiles";
 import { useLanguage } from "@/i18n/LanguageProvider";
-import { fmtBytes } from "@/lib/format";
+import { fmtBytes, fmtDelimiterGlyph } from "@/lib/format";
 import { showConfirm, toastError } from "@/lib/notifications";
 import { fileApi } from "@/services/fileApi";
 import type {
@@ -425,6 +425,9 @@ export function FilesPage() {
               </MetaField>
               <MetaField label={messages.files.totalRows} technical>
                 {messages.common.rows(preview.row_count)}
+              </MetaField>
+              <MetaField label={messages.common.delimiter} technical>
+                {fmtDelimiterGlyph(preview.delimiter, messages)}
               </MetaField>
               {preview.columns.length > 0 ? (
                 <div className="min-w-0 flex-1">

@@ -36,18 +36,27 @@ export function PanelHeader({
   title,
   description,
   actions,
+  icon,
 }: {
   title: string;
   description?: string;
   actions?: ReactNode;
+  icon?: ReactNode;
 }) {
   return (
-    <header className="flex min-h-11 items-center justify-between gap-4 border-b border-border bg-surface px-4 py-2.5">
-      <div className="min-w-0">
-        <h2 className="text-sm font-semibold text-text">{title}</h2>
-        {description ? (
-          <p className="mt-0.5 text-xs text-text-secondary">{description}</p>
+    <header className="flex min-h-11 items-center justify-between gap-4 rounded-t-xl border-b border-border bg-surface px-4 py-2.5">
+      <div className="flex min-w-0 items-center gap-2.5">
+        {icon ? (
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-accent-subtle text-accent">
+            {icon}
+          </span>
         ) : null}
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-text">{title}</h2>
+          {description ? (
+            <p className="mt-0.5 text-xs text-text-secondary">{description}</p>
+          ) : null}
+        </div>
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
     </header>

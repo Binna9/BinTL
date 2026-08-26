@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { BrandMark } from "@/components/BrandMark";
 import { ConsoleRail } from "@/components/ConsoleRail";
+import { HeaderSearch } from "@/components/HeaderSearch";
 import { SplitLayout } from "@/components/SplitLayout";
 import { TopSubmenu } from "@/components/TopSubmenu";
 import { ConnectionsPage } from "@/pages/ConnectionsPage";
@@ -11,6 +12,7 @@ import { JobRunPage } from "@/pages/JobRunPage";
 import { LoadPage } from "@/pages/LoadPage";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { QueryPage } from "@/pages/QueryPage";
+import { SchedulePage } from "@/pages/SchedulePage";
 import { SessionGatePage } from "@/pages/SessionGatePage";
 import { TransformPage } from "@/pages/TransformPage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
@@ -22,9 +24,12 @@ function ConsoleShell() {
   const studio = loc.pathname.startsWith("/workspace");
   return (
     <div className="flex h-screen flex-col overflow-hidden">
-      <header className="sticky top-0 z-40 flex h-[4.75rem] shrink-0 items-center justify-between border-b border-border bg-surface px-5 shadow-[0_2px_5px_rgba(15,23,42,0.06)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.28)]">
+      <header className="sticky top-0 z-40 grid h-[4.75rem] shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border bg-surface px-5 shadow-[0_2px_5px_rgba(15,23,42,0.06)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.28)]">
         <BrandMark to="/" />
-        <TopSubmenu />
+        <HeaderSearch />
+        <div className="justify-self-end">
+          <TopSubmenu />
+        </div>
       </header>
       <SplitLayout
         className="min-h-0 flex-1"
@@ -43,6 +48,7 @@ function ConsoleShell() {
             <Route path="/" element={<OverviewPage />} />
             <Route path="/files" element={<FilesPage />} />
             <Route path="/connections" element={<ConnectionsPage />} />
+            <Route path="/schedule" element={<SchedulePage />} />
             <Route path="/workspace" element={<WorkspacePage />} />
             <Route path="/workspace/:workspaceId" element={<WorkspacePage />} />
             <Route path="/workspace/:workspaceId/tasks/:taskId" element={<WorkspacePage />} />
