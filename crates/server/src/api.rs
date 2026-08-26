@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use connectors::{
     catalog_layout, db_source_path, export_sheet_to_csv, list_columns, list_databases,
     list_relations, list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter,
-    parse_ident, parse_table, preview_table, run_sql, spreadsheet_format, sql_kind,
+    parse_ident, parse_table, preview_table, run_sql, sniff_delimiter, spreadsheet_format, sql_kind,
     test_connection, with_database, SqlKind,
 };
 use serde::Deserialize;
@@ -134,8 +134,13 @@ async fn upload_file(
     require_csv_filename(&original)?;
     let filename = storage::resolve_upload_filename(&original, requested_name.as_deref());
     require_csv_filename(&filename)?;
-    validate_csv(&data, b',')?;
-    let meta = state.store.save_upload(&filename, &data, None, None).await?;
+    let delimiter_raw = sniff_delimiter(&data).unwrap_or_else(|| ",".into());
+    let delimiter = parse_delimiter(&delimiter_raw)?;
+    validate_csv(&data, delimiter)?;
+    let meta = state
+        .store
+        .save_upload(&filename, &data, Some(&delimiter_raw), Some(true))
+        .await?;
     Ok(Json(json!({
         "id": meta.id,
         "filename": meta.filename,
@@ -382,17 +387,23 @@ async fn preview_file(
     let meta = state.store.get_upload(&id).await?;
     let path = state.store.upload_path(&id).await?;
     let dataset = state.store.get_dataset(&id).await?;
-    let delimiter_raw = dataset
+    let stored_delimiter = dataset
         .as_ref()
         .and_then(|row| row.delimiter.clone())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| ",".into());
-    let delimiter = parse_delimiter(&delimiter_raw)?;
+        .filter(|value| !value.trim().is_empty());
     let has_header = dataset
         .as_ref()
         .and_then(|row| row.has_header)
         .map(|value| value != 0)
         .unwrap_or(true);
+    let sample = tokio::fs::read(&path)
+        .await
+        .map_err(|error| AppError::bad(format!("file read failed: {error}")))?;
+    let delimiter_raw = stored_delimiter
+        .clone()
+        .or_else(|| sniff_delimiter(&sample))
+        .unwrap_or_else(|| ",".into());
+    let delimiter = parse_delimiter(&delimiter_raw)?;
     let limit = query.limit.unwrap_or(200).clamp(1, 1000) as usize;
     let preview = tokio::task::spawn_blocking(move || {
         read_upload_preview(&path, delimiter, has_header, limit)
@@ -404,6 +415,21 @@ async fn preview_file(
             format!("file preview failed: {error}"),
         )
     })??;
+    if stored_delimiter.is_none() {
+        if let Ok(columns_json) = serde_json::to_string(&preview.columns) {
+            let _ = state
+                .store
+                .update_dataset_inspect(
+                    &id,
+                    &columns_json,
+                    Some(preview.row_count as i64),
+                    Some(&delimiter_raw),
+                    Some(has_header),
+                    Some(meta.size as i64),
+                )
+                .await;
+        }
+    }
     Ok(Json(json!({
         "id": meta.id,
         "filename": meta.filename,

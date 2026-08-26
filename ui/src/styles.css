@@ -100,6 +100,19 @@ body {
   letter-spacing: -0.011em;
 }
 
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 180ms;
+  animation-timing-function: ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
+}
+
 a {
   @apply text-accent no-underline;
 }
@@ -317,6 +330,62 @@ a {
   @apply size-3.5 accent-accent;
 }
 
+.login-field {
+  height: 2.4rem;
+  border-width: 1.5px;
+  border-color: var(--theme-border-strong);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--theme-surface) 82%, var(--theme-subtle));
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.login-field.has-start-icon {
+  padding-left: 2.25rem;
+}
+
+.login-field.has-end-icon {
+  padding-right: 2.5rem;
+}
+
+.login-field:hover:not(:disabled):not(:focus) {
+  border-color: color-mix(in srgb, var(--theme-accent) 55%, var(--theme-border-strong));
+  background: var(--theme-surface);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--theme-accent) 12%, transparent);
+}
+
+.login-field:focus {
+  border-color: var(--theme-accent);
+  background: var(--theme-surface);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--theme-accent) 18%, transparent);
+}
+
+.login-keep {
+  width: 0.95rem;
+  height: 0.95rem;
+  accent-color: var(--theme-accent);
+  cursor: pointer;
+}
+
+.login-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-text-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+
+.login-link:hover:not(:disabled) {
+  color: var(--theme-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .file-dropzone {
   --dropzone-stroke: var(--theme-border-strong);
   @apply relative flex h-20 cursor-pointer items-center justify-center rounded-lg border border-dashed bg-raised px-6 text-[13px] text-text-secondary;
@@ -422,6 +491,33 @@ a {
 .brand-mark:active .brand-mark-sub {
   color: var(--color-accent);
   transform: translateY(-1px) scale(1.04);
+}
+
+.login-card::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--theme-accent) 14%, transparent) 48%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(to bottom, black 0%, black 18%, transparent 100%);
+}
+
+.login-rule {
+  height: 1px;
+  width: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--theme-border-strong) 35%, transparent) 18%,
+    var(--theme-border-strong) 50%,
+    color-mix(in srgb, var(--theme-border-strong) 35%, transparent) 82%,
+    transparent 100%
+  );
 }
 
 @keyframes notification-toast-enter {
@@ -642,48 +738,71 @@ a {
 }
 
 .workspace-node {
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--theme-surface) 42%, white) 0%,
-      var(--theme-surface) 52%,
-      color-mix(in srgb, var(--theme-surface) 86%, var(--theme-text) 8%) 100%
-    );
+  border: 0;
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--theme-dock) 55%, white);
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 82%, transparent),
-    inset 0 -1px 0 color-mix(in srgb, var(--theme-text) 7%, transparent),
-    2px 4px 0 0 color-mix(in srgb, var(--theme-border-strong) 70%, transparent),
-    4px 10px 18px color-mix(in srgb, var(--theme-text) 14%, transparent);
+    -1.5px -1.5px 3px color-mix(in srgb, white 92%, transparent),
+    4px 7px 14px color-mix(in srgb, var(--theme-text) 16%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 86%, transparent);
 }
 
 :root.dark .workspace-node {
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--theme-surface) 78%, white 14%) 0%,
-      var(--theme-surface) 48%,
-      color-mix(in srgb, var(--theme-surface) 82%, black) 100%
-    );
+  background: color-mix(in srgb, var(--theme-dock) 70%, white 12%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.35),
-    2px 4px 0 0 rgba(0, 0, 0, 0.45),
-    5px 12px 22px rgba(0, 0, 0, 0.48);
+    -1.5px -1.5px 2.5px rgba(255, 255, 255, 0.14),
+    5px 9px 18px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .workspace-node.is-selected {
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 82%, transparent),
-    inset 0 -1px 0 color-mix(in srgb, var(--theme-text) 7%, transparent),
-    2px 4px 0 0 color-mix(in srgb, var(--theme-accent) 42%, var(--theme-border-strong)),
-    4px 12px 20px color-mix(in srgb, var(--theme-accent) 22%, transparent);
+    -1.5px -1.5px 3px color-mix(in srgb, white 92%, transparent),
+    5px 9px 16px color-mix(in srgb, var(--theme-text) 16%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--theme-accent) 38%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 88%, transparent);
 }
 
 :root.dark .workspace-node.is-selected {
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.35),
-    2px 4px 0 0 color-mix(in srgb, var(--theme-accent) 45%, black),
-    5px 12px 22px rgba(0, 0, 0, 0.55);
+    -1.5px -1.5px 2.5px rgba(255, 255, 255, 0.16),
+    5px 10px 18px rgba(0, 0, 0, 0.58),
+    0 0 0 2px color-mix(in srgb, var(--theme-accent) 48%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.workspace-node-icon {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  place-items: center;
+}
+
+.workspace-node-icon.is-extract {
+  color: var(--theme-accent);
+}
+
+.workspace-node-icon.is-transform {
+  color: var(--theme-success);
+}
+
+.workspace-node-icon svg {
+  width: 1.18rem;
+  height: 1.18rem;
+  stroke-width: 2.15;
+  filter:
+    drop-shadow(-0.7px -0.8px 0.4px var(--theme-dock-icon-hi))
+    drop-shadow(1.3px 1.8px 1.4px rgb(0 0 0 / 0.42));
+}
+
+:root.dark .workspace-node-icon svg {
+  filter:
+    drop-shadow(-0.65px -0.75px 0.35px rgb(255 255 255 / 0.6))
+    drop-shadow(1.4px 1.9px 1.6px rgb(0 0 0 / 0.75));
+}
+
+.workspace-canvas {
+  overscroll-behavior: contain;
+  scrollbar-color: color-mix(in srgb, var(--theme-text) 28%, transparent) transparent;
 }
 

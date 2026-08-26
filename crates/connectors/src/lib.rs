@@ -14,7 +14,7 @@ mod query;
 mod spreadsheet;
 
 pub use catalog::{catalog_layout, list_databases, list_relations, list_schemas, CatalogItem};
-pub use extract::{extract_table, parse_delimiter, ExtractOptions};
+pub use extract::{extract_table, parse_delimiter, sniff_delimiter, ExtractOptions};
 pub use inspect::{list_columns, preview_table, ColumnInfo, Preview};
 pub use query::{extract_query, normalize_sql, run_sql, sql_kind, QueryOutcome, SqlKind};
 pub use spreadsheet::{export_sheet_to_csv, list_sheets, spreadsheet_format, SheetInfo};

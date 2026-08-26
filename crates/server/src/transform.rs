@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::{FramePreview, PolarsEngine, TransformSpec};
+use connectors::sniff_delimiter;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use storage::{DatasetRow, Store, TransformRow};
@@ -184,6 +185,10 @@ async fn inspect_dataset(
     }
     let limit = clamp_limit(q.limit);
     let inferred_delim = row.delimiter.clone().or_else(|| {
+        std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| sniff_delimiter(&bytes))
+    }).or_else(|| {
         match path
             .extension()
             .and_then(|s| s.to_str())

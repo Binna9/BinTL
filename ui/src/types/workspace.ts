@@ -12,6 +12,7 @@ export interface Workspace {
 
 export interface WorkspaceLayout {
   nodes?: Record<string, { x: number; y: number }>;
+  view?: { x: number; y: number };
 }
 
 export interface WorkspaceListResponse {

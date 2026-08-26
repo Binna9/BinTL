@@ -69,6 +69,71 @@ pub fn parse_delimiter(raw: &str) -> Result<u8, ConnectError> {
     }
 }
 
+const SNIFF_DELIMS: &[(&str, u8)] = &[
+    (",", b','),
+    ("|", b'|'),
+    (";", b';'),
+    ("tab", b'\t'),
+    ("^", b'^'),
+];
+
+/// Guess a delimiter from a text sample. Prefers a separator that splits most
+/// rows into the same number of columns (at least 2).
+pub fn sniff_delimiter(sample: &[u8]) -> Option<String> {
+    let sample = if sample.len() > 64 * 1024 {
+        &sample[..64 * 1024]
+    } else {
+        sample
+    };
+    let mut best: Option<(usize, usize, &str)> = None;
+    for (token, byte) in SNIFF_DELIMS {
+        let Some((consistent, columns)) = score_delimiter(sample, *byte) else {
+            continue;
+        };
+        let better = match best {
+            None => true,
+            Some((best_consistent, best_columns, _)) => {
+                consistent > best_consistent
+                    || (consistent == best_consistent && columns > best_columns)
+            }
+        };
+        if better {
+            best = Some((consistent, columns, token));
+        }
+    }
+    best.map(|(_, _, token)| token.to_string())
+}
+
+fn score_delimiter(sample: &[u8], delimiter: u8) -> Option<(usize, usize)> {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(sample);
+    let mut widths = Vec::new();
+    for record in reader.records().take(24) {
+        let Ok(record) = record else {
+            continue;
+        };
+        if record.iter().all(|field| field.trim().is_empty()) {
+            continue;
+        }
+        widths.push(record.len());
+    }
+    if widths.len() < 2 {
+        return None;
+    }
+    let columns = *widths.iter().max()?;
+    if columns < 2 {
+        return None;
+    }
+    let consistent = widths.iter().filter(|width| **width == columns).count();
+    if consistent * 2 < widths.len() {
+        return None;
+    }
+    Some((consistent, columns))
+}
+
 /// Stream `SELECT *` into a delimited text file. Headers come from the table
 /// schema so a 0-row table still produces a header-only file.
 ///
@@ -235,6 +300,18 @@ mod tests {
         assert_eq!(parse_delimiter(" : ").unwrap(), b':');
         assert!(parse_delimiter("").is_err());
         assert!(parse_delimiter("||").is_err());
+    }
+
+    #[test]
+    fn sniffs_pipe_when_commas_are_thousands() {
+        let sample = "IPM 광고비|활성 사용자\nLTM|트래픽(세션)\n광고 1,000회 노출당 비용|클릭수\n";
+        assert_eq!(sniff_delimiter(sample.as_bytes()).as_deref(), Some("|"));
+    }
+
+    #[test]
+    fn sniffs_comma_csv() {
+        let sample = "a,b,c\n1,2,3\n4,5,6\n";
+        assert_eq!(sniff_delimiter(sample.as_bytes()).as_deref(), Some(","));
     }
 
     #[test]

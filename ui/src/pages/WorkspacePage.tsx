@@ -1,6 +1,6 @@
 import { DragEvent, FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { DatabaseZap, RefreshCw, RotateCcw, Save, Workflow, X, type LucideIcon } from "lucide-react";
+import { DatabaseZap, FolderOpen, RefreshCw, RotateCcw, Save, Workflow, X, type LucideIcon } from "lucide-react";
 import { SplitLayout } from "@/components/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,11 @@ const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const TOOL_KIND = "application/x-bintl-tool";
 const NODE_W = 128;
 const NODE_H = 120;
+const CANVAS_MIN_W = 2400;
+const CANVAS_MIN_H = 1600;
+const CANVAS_PAD = 280;
+const CANVAS_EDGE = 56;
+const CANVAS_SCROLL_STEP = 18;
 
 type Point = { x: number; y: number };
 type CanvasSnapshot = { tasks: TaskDefinition[]; positions: Record<string, Point> };
@@ -76,6 +81,46 @@ function clampPoint(point: Point, bounds: { width: number; height: number }): Po
     x: Math.max(16, Math.min(point.x, Math.max(16, bounds.width - NODE_W - 16))),
     y: Math.max(16, Math.min(point.y, Math.max(16, bounds.height - NODE_H - 16))),
   };
+}
+
+function canvasPoint(canvas: HTMLElement, clientX: number, clientY: number): Point {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: clientX - rect.left + canvas.scrollLeft,
+    y: clientY - rect.top + canvas.scrollTop,
+  };
+}
+
+function worldSize(
+  positions: Record<string, Point>,
+  viewport: { width: number; height: number },
+): { width: number; height: number } {
+  let maxX = 0;
+  let maxY = 0;
+  for (const point of Object.values(positions)) {
+    maxX = Math.max(maxX, point.x + NODE_W);
+    maxY = Math.max(maxY, point.y + NODE_H);
+  }
+  return {
+    width: Math.max(CANVAS_MIN_W, viewport.width, maxX + CANVAS_PAD),
+    height: Math.max(CANVAS_MIN_H, viewport.height, maxY + CANVAS_PAD),
+  };
+}
+
+function roundPoint(point: Point): Point {
+  return { x: Math.round(point.x), y: Math.round(point.y) };
+}
+
+function scrollCanvasFromPointer(canvas: HTMLElement, clientX: number, clientY: number) {
+  const rect = canvas.getBoundingClientRect();
+  let dx = 0;
+  let dy = 0;
+  if (clientX > rect.right - CANVAS_EDGE) dx = CANVAS_SCROLL_STEP;
+  else if (clientX < rect.left + CANVAS_EDGE) dx = -CANVAS_SCROLL_STEP;
+  if (clientY > rect.bottom - CANVAS_EDGE) dy = CANVAS_SCROLL_STEP;
+  else if (clientY < rect.top + CANVAS_EDGE) dy = -CANVAS_SCROLL_STEP;
+  if (dx !== 0) canvas.scrollLeft += dx;
+  if (dy !== 0) canvas.scrollTop += dy;
 }
 
 function omitPoint(positions: Record<string, Point>, id: string): Record<string, Point> {
@@ -173,6 +218,7 @@ export function WorkspacePage() {
   const logRequestRef = useRef(0);
   const refreshRequestRef = useRef(0);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const pendingViewRef = useRef<Point | null>(null);
   const positionsRef = useRef<Record<string, Point>>({});
   const savedRef = useRef<CanvasSnapshot>({ tasks: [], positions: {} });
   const savedIdsRef = useRef(new Set<string>());
@@ -208,6 +254,7 @@ export function WorkspacePage() {
   const [workspaceName, setWorkspaceName] = useState("");
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [canvasView, setCanvasView] = useState({ width: 800, height: 600 });
 
   const [name, setName] = useState("");
   const [kind, setKind] = useState<TaskKind>("extract");
@@ -232,6 +279,10 @@ export function WorkspacePage() {
   const selectedRuns = useMemo(
     () => runs.filter((run) => run.task_id === selectedTask?.id).slice(0, 5),
     [runs, selectedTask?.id],
+  );
+  const canvasWorld = useMemo(
+    () => worldSize(positions, canvasView),
+    [canvasView, positions],
   );
 
   function resetTaskForm() {
@@ -303,9 +354,11 @@ export function WorkspacePage() {
       setRuns([]);
       setPositions({});
       rememberSaved([], {});
+      pendingViewRef.current = null;
       return;
     }
     let cancelled = false;
+    pendingViewRef.current = null;
     setLoading(true);
     setError("");
     Promise.all([
@@ -322,6 +375,7 @@ export function WorkspacePage() {
             : [...current, workspace];
         });
         const nextPositions = positionsFrom(taskResponse.tasks, workspace.layout);
+        pendingViewRef.current = workspace.layout.view ?? { x: 0, y: 0 };
         setTasks(taskResponse.tasks);
         setRuns(runResponse.runs);
         setPositions(nextPositions);
@@ -337,6 +391,26 @@ export function WorkspacePage() {
       cancelled = true;
     };
   }, [messages, workspaceId]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const update = () => {
+      setCanvasView({ width: canvas.clientWidth, height: canvas.clientHeight });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [workspaceId]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const view = pendingViewRef.current;
+    if (!canvas || !view || loading) return;
+    canvas.scrollTo(view.x, view.y);
+    pendingViewRef.current = null;
+  }, [canvasWorld.height, canvasWorld.width, loading, positions, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId || !hasActiveRun) return;
@@ -494,11 +568,14 @@ export function WorkspacePage() {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    const bounds = canvasRef.current?.getBoundingClientRect();
-    const nextPoint = clampPoint(point, {
-      width: bounds?.width ?? 800,
-      height: bounds?.height ?? 600,
-    });
+    const viewport = {
+      width: canvasRef.current?.clientWidth ?? 800,
+      height: canvasRef.current?.clientHeight ?? 600,
+    };
+    const nextPoint = clampPoint(
+      point,
+      worldSize({ ...positionsRef.current, [created.id]: point }, viewport),
+    );
     const next = { ...positionsRef.current, [created.id]: nextPoint };
     setTasks((current) => [created, ...current]);
     setPositions(next);
@@ -581,7 +658,15 @@ export function WorkspacePage() {
         setTasks(nextTasks);
       }
       const response = await workspaceApi.save(requestWorkspaceId, {
-        layout: { nodes: positionsRef.current },
+        layout: {
+          nodes: Object.fromEntries(
+            Object.entries(positionsRef.current).map(([id, point]) => [id, roundPoint(point)]),
+          ),
+          view: {
+            x: Math.round(canvasRef.current?.scrollLeft ?? 0),
+            y: Math.round(canvasRef.current?.scrollTop ?? 0),
+          },
+        },
         tasks: nextTasks.map((task) => ({
           id: task.id,
           name: task.name,
@@ -666,6 +751,7 @@ export function WorkspacePage() {
       setRuns(runResponse.runs);
       if (dirtyRef.current) return;
       const nextPositions = positionsFrom(taskResponse.tasks, workspace.layout);
+      pendingViewRef.current = workspace.layout.view ?? { x: 0, y: 0 };
       setTasks(taskResponse.tasks);
       setPositions(nextPositions);
       rememberSaved(taskResponse.tasks, nextPositions);
@@ -759,20 +845,25 @@ export function WorkspacePage() {
     event.preventDefault();
     const toolKind = event.dataTransfer.getData(TOOL_KIND);
     if (toolKind !== "extract" && toolKind !== "transform") return;
-    const rect = event.currentTarget.getBoundingClientRect();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const grab = canvasPoint(canvas, event.clientX, event.clientY);
     placeTool(toolKind, {
-      x: event.clientX - rect.left - NODE_W / 2,
-      y: event.clientY - rect.top - NODE_H / 2,
+      x: grab.x - NODE_W / 2,
+      y: grab.y - NODE_H / 2,
     });
   }
 
   function onNodePointerDown(task: TaskDefinition, event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     const node = positionsRef.current[task.id] ?? { x: 56, y: 48 };
+    const grab = canvasPoint(canvas, event.clientX, event.clientY);
     dragRef.current = {
       id: task.id,
-      dx: event.clientX - node.x,
-      dy: event.clientY - node.y,
+      dx: grab.x - node.x,
+      dy: grab.y - node.y,
       startX: node.x,
       startY: node.y,
       moved: false,
@@ -782,11 +873,17 @@ export function WorkspacePage() {
 
   function onNodePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const drag = dragRef.current;
-    if (!drag || drag.id !== event.currentTarget.dataset.taskId) return;
-    const rect = canvasRef.current?.getBoundingClientRect();
+    const canvas = canvasRef.current;
+    if (!drag || !canvas || drag.id !== event.currentTarget.dataset.taskId) return;
+    scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
+    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const tentative = { x: grab.x - drag.dx, y: grab.y - drag.dy };
     const nextPoint = clampPoint(
-      { x: event.clientX - drag.dx, y: event.clientY - drag.dy },
-      { width: rect?.width ?? 800, height: rect?.height ?? 600 },
+      tentative,
+      worldSize({ ...positionsRef.current, [drag.id]: tentative }, {
+        width: canvas.clientWidth,
+        height: canvas.clientHeight,
+      }),
     );
     if (Math.abs(nextPoint.x - drag.startX) > 3
       || Math.abs(nextPoint.y - drag.startY) > 3) {
@@ -1070,24 +1167,37 @@ export function WorkspacePage() {
           <div className="pointer-events-none absolute right-24 -bottom-14 size-24 rounded-full bg-surface/70 blur-xl" />
           <div className="relative flex items-center justify-between gap-4">
             <div className="flex min-w-0 items-center gap-3">
-              <span className="flex h-8 w-10 shrink-0 items-center border-r border-border pr-3 text-text">
-                <Workflow className="size-[22px]" aria-hidden="true" />
+              <span
+                className={cn(
+                  "flex h-8 w-10 shrink-0 items-center border-r border-border pr-3",
+                  selectedTask
+                    ? selectedTask.kind === "extract"
+                      ? "text-accent"
+                      : "text-success"
+                    : "text-text",
+                )}
+              >
+                {selectedTask ? (
+                  selectedTask.kind === "transform" ? (
+                    <Workflow className="size-[22px]" aria-hidden="true" />
+                  ) : (
+                    <DatabaseZap className="size-[22px]" aria-hidden="true" />
+                  )
+                ) : (
+                  <FolderOpen className="size-[22px]" aria-hidden="true" />
+                )}
               </span>
               <div className="min-w-0">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-                  {messages.workspace.title}
+                  {selectedTask
+                    ? selectedWorkspace?.name ?? messages.workspace.title
+                    : messages.workspace.title}
                 </p>
-                <div className="mt-0.5 flex min-w-0 items-center gap-2">
-                  <h1 className="min-w-0 truncate text-sm font-semibold tracking-[-0.015em] text-text">
-                    {selectedWorkspace?.name ?? messages.workspace.selectWorkspace}
-                  </h1>
-                  {selectedWorkspace ? (
-                    <span className="shrink-0 rounded-full border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold tabular-nums text-text-secondary">
-                      {messages.workspace.version(selectedWorkspace.version)}
-                      {dirty ? ` · ${messages.workspace.unsaved}` : ""}
-                    </span>
-                  ) : null}
-                </div>
+                <h1 className="mt-0.5 min-w-0 truncate text-sm font-semibold tracking-[-0.015em] text-text">
+                  {selectedTask
+                    ? name.trim() || selectedTask.name
+                    : selectedWorkspace?.name ?? messages.workspace.selectWorkspace}
+                </h1>
               </div>
             </div>
             <ul className="flex shrink-0 items-center gap-3">
@@ -1124,29 +1234,33 @@ export function WorkspacePage() {
             />
           </ul>
         </nav>
+        {tasks.length === 0 && workspaceId ? (
+          <p className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-sm text-text-tertiary">
+            {loading ? messages.common.loading : messages.workspace.canvasHint}
+          </p>
+        ) : null}
         <section
           ref={canvasRef}
           role="application"
           aria-label={messages.workspace.canvasAria}
-          className="relative h-full min-h-0 min-w-0 overflow-hidden"
-          style={{
-            backgroundImage: "radial-gradient(circle, var(--theme-canvas-dot) 1px, transparent 1.5px)",
-            backgroundSize: "22px 22px",
-          }}
+          className="workspace-canvas relative h-full min-h-0 min-w-0 overflow-auto overscroll-contain"
           onDragOver={(event) => event.preventDefault()}
           onDrop={onCanvasDrop}
-          onClick={(event) => {
-            if (event.target === event.currentTarget && workspaceId) {
-              navigate(`/workspace/${workspaceId}`);
-            }
-          }}
         >
-        {tasks.length === 0 && workspaceId ? (
-          <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-text-tertiary">
-            {loading ? messages.common.loading : messages.workspace.canvasHint}
-          </p>
-        ) : null}
-
+          <div
+            className="relative"
+            style={{
+              width: canvasWorld.width,
+              height: canvasWorld.height,
+              backgroundImage: "radial-gradient(circle, var(--theme-canvas-dot) 1px, transparent 1.5px)",
+              backgroundSize: "22px 22px",
+            }}
+            onClick={(event) => {
+              if (event.target === event.currentTarget && workspaceId) {
+                navigate(`/workspace/${workspaceId}`);
+              }
+            }}
+          >
         {tasks.map((task) => {
           const point = positions[task.id] ?? fallbackPoint(0);
           const latest = latestByTask.get(task.id);
@@ -1163,10 +1277,8 @@ export function WorkspacePage() {
               aria-current={task.id === taskId ? "true" : undefined}
               aria-label={task.name}
               className={cn(
-                "workspace-node absolute flex w-[128px] cursor-grab select-none flex-col items-center gap-1 rounded-xl border px-2 pb-2.5 pt-5 text-center active:cursor-grabbing",
-                task.id === taskId
-                  ? "is-selected border-accent ring-2 ring-accent/30"
-                  : "border-border hover:border-accent",
+                "workspace-node absolute flex w-[128px] cursor-grab select-none flex-col items-center gap-1 px-2 pb-2.5 pt-5 text-center active:cursor-grabbing",
+                task.id === taskId && "is-selected",
               )}
               style={{ left: point.x, top: point.y }}
               onPointerDown={(event) => onNodePointerDown(task, event)}
@@ -1198,10 +1310,10 @@ export function WorkspacePage() {
                 <X className="size-3.5" aria-hidden="true" />
               </button>
               <span className={cn(
-                "flex size-9 items-center justify-center rounded-xl",
-                task.kind === "extract" ? "bg-accent-subtle text-accent" : "bg-success-subtle text-success",
+                "workspace-node-icon",
+                task.kind === "extract" ? "is-extract" : "is-transform",
               )}>
-                <Icon className="size-4" aria-hidden="true" />
+                <Icon aria-hidden="true" />
               </span>
               <span className="w-full truncate text-xs font-semibold text-text">{task.name}</span>
               <span className="text-[10px] font-medium uppercase tracking-wide text-text-tertiary">
@@ -1215,6 +1327,7 @@ export function WorkspacePage() {
             </div>
           );
         })}
+          </div>
         </section>
         </div>
       </div>
