@@ -21,6 +21,10 @@ impl AppError {
         Self::new(StatusCode::UNAUTHORIZED, "unauthorized")
     }
 
+    pub fn forbidden() -> Self {
+        Self::new(StatusCode::FORBIDDEN, "forbidden")
+    }
+
     pub fn not_found(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, msg)
     }
@@ -55,6 +59,7 @@ impl From<storage::StorageError> for AppError {
         match &err {
             storage::StorageError::NotFound(m) => Self::not_found(m.clone()),
             storage::StorageError::Invalid(m) => Self::bad(m.clone()),
+            storage::StorageError::Conflict(m) => Self::conflict(m.clone()),
             _ => Self::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         }
     }

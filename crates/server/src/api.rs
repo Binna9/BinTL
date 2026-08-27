@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path as FsPath;
 
+use crate::access::{self, CurrentUser};
 use crate::auth;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -62,8 +63,9 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
         .route("/api/jobs/{id}/run", post(run_job))
         .route("/api/jobs/{id}/result", get(job_result))
         .merge(crate::workspace::routes())
-        .merge(crate::task::routes())
+        .merge(crate::chip::routes())
         .merge(crate::transform::routes())
+        .merge(crate::users::routes())
         .layer(DefaultBodyLimit::max(max_upload_bytes))
 }
 
@@ -76,7 +78,8 @@ async fn health() -> Json<Value> {
 
 #[derive(Deserialize)]
 struct LoginBody {
-    username: String,
+    #[serde(alias = "username")]
+    userid: String,
     password: String,
 }
 
@@ -84,10 +87,12 @@ async fn login(
     State(state): State<AppState>,
     Json(body): Json<LoginBody>,
 ) -> Result<impl IntoResponse, AppError> {
-    if body.username != state.config.auth.username || body.password != state.config.auth.password {
-        return Err(AppError::unauthorized());
-    }
-    let cookie = auth::session_cookie(&state.config.session_secret, &body.username);
+    let user = state
+        .store
+        .authenticate(&body.userid, &body.password)
+        .await?
+        .ok_or_else(AppError::unauthorized)?;
+    let cookie = auth::session_cookie(&state.config.session_secret, &user.id);
     Ok(([(SET_COOKIE, cookie)], Json(json!({ "ok": true }))))
 }
 
@@ -100,9 +105,11 @@ async fn logout() -> impl IntoResponse {
 
 async fn upload_file(
     State(state): State<AppState>,
+    user: CurrentUser,
     mut multipart: Multipart,
 ) -> Result<Json<Value>, AppError> {
     let mut requested_name: Option<String> = None;
+    let mut workspace_id: Option<String> = None;
     let mut payload: Option<(String, Vec<u8>)> = None;
     while let Some(field) = multipart
         .next_field()
@@ -112,6 +119,14 @@ async fn upload_file(
         match field.name() {
             Some("filename") => {
                 requested_name = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError::bad(e.to_string()))?,
+                );
+            }
+            Some("workspace_id") => {
+                workspace_id = Some(
                     field
                         .text()
                         .await
@@ -137,9 +152,16 @@ async fn upload_file(
     let delimiter_raw = sniff_delimiter(&data).unwrap_or_else(|| ",".into());
     let delimiter = parse_delimiter(&delimiter_raw)?;
     validate_csv(&data, delimiter)?;
+    let workspace_id = access::write_workspace(&state.store, &user, workspace_id).await?;
     let meta = state
         .store
-        .save_upload(&filename, &data, Some(&delimiter_raw), Some(true))
+        .save_upload(
+            &filename,
+            &data,
+            Some(&delimiter_raw),
+            Some(true),
+            &workspace_id,
+        )
         .await?;
     Ok(Json(json!({
         "id": meta.id,
@@ -224,10 +246,13 @@ struct CommitSpreadsheetBody {
     header: Option<bool>,
     #[serde(default)]
     add_sequence: Option<bool>,
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 async fn commit_spreadsheet(
     State(state): State<AppState>,
+    user: CurrentUser,
     Json(body): Json<CommitSpreadsheetBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     if body.sheets.is_empty() {
@@ -272,6 +297,7 @@ async fn commit_spreadsheet(
         validate_csv(bytes, delimiter)?;
     }
     state.store.delete_stage(&staged.id).await?;
+    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
     let mut files = Vec::with_capacity(exports.len());
     for (filename, bytes) in exports {
         files.push(
@@ -282,6 +308,7 @@ async fn commit_spreadsheet(
                     &bytes,
                     Some(delimiter_raw.as_str()),
                     Some(header),
+                    &workspace_id,
                 )
                 .await?,
         );
@@ -366,24 +393,35 @@ fn validate_csv(bytes: &[u8], delimiter: u8) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn list_files(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let files = state.store.list_uploads().await?;
+async fn list_files(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let files = state
+        .store
+        .list_uploads(Some(&user.scope(q.workspace_id)))
+        .await?;
     Ok(Json(json!({ "files": files })))
 }
 
 async fn delete_file(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_dataset(&state.store, &user, &id).await?;
     state.store.delete_upload(&id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
 async fn preview_file(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_dataset(&state.store, &user, &id).await?;
     let meta = state.store.get_upload(&id).await?;
     let path = state.store.upload_path(&id).await?;
     let dataset = state.store.get_dataset(&id).await?;
@@ -521,8 +559,10 @@ fn default_port(driver: &str, port: Option<u16>) -> u16 {
 
 async fn create_connection(
     State(state): State<AppState>,
+    user: CurrentUser,
     Json(body): Json<CreateConnectionBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    access::require_connection_write(&user)?;
     let driver = body.driver.to_ascii_lowercase();
     let row = state
         .store
@@ -545,9 +585,11 @@ async fn create_connection(
 
 async fn update_connection(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Json(body): Json<CreateConnectionBody>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_write(&user)?;
     let driver = body.driver.to_ascii_lowercase();
     let row = state
         .store
@@ -587,8 +629,10 @@ async fn get_connection(
 
 async fn delete_connection(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_write(&user)?;
     state.store.delete_connection(&id).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -811,10 +855,13 @@ struct CreateExtractBody {
     add_sequence: Option<bool>,
     #[serde(default)]
     database: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 async fn create_extract(
     State(state): State<AppState>,
+    user: CurrentUser,
     Json(body): Json<CreateExtractBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let sql = match body.sql.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -856,6 +903,7 @@ async fn create_extract(
         }
         None => None,
     };
+    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
     let row = state
         .store
         .insert_extract(
@@ -866,6 +914,7 @@ async fn create_extract(
             body.add_sequence.unwrap_or(false),
             sql.as_deref(),
             catalog_database.as_deref(),
+            &workspace_id,
         )
         .await?;
     crate::extract::spawn(state.store.clone(), row.id.clone());
@@ -877,34 +926,32 @@ async fn create_extract(
 
 async fn list_extracts(
     State(state): State<AppState>,
+    user: CurrentUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let extracts = state.store.list_extracts(limit).await?;
+    let extracts = state
+        .store
+        .list_extracts(limit, Some(&user.scope(q.workspace_id)))
+        .await?;
     Ok(Json(json!({ "extracts": extracts })))
 }
 
 async fn get_extract(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let row = state
-        .store
-        .get_extract(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found("extract not found"))?;
+    let row = access::require_extract(&state.store, &user, &id).await?;
     Ok(Json(serde_json::to_value(row).unwrap()))
 }
 
 async fn extract_logs(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let _row = state
-        .store
-        .get_extract(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found("extract not found"))?;
+    access::require_extract(&state.store, &user, &id).await?;
     let text = state
         .store
         .read_process_log(storage::LOG_EXTRACTS, &id)
@@ -914,13 +961,10 @@ async fn extract_logs(
 
 async fn extract_file(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let row = state
-        .store
-        .get_extract(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found("extract not found"))?;
+    let row = access::require_extract(&state.store, &user, &id).await?;
     if row.status != "succeeded" {
         return Err(AppError::conflict("file available only when succeeded"));
     }
@@ -964,6 +1008,8 @@ struct CreateJobBody {
     #[serde(default)]
     rename: Option<BTreeMap<String, String>>,
     spec: Option<Value>,
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 fn merge_spec(body: &CreateJobBody) -> Result<Value, AppError> {
@@ -1006,21 +1052,22 @@ fn merge_spec(body: &CreateJobBody) -> Result<Value, AppError> {
 
 async fn create_job(
     State(state): State<AppState>,
+    user: CurrentUser,
     Json(body): Json<CreateJobBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let mut extract_read: Option<(String, bool)> = None;
+    let mut workspace_id = body.workspace_id.clone();
     let source = if let Some(file_id) = body.file_id.clone() {
+        let dataset = access::require_dataset(&state.store, &user, &file_id).await?;
+        workspace_id = Some(dataset.workspace_id);
         state.store.source_for_file_id(&file_id).await?
     } else if let Some(extract_id) = body.extract_id.clone() {
-        let row = state
-            .store
-            .get_extract(&extract_id)
-            .await?
-            .ok_or_else(|| AppError::not_found("extract not found"))?;
+        let row = access::require_extract(&state.store, &user, &extract_id).await?;
         if row.status != "succeeded" {
             return Err(AppError::conflict("extract not ready"));
         }
         extract_read = Some((row.delimiter.clone(), row.header != 0));
+        workspace_id = Some(row.workspace_id.clone());
         row.stored_path
             .ok_or_else(|| AppError::not_found("extract file missing"))?
     } else if let (Some(connection_id), Some(table)) =
@@ -1062,7 +1109,11 @@ async fn create_job(
         obj.entry("has_header").or_insert(json!(has_header));
     }
     let spec_json = serde_json::to_string(&spec).map_err(|e| AppError::bad(e.to_string()))?;
-    let job = state.store.insert_job(&source, &spec_json).await?;
+    let workspace_id = access::write_workspace(&state.store, &user, workspace_id).await?;
+    let job = state
+        .store
+        .insert_job(&source, &spec_json, &workspace_id)
+        .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::to_value(job).unwrap()),
@@ -1072,26 +1123,28 @@ async fn create_job(
 #[derive(Deserialize)]
 struct ListQuery {
     limit: Option<i64>,
+    workspace_id: Option<String>,
 }
 
 async fn list_jobs(
     State(state): State<AppState>,
+    user: CurrentUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let jobs = state.store.list_jobs(limit).await?;
+    let jobs = state
+        .store
+        .list_jobs(limit, Some(&user.scope(q.workspace_id)))
+        .await?;
     Ok(Json(json!({ "jobs": jobs })))
 }
 
 async fn get_job(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let job = state
-        .store
-        .get_job(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found("job not found"))?;
+    let job = access::require_job(&state.store, &user, &id).await?;
     let logs = state.store.list_logs(&id).await?;
     let mut value = serde_json::to_value(job).unwrap();
     value["logs"] = serde_json::to_value(logs).unwrap();
@@ -1100,13 +1153,10 @@ async fn get_job(
 
 async fn run_job(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let job = state
-        .store
-        .get_job(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found("job not found"))?;
+    let job = access::require_job(&state.store, &user, &id).await?;
     if job.status == "running" {
         return Err(AppError::conflict("job already running"));
     }
@@ -1119,13 +1169,10 @@ async fn run_job(
 
 async fn job_result(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let job = state
-        .store
-        .get_job(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found("job not found"))?;
+    let job = access::require_job(&state.store, &user, &id).await?;
     if job.status != "succeeded" {
         return Err(AppError::conflict("result available only when succeeded"));
     }

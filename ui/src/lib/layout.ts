@@ -25,4 +25,10 @@ export const layout = {
   page: {
     workspaceHeight: "calc(100vh - 8rem)",
   },
+  dashboard: {
+    cols: 12,
+    rowHeight: 56,
+    gap: 12,
+    stackAt: 900,
+  },
 } as const;

@@ -13,6 +13,7 @@ import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { Select } from "@/components/ui/select";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useConnections } from "@/hooks/useConnections";
+import { useSession } from "@/hooks/useSession";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
@@ -65,6 +66,7 @@ function ConnectionColumnsGrid({
 
 export function ConnectionsPage() {
   const { messages } = useLanguage();
+  const { canWriteConnections } = useSession();
   const navigate = useNavigate();
   const { connections, refreshConnections } = useConnections();
   const [saving, setSaving] = useState(false);
@@ -209,9 +211,14 @@ export function ConnectionsPage() {
         iconName="connections"
         eyebrow={messages.connectionsPage.eyebrow}
         title={messages.connectionsPage.title}
-        description={messages.connectionsPage.description}
+        description={
+          canWriteConnections
+            ? messages.connectionsPage.description
+            : messages.connectionsPage.readOnlyDescription
+        }
       />
 
+      {canWriteConnections ? (
       <Panel className="shrink-0">
         <PanelHeader title={messages.connectionsPage.new} description={messages.connectionsPage.newDescription} />
         <PanelBody className="py-4">
@@ -342,6 +349,7 @@ export function ConnectionsPage() {
           </form>
         </PanelBody>
       </Panel>
+      ) : null}
 
       <Panel tall className="overflow-hidden">
         <Toolbar>
@@ -365,10 +373,12 @@ export function ConnectionsPage() {
                     <li
                       key={connection.id}
                       className={cn(
-                        "relative border-b border-border p-3 pr-16",
+                        "relative border-b border-border p-3",
+                        canWriteConnections ? "pr-16" : "pr-3",
                         selectableClass(connection.id === browseId),
                       )}
                     >
+                      {canWriteConnections ? (
                       <div className="absolute right-2 top-2 flex gap-0.5">
                         <button
                           type="button"
@@ -389,6 +399,7 @@ export function ConnectionsPage() {
                           <Trash2 className="size-3.5" aria-hidden="true" />
                         </button>
                       </div>
+                      ) : null}
                       <button
                         type="button"
                         title={connection.name}

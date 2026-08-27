@@ -1,10 +1,14 @@
 import { httpRequest } from "@/services/httpClient";
 import type {
+  CreateFolderRequest,
   CreateWorkspaceRequest,
   SaveWorkspaceRequest,
   SaveWorkspaceResponse,
+  UpdateFolderRequest,
   UpdateWorkspaceRequest,
   Workspace,
+  WorkspaceFolder,
+  WorkspaceFolderListResponse,
   WorkspaceListResponse,
 } from "@/types/workspace";
 
@@ -25,5 +29,20 @@ export const workspaceApi = {
     httpRequest<SaveWorkspaceResponse>(`/api/workspaces/${id}/save`, {
       method: "PUT",
       body: JSON.stringify(request),
+    }),
+  listFolders: () => httpRequest<WorkspaceFolderListResponse>("/api/workspace-folders"),
+  createFolder: (request: CreateFolderRequest) =>
+    httpRequest<WorkspaceFolder>("/api/workspace-folders", {
+      method: "POST",
+      body: JSON.stringify(request),
+    }),
+  updateFolder: (id: string, request: UpdateFolderRequest) =>
+    httpRequest<WorkspaceFolder>(`/api/workspace-folders/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(request),
+    }),
+  deleteFolder: (id: string) =>
+    httpRequest<{ ok: boolean }>(`/api/workspace-folders/${id}`, {
+      method: "DELETE",
     }),
 };

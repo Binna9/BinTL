@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
   Hash,
   KeyRound,
@@ -13,10 +13,16 @@ import { AppDialog } from "@/components/AppDialog";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { SplitLayout } from "@/components/SplitLayout";
 import { Button } from "@/components/ui/button";
+import { FormField } from "@/components/ui/form-field";
 import { PaneHeader } from "@/components/ui/pane-header";
+import { Select } from "@/components/ui/select";
 import { Toolbar } from "@/components/ui/toolbar";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import type { Messages } from "@/i18n/ko";
+import { useSession } from "@/hooks/useSession";
+import { toastError, toastSuccess } from "@/lib/notifications";
+import { userApi } from "@/services/userApi";
+import type { PermissionRecord, RoleRecord, SessionUser } from "@/types/user";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
 
@@ -55,6 +61,7 @@ function SettingsList({
   onQuery,
   headers,
   children,
+  onAdd,
 }: {
   title: string;
   description: string;
@@ -63,6 +70,7 @@ function SettingsList({
   onQuery: (value: string) => void;
   headers: readonly string[];
   children: ReactNode;
+  onAdd?: () => void;
 }) {
   const { messages } = useLanguage();
   return (
@@ -72,10 +80,12 @@ function SettingsList({
         description={description}
         meta={messages.common.count(count)}
         actions={
-          <Button type="button" variant="primary">
-            <Plus className="size-3.5" aria-hidden="true" />
-            {messages.settings.add}
-          </Button>
+          onAdd ? (
+            <Button type="button" variant="primary" onClick={onAdd}>
+              <Plus className="size-3.5" aria-hidden="true" />
+              {messages.settings.add}
+            </Button>
+          ) : null
         }
       />
       <Toolbar>
@@ -102,31 +112,19 @@ function SettingsList({
 
 function RolesPage({ query, onQuery }: { query: string; onQuery: (value: string) => void }) {
   const { messages } = useLanguage();
+  const [roles, setRoles] = useState<RoleRecord[]>([]);
+
+  useEffect(() => {
+    void userApi
+      .roles()
+      .then((response) => setRoles(response.roles))
+      .catch((error) => toastError(messages.errors.roles, error));
+  }, [messages]);
+
   const rows = useMemo(
     () =>
-      [
-        {
-          name: "ADMIN",
-          description: messages.settings.mock.roleAdmin,
-          permissions: ["USER_READ", "USER_WRITE", "ROLE_MANAGE", "PERM_MANAGE"],
-        },
-        {
-          name: "OPERATOR",
-          description: messages.settings.mock.roleOperator,
-          permissions: ["EXTRACT_RUN", "TRANSFORM_RUN", "JOB_CANCEL"],
-        },
-        {
-          name: "ANALYST",
-          description: messages.settings.mock.roleAnalyst,
-          permissions: ["DATASET_READ", "TRANSFORM_RUN"],
-        },
-        {
-          name: "VIEWER",
-          description: messages.settings.mock.roleViewer,
-          permissions: ["DATASET_READ"],
-        },
-      ].filter((row) => hasQuery(query, row.name, row.description, ...row.permissions)),
-    [messages, query],
+      roles.filter((row) => hasQuery(query, row.code, row.name, row.description ?? "", ...row.permissions)),
+    [roles, query],
   );
 
   return (
@@ -142,9 +140,9 @@ function RolesPage({ query, onQuery }: { query: string; onQuery: (value: string)
         <EmptyGridRow cols={3} text={messages.settings.empty} />
       ) : (
         rows.map((row) => (
-          <GridRow key={row.name}>
-            <GridCell mono>{row.name}</GridCell>
-            <GridCell>{row.description}</GridCell>
+          <GridRow key={row.id}>
+            <GridCell mono>{row.code}</GridCell>
+            <GridCell>{row.description || row.name}</GridCell>
             <GridCell>
               <span className="inline-flex items-center gap-1">
                 {row.permissions.slice(0, 2).map((permission) => (
@@ -172,19 +170,21 @@ function PermissionsPage({
   onQuery: (value: string) => void;
 }) {
   const { messages } = useLanguage();
+  const [permissions, setPermissions] = useState<PermissionRecord[]>([]);
+
+  useEffect(() => {
+    void userApi
+      .permissions()
+      .then((response) => setPermissions(response.permissions))
+      .catch((error) => toastError(messages.errors.permissions, error));
+  }, [messages]);
+
   const rows = useMemo(
     () =>
-      [
-        { name: "USER_READ", description: messages.settings.mock.permUserRead },
-        { name: "USER_WRITE", description: messages.settings.mock.permUserWrite },
-        { name: "ROLE_MANAGE", description: messages.settings.mock.permRoleManage },
-        { name: "PERM_MANAGE", description: messages.settings.mock.permPermManage },
-        { name: "EXTRACT_RUN", description: messages.settings.mock.permExtractRun },
-        { name: "TRANSFORM_RUN", description: messages.settings.mock.permTransformRun },
-        { name: "DATASET_READ", description: messages.settings.mock.permDatasetRead },
-        { name: "JOB_CANCEL", description: messages.settings.mock.permJobCancel },
-      ].filter((row) => hasQuery(query, row.name, row.description)),
-    [messages, query],
+      permissions.filter((row) =>
+        hasQuery(query, row.code, row.name, row.description ?? ""),
+      ),
+    [permissions, query],
   );
 
   return (
@@ -200,9 +200,9 @@ function PermissionsPage({
         <EmptyGridRow cols={2} text={messages.settings.empty} />
       ) : (
         rows.map((row) => (
-          <GridRow key={row.name}>
-            <GridCell mono>{row.name}</GridCell>
-            <GridCell>{row.description}</GridCell>
+          <GridRow key={row.id}>
+            <GridCell mono>{row.code}</GridCell>
+            <GridCell>{row.description || row.name}</GridCell>
           </GridRow>
         ))
       )}
@@ -210,62 +210,209 @@ function PermissionsPage({
   );
 }
 
+function roleLabel(messages: Messages, role: string) {
+  if (role === "admin") return messages.settings.roleAdmin;
+  if (role === "operator") return messages.settings.roleOperator;
+  if (role === "analyst") return messages.settings.roleAnalyst;
+  if (role === "viewer") return messages.settings.roleViewer;
+  return role;
+}
+
 function UsersPage({ query, onQuery }: { query: string; onQuery: (value: string) => void }) {
   const { messages } = useLanguage();
+  const { canManageUsers, refresh: refreshSession } = useSession();
+  const [users, setUsers] = useState<SessionUser[]>([]);
+  const [roles, setRoles] = useState<RoleRecord[]>([]);
+  const [editing, setEditing] = useState<SessionUser | "new" | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try {
+      const [userResponse, roleResponse] = await Promise.all([userApi.list(), userApi.roles()]);
+      setUsers(userResponse.users);
+      setRoles(roleResponse.roles);
+    } catch (error) {
+      toastError(messages.errors.users, error);
+    }
+  }
+
+  useEffect(() => {
+    if (!canManageUsers) return;
+    void load();
+  }, [canManageUsers, messages]);
+
   const rows = useMemo(
     () =>
-      [
-        {
-          name: messages.settings.mock.userAdmin,
-          email: "hangyeol@bintl.local",
-          roles: ["ADMIN"],
-        },
-        {
-          name: messages.settings.mock.userOps,
-          email: "seoyeon@bintl.local",
-          roles: ["OPERATOR"],
-        },
-        {
-          name: messages.settings.mock.userAnalyst,
-          email: "junho@bintl.local",
-          roles: ["ANALYST", "VIEWER"],
-        },
-        {
-          name: messages.settings.mock.userViewer,
-          email: "minji@bintl.local",
-          roles: ["VIEWER"],
-        },
-      ].filter((row) => hasQuery(query, row.name, row.email, ...row.roles)),
-    [messages, query],
+      users.filter((row) =>
+        hasQuery(
+          query,
+          row.userid,
+          row.username,
+          ...row.roles,
+          row.active ? "active" : "inactive",
+        ),
+      ),
+    [users, query],
   );
 
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const userid = String(form.get("userid") ?? "");
+    const username = String(form.get("username") ?? "");
+    const password = String(form.get("password") ?? "");
+    const role = String(form.get("role") ?? "analyst");
+    const active = form.get("active") === "on";
+    setSaving(true);
+    try {
+      if (editing === "new") {
+        await userApi.create({ userid, username, password, roles: [role] });
+      } else if (editing) {
+        await userApi.update(editing.id, {
+          username,
+          roles: [role],
+          active,
+          password: password.trim() ? password : undefined,
+        });
+      }
+      toastSuccess(messages.settings.userSaved);
+      setEditing(null);
+      await load();
+      await refreshSession();
+    } catch (error) {
+      toastError(messages.errors.saveUser, error);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!canManageUsers) {
+    return (
+      <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center p-8 text-sm text-text-secondary">
+        {messages.settings.usersForbidden}
+      </div>
+    );
+  }
+
   return (
-    <SettingsList
-      title={messages.settings.users}
-      description={messages.settings.usersDesc}
-      count={rows.length}
-      query={query}
-      onQuery={onQuery}
-      headers={messages.settings.userHeaders}
-    >
-      {rows.length === 0 ? (
-        <EmptyGridRow cols={3} text={messages.settings.empty} />
-      ) : (
-        rows.map((row) => (
-          <GridRow key={row.email}>
-            <GridCell>{row.name}</GridCell>
-            <GridCell muted>{row.email}</GridCell>
-            <GridCell>
-              <span className="inline-flex items-center gap-1">
-                {row.roles.map((role) => (
-                  <Chip key={role}>{role}</Chip>
-                ))}
-              </span>
-            </GridCell>
-          </GridRow>
-        ))
-      )}
-    </SettingsList>
+    <>
+      <SettingsList
+        title={messages.settings.users}
+        description={messages.settings.usersDesc}
+        count={rows.length}
+        query={query}
+        onQuery={onQuery}
+        headers={messages.settings.userHeaders}
+        onAdd={() => setEditing("new")}
+      >
+        {rows.length === 0 ? (
+          <EmptyGridRow cols={4} text={messages.settings.empty} />
+        ) : (
+          rows.map((row) => (
+            <GridRow key={row.id} onClick={() => setEditing(row)}>
+              <GridCell mono>{row.userid}</GridCell>
+              <GridCell>{row.username}</GridCell>
+              <GridCell>
+                <span className="inline-flex items-center gap-1">
+                  {row.roles.map((role) => (
+                    <Chip key={role}>{roleLabel(messages, role)}</Chip>
+                  ))}
+                </span>
+              </GridCell>
+              <GridCell>
+                <span className={row.active ? "text-success" : "text-text-tertiary"}>
+                  {row.active ? messages.settings.active : messages.settings.inactive}
+                </span>
+              </GridCell>
+            </GridRow>
+          ))
+        )}
+      </SettingsList>
+      <AppDialog
+        open={editing !== null}
+        title={editing === "new" ? messages.settings.newUser : messages.settings.editUser}
+        onClose={() => setEditing(null)}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button type="button" onClick={() => setEditing(null)}>
+              {messages.common.cancel}
+            </Button>
+            <Button type="submit" form="user-form" variant="primary" disabled={saving}>
+              {saving ? messages.common.saving : messages.common.save}
+            </Button>
+          </div>
+        }
+      >
+        <form
+          id="user-form"
+          key={editing === "new" ? "new" : editing?.id}
+          className="grid gap-3 p-4"
+          onSubmit={(event) => void onSubmit(event)}
+        >
+          <FormField label={messages.settings.userid}>
+            <input
+              className="field-control"
+              name="userid"
+              required
+              autoComplete="off"
+              defaultValue={editing && editing !== "new" ? editing.userid : ""}
+              disabled={editing !== "new"}
+            />
+          </FormField>
+          <FormField label={messages.settings.username}>
+            <input
+              className="field-control"
+              name="username"
+              required
+              defaultValue={editing && editing !== "new" ? editing.username : ""}
+            />
+          </FormField>
+          <FormField
+            label={messages.settings.password}
+            hint={editing === "new" ? undefined : messages.settings.passwordHint}
+          >
+            <input
+              className="field-control"
+              name="password"
+              type="password"
+              autoComplete="new-password"
+              required={editing === "new"}
+            />
+          </FormField>
+          <FormField label={messages.settings.role}>
+            <Select
+              name="role"
+              defaultValue={
+                editing && editing !== "new" ? (editing.roles[0] ?? "analyst") : "analyst"
+              }
+              options={
+                roles.length > 0
+                  ? roles.map((role) => ({
+                      value: role.code,
+                      label: role.name,
+                    }))
+                  : [
+                      { value: "admin", label: messages.settings.roleAdmin },
+                      { value: "operator", label: messages.settings.roleOperator },
+                      { value: "analyst", label: messages.settings.roleAnalyst },
+                      { value: "viewer", label: messages.settings.roleViewer },
+                    ]
+              }
+            />
+          </FormField>
+          {editing && editing !== "new" ? (
+            <label className="flex items-center gap-2 text-sm text-text">
+              <input
+                type="checkbox"
+                name="active"
+                defaultChecked={editing.active}
+              />
+              {messages.settings.active}
+            </label>
+          ) : null}
+        </form>
+      </AppDialog>
+    </>
   );
 }
 

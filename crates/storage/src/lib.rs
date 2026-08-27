@@ -1,11 +1,18 @@
+mod identity;
+mod password;
 mod process_log;
 mod secret;
 
+pub use identity::{
+    DataScope, PermissionRow, RoleWithPermissions, UserRow, PERM_CONNECTION_WRITE, PERM_USER_MANAGE,
+    PERM_WORKSPACE_ALL,
+};
 pub use process_log::{
     safe_log_id, ProcessLog, LOG_AREAS, LOG_CONNECTIONS, LOG_EXTRACTS, LOG_FILES, LOG_JOBS,
     LOG_QUERY,
 };
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{SecondsFormat, Utc};
@@ -26,6 +33,8 @@ pub enum StorageError {
     NotFound(String),
     #[error("{0}")]
     Invalid(String),
+    #[error("{0}")]
+    Conflict(String),
 }
 
 /// Relative dirs under `data_dir`. Transform inputs live under `extracts/`
@@ -48,7 +57,7 @@ pub struct Store {
 }
 
 const JOB_COLS: &str = "id, status, source_path, output_path, spec_json, error_message,
-        created_at, started_at, finished_at, kind, transform_id, dataset_id";
+        created_at, started_at, finished_at, kind, transform_id, dataset_id, workspace_id";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct JobRow {
@@ -64,6 +73,7 @@ pub struct JobRow {
     pub kind: String,
     pub transform_id: Option<String>,
     pub dataset_id: Option<String>,
+    pub workspace_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -82,14 +92,14 @@ pub struct DatasetRow {
     pub created_at: String,
     pub updated_at: String,
     pub workspace_id: String,
-    pub producer_task_run_id: Option<String>,
+    pub producer_chip_run_id: Option<String>,
     pub table_name: String,
     pub connection_name: String,
 }
 
 const DATASET_COLS: &str = "d.id, d.kind, d.extract_id, d.filename, d.stored_path, d.size_bytes,
         d.delimiter, d.has_header, d.columns_json, d.row_count, d.inspected_at,
-        d.created_at, d.updated_at, d.workspace_id, d.producer_task_run_id,
+        d.created_at, d.updated_at, d.workspace_id, d.producer_chip_run_id,
         COALESCE(e.table_name, '') AS table_name,
         COALESCE(c.name, '') AS connection_name";
 
@@ -104,6 +114,7 @@ pub struct DatasetUpsert {
     pub delimiter: Option<String>,
     pub has_header: Option<bool>,
     pub row_count: Option<i64>,
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -114,6 +125,7 @@ pub struct TransformRow {
     pub spec_json: String,
     pub created_at: String,
     pub updated_at: String,
+    pub workspace_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -125,10 +137,22 @@ pub struct WorkspaceRow {
     pub version: i64,
     pub created_at: String,
     pub updated_at: String,
+    pub owner_user_id: Option<String>,
+    pub folder_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-pub struct TaskDefinitionRow {
+pub struct WorkspaceFolderRow {
+    pub id: String,
+    pub owner_user_id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ChipRow {
     pub id: String,
     pub workspace_id: String,
     pub name: String,
@@ -141,9 +165,9 @@ pub struct TaskDefinitionRow {
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-pub struct TaskRunRow {
+pub struct ChipRunRow {
     pub id: String,
-    pub task_id: String,
+    pub chip_id: String,
     pub workspace_id: String,
     pub kind: String,
     pub status: String,
@@ -160,20 +184,46 @@ pub struct TaskRunRow {
 }
 
 const WORKSPACE_COLS: &str =
-    "id, name, description, layout_json, version, created_at, updated_at";
+    "id, name, description, layout_json, version, created_at, updated_at, owner_user_id, folder_id";
+const FOLDER_COLS: &str = "id, owner_user_id, parent_id, name, created_at, updated_at";
 
 #[derive(Debug, Clone)]
-pub struct WorkspaceSaveTask {
+pub struct WorkspaceSaveChip {
     pub id: String,
     pub name: String,
     pub kind: String,
     pub config_json: String,
 }
-const TASK_DEFINITION_COLS: &str = "id, workspace_id, name, kind, config_json, revision,
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceSaveEdge {
+    pub id: String,
+    pub from_chip_id: String,
+    pub to_chip_id: String,
+    pub kind: String,
+    pub from_port: String,
+    pub to_port: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ChipEdgeRow {
+    pub id: String,
+    pub workspace_id: String,
+    pub from_chip_id: String,
+    pub to_chip_id: String,
+    pub kind: String,
+    pub from_port: String,
+    pub to_port: String,
+    pub created_at: String,
+}
+
+const CHIP_COLS: &str = "id, workspace_id, name, kind, config_json, revision,
         active, created_at, updated_at";
-const TASK_RUN_COLS: &str = "id, task_id, workspace_id, kind, status, config_snapshot_json,
+const CHIP_RUN_COLS: &str = "id, chip_id, workspace_id, kind, status, config_snapshot_json,
         revision_snapshot, input_dataset_id, output_dataset_id, legacy_extract_id,
         legacy_job_id, error_message, created_at, started_at, finished_at";
+const CHIP_EDGE_COLS: &str = "id, workspace_id, from_chip_id, to_chip_id, kind, from_port,
+        to_port, created_at";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct JobLogRow {
@@ -217,13 +267,14 @@ pub struct ExtractRow {
     pub finished_at: Option<String>,
     pub sql_text: Option<String>,
     pub catalog_database: Option<String>,
+    pub workspace_id: String,
     pub connection_name: String,
 }
 
 const EXTRACT_COLS: &str = "e.id, e.connection_id, e.table_name, e.delimiter, e.header,
         e.add_sequence, e.status, e.stored_path, e.filename, e.row_count, e.error_message,
         e.created_at, e.started_at, e.finished_at, e.sql_text, e.catalog_database,
-        COALESCE(c.name, '') AS connection_name";
+        e.workspace_id, COALESCE(c.name, '') AS connection_name";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ConnectionRow {
@@ -317,11 +368,28 @@ impl Store {
     }
 
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceRow>, StorageError> {
-        Ok(sqlx::query_as::<_, WorkspaceRow>(&format!(
-            "SELECT {WORKSPACE_COLS} FROM workspaces ORDER BY created_at ASC"
-        ))
-        .fetch_all(&self.pool)
-        .await?)
+        self.list_visible_workspaces(None).await
+    }
+
+    pub async fn list_visible_workspaces(
+        &self,
+        scope: Option<&DataScope>,
+    ) -> Result<Vec<WorkspaceRow>, StorageError> {
+        let mut extra = String::new();
+        let mut binds: Vec<String> = Vec::new();
+        if let Some(scope) = scope {
+            if !scope.admin {
+                extra.push_str(" WHERE owner_user_id = ?");
+                binds.push(scope.user_id.clone());
+            }
+        }
+        extra.push_str(" ORDER BY updated_at DESC, created_at ASC");
+        let sql = format!("SELECT {WORKSPACE_COLS} FROM workspaces{extra}");
+        let mut query = sqlx::query_as::<_, WorkspaceRow>(&sql);
+        for value in &binds {
+            query = query.bind(value);
+        }
+        Ok(query.fetch_all(&self.pool).await?)
     }
 
     pub async fn get_workspace(&self, id: &str) -> Result<Option<WorkspaceRow>, StorageError> {
@@ -337,21 +405,32 @@ impl Store {
         &self,
         name: &str,
         description: Option<&str>,
+        owner_user_id: &str,
+        folder_id: Option<&str>,
     ) -> Result<WorkspaceRow, StorageError> {
         let name = required_text(name, "workspace name")?;
+        if self.get_user(owner_user_id).await?.is_none() {
+            return Err(StorageError::NotFound("user not found".into()));
+        }
+        if let Some(folder_id) = folder_id {
+            self.require_folder_access(owner_user_id, false, folder_id)
+                .await?;
+        }
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO workspaces
-             (id, name, description, layout_json, version, created_at, updated_at)
-             VALUES (?, ?, ?, '{}', 1, ?, ?)",
+             (id, name, description, layout_json, version, created_at, updated_at, owner_user_id, folder_id)
+             VALUES (?, ?, ?, '{}', 1, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(name)
         .bind(trimmed_optional(description))
         .bind(&now)
         .bind(&now)
+        .bind(owner_user_id)
+        .bind(folder_id)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
@@ -375,12 +454,13 @@ impl Store {
         name: Option<&str>,
         description: Option<&str>,
         layout_json: Option<&str>,
+        folder_id: Option<Option<&str>>,
     ) -> Result<WorkspaceRow, StorageError> {
         let current = self
             .get_workspace(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("workspace not found".into()))?;
-        if name.is_none() && description.is_none() && layout_json.is_none() {
+        if name.is_none() && description.is_none() && layout_json.is_none() && folder_id.is_none() {
             return Ok(current);
         }
         let name = match name {
@@ -398,13 +478,26 @@ impl Store {
             }
             None => current.layout_json.as_str(),
         };
+        let next_folder = match folder_id {
+            Some(value) => value.map(str::to_string),
+            None => current.folder_id.clone(),
+        };
+        if let Some(folder) = next_folder.as_deref() {
+            let owner = current
+                .owner_user_id
+                .as_deref()
+                .ok_or_else(|| StorageError::Invalid("workspace has no owner".into()))?;
+            self.require_folder_access(owner, false, folder).await?;
+        }
         sqlx::query(
-            "UPDATE workspaces SET name = ?, description = ?, layout_json = ?, updated_at = ?
+            "UPDATE workspaces
+             SET name = ?, description = ?, layout_json = ?, folder_id = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(name)
         .bind(description.filter(|value| !value.is_empty()))
         .bind(layout_json)
+        .bind(next_folder.as_deref())
         .bind(now_rfc3339())
         .bind(id)
         .execute(&self.pool)
@@ -414,12 +507,170 @@ impl Store {
             .ok_or_else(|| StorageError::NotFound("workspace disappeared after update".into()))
     }
 
+    pub async fn list_visible_folders(
+        &self,
+        scope: Option<&DataScope>,
+    ) -> Result<Vec<WorkspaceFolderRow>, StorageError> {
+        let mut extra = String::new();
+        let mut binds: Vec<String> = Vec::new();
+        if let Some(scope) = scope {
+            if !scope.admin {
+                extra.push_str(" WHERE owner_user_id = ?");
+                binds.push(scope.user_id.clone());
+            }
+        }
+        extra.push_str(" ORDER BY name ASC, created_at ASC");
+        let sql = format!("SELECT {FOLDER_COLS} FROM workspace_folders{extra}");
+        let mut query = sqlx::query_as::<_, WorkspaceFolderRow>(&sql);
+        for value in &binds {
+            query = query.bind(value);
+        }
+        Ok(query.fetch_all(&self.pool).await?)
+    }
+
+    pub async fn get_folder(&self, id: &str) -> Result<Option<WorkspaceFolderRow>, StorageError> {
+        Ok(sqlx::query_as::<_, WorkspaceFolderRow>(&format!(
+            "SELECT {FOLDER_COLS} FROM workspace_folders WHERE id = ?"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn require_folder_access(
+        &self,
+        user_id: &str,
+        admin: bool,
+        folder_id: &str,
+    ) -> Result<WorkspaceFolderRow, StorageError> {
+        let folder = self
+            .get_folder(folder_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("folder not found".into()))?;
+        if admin || folder.owner_user_id == user_id {
+            return Ok(folder);
+        }
+        Err(StorageError::NotFound("folder not found".into()))
+    }
+
+    pub async fn insert_folder(
+        &self,
+        name: &str,
+        owner_user_id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<WorkspaceFolderRow, StorageError> {
+        let name = required_text(name, "folder name")?;
+        if self.get_user(owner_user_id).await?.is_none() {
+            return Err(StorageError::NotFound("user not found".into()));
+        }
+        if let Some(parent_id) = parent_id {
+            self.require_folder_access(owner_user_id, false, parent_id)
+                .await?;
+        }
+        let id = Uuid::new_v4().to_string();
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO workspace_folders
+             (id, owner_user_id, parent_id, name, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(owner_user_id)
+        .bind(parent_id)
+        .bind(name)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_folder(&id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("folder disappeared after insert".into()))
+    }
+
+    pub async fn update_folder(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        parent_id: Option<Option<&str>>,
+    ) -> Result<WorkspaceFolderRow, StorageError> {
+        let current = self
+            .get_folder(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("folder not found".into()))?;
+        if name.is_none() && parent_id.is_none() {
+            return Ok(current);
+        }
+        let name = match name {
+            Some(value) => required_text(value, "folder name")?,
+            None => current.name.as_str(),
+        };
+        let next_parent = match parent_id {
+            Some(value) => value.map(str::to_string),
+            None => current.parent_id.clone(),
+        };
+        if let Some(parent) = next_parent.as_deref() {
+            if parent == id {
+                return Err(StorageError::Invalid("folder cannot be its own parent".into()));
+            }
+            self.require_folder_access(&current.owner_user_id, false, parent)
+                .await?;
+            if self.folder_is_descendant(parent, id).await? {
+                return Err(StorageError::Invalid(
+                    "cannot move a folder under its descendant".into(),
+                ));
+            }
+        }
+        sqlx::query(
+            "UPDATE workspace_folders SET name = ?, parent_id = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(name)
+        .bind(next_parent.as_deref())
+        .bind(now_rfc3339())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.get_folder(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("folder disappeared after update".into()))
+    }
+
+    pub async fn delete_folder(&self, id: &str) -> Result<(), StorageError> {
+        let result = sqlx::query("DELETE FROM workspace_folders WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound("folder not found".into()));
+        }
+        Ok(())
+    }
+
+    async fn folder_is_descendant(&self, candidate: &str, ancestor: &str) -> Result<bool, StorageError> {
+        let mut current = Some(candidate.to_string());
+        let mut guard = 0;
+        while let Some(id) = current {
+            if id == ancestor {
+                return Ok(true);
+            }
+            guard += 1;
+            if guard > 64 {
+                return Err(StorageError::Invalid("folder tree too deep".into()));
+            }
+            current = self
+                .get_folder(&id)
+                .await?
+                .and_then(|folder| folder.parent_id);
+        }
+        Ok(false)
+    }
+
     pub async fn save_workspace(
         &self,
         id: &str,
         layout_json: &str,
-        tasks: &[WorkspaceSaveTask],
-    ) -> Result<(WorkspaceRow, Vec<TaskDefinitionRow>), StorageError> {
+        chips: &[WorkspaceSaveChip],
+        edges: &[WorkspaceSaveEdge],
+    ) -> Result<(WorkspaceRow, Vec<ChipRow>, Vec<ChipEdgeRow>), StorageError> {
         require_config_json(layout_json)?;
         let current = self
             .get_workspace(id)
@@ -428,56 +679,64 @@ impl Store {
         let now = now_rfc3339();
         let version = current.version + 1;
         let mut tx = self.pool.begin().await?;
-        for task in tasks {
-            let name = required_text(&task.name, "task name")?;
-            validate_task_kind(&task.kind)?;
-            require_config_json(&task.config_json)?;
-            let existing = sqlx::query_as::<_, TaskDefinitionRow>(&format!(
-                "SELECT {TASK_DEFINITION_COLS} FROM task_definitions WHERE id = ?"
+        for chip in chips {
+            let name = required_text(&chip.name, "chip name")?;
+            validate_chip_kind(&chip.kind)?;
+            require_config_json(&chip.config_json)?;
+            let existing = sqlx::query_as::<_, ChipRow>(&format!(
+                "SELECT {CHIP_COLS} FROM chips WHERE id = ?"
             ))
-            .bind(&task.id)
+            .bind(&chip.id)
             .fetch_optional(&mut *tx)
             .await?;
             if let Some(existing) = existing {
                 if existing.workspace_id != id {
                     return Err(StorageError::Invalid(
-                        "task does not belong to this workspace".into(),
+                        "chip does not belong to this workspace".into(),
                     ));
                 }
                 let bump = existing.name != name
-                    || existing.kind != task.kind
-                    || existing.config_json != task.config_json;
+                    || existing.kind != chip.kind
+                    || existing.config_json != chip.config_json;
                 sqlx::query(
-                    "UPDATE task_definitions
+                    "UPDATE chips
                      SET name = ?, kind = ?, config_json = ?,
                          revision = revision + ?, updated_at = ?
                      WHERE id = ?",
                 )
                 .bind(name)
-                .bind(&task.kind)
-                .bind(&task.config_json)
+                .bind(&chip.kind)
+                .bind(&chip.config_json)
                 .bind(i64::from(bump))
                 .bind(&now)
-                .bind(&task.id)
+                .bind(&chip.id)
                 .execute(&mut *tx)
                 .await?;
             } else {
                 sqlx::query(
-                    "INSERT INTO task_definitions
+                    "INSERT INTO chips
                      (id, workspace_id, name, kind, config_json, revision, active, created_at, updated_at)
                      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)",
                 )
-                .bind(&task.id)
+                .bind(&chip.id)
                 .bind(id)
                 .bind(name)
-                .bind(&task.kind)
-                .bind(&task.config_json)
+                .bind(&chip.kind)
+                .bind(&chip.config_json)
                 .bind(&now)
                 .bind(&now)
                 .execute(&mut *tx)
                 .await?;
             }
         }
+        let saved_chips = sqlx::query_as::<_, ChipRow>(&format!(
+            "SELECT {CHIP_COLS} FROM chips
+             WHERE workspace_id = ? ORDER BY updated_at DESC"
+        ))
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let saved_edges = replace_workspace_edges(&mut tx, id, edges, &saved_chips, &now).await?;
         sqlx::query(
             "UPDATE workspaces SET layout_json = ?, version = ?, updated_at = ? WHERE id = ?",
         )
@@ -487,14 +746,7 @@ impl Store {
         .bind(id)
         .execute(&mut *tx)
         .await?;
-        let saved_tasks = sqlx::query_as::<_, TaskDefinitionRow>(&format!(
-            "SELECT {TASK_DEFINITION_COLS} FROM task_definitions
-             WHERE workspace_id = ? ORDER BY updated_at DESC"
-        ))
-        .bind(id)
-        .fetch_all(&mut *tx)
-        .await?;
-        let snapshot = workspace_snapshot_json(layout_json, &saved_tasks)?;
+        let snapshot = workspace_snapshot_json(layout_json, &saved_chips, &saved_edges)?;
         sqlx::query(
             "INSERT INTO workspace_revisions (workspace_id, version, snapshot_json, created_at)
              VALUES (?, ?, ?, ?)",
@@ -510,7 +762,7 @@ impl Store {
             .get_workspace(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("workspace disappeared after save".into()))?;
-        Ok((workspace, saved_tasks))
+        Ok((workspace, saved_chips, saved_edges))
     }
 
     async fn backfill_workspace_revisions(&self) -> Result<(), StorageError> {
@@ -529,14 +781,14 @@ impl Store {
             if exists > 0 {
                 continue;
             }
-            let tasks = sqlx::query_as::<_, TaskDefinitionRow>(&format!(
-                "SELECT {TASK_DEFINITION_COLS} FROM task_definitions
+            let chips = sqlx::query_as::<_, ChipRow>(&format!(
+                "SELECT {CHIP_COLS} FROM chips
                  WHERE workspace_id = ? ORDER BY updated_at DESC"
             ))
             .bind(&workspace.id)
             .fetch_all(&self.pool)
             .await?;
-            let snapshot = workspace_snapshot_json(&workspace.layout_json, &tasks)?;
+            let snapshot = workspace_snapshot_json(&workspace.layout_json, &chips, &[])?;
             sqlx::query(
                 "INSERT INTO workspace_revisions (workspace_id, version, snapshot_json, created_at)
                  VALUES (?, ?, ?, ?)",
@@ -551,13 +803,13 @@ impl Store {
         Ok(())
     }
 
-    pub async fn list_task_definitions(
+    pub async fn list_chips(
         &self,
         workspace_id: &str,
-    ) -> Result<Vec<TaskDefinitionRow>, StorageError> {
+    ) -> Result<Vec<ChipRow>, StorageError> {
         self.require_workspace(workspace_id).await?;
-        Ok(sqlx::query_as::<_, TaskDefinitionRow>(&format!(
-            "SELECT {TASK_DEFINITION_COLS} FROM task_definitions
+        Ok(sqlx::query_as::<_, ChipRow>(&format!(
+            "SELECT {CHIP_COLS} FROM chips
              WHERE workspace_id = ? ORDER BY updated_at DESC"
         ))
         .bind(workspace_id)
@@ -565,33 +817,33 @@ impl Store {
         .await?)
     }
 
-    pub async fn get_task_definition(
+    pub async fn get_chip(
         &self,
         id: &str,
-    ) -> Result<Option<TaskDefinitionRow>, StorageError> {
-        Ok(sqlx::query_as::<_, TaskDefinitionRow>(&format!(
-            "SELECT {TASK_DEFINITION_COLS} FROM task_definitions WHERE id = ?"
+    ) -> Result<Option<ChipRow>, StorageError> {
+        Ok(sqlx::query_as::<_, ChipRow>(&format!(
+            "SELECT {CHIP_COLS} FROM chips WHERE id = ?"
         ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await?)
     }
 
-    pub async fn insert_task_definition(
+    pub async fn insert_chip(
         &self,
         workspace_id: &str,
         name: &str,
         kind: &str,
         config_json: &str,
-    ) -> Result<TaskDefinitionRow, StorageError> {
+    ) -> Result<ChipRow, StorageError> {
         self.require_workspace(workspace_id).await?;
-        let name = required_text(name, "task name")?;
-        validate_task_kind(kind)?;
+        let name = required_text(name, "chip name")?;
+        validate_chip_kind(kind)?;
         require_config_json(config_json)?;
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO task_definitions
+            "INSERT INTO chips
              (id, workspace_id, name, kind, config_json, revision, active, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)",
         )
@@ -604,36 +856,36 @@ impl Store {
         .bind(&now)
         .execute(&self.pool)
         .await?;
-        self.get_task_definition(&id)
+        self.get_chip(&id)
             .await?
-            .ok_or_else(|| StorageError::NotFound("task disappeared after insert".into()))
+            .ok_or_else(|| StorageError::NotFound("chip disappeared after insert".into()))
     }
 
-    pub async fn update_task_definition(
+    pub async fn update_chip(
         &self,
         id: &str,
         name: Option<&str>,
         kind: Option<&str>,
         config_json: Option<&str>,
         active: Option<bool>,
-    ) -> Result<TaskDefinitionRow, StorageError> {
+    ) -> Result<ChipRow, StorageError> {
         let current = self
-            .get_task_definition(id)
+            .get_chip(id)
             .await?
-            .ok_or_else(|| StorageError::NotFound("task not found".into()))?;
+            .ok_or_else(|| StorageError::NotFound("chip not found".into()))?;
         if name.is_none() && kind.is_none() && config_json.is_none() && active.is_none() {
             return Ok(current);
         }
         let name = match name {
-            Some(value) => required_text(value, "task name")?,
+            Some(value) => required_text(value, "chip name")?,
             None => current.name.as_str(),
         };
         let kind = kind.unwrap_or(current.kind.as_str());
-        validate_task_kind(kind)?;
+        validate_chip_kind(kind)?;
         let config_json = config_json.unwrap_or(current.config_json.as_str());
         require_config_json(config_json)?;
         sqlx::query(
-            "UPDATE task_definitions
+            "UPDATE chips
              SET name = ?, kind = ?, config_json = ?, revision = revision + 1,
                  active = ?, updated_at = ?
              WHERE id = ?",
@@ -646,32 +898,37 @@ impl Store {
         .bind(id)
         .execute(&self.pool)
         .await?;
-        self.get_task_definition(id)
+        self.get_chip(id)
             .await?
-            .ok_or_else(|| StorageError::NotFound("task disappeared after update".into()))
+            .ok_or_else(|| StorageError::NotFound("chip disappeared after update".into()))
     }
 
-    pub async fn delete_task_definition(&self, id: &str) -> Result<(), StorageError> {
+    pub async fn delete_chip(&self, id: &str) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
-        let found: Option<String> = sqlx::query_scalar("SELECT id FROM task_definitions WHERE id = ?")
+        let found: Option<String> = sqlx::query_scalar("SELECT id FROM chips WHERE id = ?")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
         if found.is_none() {
-            return Err(StorageError::NotFound("task not found".into()));
+            return Err(StorageError::NotFound("chip not found".into()));
         }
         sqlx::query(
-            "UPDATE datasets SET producer_task_run_id = NULL
-             WHERE producer_task_run_id IN (SELECT id FROM task_runs WHERE task_id = ?)",
+            "UPDATE datasets SET producer_chip_run_id = NULL
+             WHERE producer_chip_run_id IN (SELECT id FROM chip_runs WHERE chip_id = ?)",
         )
         .bind(id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM task_runs WHERE task_id = ?")
+        sqlx::query("DELETE FROM chip_edges WHERE from_chip_id = ? OR to_chip_id = ?")
+            .bind(id)
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM task_definitions WHERE id = ?")
+        sqlx::query("DELETE FROM chip_runs WHERE chip_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM chips WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -679,19 +936,19 @@ impl Store {
         Ok(())
     }
 
-    pub async fn create_task_run(
+    pub async fn create_chip_run(
         &self,
-        task_id: &str,
+        chip_id: &str,
         expected_revision: i64,
         input_dataset_id: Option<&str>,
-    ) -> Result<TaskRunRow, StorageError> {
+    ) -> Result<ChipRunRow, StorageError> {
         let task = self
-            .get_task_definition(task_id)
+            .get_chip(chip_id)
             .await?
-            .ok_or_else(|| StorageError::NotFound("task not found".into()))?;
+            .ok_or_else(|| StorageError::NotFound("chip not found".into()))?;
         if task.active == 0 || task.revision != expected_revision {
             return Err(StorageError::Invalid(
-                "task changed before the run could be queued".into(),
+                "chip changed before the run could be queued".into(),
             ));
         }
         if let Some(dataset_id) = input_dataset_id {
@@ -707,46 +964,46 @@ impl Store {
         }
         let id = Uuid::new_v4().to_string();
         let result = sqlx::query(
-            "INSERT INTO task_runs
-             (id, task_id, workspace_id, kind, status, config_snapshot_json,
+            "INSERT INTO chip_runs
+             (id, chip_id, workspace_id, kind, status, config_snapshot_json,
               revision_snapshot, input_dataset_id, created_at)
              SELECT ?, id, workspace_id, kind, 'queued', config_json, revision, ?, ?
-             FROM task_definitions
+             FROM chips
              WHERE id = ? AND revision = ? AND active = 1",
         )
         .bind(&id)
         .bind(input_dataset_id)
         .bind(now_rfc3339())
-        .bind(task_id)
+        .bind(chip_id)
         .bind(expected_revision)
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
             return Err(StorageError::Invalid(
-                "task changed before the run could be queued".into(),
+                "chip changed before the run could be queued".into(),
             ));
         }
-        self.get_task_run(&id)
+        self.get_chip_run(&id)
             .await?
-            .ok_or_else(|| StorageError::NotFound("task run disappeared after insert".into()))
+            .ok_or_else(|| StorageError::NotFound("chip run disappeared after insert".into()))
     }
 
-    pub async fn get_task_run(&self, id: &str) -> Result<Option<TaskRunRow>, StorageError> {
-        Ok(sqlx::query_as::<_, TaskRunRow>(&format!(
-            "SELECT {TASK_RUN_COLS} FROM task_runs WHERE id = ?"
+    pub async fn get_chip_run(&self, id: &str) -> Result<Option<ChipRunRow>, StorageError> {
+        Ok(sqlx::query_as::<_, ChipRunRow>(&format!(
+            "SELECT {CHIP_RUN_COLS} FROM chip_runs WHERE id = ?"
         ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await?)
     }
 
-    pub async fn list_task_runs(
+    pub async fn list_chip_runs(
         &self,
         workspace_id: &str,
-    ) -> Result<Vec<TaskRunRow>, StorageError> {
+    ) -> Result<Vec<ChipRunRow>, StorageError> {
         self.require_workspace(workspace_id).await?;
-        Ok(sqlx::query_as::<_, TaskRunRow>(&format!(
-            "SELECT {TASK_RUN_COLS} FROM task_runs
+        Ok(sqlx::query_as::<_, ChipRunRow>(&format!(
+            "SELECT {CHIP_RUN_COLS} FROM chip_runs
              WHERE workspace_id = ? ORDER BY created_at DESC"
         ))
         .bind(workspace_id)
@@ -754,9 +1011,38 @@ impl Store {
         .await?)
     }
 
-    pub async fn set_task_run_running(&self, id: &str) -> Result<(), StorageError> {
+    pub async fn list_chip_edges(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<ChipEdgeRow>, StorageError> {
+        self.require_workspace(workspace_id).await?;
+        Ok(sqlx::query_as::<_, ChipEdgeRow>(&format!(
+            "SELECT {CHIP_EDGE_COLS} FROM chip_edges
+             WHERE workspace_id = ? ORDER BY created_at ASC"
+        ))
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn latest_chip_output(
+        &self,
+        chip_id: &str,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(sqlx::query_scalar(
+            "SELECT output_dataset_id FROM chip_runs
+             WHERE chip_id = ? AND status = 'succeeded' AND output_dataset_id IS NOT NULL
+             ORDER BY COALESCE(finished_at, created_at) DESC, created_at DESC
+             LIMIT 1",
+        )
+        .bind(chip_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn set_chip_run_running(&self, id: &str) -> Result<(), StorageError> {
         let result = sqlx::query(
-            "UPDATE task_runs SET status = 'running', started_at = ?, error_message = NULL
+            "UPDATE chip_runs SET status = 'running', started_at = ?, error_message = NULL
              WHERE id = ? AND status = 'queued'",
         )
         .bind(now_rfc3339())
@@ -765,46 +1051,46 @@ impl Store {
         .await?;
         if result.rows_affected() == 0 {
             return Err(StorageError::Invalid(
-                "task run must be queued before starting".into(),
+                "chip run must be queued before starting".into(),
             ));
         }
         Ok(())
     }
 
-    pub async fn attach_task_run_extract(
+    pub async fn attach_chip_run_extract(
         &self,
         id: &str,
         extract_id: &str,
     ) -> Result<(), StorageError> {
-        update_running_task_ref(&self.pool, id, "legacy_extract_id", extract_id).await
+        update_running_chip_ref(&self.pool, id, "legacy_extract_id", extract_id).await
     }
 
-    pub async fn attach_task_run_job(&self, id: &str, job_id: &str) -> Result<(), StorageError> {
-        update_running_task_ref(&self.pool, id, "legacy_job_id", job_id).await
+    pub async fn attach_chip_run_job(&self, id: &str, job_id: &str) -> Result<(), StorageError> {
+        update_running_chip_ref(&self.pool, id, "legacy_job_id", job_id).await
     }
 
-    pub async fn set_task_run_succeeded(
+    pub async fn set_chip_run_succeeded(
         &self,
         id: &str,
         output_dataset_id: &str,
     ) -> Result<(), StorageError> {
         let run = self
-            .get_task_run(id)
+            .get_chip_run(id)
             .await?
-            .ok_or_else(|| StorageError::NotFound("task run not found".into()))?;
+            .ok_or_else(|| StorageError::NotFound("chip run not found".into()))?;
         let dataset = self
             .get_dataset(output_dataset_id)
             .await?
             .ok_or_else(|| StorageError::NotFound("output dataset not found".into()))?;
         if dataset.workspace_id != run.workspace_id
-            || dataset.producer_task_run_id.as_deref() != Some(id)
+            || dataset.producer_chip_run_id.as_deref() != Some(id)
         {
             return Err(StorageError::Invalid(
-                "output dataset provenance does not match task run".into(),
+                "output dataset provenance does not match chip run".into(),
             ));
         }
         let result = sqlx::query(
-            "UPDATE task_runs
+            "UPDATE chip_runs
              SET status = 'succeeded', output_dataset_id = ?, error_message = NULL,
                  finished_at = ?
              WHERE id = ? AND status = 'running'",
@@ -816,15 +1102,15 @@ impl Store {
         .await?;
         if result.rows_affected() == 0 {
             return Err(StorageError::Invalid(
-                "only a running task run can succeed".into(),
+                "only a running chip run can succeed".into(),
             ));
         }
         Ok(())
     }
 
-    pub async fn set_task_run_failed(&self, id: &str, error: &str) -> Result<(), StorageError> {
+    pub async fn set_chip_run_failed(&self, id: &str, error: &str) -> Result<(), StorageError> {
         let result = sqlx::query(
-            "UPDATE task_runs
+            "UPDATE chip_runs
              SET status = 'failed', error_message = ?, finished_at = ?
              WHERE id = ? AND status IN ('queued', 'running')",
         )
@@ -835,7 +1121,7 @@ impl Store {
         .await?;
         if result.rows_affected() == 0 {
             return Err(StorageError::Invalid(
-                "only a queued or running task run can fail".into(),
+                "only a queued or running chip run can fail".into(),
             ));
         }
         Ok(())
@@ -854,7 +1140,9 @@ impl Store {
         bytes: &[u8],
         delimiter: Option<&str>,
         has_header: Option<bool>,
+        workspace_id: &str,
     ) -> Result<FileMeta, StorageError> {
+        self.require_workspace(workspace_id).await?;
         let id = Uuid::new_v4().to_string();
         let filename = safe_filename(filename);
         let rel = upload_rel(&id, &filename);
@@ -874,6 +1162,7 @@ impl Store {
                 delimiter: delimiter.map(str::to_string),
                 has_header,
                 row_count: None,
+                workspace_id: Some(workspace_id.to_string()),
             })
             .await
         {
@@ -947,7 +1236,21 @@ impl Store {
             })
     }
 
-    pub async fn list_uploads(&self) -> Result<Vec<FileMeta>, StorageError> {
+    pub async fn list_uploads(&self, scope: Option<&DataScope>) -> Result<Vec<FileMeta>, StorageError> {
+        let rows = self.list_datasets(scope).await?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| row.kind == "upload")
+            .map(|row| FileMeta {
+                id: row.id,
+                filename: row.filename,
+                size: row.size_bytes.unwrap_or(0) as u64,
+                stored_path: row.stored_path,
+            })
+            .collect())
+    }
+
+    async fn list_upload_dirs(&self) -> Result<Vec<FileMeta>, StorageError> {
         let mut out = Vec::new();
         let root = self.uploads_dir();
         let mut dirs = match tokio::fs::read_dir(&root).await {
@@ -1059,17 +1362,20 @@ impl Store {
         &self,
         source_path: &str,
         spec_json: &str,
+        workspace_id: &str,
     ) -> Result<JobRow, StorageError> {
+        self.require_workspace(workspace_id).await?;
         let id = Uuid::new_v4().to_string();
         let created_at = now_rfc3339();
         sqlx::query(
-            "INSERT INTO jobs (id, status, source_path, spec_json, created_at)
-             VALUES (?, 'queued', ?, ?, ?)",
+            "INSERT INTO jobs (id, status, source_path, spec_json, created_at, workspace_id)
+             VALUES (?, 'queued', ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(source_path)
         .bind(spec_json)
         .bind(&created_at)
+        .bind(workspace_id)
         .execute(&self.pool)
         .await?;
         self.get_job(&id)
@@ -1083,13 +1389,15 @@ impl Store {
         spec_json: &str,
         transform_id: &str,
         dataset_id: &str,
+        workspace_id: &str,
     ) -> Result<JobRow, StorageError> {
+        self.require_workspace(workspace_id).await?;
         let id = Uuid::new_v4().to_string();
         let created_at = now_rfc3339();
         sqlx::query(
             "INSERT INTO jobs
-             (id, status, source_path, spec_json, created_at, kind, transform_id, dataset_id)
-             VALUES (?, 'queued', ?, ?, ?, 'transform', ?, ?)",
+             (id, status, source_path, spec_json, created_at, kind, transform_id, dataset_id, workspace_id)
+             VALUES (?, 'queued', ?, ?, ?, 'transform', ?, ?, ?)",
         )
         .bind(&id)
         .bind(source_path)
@@ -1097,6 +1405,7 @@ impl Store {
         .bind(&created_at)
         .bind(transform_id)
         .bind(dataset_id)
+        .bind(workspace_id)
         .execute(&self.pool)
         .await?;
         self.get_job(&id)
@@ -1112,13 +1421,23 @@ impl Store {
         Ok(row)
     }
 
-    pub async fn list_jobs(&self, limit: i64) -> Result<Vec<JobRow>, StorageError> {
-        let rows = sqlx::query_as::<_, JobRow>(&format!(
-            "SELECT {JOB_COLS} FROM jobs ORDER BY created_at DESC LIMIT ?"
-        ))
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+    pub async fn list_jobs(
+        &self,
+        limit: i64,
+        scope: Option<&DataScope>,
+    ) -> Result<Vec<JobRow>, StorageError> {
+        let (extra, binds) = match scope {
+            Some(scope) => Self::workspace_scope_sql(scope, "workspace_id"),
+            None => (String::new(), Vec::new()),
+        };
+        let sql = format!(
+            "SELECT {JOB_COLS} FROM jobs WHERE 1=1 {extra} ORDER BY created_at DESC LIMIT ?"
+        );
+        let mut query = sqlx::query_as::<_, JobRow>(&sql);
+        for value in &binds {
+            query = query.bind(value);
+        }
+        let rows = query.bind(limit).fetch_all(&self.pool).await?;
         Ok(rows)
     }
 
@@ -1361,7 +1680,9 @@ impl Store {
         add_sequence: bool,
         sql_text: Option<&str>,
         catalog_database: Option<&str>,
+        workspace_id: &str,
     ) -> Result<ExtractRow, StorageError> {
+        self.require_workspace(workspace_id).await?;
         let _ = self
             .get_connection(connection_id)
             .await?
@@ -1370,8 +1691,8 @@ impl Store {
         let created_at = now_rfc3339();
         sqlx::query(
             "INSERT INTO extracts
-             (id, connection_id, table_name, delimiter, header, add_sequence, status, created_at, sql_text, catalog_database)
-             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+             (id, connection_id, table_name, delimiter, header, add_sequence, status, created_at, sql_text, catalog_database, workspace_id)
+             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(connection_id)
@@ -1382,6 +1703,7 @@ impl Store {
         .bind(&created_at)
         .bind(sql_text)
         .bind(catalog_database)
+        .bind(workspace_id)
         .execute(&self.pool)
         .await?;
         self.get_extract(&id)
@@ -1401,15 +1723,26 @@ impl Store {
         Ok(row)
     }
 
-    pub async fn list_extracts(&self, limit: i64) -> Result<Vec<ExtractRow>, StorageError> {
-        let rows = sqlx::query_as::<_, ExtractRow>(&format!(
+    pub async fn list_extracts(
+        &self,
+        limit: i64,
+        scope: Option<&DataScope>,
+    ) -> Result<Vec<ExtractRow>, StorageError> {
+        let (extra, binds) = match scope {
+            Some(scope) => Self::workspace_scope_sql(scope, "e.workspace_id"),
+            None => (String::new(), Vec::new()),
+        };
+        let sql = format!(
             "SELECT {EXTRACT_COLS} FROM extracts e
              LEFT JOIN connections c ON c.id = e.connection_id
+             WHERE 1=1 {extra}
              ORDER BY e.created_at DESC LIMIT ?"
-        ))
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let mut query = sqlx::query_as::<_, ExtractRow>(&sql);
+        for value in &binds {
+            query = query.bind(value);
+        }
+        let rows = query.bind(limit).fetch_all(&self.pool).await?;
         Ok(rows)
     }
 
@@ -1441,7 +1774,7 @@ impl Store {
             .ok()
             .map(|metadata| metadata.len() as i64);
         let linked_run = sqlx::query_as::<_, (String, String)>(
-            "SELECT id, workspace_id FROM task_runs
+            "SELECT id, workspace_id FROM chip_runs
              WHERE legacy_extract_id = ? AND status = 'running'",
         )
         .bind(id)
@@ -1450,8 +1783,8 @@ impl Store {
         let workspace_id = linked_run
             .as_ref()
             .map(|(_, workspace_id)| workspace_id.as_str())
-            .unwrap_or(DEFAULT_WORKSPACE_ID);
-        let producer_task_run_id = linked_run.as_ref().map(|(run_id, _)| run_id.as_str());
+            .unwrap_or(row.workspace_id.as_str());
+        let producer_chip_run_id = linked_run.as_ref().map(|(run_id, _)| run_id.as_str());
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         sqlx::query(
@@ -1471,7 +1804,7 @@ impl Store {
         sqlx::query(
             "INSERT INTO datasets
              (id, kind, extract_id, filename, stored_path, size_bytes, delimiter, has_header,
-              row_count, created_at, updated_at, workspace_id, producer_task_run_id)
+              row_count, created_at, updated_at, workspace_id, producer_chip_run_id)
              VALUES (?, 'database', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                kind = excluded.kind,
@@ -1483,7 +1816,7 @@ impl Store {
                has_header = excluded.has_header,
                row_count = excluded.row_count,
                workspace_id = excluded.workspace_id,
-               producer_task_run_id = excluded.producer_task_run_id,
+               producer_chip_run_id = excluded.producer_chip_run_id,
                updated_at = excluded.updated_at",
         )
         .bind(id)
@@ -1497,12 +1830,12 @@ impl Store {
         .bind(&now)
         .bind(&now)
         .bind(workspace_id)
-        .bind(producer_task_run_id)
+        .bind(producer_chip_run_id)
         .execute(&mut *tx)
         .await?;
         if let Some((run_id, _)) = linked_run {
             let result = sqlx::query(
-                "UPDATE task_runs
+                "UPDATE chip_runs
                  SET status = 'succeeded', output_dataset_id = ?, error_message = NULL,
                      finished_at = ?
                  WHERE id = ? AND status = 'running'",
@@ -1514,7 +1847,7 @@ impl Store {
             .await?;
             if result.rows_affected() == 0 {
                 return Err(StorageError::Invalid(
-                    "linked task run is not running".into(),
+                    "linked chip run is not running".into(),
                 ));
             }
         }
@@ -1544,7 +1877,7 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "UPDATE task_runs
+            "UPDATE chip_runs
              SET status = 'failed', error_message = ?, finished_at = ?
              WHERE legacy_extract_id = ? AND status IN ('queued', 'running')",
         )
@@ -1571,8 +1904,8 @@ impl Store {
         sqlx::query(
             "INSERT INTO datasets
              (id, kind, extract_id, filename, stored_path, size_bytes, delimiter, has_header,
-              row_count, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              row_count, created_at, updated_at, workspace_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                kind = excluded.kind,
                extract_id = excluded.extract_id,
@@ -1582,6 +1915,7 @@ impl Store {
                delimiter = COALESCE(excluded.delimiter, datasets.delimiter),
                has_header = COALESCE(excluded.has_header, datasets.has_header),
                row_count = COALESCE(excluded.row_count, datasets.row_count),
+               workspace_id = COALESCE(excluded.workspace_id, datasets.workspace_id),
                updated_at = excluded.updated_at",
         )
         .bind(&row.id)
@@ -1595,6 +1929,7 @@ impl Store {
         .bind(row.row_count)
         .bind(&now)
         .bind(&now)
+        .bind(row.workspace_id.as_deref().unwrap_or(DEFAULT_WORKSPACE_ID))
         .execute(&self.pool)
         .await?;
         self.get_dataset(&row.id)
@@ -1606,25 +1941,25 @@ impl Store {
         &self,
         dataset_id: &str,
         workspace_id: &str,
-        producer_task_run_id: &str,
+        producer_chip_run_id: &str,
     ) -> Result<(), StorageError> {
         self.require_workspace(workspace_id).await?;
         let run = self
-            .get_task_run(producer_task_run_id)
+            .get_chip_run(producer_chip_run_id)
             .await?
-            .ok_or_else(|| StorageError::NotFound("producer task run not found".into()))?;
+            .ok_or_else(|| StorageError::NotFound("producer chip run not found".into()))?;
         if run.workspace_id != workspace_id {
             return Err(StorageError::Invalid(
-                "dataset and producer task run workspace mismatch".into(),
+                "dataset and producer chip run workspace mismatch".into(),
             ));
         }
         let result = sqlx::query(
             "UPDATE datasets
-             SET workspace_id = ?, producer_task_run_id = ?, updated_at = ?
+             SET workspace_id = ?, producer_chip_run_id = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(workspace_id)
-        .bind(producer_task_run_id)
+        .bind(producer_chip_run_id)
         .bind(now_rfc3339())
         .bind(dataset_id)
         .execute(&self.pool)
@@ -1635,13 +1970,13 @@ impl Store {
         Ok(())
     }
 
-    pub async fn complete_task_run_for_job(
+    pub async fn complete_chip_run_for_job(
         &self,
         job_id: &str,
         stored_path: &str,
     ) -> Result<Option<String>, StorageError> {
-        let run = sqlx::query_as::<_, TaskRunRow>(&format!(
-            "SELECT {TASK_RUN_COLS} FROM task_runs WHERE legacy_job_id = ?"
+        let run = sqlx::query_as::<_, ChipRunRow>(&format!(
+            "SELECT {CHIP_RUN_COLS} FROM chip_runs WHERE legacy_job_id = ?"
         ))
         .bind(job_id)
         .fetch_optional(&self.pool)
@@ -1652,7 +1987,7 @@ impl Store {
         };
         if run.status != "running" {
             return Err(StorageError::Invalid(
-                "linked task run is not running".into(),
+                "linked chip run is not running".into(),
             ));
         }
         let filename = Path::new(stored_path)
@@ -1678,7 +2013,7 @@ impl Store {
         sqlx::query(
             "INSERT INTO datasets
              (id, kind, filename, stored_path, size_bytes, created_at, updated_at,
-              workspace_id, producer_task_run_id)
+              workspace_id, producer_chip_run_id)
              VALUES (?, 'transform', ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&run.id)
@@ -1692,7 +2027,7 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         let result = sqlx::query(
-            "UPDATE task_runs
+            "UPDATE chip_runs
              SET status = 'succeeded', output_dataset_id = ?, error_message = NULL,
                  finished_at = ?
              WHERE id = ? AND status = 'running'",
@@ -1704,14 +2039,14 @@ impl Store {
         .await?;
         if result.rows_affected() == 0 {
             return Err(StorageError::Invalid(
-                "only a running task run can succeed".into(),
+                "only a running chip run can succeed".into(),
             ));
         }
         tx.commit().await?;
         Ok(Some(run.id))
     }
 
-    pub async fn fail_task_run_for_job(
+    pub async fn fail_chip_run_for_job(
         &self,
         job_id: &str,
         error: &str,
@@ -1727,7 +2062,7 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "UPDATE task_runs
+            "UPDATE chip_runs
              SET status = 'failed', error_message = ?, finished_at = ?
              WHERE legacy_job_id = ? AND status IN ('queued', 'running')",
         )
@@ -1797,12 +2132,20 @@ impl Store {
         Ok(row)
     }
 
-    pub async fn list_datasets(&self) -> Result<Vec<DatasetRow>, StorageError> {
-        let sql = format!("{} ORDER BY d.created_at DESC", Self::dataset_select());
-        let rows = sqlx::query_as::<_, DatasetRow>(&sql)
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows)
+    pub async fn list_datasets(&self, scope: Option<&DataScope>) -> Result<Vec<DatasetRow>, StorageError> {
+        let (extra, binds) = match scope {
+            Some(scope) => Self::workspace_scope_sql(scope, "d.workspace_id"),
+            None => (String::new(), Vec::new()),
+        };
+        let sql = format!(
+            "{} WHERE 1=1 {extra} ORDER BY d.created_at DESC",
+            Self::dataset_select()
+        );
+        let mut query = sqlx::query_as::<_, DatasetRow>(&sql);
+        for value in &binds {
+            query = query.bind(value);
+        }
+        Ok(query.fetch_all(&self.pool).await?)
     }
 
     pub async fn insert_transform(
@@ -1815,15 +2158,15 @@ impl Store {
         if name.is_empty() {
             return Err(StorageError::Invalid("name required".into()));
         }
-        let _ = self
+        let dataset = self
             .get_dataset(dataset_id)
             .await?
             .ok_or_else(|| StorageError::NotFound("dataset not found".into()))?;
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO transforms (id, name, dataset_id, spec_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO transforms (id, name, dataset_id, spec_json, created_at, updated_at, workspace_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(name)
@@ -1831,6 +2174,7 @@ impl Store {
         .bind(spec_json)
         .bind(&now)
         .bind(&now)
+        .bind(&dataset.workspace_id)
         .execute(&self.pool)
         .await?;
         self.get_transform(&id)
@@ -1877,7 +2221,7 @@ impl Store {
 
     pub async fn get_transform(&self, id: &str) -> Result<Option<TransformRow>, StorageError> {
         let row = sqlx::query_as::<_, TransformRow>(
-            "SELECT id, name, dataset_id, spec_json, created_at, updated_at
+            "SELECT id, name, dataset_id, spec_json, created_at, updated_at, workspace_id
              FROM transforms WHERE id = ?",
         )
         .bind(id)
@@ -1886,14 +2230,20 @@ impl Store {
         Ok(row)
     }
 
-    pub async fn list_transforms(&self) -> Result<Vec<TransformRow>, StorageError> {
-        let rows = sqlx::query_as::<_, TransformRow>(
-            "SELECT id, name, dataset_id, spec_json, created_at, updated_at
-             FROM transforms ORDER BY updated_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
+    pub async fn list_transforms(&self, scope: Option<&DataScope>) -> Result<Vec<TransformRow>, StorageError> {
+        let (extra, binds) = match scope {
+            Some(scope) => Self::workspace_scope_sql(scope, "workspace_id"),
+            None => (String::new(), Vec::new()),
+        };
+        let sql = format!(
+            "SELECT id, name, dataset_id, spec_json, created_at, updated_at, workspace_id
+             FROM transforms WHERE 1=1 {extra} ORDER BY updated_at DESC"
+        );
+        let mut query = sqlx::query_as::<_, TransformRow>(&sql);
+        for value in &binds {
+            query = query.bind(value);
+        }
+        Ok(query.fetch_all(&self.pool).await?)
     }
 
     pub async fn backfill_datasets(&self) -> Result<(), StorageError> {
@@ -1925,11 +2275,12 @@ impl Store {
                 delimiter: Some(row.delimiter),
                 has_header: Some(row.header != 0),
                 row_count: row.row_count,
+                workspace_id: None,
             })
             .await?;
         }
 
-        let uploads = self.list_uploads().await?;
+        let uploads = self.list_upload_dirs().await?;
         for file in uploads {
             self.upsert_dataset(&DatasetUpsert {
                 id: file.id,
@@ -1941,6 +2292,7 @@ impl Store {
                 delimiter: None,
                 has_header: None,
                 row_count: None,
+                workspace_id: None,
             })
             .await?;
         }
@@ -2101,7 +2453,7 @@ async fn rewrite_legacy_stored_paths(pool: &SqlitePool) -> Result<(), StorageErr
     Ok(())
 }
 
-async fn update_running_task_ref(
+async fn update_running_chip_ref(
     pool: &SqlitePool,
     id: &str,
     column: &str,
@@ -2109,21 +2461,21 @@ async fn update_running_task_ref(
 ) -> Result<(), StorageError> {
     let sql = match column {
         "legacy_extract_id" => {
-            "UPDATE task_runs SET legacy_extract_id = ? WHERE id = ? AND status = 'running'"
+            "UPDATE chip_runs SET legacy_extract_id = ? WHERE id = ? AND status = 'running'"
         }
         "legacy_job_id" => {
-            "UPDATE task_runs SET legacy_job_id = ? WHERE id = ? AND status = 'running'"
+            "UPDATE chip_runs SET legacy_job_id = ? WHERE id = ? AND status = 'running'"
         }
         _ => {
             return Err(StorageError::Invalid(
-                "invalid legacy task reference".into(),
+                "invalid legacy chip reference".into(),
             ))
         }
     };
     let result = sqlx::query(sql).bind(value).bind(id).execute(pool).await?;
     if result.rows_affected() == 0 {
         return Err(StorageError::Invalid(
-            "legacy reference requires a running task run".into(),
+            "legacy reference requires a running chip run".into(),
         ));
     }
     Ok(())
@@ -2141,10 +2493,10 @@ fn trimmed_optional(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn validate_task_kind(kind: &str) -> Result<(), StorageError> {
+fn validate_chip_kind(kind: &str) -> Result<(), StorageError> {
     if !matches!(kind, "extract" | "transform" | "load") {
         return Err(StorageError::Invalid(
-            "task kind must be extract, transform, or load".into(),
+            "chip kind must be extract, transform, or load".into(),
         ));
     }
     Ok(())
@@ -2152,43 +2504,219 @@ fn validate_task_kind(kind: &str) -> Result<(), StorageError> {
 
 fn require_config_json(config_json: &str) -> Result<(), StorageError> {
     let value: serde_json::Value = serde_json::from_str(config_json)
-        .map_err(|error| StorageError::Invalid(format!("invalid task config JSON: {error}")))?;
+        .map_err(|error| StorageError::Invalid(format!("invalid chip config JSON: {error}")))?;
     if !value.is_object() {
         return Err(StorageError::Invalid(
-            "task config must be a JSON object".into(),
+            "chip config must be a JSON object".into(),
         ));
     }
     reject_sensitive_config(&value)?;
     Ok(())
 }
 
-fn empty_workspace_snapshot() -> &'static str {
-    r#"{"layout":{},"tasks":[]}"#
+pub(crate) fn empty_workspace_snapshot() -> &'static str {
+    r#"{"layout":{},"chips":[],"edges":[]}"#
 }
 
 fn workspace_snapshot_json(
     layout_json: &str,
-    tasks: &[TaskDefinitionRow],
+    chips: &[ChipRow],
+    edges: &[ChipEdgeRow],
 ) -> Result<String, StorageError> {
     let layout: serde_json::Value = serde_json::from_str(layout_json)
         .unwrap_or_else(|_| serde_json::json!({}));
-    let tasks = tasks
+    let chips = chips
         .iter()
-        .map(|task| {
-            let config: serde_json::Value = serde_json::from_str(&task.config_json)
+        .map(|chip| {
+            let config: serde_json::Value = serde_json::from_str(&chip.config_json)
                 .unwrap_or_else(|_| serde_json::json!({}));
             serde_json::json!({
-                "id": task.id,
-                "name": task.name,
-                "kind": task.kind,
+                "id": chip.id,
+                "name": chip.name,
+                "kind": chip.kind,
                 "config": config,
-                "revision": task.revision,
-                "active": task.active != 0,
+                "revision": chip.revision,
+                "active": chip.active != 0,
             })
         })
         .collect::<Vec<_>>();
-    serde_json::to_string(&serde_json::json!({ "layout": layout, "tasks": tasks }))
-        .map_err(|error| StorageError::Invalid(error.to_string()))
+    let edges = edges
+        .iter()
+        .map(|edge| {
+            serde_json::json!({
+                "id": edge.id,
+                "from_chip_id": edge.from_chip_id,
+                "to_chip_id": edge.to_chip_id,
+                "kind": edge.kind,
+                "from_port": edge.from_port,
+                "to_port": edge.to_port,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&serde_json::json!({
+        "layout": layout,
+        "chips": chips,
+        "edges": edges,
+    }))
+    .map_err(|error| StorageError::Invalid(error.to_string()))
+}
+
+async fn replace_workspace_edges(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    workspace_id: &str,
+    edges: &[WorkspaceSaveEdge],
+    chips: &[ChipRow],
+    now: &str,
+) -> Result<Vec<ChipEdgeRow>, StorageError> {
+    let chips_by_id = chips
+        .iter()
+        .map(|chip| (chip.id.as_str(), chip))
+        .collect::<HashMap<_, _>>();
+    let mut seen = HashSet::new();
+    let mut pairs = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let from_id = required_text(&edge.from_chip_id, "from_chip_id")?;
+        let to_id = required_text(&edge.to_chip_id, "to_chip_id")?;
+        if from_id == to_id {
+            return Err(StorageError::Invalid(
+                "chip edge cannot connect a chip to itself".into(),
+            ));
+        }
+        let from = chips_by_id.get(from_id).ok_or_else(|| {
+            StorageError::Invalid("chip edge must start from a chip in this workspace".into())
+        })?;
+        let to = chips_by_id.get(to_id).ok_or_else(|| {
+            StorageError::Invalid("chip edge must end at a chip in this workspace".into())
+        })?;
+        validate_edge_kind(&edge.kind, from.kind.as_str(), to.kind.as_str())?;
+        let from_port = {
+            let value = edge.from_port.trim();
+            if value.is_empty() {
+                "out".to_string()
+            } else {
+                value.to_string()
+            }
+        };
+        let to_port = {
+            let value = edge.to_port.trim();
+            if value.is_empty() {
+                "in".to_string()
+            } else {
+                value.to_string()
+            }
+        };
+        let key = (from_id.to_string(), to_id.to_string(), edge.kind.clone());
+        if !seen.insert(key) {
+            return Err(StorageError::Invalid(
+                "duplicate chip edge".into(),
+            ));
+        }
+        let id = if edge.id.trim().is_empty() {
+            Uuid::new_v4().to_string()
+        } else {
+            validate_uuid(&edge.id, "edge id")?;
+            edge.id.clone()
+        };
+        pairs.push((
+            id,
+            from_id.to_string(),
+            to_id.to_string(),
+            edge.kind.clone(),
+            from_port,
+            to_port,
+        ));
+    }
+    if edges_have_cycle(
+        pairs
+            .iter()
+            .map(|(_, from, to, _, _, _)| (from.as_str(), to.as_str())),
+    ) {
+        return Err(StorageError::Invalid("chip edges cannot form a cycle".into()));
+    }
+    sqlx::query("DELETE FROM chip_edges WHERE workspace_id = ?")
+        .bind(workspace_id)
+        .execute(&mut **tx)
+        .await?;
+    for (id, from_id, to_id, kind, from_port, to_port) in &pairs {
+        sqlx::query(
+            "INSERT INTO chip_edges
+             (id, workspace_id, from_chip_id, to_chip_id, kind, from_port, to_port, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(workspace_id)
+        .bind(from_id)
+        .bind(to_id)
+        .bind(kind)
+        .bind(from_port)
+        .bind(to_port)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(sqlx::query_as::<_, ChipEdgeRow>(&format!(
+        "SELECT {CHIP_EDGE_COLS} FROM chip_edges
+         WHERE workspace_id = ? ORDER BY created_at ASC"
+    ))
+    .bind(workspace_id)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
+fn validate_edge_kind(kind: &str, from_kind: &str, to_kind: &str) -> Result<(), StorageError> {
+    match kind {
+        "data" => {
+            if !matches!(from_kind, "extract" | "transform") {
+                return Err(StorageError::Invalid(
+                    "data edges must start from extract or transform".into(),
+                ));
+            }
+            if !matches!(to_kind, "transform" | "load") {
+                return Err(StorageError::Invalid(
+                    "data edges must end at transform or load".into(),
+                ));
+            }
+            Ok(())
+        }
+        "then" | "on_error" => Ok(()),
+        _ => Err(StorageError::Invalid(
+            "chip edge kind must be data, then, or on_error".into(),
+        )),
+    }
+}
+
+fn edges_have_cycle<'a, I>(edges: I) -> bool
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let mut graph: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (from, to) in edges {
+        graph.entry(from).or_default().push(to);
+        graph.entry(to).or_default();
+    }
+    let mut state = HashMap::new();
+    fn visit<'a>(
+        node: &'a str,
+        graph: &HashMap<&'a str, Vec<&'a str>>,
+        state: &mut HashMap<&'a str, u8>,
+    ) -> bool {
+        match state.get(node).copied() {
+            Some(1) => return true,
+            Some(2) => return false,
+            _ => {}
+        }
+        state.insert(node, 1);
+        if let Some(next) = graph.get(node) {
+            for child in next {
+                if visit(child, graph, state) {
+                    return true;
+                }
+            }
+        }
+        state.insert(node, 2);
+        false
+    }
+    graph.keys().copied().any(|node| visit(node, &graph, &mut state))
 }
 
 fn reject_sensitive_config(value: &serde_json::Value) -> Result<(), StorageError> {
@@ -2205,7 +2733,7 @@ fn reject_sensitive_config(value: &serde_json::Value) -> Result<(), StorageError
                     "password" | "passwordcipher" | "outputpath" | "storedpath"
                 ) {
                     return Err(StorageError::Invalid(format!(
-                        "task config must not contain `{key}`"
+                        "chip config must not contain `{key}`"
                     )));
                 }
                 reject_sensitive_config(value)?;
@@ -2285,6 +2813,13 @@ fn safe_filename(name: &str) -> String {
 mod tests {
     use super::*;
 
+    async fn test_store() -> (PathBuf, Store, UserRow) {
+        let root = std::env::temp_dir().join(format!("bintl-storage-test-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-session-secret").await.unwrap();
+        let admin = store.ensure_bootstrap("admin", "admin").await.unwrap();
+        (root, store, admin)
+    }
+
     #[test]
     fn extract_paths_are_kinded() {
         assert_eq!(
@@ -2321,8 +2856,7 @@ mod tests {
 
     #[tokio::test]
     async fn stages_reads_and_deletes_a_spreadsheet() {
-        let root = std::env::temp_dir().join(format!("bintl-storage-test-{}", Uuid::new_v4()));
-        let store = Store::open(&root, "test-session-secret").await.unwrap();
+        let (root, store, _) = test_store().await;
         let staged = store
             .stage_spreadsheet("../report.xlsx", b"spreadsheet")
             .await
@@ -2347,10 +2881,23 @@ mod tests {
 
     #[tokio::test]
     async fn deletes_upload_directory_and_dataset() {
-        let root = std::env::temp_dir().join(format!("bintl-storage-test-{}", Uuid::new_v4()));
-        let store = Store::open(&root, "test-session-secret").await.unwrap();
+        let (root, store, admin) = test_store().await;
+        let home = store
+            .list_visible_workspaces(Some(&DataScope::for_user(&admin)))
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .id;
         let meta = store
-            .save_upload("sales.csv", b"name,amount\na,1\n", Some(","), Some(true))
+            .save_upload(
+                "sales.csv",
+                b"name,amount\na,1\n",
+                Some(","),
+                Some(true),
+                &home,
+            )
             .await
             .unwrap();
         let dir = store.uploads_dir().join(&meta.id);
@@ -2364,15 +2911,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_runs_keep_definition_snapshot_and_transition_once() {
-        let root = std::env::temp_dir().join(format!("bintl-storage-test-{}", Uuid::new_v4()));
-        let store = Store::open(&root, "test-session-secret").await.unwrap();
+    async fn chip_runs_keep_definition_snapshot_and_transition_once() {
+        let (root, store, admin) = test_store().await;
         let workspace = store
-            .insert_workspace("Sales", Some("daily imports"))
+            .insert_workspace("Sales", Some("daily imports"), &admin.id, None)
             .await
             .unwrap();
         let task = store
-            .insert_task_definition(
+            .insert_chip(
                 &workspace.id,
                 "Users",
                 "extract",
@@ -2381,11 +2927,11 @@ mod tests {
             .await
             .unwrap();
         let run = store
-            .create_task_run(&task.id, task.revision, None)
+            .create_chip_run(&task.id, task.revision, None)
             .await
             .unwrap();
         store
-            .update_task_definition(
+            .update_chip(
                 &task.id,
                 None,
                 None,
@@ -2397,15 +2943,206 @@ mod tests {
 
         assert_eq!(run.revision_snapshot, 1);
         assert!(run.config_snapshot_json.contains("\"users\""));
-        store.set_task_run_running(&run.id).await.unwrap();
-        assert!(store.set_task_run_running(&run.id).await.is_err());
-        store.set_task_run_failed(&run.id, "stopped").await.unwrap();
+        store.set_chip_run_running(&run.id).await.unwrap();
+        assert!(store.set_chip_run_running(&run.id).await.is_err());
+        store.set_chip_run_failed(&run.id, "stopped").await.unwrap();
         assert_eq!(
-            store.get_task_run(&run.id).await.unwrap().unwrap().status,
+            store.get_chip_run(&run.id).await.unwrap().unwrap().status,
             "failed"
         );
 
         store.pool.close().await;
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn save_workspace_stores_chip_edges_and_rejects_cycles() {
+        let (root, store, admin) = test_store().await;
+        let workspace = store
+            .insert_workspace("Flow", None, &admin.id, None)
+            .await
+            .unwrap();
+        let extract = store
+            .insert_chip(
+                &workspace.id,
+                "Users",
+                "extract",
+                r#"{"connection_id":"c","source":{"type":"table","table":"users"}}"#,
+            )
+            .await
+            .unwrap();
+        let transform = store
+            .insert_chip(
+                &workspace.id,
+                "Clean",
+                "transform",
+                r#"{"spec":{"version":2,"steps":[],"sink":"parquet"}}"#,
+            )
+            .await
+            .unwrap();
+        let (_, chips, edges) = store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[
+                    WorkspaceSaveChip {
+                        id: extract.id.clone(),
+                        name: extract.name.clone(),
+                        kind: extract.kind.clone(),
+                        config_json: extract.config_json.clone(),
+                    },
+                    WorkspaceSaveChip {
+                        id: transform.id.clone(),
+                        name: transform.name.clone(),
+                        kind: transform.kind.clone(),
+                        config_json: transform.config_json.clone(),
+                    },
+                ],
+                &[WorkspaceSaveEdge {
+                    id: Uuid::new_v4().to_string(),
+                    from_chip_id: extract.id.clone(),
+                    to_chip_id: transform.id.clone(),
+                    kind: "data".into(),
+                    from_port: "out".into(),
+                    to_port: "in".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(chips.len(), 2);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].kind, "data");
+
+        let cycle = store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[
+                    WorkspaceSaveChip {
+                        id: extract.id.clone(),
+                        name: extract.name.clone(),
+                        kind: extract.kind.clone(),
+                        config_json: extract.config_json.clone(),
+                    },
+                    WorkspaceSaveChip {
+                        id: transform.id.clone(),
+                        name: transform.name.clone(),
+                        kind: transform.kind.clone(),
+                        config_json: transform.config_json.clone(),
+                    },
+                ],
+                &[
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "data".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: transform.id.clone(),
+                        to_chip_id: extract.id.clone(),
+                        kind: "then".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                ],
+            )
+            .await;
+        assert!(cycle.is_err());
+
+        store.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn users_own_workspaces_and_uploads() {
+        let (root, store, admin) = test_store().await;
+        let analyst = store
+            .create_user("lee", "이서연", "secret12", &["analyst".into()])
+            .await
+            .unwrap();
+        let admin_scope = DataScope::for_user(&admin);
+        let analyst_scope = DataScope::for_user(&analyst);
+        let admin_home = store
+            .list_visible_workspaces(Some(&admin_scope))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|workspace| workspace.owner_user_id.as_deref() == Some(admin.id.as_str()))
+            .unwrap()
+            .id;
+        let analyst_home = store
+            .list_visible_workspaces(Some(&analyst_scope))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|workspace| workspace.owner_user_id.as_deref() == Some(analyst.id.as_str()))
+            .unwrap()
+            .id;
+
+        store
+            .save_upload("a.csv", b"x,y\n1,2\n", Some(","), Some(true), &admin_home)
+            .await
+            .unwrap();
+        store
+            .save_upload("b.csv", b"x,y\n3,4\n", Some(","), Some(true), &analyst_home)
+            .await
+            .unwrap();
+
+        let admin_files = store
+            .list_uploads(Some(&admin_scope))
+            .await
+            .unwrap();
+        let analyst_files = store
+            .list_uploads(Some(&analyst_scope))
+            .await
+            .unwrap();
+        assert!(admin_files.iter().any(|file| file.filename == "a.csv"));
+        assert!(admin_files.iter().any(|file| file.filename == "b.csv"));
+        assert_eq!(analyst_files.len(), 1);
+        assert_eq!(analyst_files[0].filename, "b.csv");
+
+        let analyst_workspaces = store
+            .list_visible_workspaces(Some(&analyst_scope))
+            .await
+            .unwrap();
+        assert!(analyst_workspaces
+            .iter()
+            .all(|workspace| workspace.owner_user_id.as_deref() == Some(&analyst.id)));
+        assert!(!analyst_workspaces.is_empty());
+
+        assert!(store
+            .require_workspace_access(&analyst.id, false, &admin_home)
+            .await
+            .is_err());
+
+        let folder = store
+            .insert_folder("국가사업", &analyst.id, None)
+            .await
+            .unwrap();
+        let child = store
+            .insert_folder("내 워크스페이스", &analyst.id, Some(&folder.id))
+            .await
+            .unwrap();
+        let nested = store
+            .insert_workspace("WS-1", None, &analyst.id, Some(&child.id))
+            .await
+            .unwrap();
+        assert_eq!(nested.folder_id.as_deref(), Some(child.id.as_str()));
+        assert!(store
+            .update_folder(&folder.id, None, Some(Some(&child.id)))
+            .await
+            .is_err());
+        let demote = vec!["analyst".to_string()];
+        assert!(store
+            .update_user(&admin.id, None, None, Some(demote.as_slice()), None)
+            .await
+            .is_err());
+
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -462,12 +462,7 @@ a {
   transform: translateY(-1px) scale(1.04);
 }
 
-.login-release {
-  position: absolute;
-  left: auto;
-  right: 0.85rem;
-  top: 0.75rem;
-  z-index: 1;
+.release-badge {
   display: inline-flex;
   align-items: center;
   gap: 0.38rem;
@@ -478,30 +473,38 @@ a {
   color: #0a0a0a;
 }
 
-:root.dark .login-release {
+:root.dark .release-badge {
   color: #f4f4f5;
 }
 
-.login-release-icon {
+.release-badge-icon {
   width: 0.8rem;
   height: 0.8rem;
   flex-shrink: 0;
 }
 
-.login-release-label {
+.release-badge-label {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1;
 }
 
-.login-release-ver {
+.release-badge-ver {
   font-family: Outfit, "Pretendard Variable", sans-serif;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+}
+
+.login-release {
+  position: absolute;
+  left: auto;
+  right: 0.85rem;
+  top: 0.75rem;
+  z-index: 1;
 }
 
 .header-search {
@@ -615,18 +618,67 @@ a {
   color: var(--color-text);
 }
 
-.login-card::before {
-  content: "";
+.login-card {
+  background: color-mix(in srgb, var(--theme-surface) 90%, transparent);
+  box-shadow:
+    -1.5px -1.5px 3px color-mix(in srgb, white 82%, transparent),
+    0 1px 0 color-mix(in srgb, white 55%, transparent),
+    6px 12px 24px color-mix(in srgb, var(--theme-text) 14%, transparent),
+    2px 4px 8px color-mix(in srgb, var(--theme-text) 8%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 78%, transparent),
+    inset 0 -1px 1px color-mix(in srgb, var(--theme-text) 6%, transparent);
+}
+
+:root.dark .login-card {
+  box-shadow:
+    -1px -1px 2px rgba(255, 255, 255, 0.12),
+    7px 16px 32px rgba(0, 0, 0, 0.52),
+    2px 6px 12px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.28);
+}
+
+.login-card-slash {
+  --login-slash: #7a8694;
+  --login-slash-hi: #c5ced6;
   pointer-events: none;
   position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in srgb, var(--theme-accent) 14%, transparent) 48%,
-    transparent 100%
-  );
-  mask-image: linear-gradient(to bottom, black 0%, black 18%, transparent 100%);
+  z-index: 1;
+  top: 0;
+  left: 0;
+  width: 5.5rem;
+  height: 5.5rem;
+}
+
+:root.dark .login-card-slash {
+  --login-slash: #8d97a3;
+  --login-slash-hi: #d5dbe2;
+}
+
+.login-card-slash svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter:
+    drop-shadow(0 1px 0 color-mix(in srgb, white 55%, transparent))
+    drop-shadow(0 2px 3px color-mix(in srgb, var(--theme-text) 12%, transparent))
+    drop-shadow(0 0 5px color-mix(in srgb, var(--login-slash) 40%, transparent));
+}
+
+.login-card-slash-outer,
+.login-card-slash-inner {
+  fill: none;
+  stroke: url(#login-card-slash-grad);
+  stroke-linecap: butt;
+}
+
+.login-card-slash-outer {
+  stroke-width: 5.1;
+}
+
+.login-card-slash-inner {
+  stroke-width: 1.7;
 }
 
 .login-rule {
@@ -895,8 +947,8 @@ a {
 
 .workspace-node-icon {
   display: grid;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 1.7rem;
+  height: 1.7rem;
   place-items: center;
 }
 
@@ -909,8 +961,8 @@ a {
 }
 
 .workspace-node-icon svg {
-  width: 1.18rem;
-  height: 1.18rem;
+  width: 0.95rem;
+  height: 0.95rem;
   stroke-width: 2.15;
   filter:
     drop-shadow(-0.7px -0.8px 0.4px var(--theme-dock-icon-hi))
@@ -923,9 +975,359 @@ a {
     drop-shadow(1.4px 1.9px 1.6px rgb(0 0 0 / 0.75));
 }
 
+.workspace-minimap {
+  pointer-events: auto;
+  position: absolute;
+  top: 1.15rem;
+  right: 1.25rem;
+  left: auto;
+  bottom: auto;
+  z-index: 20;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--theme-border-strong) 70%, transparent);
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--theme-surface) 88%, transparent);
+  box-shadow:
+    0 8px 22px color-mix(in srgb, var(--theme-text) 12%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 55%, transparent);
+  cursor: crosshair;
+  backdrop-filter: blur(8px);
+}
+
+.workspace-minimap-world {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background-image: radial-gradient(circle, var(--theme-canvas-dot) 0.7px, transparent 1px);
+  background-size: 7px 7px;
+}
+
+.workspace-minimap-chip {
+  position: absolute;
+  border-radius: 1px;
+  opacity: 0.92;
+}
+
+.workspace-minimap-chip.is-extract {
+  background: var(--theme-accent);
+}
+
+.workspace-minimap-chip.is-transform {
+  background: var(--theme-success);
+}
+
+.workspace-minimap-view {
+  position: absolute;
+  border: 1.5px solid color-mix(in srgb, var(--theme-accent) 85%, white);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--theme-accent) 18%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-accent) 25%, transparent);
+  pointer-events: none;
+}
+
+.workspace-rail {
+  padding: 0.2rem 0.25rem 0.2rem 0.15rem;
+  background: color-mix(in srgb, var(--theme-subtle) 45%, var(--theme-canvas));
+}
+
+.workspace-rail-split > button[aria-orientation="horizontal"] {
+  height: 0.35rem;
+  background: transparent;
+}
+
+.workspace-rail-split > button[aria-orientation="horizontal"]:hover,
+.workspace-rail-split > button[aria-orientation="horizontal"]:focus-visible {
+  background: color-mix(in srgb, var(--theme-border) 55%, transparent);
+}
+
+.workspace-rail-card {
+  border: 1px solid color-mix(in srgb, var(--theme-border) 88%, transparent);
+  border-radius: 0.85rem;
+  background: var(--theme-surface);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 55%, transparent),
+    0 4px 12px color-mix(in srgb, var(--theme-text) 5%, transparent);
+}
+
+:root.dark .workspace-rail-card {
+  background: var(--theme-surface);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04),
+    0 6px 16px rgba(0, 0, 0, 0.22);
+}
+
+.workspace-rail-card-head {
+  padding: 0.7rem 0.7rem 0.55rem;
+}
+
+.workspace-rail-tree {
+  border-radius: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--theme-border) 75%, transparent);
+  background: color-mix(in srgb, var(--theme-subtle) 45%, transparent);
+}
+
+.workspace-rail-card-foot {
+  padding: 0.65rem 0.7rem 0.7rem;
+  border-top: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
+  background: color-mix(in srgb, var(--theme-subtle) 28%, transparent);
+}
+
+.workspace-rail-group {
+  display: grid;
+  gap: 0.45rem;
+}
+
 .workspace-canvas {
   overscroll-behavior: contain;
   scrollbar-color: color-mix(in srgb, var(--theme-text) 28%, transparent) transparent;
+}
+
+.chip-link {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  bottom: 8px;
+  width: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: transparent;
+  cursor: crosshair;
+}
+
+.chip-link.is-left {
+  left: -6px;
+}
+
+.chip-link.is-right {
+  right: -6px;
+}
+
+.chip-link.is-top {
+  top: -6px;
+  right: 12px;
+  bottom: auto;
+  left: 12px;
+  width: auto;
+  height: 18px;
+}
+
+.chip-link.is-bottom {
+  top: auto;
+  right: 12px;
+  bottom: -6px;
+  left: 12px;
+  width: auto;
+  height: 18px;
+}
+
+.chip-link svg {
+  width: 13px;
+  height: 10px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.chip-link.is-left svg {
+  transform: scaleX(-1);
+}
+
+.chip-link.is-top svg {
+  transform: rotate(-90deg);
+}
+
+.chip-link.is-bottom svg {
+  transform: rotate(90deg);
+}
+
+.chip-link:hover,
+.chip-link:focus-visible {
+  color: var(--color-accent);
+}
+
+.chip-link.is-then:hover,
+.chip-link.is-then:focus-visible {
+  color: var(--color-text-secondary);
+}
+
+.chip-link.is-on_error:hover,
+.chip-link.is-on_error:focus-visible {
+  color: var(--color-danger);
+}
+
+.chip-link:hover svg,
+.chip-link:focus-visible svg {
+  opacity: 1;
+}
+
+.dock-btn.is-active {
+  color: var(--theme-dock-glow);
+  box-shadow:
+    -1px -1px 2px color-mix(in srgb, white 90%, transparent),
+    3px 6px 10px color-mix(in srgb, var(--theme-text) 18%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 85%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--theme-dock-glow) 45%, transparent);
+}
+
+.dock-btn.is-active::before {
+  position: absolute;
+  top: 22%;
+  bottom: 22%;
+  left: 0.32rem;
+  width: 1.5px;
+  border-radius: 99px;
+  background: var(--theme-dock-glow);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--theme-dock-glow) 70%, transparent);
+  content: "";
+}
+
+:root.dark .dock-btn.is-active {
+  box-shadow:
+    -1px -1px 1.5px rgba(255, 255, 255, 0.16),
+    4px 7px 12px rgba(0, 0, 0, 0.62),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 0 0 2px color-mix(in srgb, var(--theme-dock-glow) 50%, transparent);
+}
+
+.dock-rail > li.is-sep {
+  margin-top: 0.28rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid color-mix(in srgb, var(--theme-text) 10%, transparent);
+}
+
+.chip-wire {
+  --wire: var(--color-accent);
+  --wire-flow: color-mix(in srgb, white 78%, var(--wire));
+}
+
+.chip-wire.is-then {
+  --wire: var(--color-text-secondary);
+  --wire-flow: color-mix(in srgb, white 55%, var(--wire));
+}
+
+.chip-wire.is-error {
+  --wire: var(--color-danger);
+  --wire-flow: color-mix(in srgb, white 70%, var(--wire));
+}
+
+.chip-wire-glow {
+  stroke: var(--wire);
+  stroke-width: 8;
+  stroke-linecap: round;
+  opacity: 0.22;
+  filter: blur(1.6px);
+  pointer-events: none;
+}
+
+.chip-wire-trace {
+  stroke: var(--wire);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-dasharray: 2 7;
+  opacity: 0.38;
+  pointer-events: none;
+}
+
+.chip-wire-core {
+  stroke: var(--wire);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--wire) 80%, transparent));
+  pointer-events: none;
+}
+
+.chip-wire-flow {
+  stroke: var(--wire-flow);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-dasharray: 6 18;
+  opacity: 0.92;
+  animation: chip-wire-flow 0.95s linear infinite;
+  pointer-events: none;
+}
+
+.chip-wire.is-then .chip-wire-core {
+  stroke-dasharray: 7 5;
+}
+
+.chip-wire.is-then .chip-wire-flow {
+  animation-duration: 1.55s;
+  opacity: 0.62;
+}
+
+.chip-wire.is-error .chip-wire-flow {
+  animation-duration: 0.72s;
+}
+
+.chip-wire.is-selected .chip-wire-glow {
+  opacity: 0.38;
+  stroke-width: 10;
+}
+
+.chip-wire.is-selected .chip-wire-core {
+  stroke-width: 2.15;
+}
+
+.chip-wire.is-preview {
+  opacity: 0.78;
+}
+
+.chip-wire.is-preview .chip-wire-flow,
+.chip-wire.is-preview .chip-wire-chevron {
+  animation: none;
+}
+
+.chip-wire-chevron {
+  fill: none;
+  stroke: var(--wire-flow);
+  stroke-width: 1.55;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 3px var(--wire));
+  pointer-events: none;
+}
+
+.chip-wire-node {
+  fill: var(--color-canvas);
+  stroke: var(--wire);
+  stroke-width: 1.55;
+  filter: drop-shadow(0 0 4px var(--wire));
+  pointer-events: none;
+}
+
+.chip-wire-arrow {
+  fill: none;
+  stroke: var(--wire);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chip-wire-arrow.is-data {
+  --wire: var(--color-accent);
+}
+
+.chip-wire-arrow.is-then {
+  --wire: var(--color-text-secondary);
+}
+
+.chip-wire-arrow.is-error {
+  --wire: var(--color-danger);
+}
+
+@keyframes chip-wire-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip-wire-flow {
+    animation: none;
+  }
 }
 
 .ops-shell {
@@ -1020,26 +1422,49 @@ a {
 
 .dash-chart {
   position: relative;
+  min-height: 0;
 }
 
-.dash-chart-area {
-  pointer-events: none;
-  position: absolute;
-  inset: 0 0 1.4rem;
+.dash-chart canvas {
+  max-width: 100%;
+}
+
+.dash-chart-legend {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 6.5rem;
+}
+
+.dash-chart-legend-item {
+  display: flex;
   width: 100%;
-  height: auto;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.2rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
 }
 
-.dash-chart-grid {
-  stroke: var(--color-border);
-  stroke-width: 1;
+.dash-chart-legend-item:hover {
+  color: var(--color-text);
 }
 
-.dash-chart-line {
-  stroke: var(--color-accent);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.dash-chart-legend-item i {
+  display: block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.dash-chart-legend-item strong {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--color-text);
 }
 
 .dash-legend {
@@ -1058,31 +1483,6 @@ a {
   border-radius: 999px;
   vertical-align: 0.05rem;
 }
-
-.dash-funnel-stage {
-  display: block;
-  color: inherit;
-  text-decoration: none;
-}
-
-.dash-funnel-track {
-  display: block;
-  height: 0.55rem;
-  margin-top: 0.45rem;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--color-subtle);
-}
-
-.dash-funnel-fill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-}
-
-.dash-funnel-fill-accent { background: var(--color-accent); }
-.dash-funnel-fill-success { background: var(--color-success); }
-.dash-funnel-fill-warning { background: color-mix(in srgb, var(--color-warning) 70%, var(--color-border)); }
 
 .dash-feed-row {
   display: flex;
@@ -1118,6 +1518,7 @@ a {
 
 .dash-start {
   display: flex;
+  min-height: 0;
   align-items: center;
   gap: 0.75rem;
   padding: 0.7rem 0.8rem;
@@ -1144,5 +1545,50 @@ a {
   background: var(--color-surface);
   color: var(--color-accent);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+.dash-canvas {
+  position: relative;
+  min-height: calc(100vh - 12.5rem);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-canvas);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+.dash-canvas-wash {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      ellipse 85% 60% at 0% 0%,
+      color-mix(in srgb, var(--color-accent) 11%, transparent),
+      transparent 58%
+    ),
+    radial-gradient(
+      ellipse 70% 55% at 100% 100%,
+      color-mix(in srgb, var(--color-success) 9%, transparent),
+      transparent 54%
+    );
+}
+
+:root.dark .dash-canvas-wash {
+  background:
+    radial-gradient(
+      ellipse 85% 60% at 0% 0%,
+      color-mix(in srgb, var(--color-accent) 18%, transparent),
+      transparent 58%
+    ),
+    radial-gradient(
+      ellipse 75% 58% at 100% 108%,
+      color-mix(in srgb, var(--color-success) 12%, transparent),
+      transparent 52%
+    );
+}
+
+:root.dark .dash-canvas {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
 }
 

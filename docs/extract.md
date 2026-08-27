@@ -135,7 +135,7 @@ POST /api/jobs
 ### 5. 화면
 
 - `/connections`: 저장/테스트 + browse → 테이블 선택 후 `/db`로 이동
-- `/db` (`/query` 호환): 카탈로그·SQL 편집·미리보기. 결과 팝업의 결과 내보내기는 서버 파일을 만들고, 작업 등록은 `task_definitions`에 작업 1건만 INSERT한다.
+- `/db` (`/query` 호환): 카탈로그·SQL 편집·미리보기. 결과 팝업의 결과 내보내기는 서버 파일을 만들고, 칩 등록은 `chips`에 추출 칩 1건만 INSERT한다.
 - `/extracts`: 서버 파일 목록, queued/running이면 2초 폴링, 성공 시 다운로드
 - `/transform`: 완료된 extract가 Dataset 카탈로그에 등록되어 변환 입력으로 표시
 - `/workspace`: 같은 Extract 설정을 재사용 가능한 작업으로 저장하고 반복 실행

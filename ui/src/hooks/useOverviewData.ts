@@ -4,7 +4,7 @@ import { datasetApi } from "@/services/datasetApi";
 import { extractApi } from "@/services/extractApi";
 import { jobApi } from "@/services/jobApi";
 import { systemApi } from "@/services/systemApi";
-import { taskApi } from "@/services/taskApi";
+import { chipApi } from "@/services/chipApi";
 import { workspaceApi } from "@/services/workspaceApi";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { toastError } from "@/lib/notifications";
@@ -18,7 +18,7 @@ export function useOverviewData() {
   const [recentJobs, setRecentJobs] = useState<EtlJob[]>([]);
   const [recentExtracts, setRecentExtracts] = useState<ExtractRecord[]>([]);
   const [workspaceCount, setWorkspaceCount] = useState(0);
-  const [activeTaskCount, setActiveTaskCount] = useState(0);
+  const [activeChipCount, setActiveChipCount] = useState(0);
   const [datasetCount, setDatasetCount] = useState(0);
   const [connectionCount, setConnectionCount] = useState(0);
 
@@ -40,10 +40,10 @@ export function useOverviewData() {
         setConnectionCount(connections.connections.length);
         const taskLists = await Promise.all(
           workspaces.workspaces.map((workspace) =>
-            taskApi.list(workspace.id).then((response) => response.tasks).catch(() => []),
+            chipApi.list(workspace.id).then((response) => response.chips).catch(() => []),
           ),
         );
-        setActiveTaskCount(taskLists.flat().filter((task) => task.active).length);
+        setActiveChipCount(taskLists.flat().filter((chip) => chip.active).length);
       })
       .catch((error) => toastError(messages.errors.overview, error));
   }, [messages]);
@@ -53,7 +53,7 @@ export function useOverviewData() {
     recentJobs,
     recentExtracts,
     workspaceCount,
-    activeTaskCount,
+    activeChipCount,
     datasetCount,
     connectionCount,
   };

@@ -1,23 +1,24 @@
-import { DragEvent, FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { DatabaseZap, FolderOpen, RefreshCw, RotateCcw, Save, Workflow, X, type LucideIcon } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronRight, CircleAlert, DatabaseZap, Folder, FolderKanban, FolderOpen, FolderPlus, Layers, RefreshCw, RotateCcw, Save, Spline, Workflow, X, type LucideIcon } from "lucide-react";
 import { SplitLayout } from "@/components/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
 import { fmtWhen } from "@/lib/format";
 import { layout } from "@/lib/layout";
 import { showConfirm } from "@/lib/notifications";
 import { connectionApi } from "@/services/connectionApi";
 import { datasetApi } from "@/services/datasetApi";
-import { taskApi } from "@/services/taskApi";
+import { chipApi } from "@/services/chipApi";
 import { workspaceApi } from "@/services/workspaceApi";
 import type { DataConnection } from "@/types/connection";
 import type { Dataset } from "@/types/dataset";
-import type { TaskConfig, TaskDefinition, TaskKind, TaskRun } from "@/types/task";
-import type { Workspace, WorkspaceLayout } from "@/types/workspace";
+import type { Chip, ChipConfig, ChipEdge, ChipEdgeKind, ChipKind, ChipRun } from "@/types/chip";
+import type { Workspace, WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
 
 const EMPTY_SPEC = JSON.stringify(
   { version: 2, sink: "parquet", steps: [] },
@@ -26,33 +27,38 @@ const EMPTY_SPEC = JSON.stringify(
 );
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const TOOL_KIND = "application/x-bintl-tool";
-const NODE_W = 128;
-const NODE_H = 120;
-const CANVAS_MIN_W = 2400;
-const CANVAS_MIN_H = 1600;
-const CANVAS_PAD = 280;
+const NODE_W = 100;
+const NODE_H = 96;
+const CANVAS_W = 3200;
+const CANVAS_H = 2200;
 const CANVAS_EDGE = 56;
 const CANVAS_SCROLL_STEP = 18;
+const MINIMAP_W = 168;
+const MINIMAP_H = 116;
 
 type Point = { x: number; y: number };
-type CanvasSnapshot = { tasks: TaskDefinition[]; positions: Record<string, Point> };
+type CanvasSnapshot = { chips: Chip[]; positions: Record<string, Point>; edges: ChipEdge[] };
 
-function cloneCanvas(tasks: TaskDefinition[], positions: Record<string, Point>): CanvasSnapshot {
-  return JSON.parse(JSON.stringify({ tasks, positions })) as CanvasSnapshot;
+function cloneCanvas(
+  chips: Chip[],
+  positions: Record<string, Point>,
+  edges: ChipEdge[],
+): CanvasSnapshot {
+  return JSON.parse(JSON.stringify({ chips, positions, edges })) as CanvasSnapshot;
 }
 
-function textValue(config: TaskConfig, key: string, fallback = ""): string {
+function textValue(config: ChipConfig, key: string, fallback = ""): string {
   return typeof config[key] === "string" ? config[key] as string : fallback;
 }
 
-function boolValue(config: TaskConfig, key: string, fallback: boolean): boolean {
+function boolValue(config: ChipConfig, key: string, fallback: boolean): boolean {
   return typeof config[key] === "boolean" ? config[key] as boolean : fallback;
 }
 
-function objectValue(config: TaskConfig, key: string): TaskConfig {
+function objectValue(config: ChipConfig, key: string): ChipConfig {
   const value = config[key];
   return value && typeof value === "object" && !Array.isArray(value)
-    ? value as TaskConfig
+    ? value as ChipConfig
     : {};
 }
 
@@ -60,7 +66,7 @@ function nodesFromLayout(layout?: WorkspaceLayout): Record<string, Point> {
   return layout?.nodes ?? {};
 }
 
-function draftConfig(kind: "extract" | "transform"): TaskConfig {
+function draftConfig(kind: "extract" | "transform"): ChipConfig {
   if (kind === "extract") {
     return {
       connection_id: "",
@@ -73,10 +79,10 @@ function draftConfig(kind: "extract" | "transform"): TaskConfig {
 }
 
 function fallbackPoint(index: number): Point {
-  return { x: 112 + (index % 4) * 156, y: 40 + Math.floor(index / 4) * 132 };
+  return { x: 96 + (index % 5) * 128, y: 48 + Math.floor(index / 5) * 112 };
 }
 
-function clampPoint(point: Point, bounds: { width: number; height: number }): Point {
+function clampPoint(point: Point, bounds: { width: number; height: number } = { width: CANVAS_W, height: CANVAS_H }): Point {
   return {
     x: Math.max(16, Math.min(point.x, Math.max(16, bounds.width - NODE_W - 16))),
     y: Math.max(16, Math.min(point.y, Math.max(16, bounds.height - NODE_H - 16))),
@@ -88,22 +94,6 @@ function canvasPoint(canvas: HTMLElement, clientX: number, clientY: number): Poi
   return {
     x: clientX - rect.left + canvas.scrollLeft,
     y: clientY - rect.top + canvas.scrollTop,
-  };
-}
-
-function worldSize(
-  positions: Record<string, Point>,
-  viewport: { width: number; height: number },
-): { width: number; height: number } {
-  let maxX = 0;
-  let maxY = 0;
-  for (const point of Object.values(positions)) {
-    maxX = Math.max(maxX, point.x + NODE_W);
-    maxY = Math.max(maxY, point.y + NODE_H);
-  }
-  return {
-    width: Math.max(CANVAS_MIN_W, viewport.width, maxX + CANVAS_PAD),
-    height: Math.max(CANVAS_MIN_H, viewport.height, maxY + CANVAS_PAD),
   };
 }
 
@@ -127,6 +117,157 @@ function omitPoint(positions: Record<string, Point>, id: string): Record<string,
   const next = { ...positions };
   delete next[id];
   return next;
+}
+
+type PortSide = "left" | "right" | "top" | "bottom";
+
+type EdgeGeometry = {
+  d: string;
+  start: Point;
+  end: Point;
+  c1: Point;
+  c2: Point;
+  fromSide: PortSide;
+  toSide: PortSide;
+};
+
+function chipCenter(point: Point): Point {
+  return { x: point.x + NODE_W / 2, y: point.y + NODE_H / 2 };
+}
+
+function portPoint(chip: Point, side: PortSide): Point {
+  if (side === "top") return { x: chip.x + NODE_W / 2, y: chip.y };
+  if (side === "bottom") return { x: chip.x + NODE_W / 2, y: chip.y + NODE_H };
+  return {
+    x: side === "right" ? chip.x + NODE_W : chip.x,
+    y: chip.y + NODE_H / 2,
+  };
+}
+
+function oppositeSide(side: PortSide): PortSide {
+  if (side === "left") return "right";
+  if (side === "right") return "left";
+  if (side === "top") return "bottom";
+  return "top";
+}
+
+function asPortSide(value: string, fallback: PortSide = "right"): PortSide {
+  if (value === "left" || value === "right" || value === "top" || value === "bottom") return value;
+  return fallback;
+}
+
+function routeSides(from: Point, to: Point): { fromSide: PortSide; toSide: PortSide } {
+  const a = chipCenter(from);
+  const b = chipCenter(to);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  if (Math.abs(dy) > Math.abs(dx)) {
+    return dy < 0
+      ? { fromSide: "top", toSide: "bottom" }
+      : { fromSide: "bottom", toSide: "top" };
+  }
+  return dx < 0
+    ? { fromSide: "left", toSide: "right" }
+    : { fromSide: "right", toSide: "left" };
+}
+
+function exitControl(point: Point, side: PortSide, dist: number): Point {
+  if (side === "top") return { x: point.x, y: point.y - dist };
+  if (side === "bottom") return { x: point.x, y: point.y + dist };
+  return {
+    x: side === "right" ? point.x + dist : point.x - dist,
+    y: point.y,
+  };
+}
+
+function cubicPath(start: Point, c1: Point, c2: Point, end: Point): string {
+  return `M ${start.x} ${start.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`;
+}
+
+function controlDistance(start: Point, end: Point) {
+  return Math.max(64, Math.hypot(end.x - start.x, end.y - start.y) * 0.42);
+}
+
+function edgeGeometry(from: Point, to: Point): EdgeGeometry {
+  const { fromSide, toSide } = routeSides(from, to);
+  const start = portPoint(from, fromSide);
+  const end = portPoint(to, toSide);
+  const dist = controlDistance(start, end);
+  const c1 = exitControl(start, fromSide, dist);
+  const c2 = exitControl(end, toSide, dist);
+  return { d: cubicPath(start, c1, c2, end), start, end, c1, c2, fromSide, toSide };
+}
+
+function previewGeometry(from: Point, cursor: Point, fromSide: PortSide): EdgeGeometry {
+  const center = chipCenter(from);
+  const dx = cursor.x - center.x;
+  const dy = cursor.y - center.y;
+  const side: PortSide = Math.abs(dx) < 8 && Math.abs(dy) < 8
+    ? fromSide
+    : Math.abs(dy) > Math.abs(dx)
+      ? (dy < 0 ? "top" : "bottom")
+      : (dx < 0 ? "left" : "right");
+  const toSide = oppositeSide(side);
+  const start = portPoint(from, side);
+  const dist = controlDistance(start, cursor);
+  const c1 = exitControl(start, side, dist);
+  const c2 = exitControl(cursor, toSide, dist * 0.55);
+  return {
+    d: cubicPath(start, c1, c2, cursor),
+    start,
+    end: cursor,
+    c1,
+    c2,
+    fromSide: side,
+    toSide,
+  };
+}
+
+function cubicAt(start: Point, c1: Point, c2: Point, end: Point, t: number): Point {
+  const u = 1 - t;
+  return {
+    x: u * u * u * start.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * end.x,
+    y: u * u * u * start.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * end.y,
+  };
+}
+
+function cubicTangent(start: Point, c1: Point, c2: Point, end: Point, t: number): Point {
+  const u = 1 - t;
+  return {
+    x: 3 * u * u * (c1.x - start.x) + 6 * u * t * (c2.x - c1.x) + 3 * t * t * (end.x - c2.x),
+    y: 3 * u * u * (c1.y - start.y) + 6 * u * t * (c2.y - c1.y) + 3 * t * t * (end.y - c2.y),
+  };
+}
+
+function flowMarks(geo: EdgeGeometry): Array<Point & { angle: number }> {
+  return [0.34, 0.52, 0.7].map((t) => {
+    const point = cubicAt(geo.start, geo.c1, geo.c2, geo.end, t);
+    const tangent = cubicTangent(geo.start, geo.c1, geo.c2, geo.end, t);
+    return {
+      ...point,
+      angle: (Math.atan2(tangent.y, tangent.x) * 180) / Math.PI,
+    };
+  });
+}
+
+function wireTone(kind: ChipEdgeKind): "is-data" | "is-then" | "is-error" {
+  if (kind === "on_error") return "is-error";
+  if (kind === "then") return "is-then";
+  return "is-data";
+}
+
+function defaultEdgeKind(fromKind: ChipKind, toKind: ChipKind): ChipEdgeKind {
+  if (
+    (fromKind === "extract" || fromKind === "transform")
+    && (toKind === "transform" || toKind === "load")
+  ) {
+    return "data";
+  }
+  return "then";
+}
+
+function incomingDataEdge(edges: ChipEdge[], chipId: string): ChipEdge | undefined {
+  return edges.find((edge) => edge.to_chip_id === chipId && edge.kind === "data");
 }
 
 function ShortcutHint({ keys, label }: { keys: string[]; label: string }) {
@@ -160,6 +301,8 @@ function ToolIconButton({
   icon: Icon,
   disabled,
   spinning,
+  pressed,
+  separate,
   draggable = false,
   onDragStart,
   onDragEnd,
@@ -170,6 +313,8 @@ function ToolIconButton({
   icon: LucideIcon;
   disabled?: boolean;
   spinning?: boolean;
+  pressed?: boolean;
+  separate?: boolean;
   draggable?: boolean;
   onDragStart?: (event: DragEvent<HTMLButtonElement>) => void;
   onDragEnd?: () => void;
@@ -179,7 +324,7 @@ function ToolIconButton({
 
   return (
     <li
-      className="relative"
+      className={cn("relative", separate && "is-sep")}
       onMouseEnter={() => setTipOpen(true)}
       onMouseLeave={() => setTipOpen(false)}
     >
@@ -188,7 +333,8 @@ function ToolIconButton({
         draggable={draggable && !disabled}
         disabled={disabled}
         aria-label={`${label}. ${hint}`}
-        className="dock-btn"
+        aria-pressed={pressed}
+        className={cn("dock-btn", pressed && "is-active")}
         onDragStart={(event) => {
           setTipOpen(false);
           onDragStart?.(event);
@@ -210,17 +356,345 @@ function ToolIconButton({
   );
 }
 
+function ChipLinkHandle({
+  side,
+  label,
+  kind,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+}: {
+  side: PortSide;
+  label: string;
+  kind: ChipEdgeKind;
+  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn("chip-link", `is-${side}`, `is-${kind}`)}
+      aria-label={label}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+    >
+      <svg viewBox="0 0 18 14" aria-hidden="true">
+        <path
+          d="M2 7 H11"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+        />
+        <path
+          d="M9 3 L15 7 L9 11"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+function EdgeWire({
+  geo,
+  kind,
+  selected = false,
+  preview = false,
+  onClick,
+}: {
+  geo: EdgeGeometry;
+  kind: ChipEdgeKind;
+  selected?: boolean;
+  preview?: boolean;
+  onClick?: (event: ReactMouseEvent<SVGPathElement>) => void;
+}) {
+  const marks = preview ? [] : flowMarks(geo);
+  return (
+    <g className={cn("chip-wire", wireTone(kind), selected && "is-selected", preview && "is-preview")}>
+      {onClick ? (
+        <path
+          d={geo.d}
+          fill="none"
+          stroke="transparent"
+          strokeWidth={16}
+          className="pointer-events-auto cursor-pointer"
+          onClick={onClick}
+        />
+      ) : null}
+      <path d={geo.d} fill="none" className="chip-wire-glow" />
+      <path d={geo.d} fill="none" className="chip-wire-trace" />
+      <path d={geo.d} fill="none" className="chip-wire-core" markerEnd={`url(#chip-wire-arrow-${kind})`} />
+      <path d={geo.d} fill="none" className="chip-wire-flow" />
+      {marks.map((mark, index) => (
+        <path
+          key={`${mark.x}-${mark.y}-${index}`}
+          className="chip-wire-chevron"
+          d="M -7 -4.2 L 0.4 0 L -7 4.2"
+          transform={`translate(${mark.x} ${mark.y}) rotate(${mark.angle})`}
+        />
+      ))}
+      <polygon
+        className="chip-wire-node"
+        points={`${geo.start.x},${geo.start.y - 4} ${geo.start.x + 4},${geo.start.y} ${geo.start.x},${geo.start.y + 4} ${geo.start.x - 4},${geo.start.y}`}
+      />
+    </g>
+  );
+}
+
+function LayerGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="workspace-rail-group">
+      <h3 className="px-1 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
+        {title}
+      </h3>
+      <ul className="space-y-1">{children}</ul>
+    </section>
+  );
+}
+
+function LayerRow({
+  active,
+  icon: Icon,
+  iconClassName,
+  label,
+  meta,
+  onClick,
+}: {
+  active?: boolean;
+  icon: LucideIcon;
+  iconClassName?: string;
+  label: string;
+  meta?: string;
+  onClick: () => void;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        className={cn(
+          "flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left outline-none transition-colors",
+          active
+            ? "bg-accent-subtle text-accent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--theme-accent)_28%,transparent)]"
+            : "hover:bg-subtle",
+        )}
+        onClick={onClick}
+      >
+        <span className={cn(
+          "grid size-7 shrink-0 place-items-center rounded-lg",
+          active ? "bg-surface" : "bg-subtle",
+        )}>
+          <Icon className={cn("size-3.5", iconClassName)} aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text">{label}</span>
+        {meta ? (
+          <span className="shrink-0 rounded-full bg-subtle px-1.5 py-0.5 text-[10px] text-text-tertiary">
+            {meta}
+          </span>
+        ) : null}
+      </button>
+    </li>
+  );
+}
+
+function WorkspaceLayers({
+  chips,
+  edges,
+  chipId,
+  selectedEdgeId,
+  messages,
+  emptyHint,
+  onSelectChip,
+  onSelectEdge,
+}: {
+  chips: Chip[];
+  edges: ChipEdge[];
+  chipId?: string;
+  selectedEdgeId: string | null;
+  messages: Messages;
+  emptyHint: string;
+  onSelectChip: (id: string) => void;
+  onSelectEdge: (id: string) => void;
+}) {
+  const extracts = chips.filter((chip) => chip.kind === "extract");
+  const transforms = chips.filter((chip) => chip.kind === "transform");
+  const nameOf = (id: string) => chips.find((chip) => chip.id === id)?.name ?? id.slice(0, 8);
+  const kindLabel = (kind: ChipEdgeKind) =>
+    kind === "data"
+      ? messages.workspace.edgeData
+      : kind === "then"
+        ? messages.workspace.edgeThen
+        : messages.workspace.edgeOnError;
+
+  if (chips.length === 0 && edges.length === 0) {
+    return <p className="text-sm text-text-secondary">{emptyHint}</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <h2 className="flex items-center gap-2 text-sm font-semibold text-text">
+        <Layers className="size-3.5 text-text-secondary" aria-hidden="true" />
+        {messages.workspace.layers}
+      </h2>
+      <LayerGroup title={messages.workspace.layerExtracts(extracts.length)}>
+        {extracts.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : (
+          extracts.map((chip) => (
+            <LayerRow
+              key={chip.id}
+              active={chip.id === chipId}
+              icon={DatabaseZap}
+              iconClassName="text-accent"
+              label={chip.name}
+              onClick={() => onSelectChip(chip.id)}
+            />
+          ))
+        )}
+      </LayerGroup>
+      <LayerGroup title={messages.workspace.layerTransforms(transforms.length)}>
+        {transforms.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : (
+          transforms.map((chip) => (
+            <LayerRow
+              key={chip.id}
+              active={chip.id === chipId}
+              icon={Workflow}
+              iconClassName="text-success"
+              label={chip.name}
+              onClick={() => onSelectChip(chip.id)}
+            />
+          ))
+        )}
+      </LayerGroup>
+      <LayerGroup title={messages.workspace.layerEdges(edges.length)}>
+        {edges.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : (
+          edges.map((edge) => (
+            <LayerRow
+              key={edge.id}
+              active={edge.id === selectedEdgeId}
+              icon={Spline}
+              iconClassName={
+                edge.kind === "on_error"
+                  ? "text-danger"
+                  : edge.kind === "then"
+                    ? "text-text-secondary"
+                    : "text-accent"
+              }
+              label={`${nameOf(edge.from_chip_id)} → ${nameOf(edge.to_chip_id)}`}
+              meta={kindLabel(edge.kind)}
+              onClick={() => onSelectEdge(edge.id)}
+            />
+          ))
+        )}
+      </LayerGroup>
+    </div>
+  );
+}
+
+function WorkspaceMinimap({
+  chips,
+  positions,
+  scroll,
+  view,
+  label,
+  onJump,
+}: {
+  chips: Chip[];
+  positions: Record<string, Point>;
+  scroll: Point;
+  view: { width: number; height: number };
+  label: string;
+  onJump: (worldX: number, worldY: number) => void;
+}) {
+  const scale = Math.min(MINIMAP_W / CANVAS_W, MINIMAP_H / CANVAS_H);
+  const mapW = CANVAS_W * scale;
+  const mapH = CANVAS_H * scale;
+  const viewLeft = scroll.x * scale;
+  const viewTop = scroll.y * scale;
+  const viewW = Math.min(mapW, view.width * scale);
+  const viewH = Math.min(mapH, view.height * scale);
+
+  function pointFromEvent(event: ReactPointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / mapW) * CANVAS_W,
+      y: ((event.clientY - rect.top) / mapH) * CANVAS_H,
+    };
+  }
+
+  return (
+    <div
+      className="workspace-minimap"
+      role="navigation"
+      aria-label={label}
+      style={{ width: mapW, height: mapH }}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        const point = pointFromEvent(event);
+        onJump(point.x, point.y);
+      }}
+      onPointerMove={(event) => {
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        const point = pointFromEvent(event);
+        onJump(point.x, point.y);
+      }}
+    >
+      <div className="workspace-minimap-world" aria-hidden="true">
+        {chips.map((chip) => {
+          const point = positions[chip.id];
+          if (!point) return null;
+          return (
+            <span
+              key={chip.id}
+              className={cn(
+                "workspace-minimap-chip",
+                chip.kind === "extract" ? "is-extract" : "is-transform",
+              )}
+              style={{
+                left: point.x * scale,
+                top: point.y * scale,
+                width: Math.max(3, NODE_W * scale),
+                height: Math.max(3, NODE_H * scale),
+              }}
+            />
+          );
+        })}
+        <span
+          className="workspace-minimap-view"
+          style={{ left: viewLeft, top: viewTop, width: viewW, height: viewH }}
+        />
+      </div>
+    </div>
+  );
+}
+
 export function WorkspacePage() {
   const { messages } = useLanguage();
   const navigate = useNavigate();
-  const { workspaceId, taskId } = useParams<{ workspaceId: string; taskId: string }>();
+  const { workspaceId, chipId } = useParams<{ workspaceId: string; chipId: string }>();
   const currentWorkspaceRef = useRef(workspaceId);
   const logRequestRef = useRef(0);
   const refreshRequestRef = useRef(0);
   const canvasRef = useRef<HTMLDivElement>(null);
   const pendingViewRef = useRef<Point | null>(null);
   const positionsRef = useRef<Record<string, Point>>({});
-  const savedRef = useRef<CanvasSnapshot>({ tasks: [], positions: {} });
+  const savedRef = useRef<CanvasSnapshot>({ chips: [], positions: {}, edges: [] });
   const savedIdsRef = useRef(new Set<string>());
   const confirmingSaveRef = useRef(false);
   const dirtyRef = useRef(false);
@@ -236,11 +710,23 @@ export function WorkspacePage() {
     startY: number;
     moved: boolean;
   } | null>(null);
+  const panRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    scrollLeft: number;
+    scrollTop: number;
+    moved: boolean;
+  } | null>(null);
   currentWorkspaceRef.current = workspaceId;
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [tasks, setTasks] = useState<TaskDefinition[]>([]);
-  const [runs, setRuns] = useState<TaskRun[]>([]);
+  const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [chips, setChips] = useState<Chip[]>([]);
+  const [edges, setEdges] = useState<ChipEdge[]>([]);
+  const [runs, setRuns] = useState<ChipRun[]>([]);
   const [connections, setConnections] = useState<DataConnection[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [positions, setPositions] = useState<Record<string, Point>>({});
@@ -252,12 +738,26 @@ export function WorkspacePage() {
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
+  const [folderName, setFolderName] = useState("");
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [canvasView, setCanvasView] = useState({ width: 800, height: 600 });
+  const [canvasScroll, setCanvasScroll] = useState({ x: 0, y: 0 });
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [edgeTool, setEdgeTool] = useState<ChipEdgeKind>("data");
+  const [linking, setLinking] = useState<{
+    fromId: string;
+    kind: ChipEdgeKind;
+    fromSide: PortSide;
+    x: number;
+    y: number;
+  } | null>(null);
+  const linkingRef = useRef(linking);
+  linkingRef.current = linking;
 
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<TaskKind>("extract");
+  const [kind, setKind] = useState<ChipKind>("extract");
   const [mode, setMode] = useState("table");
   const [connectionId, setConnectionId] = useState("");
   const [database, setDatabase] = useState("");
@@ -272,20 +772,18 @@ export function WorkspacePage() {
   busyRef.current = busy;
 
   const selectedWorkspace = workspaces.find((item) => item.id === workspaceId);
-  const selectedTask = tasks.find(
-    (item) => item.id === taskId && item.workspace_id === workspaceId,
+  const selectedChip = chips.find(
+    (item) => item.id === chipId && item.workspace_id === workspaceId,
   );
+  const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const hasActiveRun = runs.some((run) => ACTIVE_STATUSES.has(run.status));
   const selectedRuns = useMemo(
-    () => runs.filter((run) => run.task_id === selectedTask?.id).slice(0, 5),
-    [runs, selectedTask?.id],
+    () => runs.filter((run) => run.chip_id === selectedChip?.id).slice(0, 5),
+    [runs, selectedChip?.id],
   );
-  const canvasWorld = useMemo(
-    () => worldSize(positions, canvasView),
-    [canvasView, positions],
-  );
+  const canvasWorld = useMemo(() => ({ width: CANVAS_W, height: CANVAS_H }), []);
 
-  function resetTaskForm() {
+  function resetChipForm() {
     setName("");
     setKind("extract");
     setMode("table");
@@ -299,19 +797,105 @@ export function WorkspacePage() {
     setSpec(EMPTY_SPEC);
   }
 
-  function rememberSaved(nextTasks: TaskDefinition[], nextPositions: Record<string, Point>) {
-    savedRef.current = cloneCanvas(nextTasks, nextPositions);
-    savedIdsRef.current = new Set(nextTasks.map((task) => task.id));
+  function rememberSaved(
+    nextChips: Chip[],
+    nextPositions: Record<string, Point>,
+    nextEdges: ChipEdge[],
+  ) {
+    savedRef.current = cloneCanvas(nextChips, nextPositions, nextEdges);
+    savedIdsRef.current = new Set(nextChips.map((chip) => chip.id));
     setDirty(false);
   }
 
-  function positionsFrom(nextTasks: TaskDefinition[], layout?: WorkspaceLayout) {
+  function positionsFrom(nextChips: Chip[], layout?: WorkspaceLayout) {
     const stored = nodesFromLayout(layout);
     const next: Record<string, Point> = {};
-    nextTasks.forEach((task, index) => {
-      next[task.id] = stored[task.id] ?? fallbackPoint(index);
+    nextChips.forEach((chip, index) => {
+      next[chip.id] = stored[chip.id] ?? fallbackPoint(index);
     });
     return next;
+  }
+
+  function markDirty(
+    nextChips: Chip[],
+    nextPositions: Record<string, Point>,
+    nextEdges: ChipEdge[],
+  ) {
+    const saved = savedRef.current;
+    const dirtyNow = nextChips.length !== saved.chips.length
+      || nextEdges.length !== saved.edges.length
+      || nextChips.some((chip) => {
+        const original = saved.chips.find((item) => item.id === chip.id);
+        return !original
+          || original.name !== chip.name
+          || JSON.stringify(original.config) !== JSON.stringify(chip.config);
+      })
+      || nextChips.some((chip) => {
+        const currentPoint = nextPositions[chip.id];
+        const savedPoint = saved.positions[chip.id];
+        return !currentPoint || !savedPoint
+          || currentPoint.x !== savedPoint.x
+          || currentPoint.y !== savedPoint.y;
+      })
+      || nextEdges.some((edge) => {
+        const original = saved.edges.find((item) => item.id === edge.id);
+        return !original
+          || original.kind !== edge.kind
+          || original.from_chip_id !== edge.from_chip_id
+          || original.to_chip_id !== edge.to_chip_id;
+      });
+    setDirty(dirtyNow);
+  }
+
+  function dropEdgeLocally(edgeId: string) {
+    const nextEdges = edges.filter((edge) => edge.id !== edgeId);
+    setEdges(nextEdges);
+    setSelectedEdgeId((current) => (current === edgeId ? null : current));
+    markDirty(chips, positionsRef.current, nextEdges);
+  }
+
+  function connectChips(fromId: string, toId: string, kindValue: ChipEdgeKind) {
+    if (fromId === toId) return;
+    const from = chips.find((chip) => chip.id === fromId);
+    const to = chips.find((chip) => chip.id === toId);
+    if (!from || !to || !workspaceId) return;
+    const kind = kindValue === "data" ? defaultEdgeKind(from.kind, to.kind) === "data" ? "data" : "then" : kindValue;
+    if (kind === "data" && defaultEdgeKind(from.kind, to.kind) !== "data") return;
+    if (edges.some((edge) =>
+      edge.from_chip_id === fromId && edge.to_chip_id === toId && edge.kind === kind
+    )) {
+      return;
+    }
+    const fromPoint = positionsRef.current[fromId] ?? fallbackPoint(0);
+    const toPoint = positionsRef.current[toId] ?? fallbackPoint(0);
+    const route = routeSides(fromPoint, toPoint);
+    const created: ChipEdge = {
+      id: crypto.randomUUID(),
+      workspace_id: workspaceId,
+      from_chip_id: fromId,
+      to_chip_id: toId,
+      kind,
+      from_port: route.fromSide,
+      to_port: route.toSide,
+    };
+    const nextEdges = [...edges, created];
+    setEdges(nextEdges);
+    setSelectedEdgeId(created.id);
+    markDirty(chips, positionsRef.current, nextEdges);
+  }
+
+  function changeEdgeKind(edgeId: string, kindValue: ChipEdgeKind) {
+    const current = edges.find((edge) => edge.id === edgeId);
+    if (!current) return;
+    const from = chips.find((chip) => chip.id === current.from_chip_id);
+    const to = chips.find((chip) => chip.id === current.to_chip_id);
+    if (!from || !to) return;
+    if (kindValue === "data" && defaultEdgeKind(from.kind, to.kind) !== "data") return;
+    const nextEdges = edges.map((edge) =>
+      edge.id === edgeId ? { ...edge, kind: kindValue } : edge,
+    );
+    setEdges(nextEdges);
+    markDirty(chips, positionsRef.current, nextEdges);
   }
 
   useEffect(() => {
@@ -325,15 +909,24 @@ export function WorkspacePage() {
     setLoading(true);
     Promise.all([
       workspaceApi.list(),
+      workspaceApi.listFolders(),
       connectionApi.getConnections(),
       datasetApi.list(),
     ])
-      .then(([workspaceResponse, connectionResponse, datasetResponse]) => {
+      .then(([workspaceResponse, folderResponse, connectionResponse, datasetResponse]) => {
         if (cancelled) return;
         setWorkspaces(workspaceResponse.workspaces);
+        setFolders(folderResponse.folders);
+        setExpandedFolders((current) => {
+          const next = { ...current };
+          for (const folder of folderResponse.folders) {
+            if (next[folder.id] === undefined) next[folder.id] = true;
+          }
+          return next;
+        });
         setConnections(connectionResponse.connections);
         setDatasets(datasetResponse.datasets);
-        if (!workspaceId && workspaceResponse.workspaces[0]) {
+        if (!workspaceId && workspaceResponse.workspaces.length > 0) {
           navigate(`/workspace/${workspaceResponse.workspaces[0].id}`, { replace: true });
         }
       })
@@ -350,10 +943,11 @@ export function WorkspacePage() {
 
   useEffect(() => {
     if (!workspaceId) {
-      setTasks([]);
+      setChips([]);
+      setEdges([]);
       setRuns([]);
       setPositions({});
-      rememberSaved([], {});
+      rememberSaved([], {}, []);
       pendingViewRef.current = null;
       return;
     }
@@ -363,10 +957,10 @@ export function WorkspacePage() {
     setError("");
     Promise.all([
       workspaceApi.get(workspaceId),
-      taskApi.list(workspaceId),
-      taskApi.listRuns(workspaceId),
+      chipApi.list(workspaceId),
+      chipApi.listRuns(workspaceId),
     ])
-      .then(([workspace, taskResponse, runResponse]) => {
+      .then(([workspace, chipResponse, runResponse]) => {
         if (cancelled) return;
         setWorkspaces((current) => {
           const exists = current.some((item) => item.id === workspace.id);
@@ -374,12 +968,14 @@ export function WorkspacePage() {
             ? current.map((item) => (item.id === workspace.id ? workspace : item))
             : [...current, workspace];
         });
-        const nextPositions = positionsFrom(taskResponse.tasks, workspace.layout);
+        const nextPositions = positionsFrom(chipResponse.chips, workspace.layout);
+        const nextEdges = workspace.edges ?? [];
         pendingViewRef.current = workspace.layout.view ?? { x: 0, y: 0 };
-        setTasks(taskResponse.tasks);
+        setChips(chipResponse.chips);
+        setEdges(nextEdges);
         setRuns(runResponse.runs);
         setPositions(nextPositions);
-        rememberSaved(taskResponse.tasks, nextPositions);
+        rememberSaved(chipResponse.chips, nextPositions, nextEdges);
       })
       .catch((reason: unknown) => {
         if (!cancelled) setError(`${messages.workspace.loadError}: ${String(reason)}`);
@@ -397,11 +993,16 @@ export function WorkspacePage() {
     if (!canvas) return;
     const update = () => {
       setCanvasView({ width: canvas.clientWidth, height: canvas.clientHeight });
+      setCanvasScroll({ x: canvas.scrollLeft, y: canvas.scrollTop });
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(canvas);
-    return () => observer.disconnect();
+    canvas.addEventListener("scroll", update, { passive: true });
+    return () => {
+      observer.disconnect();
+      canvas.removeEventListener("scroll", update);
+    };
   }, [workspaceId]);
 
   useEffect(() => {
@@ -418,7 +1019,7 @@ export function WorkspacePage() {
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const response = await taskApi.listRuns(workspaceId);
+        const response = await chipApi.listRuns(workspaceId);
         if (cancelled) return;
         const stillActive = response.runs.some((run) => ACTIVE_STATUSES.has(run.status));
         if (stillActive) {
@@ -447,13 +1048,13 @@ export function WorkspacePage() {
   }, [hasActiveRun, messages, workspaceId]);
 
   useEffect(() => {
-    if (!selectedTask) {
-      if (!taskId) resetTaskForm();
+    if (!selectedChip) {
+      if (!chipId) resetChipForm();
       return;
     }
-    const config = selectedTask.config;
-    setName(selectedTask.name);
-    setKind(selectedTask.kind);
+    const config = selectedChip.config;
+    setName(selectedChip.name);
+    setKind(selectedChip.kind);
     const source = objectValue(config, "source");
     setMode(textValue(source, "type", "table"));
     setConnectionId(textValue(config, "connection_id"));
@@ -467,10 +1068,23 @@ export function WorkspacePage() {
     setSpec(savedSpec && typeof savedSpec === "object"
       ? JSON.stringify(savedSpec, null, 2)
       : EMPTY_SPEC);
-  }, [selectedTask, taskId]);
+  }, [selectedChip, chipId]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setLinking(null);
+        setSelectedEdgeId(null);
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (isEditableTarget(event.target)) return;
+        if (selectedEdgeId && !busyRef.current) {
+          event.preventDefault();
+          dropEdgeLocally(selectedEdgeId);
+        }
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       const key = event.key.toLowerCase();
       if (key === "s") {
@@ -489,7 +1103,7 @@ export function WorkspacePage() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [workspaceId]);
+  }, [selectedEdgeId, workspaceId]);
 
   async function createWorkspace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -497,7 +1111,10 @@ export function WorkspacePage() {
     setBusy(true);
     setError("");
     try {
-      const created = await workspaceApi.create({ name: workspaceName.trim() });
+      const created = await workspaceApi.create({
+        name: workspaceName.trim(),
+        folder_id: selectedFolderId,
+      });
       if (currentWorkspaceRef.current !== requestWorkspaceId) return;
       setWorkspaces((current) => [...current, created]);
       setWorkspaceName("");
@@ -512,7 +1129,28 @@ export function WorkspacePage() {
     }
   }
 
-  function taskConfig(): TaskConfig {
+  async function createFolder(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const created = await workspaceApi.createFolder({
+        name: folderName.trim(),
+        parent_id: selectedFolderId,
+      });
+      setFolders((current) => [...current, created]);
+      setExpandedFolders((current) => ({ ...current, [created.id]: true }));
+      setSelectedFolderId(created.id);
+      setFolderName("");
+      setCreatingFolder(false);
+    } catch (reason) {
+      setError(`${messages.workspace.createFolderError}: ${String(reason)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function chipConfig(): ChipConfig {
     if (kind === "extract") {
       return {
         connection_id: connectionId,
@@ -533,31 +1171,30 @@ export function WorkspacePage() {
     return {};
   }
 
-  function applyTask(event: FormEvent<HTMLFormElement>) {
+  function applyChip(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!workspaceId || !selectedTask || kind === "load") return;
+    if (!workspaceId || !selectedChip || kind === "load") return;
     try {
-      const config = taskConfig();
+      const config = chipConfig();
       const nextName = name.trim();
-      setTasks((current) =>
-        current.map((task) =>
-          task.id === selectedTask.id ? { ...task, name: nextName, config } : task,
-        ),
+      const nextChips = chips.map((chip) =>
+        chip.id === selectedChip.id ? { ...chip, name: nextName, config } : chip,
       );
-      setDirty(true);
+      setChips(nextChips);
+      markDirty(nextChips, positionsRef.current, edges);
       setError("");
     } catch (reason) {
-      setError(`${messages.workspace.saveTaskError}: ${String(reason)}`);
+      setError(`${messages.workspace.saveChipError}: ${String(reason)}`);
     }
   }
 
   function placeTool(toolKind: "extract" | "transform", point: Point) {
     if (!workspaceId) return;
-    const count = tasks.filter((task) => task.kind === toolKind).length + 1;
+    const count = chips.filter((chip) => chip.kind === toolKind).length + 1;
     const placedName = toolKind === "extract"
       ? messages.workspace.untitledExtract(count)
       : messages.workspace.untitledTransform(count);
-    const created: TaskDefinition = {
+    const created: Chip = {
       id: crypto.randomUUID(),
       workspace_id: workspaceId,
       name: placedName,
@@ -568,75 +1205,62 @@ export function WorkspacePage() {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    const viewport = {
-      width: canvasRef.current?.clientWidth ?? 800,
-      height: canvasRef.current?.clientHeight ?? 600,
-    };
-    const nextPoint = clampPoint(
-      point,
-      worldSize({ ...positionsRef.current, [created.id]: point }, viewport),
-    );
+    const nextPoint = clampPoint(point);
     const next = { ...positionsRef.current, [created.id]: nextPoint };
-    setTasks((current) => [created, ...current]);
+    const nextChips = [created, ...chips];
+    setChips(nextChips);
     setPositions(next);
-    setDirty(true);
+    markDirty(nextChips, next, edges);
     setError("");
-    navigate(`/workspace/${workspaceId}/tasks/${created.id}`);
+    navigate(`/workspace/${workspaceId}/chips/${created.id}`);
   }
 
-  function dropTaskLocally(taskIdToDrop: string) {
-    setTasks((current) => {
-      const nextTasks = current.filter((item) => item.id !== taskIdToDrop);
-      const nextPositions = omitPoint(positionsRef.current, taskIdToDrop);
-      setPositions(nextPositions);
-      savedRef.current = {
-        tasks: savedRef.current.tasks.filter((item) => item.id !== taskIdToDrop),
-        positions: omitPoint(savedRef.current.positions, taskIdToDrop),
-      };
-      savedIdsRef.current.delete(taskIdToDrop);
-      const saved = savedRef.current;
-      const dirtyNow = nextTasks.length !== saved.tasks.length
-        || nextTasks.some((task) => {
-          const original = saved.tasks.find((item) => item.id === task.id);
-          return !original
-            || original.name !== task.name
-            || JSON.stringify(original.config) !== JSON.stringify(task.config);
-        })
-        || nextTasks.some((task) => {
-          const currentPoint = nextPositions[task.id];
-          const savedPoint = saved.positions[task.id];
-          return !currentPoint || !savedPoint
-            || currentPoint.x !== savedPoint.x
-            || currentPoint.y !== savedPoint.y;
-        });
-      setDirty(dirtyNow);
-      return nextTasks;
-    });
-    setRuns((current) => current.filter((run) => run.task_id !== taskIdToDrop));
-    if (dragRef.current?.id === taskIdToDrop) dragRef.current = null;
+  function dropChipLocally(chipIdToDrop: string) {
+    const nextChips = chips.filter((item) => item.id !== chipIdToDrop);
+    const nextPositions = omitPoint(positionsRef.current, chipIdToDrop);
+    const nextEdges = edges.filter((edge) =>
+      edge.from_chip_id !== chipIdToDrop && edge.to_chip_id !== chipIdToDrop,
+    );
+    setPositions(nextPositions);
+    setEdges(nextEdges);
+    savedRef.current = {
+      chips: savedRef.current.chips.filter((item) => item.id !== chipIdToDrop),
+      positions: omitPoint(savedRef.current.positions, chipIdToDrop),
+      edges: savedRef.current.edges.filter((edge) =>
+        edge.from_chip_id !== chipIdToDrop && edge.to_chip_id !== chipIdToDrop,
+      ),
+    };
+    savedIdsRef.current.delete(chipIdToDrop);
+    markDirty(nextChips, nextPositions, nextEdges);
+    setChips(nextChips);
+    setRuns((current) => current.filter((run) => run.chip_id !== chipIdToDrop));
+    if (dragRef.current?.id === chipIdToDrop) dragRef.current = null;
+    if (selectedEdgeId && nextEdges.every((edge) => edge.id !== selectedEdgeId)) {
+      setSelectedEdgeId(null);
+    }
   }
 
-  async function deleteCanvasTask(task: TaskDefinition) {
+  async function deleteCanvasChip(chip: Chip) {
     const confirmed = await showConfirm(
-      messages.workspace.deleteTaskTitle,
-      messages.workspace.deleteTaskMessage(task.name),
+      messages.workspace.deleteChipTitle,
+      messages.workspace.deleteChipMessage(chip.name),
       { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
     setBusy(true);
     setError("");
     try {
-      if (savedIdsRef.current.has(task.id)) {
-        await taskApi.remove(task.id);
+      if (savedIdsRef.current.has(chip.id)) {
+        await chipApi.remove(chip.id);
       }
       if (currentWorkspaceRef.current !== workspaceId) return;
-      dropTaskLocally(task.id);
-      if (taskId === task.id && workspaceId) {
+      dropChipLocally(chip.id);
+      if (chipId === chip.id && workspaceId) {
         navigate(`/workspace/${workspaceId}`);
       }
     } catch (reason) {
       if (currentWorkspaceRef.current === workspaceId) {
-        setError(`${messages.workspace.deleteTaskError}: ${String(reason)}`);
+        setError(`${messages.workspace.deleteChipError}: ${String(reason)}`);
       }
     } finally {
       if (currentWorkspaceRef.current === workspaceId) setBusy(false);
@@ -649,13 +1273,13 @@ export function WorkspacePage() {
     setBusy(true);
     setError("");
     try {
-      let nextTasks = tasks;
-      if (selectedTask && kind !== "load") {
-        const config = taskConfig();
-        nextTasks = tasks.map((task) =>
-          task.id === selectedTask.id ? { ...task, name: name.trim(), config } : task,
+      let nextChips = chips;
+      if (selectedChip && kind !== "load") {
+        const config = chipConfig();
+        nextChips = chips.map((chip) =>
+          chip.id === selectedChip.id ? { ...chip, name: name.trim(), config } : chip,
         );
-        setTasks(nextTasks);
+        setChips(nextChips);
       }
       const response = await workspaceApi.save(requestWorkspaceId, {
         layout: {
@@ -667,26 +1291,46 @@ export function WorkspacePage() {
             y: Math.round(canvasRef.current?.scrollTop ?? 0),
           },
         },
-        tasks: nextTasks.map((task) => ({
-          id: task.id,
-          name: task.name,
-          kind: task.kind,
-          config: task.config,
+        chips: nextChips.map((chip) => ({
+          id: chip.id,
+          name: chip.name,
+          kind: chip.kind,
+          config: chip.config,
         })),
+        edges: edges.map((edge) => {
+          const fromPoint = positionsRef.current[edge.from_chip_id];
+          const toPoint = positionsRef.current[edge.to_chip_id];
+          const route = fromPoint && toPoint
+            ? routeSides(fromPoint, toPoint)
+            : {
+              fromSide: asPortSide(edge.from_port, "right"),
+              toSide: asPortSide(edge.to_port, "left"),
+            };
+          return {
+            id: edge.id,
+            from_chip_id: edge.from_chip_id,
+            to_chip_id: edge.to_chip_id,
+            kind: edge.kind,
+            from_port: route.fromSide,
+            to_port: route.toSide,
+          };
+        }),
       });
       if (currentWorkspaceRef.current !== requestWorkspaceId) return;
-      const nextPositions = positionsFrom(response.tasks, response.workspace.layout);
+      const nextPositions = positionsFrom(response.chips, response.workspace.layout);
+      const nextEdges = response.edges ?? response.workspace.edges ?? [];
       setWorkspaces((current) =>
         current.map((item) =>
           item.id === response.workspace.id ? response.workspace : item,
         ),
       );
-      setTasks(response.tasks);
+      setChips(response.chips);
+      setEdges(nextEdges);
       setPositions(nextPositions);
-      rememberSaved(response.tasks, nextPositions);
+      rememberSaved(response.chips, nextPositions, nextEdges);
     } catch (reason) {
       if (currentWorkspaceRef.current === requestWorkspaceId) {
-        setError(`${messages.workspace.saveTaskError}: ${String(reason)}`);
+        setError(`${messages.workspace.saveChipError}: ${String(reason)}`);
       }
     } finally {
       if (currentWorkspaceRef.current === requestWorkspaceId) setBusy(false);
@@ -709,12 +1353,18 @@ export function WorkspacePage() {
   }
 
   function resetCanvas() {
-    const saved = cloneCanvas(savedRef.current.tasks, savedRef.current.positions);
-    setTasks(saved.tasks);
+    const saved = cloneCanvas(
+      savedRef.current.chips,
+      savedRef.current.positions,
+      savedRef.current.edges,
+    );
+    setChips(saved.chips);
+    setEdges(saved.edges);
     setPositions(saved.positions);
+    setSelectedEdgeId(null);
     setDirty(false);
     setError("");
-    if (taskId && !savedIdsRef.current.has(taskId) && workspaceId) {
+    if (chipId && !savedIdsRef.current.has(chipId) && workspaceId) {
       navigate(`/workspace/${workspaceId}`);
     }
   }
@@ -726,20 +1376,22 @@ export function WorkspacePage() {
     setError("");
     setPollError("");
     try {
-      const [workspaceResponse, connectionResponse, datasetResponse] = await Promise.all([
+      const [workspaceResponse, folderResponse, connectionResponse, datasetResponse] = await Promise.all([
         workspaceApi.list(),
+        workspaceApi.listFolders(),
         connectionApi.getConnections(),
         datasetApi.list(),
       ]);
       if (refreshRequestRef.current !== requestId) return;
       setWorkspaces(workspaceResponse.workspaces);
+      setFolders(folderResponse.folders);
       setConnections(connectionResponse.connections);
       setDatasets(datasetResponse.datasets);
       if (!requestWorkspaceId) return;
-      const [workspace, taskResponse, runResponse] = await Promise.all([
+      const [workspace, chipResponse, runResponse] = await Promise.all([
         workspaceApi.get(requestWorkspaceId),
-        taskApi.list(requestWorkspaceId),
-        taskApi.listRuns(requestWorkspaceId),
+        chipApi.list(requestWorkspaceId),
+        chipApi.listRuns(requestWorkspaceId),
       ]);
       if (refreshRequestRef.current !== requestId) return;
       setWorkspaces((current) => {
@@ -750,11 +1402,13 @@ export function WorkspacePage() {
       });
       setRuns(runResponse.runs);
       if (dirtyRef.current) return;
-      const nextPositions = positionsFrom(taskResponse.tasks, workspace.layout);
+      const nextPositions = positionsFrom(chipResponse.chips, workspace.layout);
+      const nextEdges = workspace.edges ?? [];
       pendingViewRef.current = workspace.layout.view ?? { x: 0, y: 0 };
-      setTasks(taskResponse.tasks);
+      setChips(chipResponse.chips);
+      setEdges(nextEdges);
       setPositions(nextPositions);
-      rememberSaved(taskResponse.tasks, nextPositions);
+      rememberSaved(chipResponse.chips, nextPositions, nextEdges);
     } catch (reason) {
       if (refreshRequestRef.current === requestId) {
         setError(`${messages.workspace.loadError}: ${String(reason)}`);
@@ -769,23 +1423,24 @@ export function WorkspacePage() {
   };
   resetCanvasRef.current = resetCanvas;
 
-  async function runTask() {
-    if (!selectedTask || selectedTask.kind === "load") return;
-    const requestWorkspaceId = selectedTask.workspace_id;
+  async function runChip() {
+    if (!selectedChip || selectedChip.kind === "load") return;
+    const requestWorkspaceId = selectedChip.workspace_id;
     setBusy(true);
     setError("");
     try {
-      const request = selectedTask.kind === "transform" && inputDatasetId
+      const wired = Boolean(incomingDataEdge(edges, selectedChip.id));
+      const request = selectedChip.kind === "transform" && inputDatasetId && !wired
         ? { input_dataset_id: inputDatasetId }
         : {};
-      await taskApi.run(selectedTask.id, request);
+      await chipApi.run(selectedChip.id, request);
       if (currentWorkspaceRef.current !== requestWorkspaceId) return;
-      const response = await taskApi.listRuns(selectedTask.workspace_id);
+      const response = await chipApi.listRuns(selectedChip.workspace_id);
       if (currentWorkspaceRef.current !== requestWorkspaceId) return;
       setRuns(response.runs);
     } catch (reason) {
       if (currentWorkspaceRef.current === requestWorkspaceId) {
-        setError(`${messages.workspace.runTaskError}: ${String(reason)}`);
+        setError(`${messages.workspace.runChipError}: ${String(reason)}`);
       }
     } finally {
       if (currentWorkspaceRef.current === requestWorkspaceId) setBusy(false);
@@ -799,7 +1454,7 @@ export function WorkspacePage() {
     setRunLog(null);
     setError("");
     try {
-      const response = await taskApi.getRunLogs(runId);
+      const response = await chipApi.getRunLogs(runId);
       if (
         currentWorkspaceRef.current === requestWorkspaceId &&
         logRequestRef.current === requestId
@@ -854,14 +1509,15 @@ export function WorkspacePage() {
     });
   }
 
-  function onNodePointerDown(task: TaskDefinition, event: ReactPointerEvent<HTMLDivElement>) {
+  function onNodePointerDown(chip: Chip, event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest(".chip-link, button")) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const node = positionsRef.current[task.id] ?? { x: 56, y: 48 };
+    const node = positionsRef.current[chip.id] ?? { x: 56, y: 48 };
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
     dragRef.current = {
-      id: task.id,
+      id: chip.id,
       dx: grab.x - node.x,
       dy: grab.y - node.y,
       startX: node.x,
@@ -874,17 +1530,11 @@ export function WorkspacePage() {
   function onNodePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const drag = dragRef.current;
     const canvas = canvasRef.current;
-    if (!drag || !canvas || drag.id !== event.currentTarget.dataset.taskId) return;
+    if (!drag || !canvas || drag.id !== event.currentTarget.dataset.chipId) return;
     scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
     const tentative = { x: grab.x - drag.dx, y: grab.y - drag.dy };
-    const nextPoint = clampPoint(
-      tentative,
-      worldSize({ ...positionsRef.current, [drag.id]: tentative }, {
-        width: canvas.clientWidth,
-        height: canvas.clientHeight,
-      }),
-    );
+    const nextPoint = clampPoint(tentative);
     if (Math.abs(nextPoint.x - drag.startX) > 3
       || Math.abs(nextPoint.y - drag.startY) > 3) {
       drag.moved = true;
@@ -892,25 +1542,111 @@ export function WorkspacePage() {
     setPositions((current) => ({ ...current, [drag.id]: nextPoint }));
   }
 
-  function onNodePointerUp(task: TaskDefinition) {
+  function onNodePointerUp(chip: Chip) {
     const drag = dragRef.current;
     dragRef.current = null;
-    if (!drag || drag.id !== task.id) return;
+    if (!drag || drag.id !== chip.id) return;
     if (drag.moved) {
-      setDirty(true);
+      markDirty(chips, positionsRef.current, edges);
       return;
     }
-    navigate(`/workspace/${workspaceId}/tasks/${task.id}`);
+    setSelectedEdgeId(null);
+    navigate(`/workspace/${workspaceId}/chips/${chip.id}`);
   }
 
+  function onPortPointerDown(
+    chip: Chip,
+    side: PortSide,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const kindValue = edgeTool;
+    setSelectedEdgeId(null);
+    setLinking({ fromId: chip.id, kind: kindValue, fromSide: side, x: grab.x, y: grab.y });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function onPortPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!linkingRef.current) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
+    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    setLinking((current) => current ? { ...current, x: grab.x, y: grab.y } : current);
+  }
+
+  function onPortPointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
+    const link = linkingRef.current;
+    setLinking(null);
+    if (!link) return;
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const host = target instanceof Element ? target.closest("[data-chip-id]") : null;
+    const toId = host instanceof HTMLElement ? host.dataset.chipId : undefined;
+    if (toId) connectChips(link.fromId, toId, link.kind);
+  }
+
+  function onCanvasPanDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 && event.button !== 1) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("[data-chip-id], .chip-link, button, .chip-wire")) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    panRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: canvas.scrollLeft,
+      scrollTop: canvas.scrollTop,
+      moved: false,
+    };
+    canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function onCanvasPanMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const pan = panRef.current;
+    const canvas = canvasRef.current;
+    if (!pan || !canvas || pan.pointerId !== event.pointerId) return;
+    const dx = event.clientX - pan.startX;
+    const dy = event.clientY - pan.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) pan.moved = true;
+    canvas.scrollLeft = pan.scrollLeft - dx;
+    canvas.scrollTop = pan.scrollTop - dy;
+  }
+
+  function onCanvasPanUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const pan = panRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    panRef.current = null;
+    if (!pan.moved && workspaceId) {
+      setSelectedEdgeId(null);
+      navigate(`/workspace/${workspaceId}`);
+    }
+  }
+
+  function jumpCanvasTo(worldX: number, worldY: number) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.scrollTo({
+      left: Math.max(0, worldX - canvas.clientWidth / 2),
+      top: Math.max(0, worldY - canvas.clientHeight / 2),
+    });
+  }
+
+  const wiredInput = selectedChip ? Boolean(incomingDataEdge(edges, selectedChip.id)) : false;
   const validExtract = connectionId && (mode === "table" ? table.trim() : sql.trim());
-  const validTransform = inputDatasetId && spec.trim();
-  const canSave = Boolean(selectedTask) && name.trim() && kind !== "load" &&
-    (kind === "extract" ? validExtract : validTransform);
-  const latestByTask = useMemo(() => {
-    const map = new Map<string, TaskRun>();
+  const validTransform = spec.trim() && (wiredInput || inputDatasetId);
+  const canSave = Boolean(selectedChip) && name.trim() && kind !== "load" &&
+    (kind === "extract" ? Boolean(validExtract) : Boolean(validTransform));
+  const latestByChip = useMemo(() => {
+    const map = new Map<string, ChipRun>();
     for (const run of runs) {
-      if (!map.has(run.task_id)) map.set(run.task_id, run);
+      if (!map.has(run.chip_id)) map.set(run.chip_id, run);
     }
     return map;
   }, [runs]);
@@ -929,6 +1665,107 @@ export function WorkspacePage() {
       icon: Workflow,
     },
   ];
+  const edgeTools = [
+    {
+      kind: "data" as const,
+      label: messages.workspace.edgeData,
+      hint: messages.workspace.edgeDataHint,
+      icon: Spline,
+    },
+    {
+      kind: "then" as const,
+      label: messages.workspace.edgeThen,
+      hint: messages.workspace.edgeThenHint,
+      icon: ArrowRight,
+    },
+    {
+      kind: "on_error" as const,
+      label: messages.workspace.edgeOnError,
+      hint: messages.workspace.edgeOnErrorHint,
+      icon: CircleAlert,
+    },
+  ];
+
+  const rootFolders = useMemo(
+    () => folders.filter((folder) => !folder.parent_id).sort((a, b) => a.name.localeCompare(b.name)),
+    [folders],
+  );
+  const rootWorkspaces = useMemo(
+    () =>
+      workspaces
+        .filter((workspace) => !workspace.folder_id)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [workspaces],
+  );
+
+  function childFolders(parentId: string) {
+    return folders
+      .filter((folder) => folder.parent_id === parentId)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function childWorkspaces(folderId: string) {
+    return workspaces
+      .filter((workspace) => workspace.folder_id === folderId)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function renderFolderTree(folder: WorkspaceFolder, depth: number): ReactNode {
+    const open = expandedFolders[folder.id] !== false;
+    const selected = selectedFolderId === folder.id;
+    return (
+      <div key={folder.id}>
+        <div
+          className={cn(
+            "flex items-center gap-1 rounded-xl px-1 py-1 text-left text-[12px]",
+            selected ? "bg-accent-subtle text-accent" : "text-text hover:bg-subtle",
+          )}
+          style={{ paddingLeft: `${0.25 + depth * 0.75}rem` }}
+        >
+          <button
+            type="button"
+            className="grid size-5 place-items-center rounded text-text-tertiary outline-none hover:text-text"
+            aria-label={open ? messages.workspace.collapseFolder : messages.workspace.expandFolder}
+            onClick={() =>
+              setExpandedFolders((current) => ({ ...current, [folder.id]: !open }))
+            }
+          >
+            {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          </button>
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-1.5 truncate outline-none"
+            onClick={() => setSelectedFolderId(folder.id)}
+          >
+            {open ? <FolderOpen className="size-3.5 shrink-0" /> : <Folder className="size-3.5 shrink-0" />}
+            <span className="truncate">{folder.name}</span>
+          </button>
+        </div>
+        {open ? (
+          <div>
+            {childFolders(folder.id).map((child) => renderFolderTree(child, depth + 1))}
+            {childWorkspaces(folder.id).map((workspace) => (
+              <button
+                key={workspace.id}
+                type="button"
+                className={cn(
+                  "flex w-full items-center gap-1.5 truncate rounded-xl py-1.5 pr-2 text-left text-[12px] outline-none",
+                  workspace.id === workspaceId
+                    ? "bg-accent text-white"
+                    : "text-text-secondary hover:bg-subtle hover:text-text",
+                )}
+                style={{ paddingLeft: `${1.5 + depth * 0.75}rem` }}
+                onClick={() => navigate(`/workspace/${workspace.id}`)}
+              >
+                <FolderKanban className="size-3.5 shrink-0" aria-hidden="true" />
+                <span className="truncate">{workspace.name}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <SplitLayout
@@ -936,229 +1773,368 @@ export function WorkspacePage() {
       className="h-full min-h-0 bg-canvas"
       defaultSizes={[layout.split.sidebar + 28]}
     >
-      <aside className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
-        <div className="border-b border-border p-3">
-          <label className="flex flex-col gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
-            {messages.workspace.workspace}
-            <Select
-              value={workspaceId ?? ""}
-              placeholder={loading ? messages.common.loading : messages.workspace.selectWorkspace}
-              options={workspaces.map((workspace) => ({
-                value: workspace.id,
-                label: workspace.name,
-              }))}
-              onChange={(id) => navigate(id ? `/workspace/${id}` : "/workspace")}
-            />
-          </label>
-          <Button
-            className="mt-2 w-full"
-            type="button"
-            onClick={() => setCreatingWorkspace((value) => !value)}
-          >
-            {messages.workspace.newWorkspace}
-          </Button>
-          {creatingWorkspace ? (
-            <form className="mt-2 flex flex-col gap-2" onSubmit={(event) => void createWorkspace(event)}>
-              <input
-                className="field-control"
-                value={workspaceName}
-                required
-                placeholder={messages.workspace.name}
-                onChange={(event) => setWorkspaceName(event.target.value)}
-              />
-              <Button type="submit" variant="primary" disabled={busy || !workspaceName.trim()}>
-                {messages.workspace.create}
-              </Button>
-            </form>
-          ) : null}
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          {error || pollError ? (
-            <div role="alert" className="mb-3 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
-              {error || pollError}
-            </div>
-          ) : null}
-
-          {selectedTask ? (
-            <form className="flex flex-col gap-3" onSubmit={applyTask}>
+      <aside className="workspace-rail flex h-full min-h-0 flex-col overflow-hidden">
+        <SplitLayout
+          direction="vertical"
+          className="workspace-rail-split min-h-0 flex-1"
+          defaultSizes={[236]}
+          minSize={148}
+        >
+          <section className="workspace-rail-card flex h-full min-h-0 flex-col overflow-hidden">
+            <header className="workspace-rail-card-head">
               <div className="flex items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold text-text">{messages.workspace.inspector}</h2>
-                <Button
-                  type="button"
-                  variant="quiet"
-                  onClick={() => navigate(`/workspace/${workspaceId}`)}
-                >
-                  {messages.workspace.closeInspector}
-                </Button>
+                <p className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
+                  <FolderOpen className="size-3.5" aria-hidden="true" />
+                  {messages.workspace.browser}
+                </p>
+                <span className="truncate rounded-full bg-subtle px-2 py-0.5 text-[10px] font-medium text-text-tertiary">
+                  {selectedFolderId
+                    ? folders.find((folder) => folder.id === selectedFolderId)?.name
+                    : messages.workspace.root}
+                </span>
               </div>
-              <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                {messages.workspace.taskName}
-                <input className="field-control" value={name} required onChange={(event) => setName(event.target.value)} />
-              </label>
-
-              {kind === "extract" ? (
-                <>
-                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                    {messages.workspace.mode}
-                    <Select
-                      value={mode}
-                      options={[
-                        { value: "table", label: messages.workspace.tableMode },
-                        { value: "query", label: messages.workspace.queryMode },
-                      ]}
-                      onChange={setMode}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                    {messages.workspace.connection}
-                    <Select
-                      value={connectionId}
-                      placeholder={messages.workspace.selectConnection}
-                      options={connections.map((connection) => ({ value: connection.id, label: connection.name }))}
-                      onChange={setConnectionId}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                    {messages.workspace.database}
-                    <input
-                      className="field-control technical"
-                      value={database}
-                      placeholder={messages.workspace.databaseOptional}
-                      onChange={(event) => setDatabase(event.target.value)}
-                    />
-                  </label>
-                  {mode === "table" ? (
-                    <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                      {messages.workspace.table}
-                      <input className="field-control technical" value={table} required onChange={(event) => setTable(event.target.value)} />
-                    </label>
-                  ) : (
-                    <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                      {messages.workspace.sql}
-                      <textarea className="field-control technical min-h-24 resize-y" value={sql} required onChange={(event) => setSql(event.target.value)} />
-                    </label>
-                  )}
-                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                    {messages.common.delimiter}
-                    <input className="field-control technical" value={delimiter} required onChange={(event) => setDelimiter(event.target.value)} />
-                  </label>
-                  <label className="flex items-center gap-2 text-xs font-medium text-text-secondary">
-                    <input type="checkbox" checked={hasHeader} onChange={(event) => setHasHeader(event.target.checked)} />
-                    {messages.workspace.hasHeader}
-                  </label>
-                </>
-              ) : kind === "transform" ? (
-                <>
-                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                    {messages.workspace.inputDataset}
-                    <Select
-                      value={inputDatasetId}
-                      placeholder={messages.workspace.selectDataset}
-                      options={datasets
-                        .filter((dataset) => dataset.available && dataset.workspace_id === workspaceId)
-                        .map((dataset) => ({ value: dataset.id, label: dataset.filename }))}
-                      onChange={setInputDatasetId}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                    {messages.workspace.transformSpec}
-                    <textarea
-                      className="field-control technical min-h-36 resize-y"
-                      value={spec}
-                      required
-                      spellCheck={false}
-                      onChange={(event) => setSpec(event.target.value)}
-                    />
-                  </label>
-                </>
-              ) : (
-                <p className="text-sm text-warning">{messages.workspace.loadUnavailable}</p>
-              )}
-
-              <div className="flex gap-2">
-                <Button type="submit" variant="primary" disabled={busy || !canSave}>
-                  {messages.workspace.applyTask}
+              <div className="mt-2.5 flex gap-2">
+                <Button
+                  className="flex-1"
+                  type="button"
+                  onClick={() => {
+                    setCreatingFolder((value) => !value);
+                    setCreatingWorkspace(false);
+                  }}
+                >
+                  <FolderPlus className="size-3.5" aria-hidden="true" />
+                  {messages.workspace.newFolder}
                 </Button>
                 <Button
+                  className="flex-1"
                   type="button"
-                  disabled={busy || !selectedTask.active || !canSave || dirty || !savedIdsRef.current.has(selectedTask.id)}
-                  title={dirty || !savedIdsRef.current.has(selectedTask.id) ? messages.workspace.saveFirst : undefined}
-                  onClick={() => void runTask()}
+                  onClick={() => {
+                    setCreatingWorkspace((value) => !value);
+                    setCreatingFolder(false);
+                  }}
                 >
-                  {messages.common.run}
+                  <FolderKanban className="size-3.5" aria-hidden="true" />
+                  {messages.workspace.newWorkspace}
                 </Button>
               </div>
-
-              {selectedRuns.length > 0 ? (
-                <div className="border-t border-border pt-3">
-                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
-                    {messages.workspace.recentRuns}
-                  </p>
-                  <ul className="space-y-2">
-                    {selectedRuns.map((run) => (
-                      <li key={run.id} className="rounded-lg border border-border bg-raised px-2 py-1.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <StatusPill value={run.status} />
-                          <span className="technical text-[11px] text-text-tertiary">{fmtWhen(run.created_at)}</span>
-                        </div>
-                        {run.error_message ? (
-                          <p className="mt-1 truncate text-[11px] text-danger" title={run.error_message}>{run.error_message}</p>
-                        ) : null}
-                        <Button
-                          className="mt-1"
-                          type="button"
-                          variant="quiet"
-                          disabled={loadingLogId === run.id}
-                          onClick={() => void showRunLog(run.id)}
-                        >
-                          {messages.workspace.logs}
-                        </Button>
-                      </li>
+              {creatingFolder ? (
+                <form className="mt-2.5 flex flex-col gap-2" onSubmit={(event) => void createFolder(event)}>
+                  <input
+                    className="field-control"
+                    value={folderName}
+                    required
+                    placeholder={messages.workspace.folderName}
+                    onChange={(event) => setFolderName(event.target.value)}
+                  />
+                  <Button type="submit" variant="primary" disabled={busy || !folderName.trim()}>
+                    {messages.workspace.create}
+                  </Button>
+                </form>
+              ) : null}
+              {creatingWorkspace ? (
+                <form className="mt-2.5 flex flex-col gap-2" onSubmit={(event) => void createWorkspace(event)}>
+                  <input
+                    className="field-control"
+                    value={workspaceName}
+                    required
+                    placeholder={messages.workspace.name}
+                    onChange={(event) => setWorkspaceName(event.target.value)}
+                  />
+                  <Button type="submit" variant="primary" disabled={busy || !workspaceName.trim()}>
+                    {messages.workspace.create}
+                  </Button>
+                </form>
+              ) : null}
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5">
+              <div className="workspace-rail-tree p-1">
+                {loading ? (
+                  <p className="px-2 py-3 text-[12px] text-text-tertiary">{messages.common.loading}</p>
+                ) : folders.length === 0 && workspaces.length === 0 ? (
+                  <p className="px-2 py-3 text-[12px] text-text-tertiary">{messages.workspace.noWorkspaces}</p>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className={cn(
+                        "mb-1 flex w-full items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-left text-[12px] outline-none",
+                        selectedFolderId === null
+                          ? "bg-accent-subtle text-accent"
+                          : "text-text-secondary hover:bg-subtle",
+                      )}
+                      onClick={() => setSelectedFolderId(null)}
+                    >
+                      <Folder className="size-3.5 shrink-0" aria-hidden="true" />
+                      {messages.workspace.root}
+                    </button>
+                    {rootFolders.map((folder) => renderFolderTree(folder, 0))}
+                    {rootWorkspaces.map((workspace) => (
+                      <button
+                        key={workspace.id}
+                        type="button"
+                        className={cn(
+                          "flex w-full items-center gap-1.5 truncate rounded-xl px-2.5 py-1.5 text-left text-[12px] outline-none",
+                          workspace.id === workspaceId
+                            ? "bg-accent text-white"
+                            : "text-text-secondary hover:bg-subtle hover:text-text",
+                        )}
+                        onClick={() => navigate(`/workspace/${workspace.id}`)}
+                      >
+                        <FolderKanban className="size-3.5 shrink-0" aria-hidden="true" />
+                        <span className="truncate">{workspace.name}</span>
+                      </button>
                     ))}
-                  </ul>
-                  {runLog ? (
-                    <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-subtle p-2 text-[11px] text-text-secondary">
-                      {runLog.text || messages.workspace.noRunLog}
-                    </pre>
-                  ) : null}
+                  </>
+                )}
+              </div>
+            </div>
+          </section>
+
+          <section className="workspace-rail-card flex h-full min-h-0 flex-col overflow-hidden">
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {error || pollError ? (
+                <div role="alert" className="mb-3 rounded-xl border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
+                  {error || pollError}
                 </div>
               ) : null}
-            </form>
-          ) : (
-            <p className="text-sm text-text-secondary">
-              {workspaceId ? messages.workspace.canvasHint : messages.workspace.noWorkspaces}
-            </p>
-          )}
-        </div>
 
-        {workspaceId ? (
-          <div className="grid shrink-0 grid-cols-2 items-center gap-2 border-t border-border bg-surface p-3">
-            <span className="col-start-2 justify-self-end rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] font-semibold tabular-nums text-text-secondary shadow-sm">
-              {messages.workspace.version(selectedWorkspace?.version ?? 1)}
-              {dirty ? ` · ${messages.workspace.unsaved}` : ""}
-            </span>
-            <Button
-              type="button"
-              className="w-full gap-2"
-              disabled={busy || !dirty}
-              onClick={resetCanvas}
-            >
-              <RotateCcw className="size-3.5" aria-hidden="true" />
-              {messages.workspace.resetCanvas}
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              className="w-full gap-2"
-              disabled={busy || !dirty}
-              onClick={() => void requestSave()}
-            >
-              <Save className="size-3.5" aria-hidden="true" />
-              {busy ? messages.common.saving : messages.workspace.saveCanvas}
-            </Button>
-          </div>
-        ) : null}
+              {selectedEdge ? (
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 className="text-sm font-semibold text-text">{messages.workspace.edgeInspector}</h2>
+                    <Button
+                      type="button"
+                      variant="quiet"
+                      onClick={() => setSelectedEdgeId(null)}
+                    >
+                      {messages.workspace.closeInspector}
+                    </Button>
+                  </div>
+                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                    {messages.workspace.edgeKind}
+                    <Select
+                      value={selectedEdge.kind}
+                      options={[
+                        { value: "data", label: messages.workspace.edgeData },
+                        { value: "then", label: messages.workspace.edgeThen },
+                        { value: "on_error", label: messages.workspace.edgeOnError },
+                      ]}
+                      onChange={(value) => changeEdgeKind(selectedEdge.id, value as ChipEdgeKind)}
+                    />
+                  </label>
+                  <p className="text-xs text-text-secondary">{messages.workspace.edgeHint}</p>
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    onClick={() => dropEdgeLocally(selectedEdge.id)}
+                  >
+                    {messages.workspace.deleteEdge}
+                  </Button>
+                </div>
+              ) : selectedChip ? (
+                <form className="flex flex-col gap-3" onSubmit={applyChip}>
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 className="text-sm font-semibold text-text">{messages.workspace.inspector}</h2>
+                    <Button
+                      type="button"
+                      variant="quiet"
+                      onClick={() => navigate(`/workspace/${workspaceId}`)}
+                    >
+                      {messages.workspace.closeInspector}
+                    </Button>
+                  </div>
+                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                    {messages.workspace.chipName}
+                    <input className="field-control" value={name} required onChange={(event) => setName(event.target.value)} />
+                  </label>
+
+                  {kind === "extract" ? (
+                    <>
+                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                        {messages.workspace.mode}
+                        <Select
+                          value={mode}
+                          options={[
+                            { value: "table", label: messages.workspace.tableMode },
+                            { value: "query", label: messages.workspace.queryMode },
+                          ]}
+                          onChange={setMode}
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                        {messages.workspace.connection}
+                        <Select
+                          value={connectionId}
+                          placeholder={messages.workspace.selectConnection}
+                          options={connections.map((connection) => ({ value: connection.id, label: connection.name }))}
+                          onChange={setConnectionId}
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                        {messages.workspace.database}
+                        <input
+                          className="field-control technical"
+                          value={database}
+                          placeholder={messages.workspace.databaseOptional}
+                          onChange={(event) => setDatabase(event.target.value)}
+                        />
+                      </label>
+                      {mode === "table" ? (
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                          {messages.workspace.table}
+                          <input className="field-control technical" value={table} required onChange={(event) => setTable(event.target.value)} />
+                        </label>
+                      ) : (
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                          {messages.workspace.sql}
+                          <textarea className="field-control technical min-h-24 resize-y" value={sql} required onChange={(event) => setSql(event.target.value)} />
+                        </label>
+                      )}
+                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                        {messages.common.delimiter}
+                        <input className="field-control technical" value={delimiter} required onChange={(event) => setDelimiter(event.target.value)} />
+                      </label>
+                      <label className="flex items-center gap-2 text-xs font-medium text-text-secondary">
+                        <input type="checkbox" checked={hasHeader} onChange={(event) => setHasHeader(event.target.checked)} />
+                        {messages.workspace.hasHeader}
+                      </label>
+                    </>
+                  ) : kind === "transform" ? (
+                    <>
+                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                        {messages.workspace.inputDataset}
+                        {wiredInput ? (
+                          <p className="text-xs font-normal text-text-secondary">
+                            {messages.workspace.inputFromEdge}
+                          </p>
+                        ) : (
+                          <Select
+                            value={inputDatasetId}
+                            placeholder={messages.workspace.selectDataset}
+                            options={datasets
+                              .filter((dataset) => dataset.available && dataset.workspace_id === workspaceId)
+                              .map((dataset) => ({ value: dataset.id, label: dataset.filename }))}
+                            onChange={setInputDatasetId}
+                          />
+                        )}
+                      </label>
+                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+                        {messages.workspace.transformSpec}
+                        <textarea
+                          className="field-control technical min-h-36 resize-y"
+                          value={spec}
+                          required
+                          spellCheck={false}
+                          onChange={(event) => setSpec(event.target.value)}
+                        />
+                      </label>
+                    </>
+                  ) : (
+                    <p className="text-sm text-warning">{messages.workspace.loadUnavailable}</p>
+                  )}
+
+                  <div className="flex gap-2">
+                    <Button type="submit" variant="primary" disabled={busy || !canSave}>
+                      {messages.workspace.applyChip}
+                    </Button>
+                    <Button
+                      type="button"
+                      disabled={busy || !selectedChip.active || !canSave || dirty || !savedIdsRef.current.has(selectedChip.id)}
+                      title={dirty || !savedIdsRef.current.has(selectedChip.id) ? messages.workspace.saveFirst : undefined}
+                      onClick={() => void runChip()}
+                    >
+                      {messages.common.run}
+                    </Button>
+                  </div>
+
+                  {selectedRuns.length > 0 ? (
+                    <div className="border-t border-border pt-3">
+                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+                        {messages.workspace.recentRuns}
+                      </p>
+                      <ul className="space-y-2">
+                        {selectedRuns.map((run) => (
+                          <li key={run.id} className="rounded-xl border border-border bg-raised px-2.5 py-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <StatusPill value={run.status} />
+                              <span className="technical text-[11px] text-text-tertiary">{fmtWhen(run.created_at)}</span>
+                            </div>
+                            {run.error_message ? (
+                              <p className="mt-1 truncate text-[11px] text-danger" title={run.error_message}>
+                                {run.error_message}
+                              </p>
+                            ) : null}
+                            <Button
+                              className="mt-1"
+                              type="button"
+                              variant="quiet"
+                              disabled={loadingLogId === run.id}
+                              onClick={() => void showRunLog(run.id)}
+                            >
+                              {messages.workspace.logs}
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                      {runLog ? (
+                        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-xl bg-subtle p-2.5 text-[11px] text-text-secondary">
+                          {runLog.text || messages.workspace.noRunLog}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </form>
+              ) : (
+                <WorkspaceLayers
+                  chips={chips}
+                  edges={edges}
+                  chipId={chipId}
+                  selectedEdgeId={selectedEdgeId}
+                  messages={messages}
+                  emptyHint={workspaceId ? messages.workspace.emptyLayers : messages.workspace.noWorkspaces}
+                  onSelectChip={(id) => {
+                    if (!workspaceId) return;
+                    setSelectedEdgeId(null);
+                    navigate(`/workspace/${workspaceId}/chips/${id}`);
+                  }}
+                  onSelectEdge={(id) => {
+                    if (!workspaceId) return;
+                    setSelectedEdgeId(id);
+                    navigate(`/workspace/${workspaceId}`);
+                  }}
+                />
+              )}
+            </div>
+
+            {workspaceId ? (
+              <div className="workspace-rail-card-foot grid shrink-0 grid-cols-2 items-center gap-2">
+                <span className="col-start-2 justify-self-end rounded-full border border-border bg-subtle/70 px-2.5 py-1 text-[11px] font-semibold tabular-nums text-text-secondary">
+                  {messages.workspace.version(selectedWorkspace?.version ?? 1)}
+                  {dirty ? ` · ${messages.workspace.unsaved}` : ""}
+                </span>
+                <Button
+                  type="button"
+                  className="w-full gap-2"
+                  disabled={busy || !dirty}
+                  onClick={resetCanvas}
+                >
+                  <RotateCcw className="size-3.5" aria-hidden="true" />
+                  {messages.workspace.resetCanvas}
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  className="w-full gap-2"
+                  disabled={busy || !dirty}
+                  onClick={() => void requestSave()}
+                >
+                  <Save className="size-3.5" aria-hidden="true" />
+                  {busy ? messages.common.saving : messages.workspace.saveCanvas}
+                </Button>
+              </div>
+            ) : null}
+          </section>
+        </SplitLayout>
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -1170,15 +2146,15 @@ export function WorkspacePage() {
               <span
                 className={cn(
                   "flex h-8 w-10 shrink-0 items-center border-r border-border pr-3",
-                  selectedTask
-                    ? selectedTask.kind === "extract"
+                  selectedChip
+                    ? selectedChip.kind === "extract"
                       ? "text-accent"
                       : "text-success"
                     : "text-text",
                 )}
               >
-                {selectedTask ? (
-                  selectedTask.kind === "transform" ? (
+                {selectedChip ? (
+                  selectedChip.kind === "transform" ? (
                     <Workflow className="size-[22px]" aria-hidden="true" />
                   ) : (
                     <DatabaseZap className="size-[22px]" aria-hidden="true" />
@@ -1189,13 +2165,13 @@ export function WorkspacePage() {
               </span>
               <div className="min-w-0">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-                  {selectedTask
+                  {selectedChip
                     ? selectedWorkspace?.name ?? messages.workspace.title
                     : messages.workspace.title}
                 </p>
                 <h1 className="mt-0.5 min-w-0 truncate text-sm font-semibold tracking-[-0.015em] text-text">
-                  {selectedTask
-                    ? name.trim() || selectedTask.name
+                  {selectedChip
+                    ? name.trim() || selectedChip.name
                     : selectedWorkspace?.name ?? messages.workspace.selectWorkspace}
                 </h1>
               </div>
@@ -1224,6 +2200,18 @@ export function WorkspacePage() {
                 onDragEnd={onToolDragEnd}
               />
             ))}
+            {edgeTools.map((tool, index) => (
+              <ToolIconButton
+                key={tool.kind}
+                label={tool.label}
+                hint={tool.hint}
+                icon={tool.icon}
+                separate={index === 0}
+                pressed={edgeTool === tool.kind}
+                disabled={busy || refreshing || !workspaceId}
+                onClick={() => setEdgeTool(tool.kind)}
+              />
+            ))}
             <ToolIconButton
               label={messages.common.refresh}
               hint={messages.workspace.refreshHint}
@@ -1234,7 +2222,7 @@ export function WorkspacePage() {
             />
           </ul>
         </nav>
-        {tasks.length === 0 && workspaceId ? (
+        {chips.length === 0 && workspaceId ? (
           <p className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-sm text-text-tertiary">
             {loading ? messages.common.loading : messages.workspace.canvasHint}
           </p>
@@ -1243,9 +2231,13 @@ export function WorkspacePage() {
           ref={canvasRef}
           role="application"
           aria-label={messages.workspace.canvasAria}
-          className="workspace-canvas relative h-full min-h-0 min-w-0 overflow-auto overscroll-contain"
+          className="workspace-canvas relative h-full min-h-0 min-w-0 cursor-grab overflow-auto overscroll-contain active:cursor-grabbing"
           onDragOver={(event) => event.preventDefault()}
           onDrop={onCanvasDrop}
+          onPointerDown={onCanvasPanDown}
+          onPointerMove={onCanvasPanMove}
+          onPointerUp={onCanvasPanUp}
+          onPointerCancel={onCanvasPanUp}
         >
           <div
             className="relative"
@@ -1255,45 +2247,123 @@ export function WorkspacePage() {
               backgroundImage: "radial-gradient(circle, var(--theme-canvas-dot) 1px, transparent 1.5px)",
               backgroundSize: "22px 22px",
             }}
-            onClick={(event) => {
-              if (event.target === event.currentTarget && workspaceId) {
-                navigate(`/workspace/${workspaceId}`);
-              }
-            }}
           >
-        {tasks.map((task) => {
-          const point = positions[task.id] ?? fallbackPoint(0);
-          const latest = latestByTask.get(task.id);
-          const configured = task.kind === "extract"
-            ? Boolean(textValue(task.config, "connection_id"))
-            : Boolean(textValue(task.config, "input_dataset_id"));
-          const Icon = task.kind === "transform" ? Workflow : DatabaseZap;
+        <svg
+          className="pointer-events-none absolute inset-0"
+          width={canvasWorld.width}
+          height={canvasWorld.height}
+        >
+          <defs>
+            {(["data", "then", "on_error"] as const).map((kindValue) => (
+              <marker
+                key={kindValue}
+                id={`chip-wire-arrow-${kindValue}`}
+                markerWidth="12"
+                markerHeight="10"
+                refX="10"
+                refY="5"
+                orient="auto"
+                markerUnits="userSpaceOnUse"
+              >
+                <path
+                  className={cn("chip-wire-arrow", wireTone(kindValue))}
+                  d="M 1 1 L 10 5 L 1 9"
+                />
+              </marker>
+            ))}
+          </defs>
+          {edges.map((edge) => {
+            const from = positions[edge.from_chip_id];
+            const to = positions[edge.to_chip_id];
+            if (!from || !to) return null;
+            return (
+              <EdgeWire
+                key={edge.id}
+                geo={edgeGeometry(from, to)}
+                kind={edge.kind}
+                selected={edge.id === selectedEdgeId}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSelectedEdgeId(edge.id);
+                  if (workspaceId) navigate(`/workspace/${workspaceId}`);
+                }}
+              />
+            );
+          })}
+          {linking ? (() => {
+            const from = positions[linking.fromId];
+            if (!from) return null;
+            return (
+              <EdgeWire
+                geo={previewGeometry(from, { x: linking.x, y: linking.y }, linking.fromSide)}
+                kind={linking.kind}
+                preview
+              />
+            );
+          })() : null}
+        </svg>
+        {chips.map((chip) => {
+          const point = positions[chip.id] ?? fallbackPoint(0);
+          const latest = latestByChip.get(chip.id);
+          const Icon = chip.kind === "transform" ? Workflow : DatabaseZap;
           return (
             <div
-              key={task.id}
+              key={chip.id}
               role="button"
               tabIndex={0}
-              data-task-id={task.id}
-              aria-current={task.id === taskId ? "true" : undefined}
-              aria-label={task.name}
+              data-chip-id={chip.id}
+              aria-current={chip.id === chipId ? "true" : undefined}
+              aria-label={chip.name}
               className={cn(
-                "workspace-node absolute flex w-[128px] cursor-grab select-none flex-col items-center gap-1 px-2 pb-2.5 pt-5 text-center active:cursor-grabbing",
-                task.id === taskId && "is-selected",
+                "workspace-node absolute flex h-[96px] w-[100px] cursor-grab select-none flex-col items-center gap-0.5 px-1.5 pb-1.5 pt-4 text-center active:cursor-grabbing",
+                chip.id === chipId && "is-selected",
               )}
               style={{ left: point.x, top: point.y }}
-              onPointerDown={(event) => onNodePointerDown(task, event)}
+              onPointerDown={(event) => onNodePointerDown(chip, event)}
               onPointerMove={onNodePointerMove}
-              onPointerUp={() => onNodePointerUp(task)}
+              onPointerUp={() => onNodePointerUp(chip)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  navigate(`/workspace/${workspaceId}/tasks/${task.id}`);
+                  navigate(`/workspace/${workspaceId}/chips/${chip.id}`);
                 }
               }}
             >
+              <ChipLinkHandle
+                side="left"
+                label={messages.workspace.connectChip}
+                kind={edgeTool}
+                onPointerDown={(event) => onPortPointerDown(chip, "left", event)}
+                onPointerMove={onPortPointerMove}
+                onPointerUp={onPortPointerUp}
+              />
+              <ChipLinkHandle
+                side="right"
+                label={messages.workspace.connectChip}
+                kind={edgeTool}
+                onPointerDown={(event) => onPortPointerDown(chip, "right", event)}
+                onPointerMove={onPortPointerMove}
+                onPointerUp={onPortPointerUp}
+              />
+              <ChipLinkHandle
+                side="top"
+                label={messages.workspace.connectChip}
+                kind={edgeTool}
+                onPointerDown={(event) => onPortPointerDown(chip, "top", event)}
+                onPointerMove={onPortPointerMove}
+                onPointerUp={onPortPointerUp}
+              />
+              <ChipLinkHandle
+                side="bottom"
+                label={messages.workspace.connectChip}
+                kind={edgeTool}
+                onPointerDown={(event) => onPortPointerDown(chip, "bottom", event)}
+                onPointerMove={onPortPointerMove}
+                onPointerUp={onPortPointerUp}
+              />
               <button
                 type="button"
-                className="absolute right-1 top-1 z-10 grid size-5 place-items-center rounded-md text-text-tertiary outline-none hover:bg-danger-subtle hover:text-danger focus-visible:ring-2 focus-visible:ring-accent/40"
+                className="absolute right-0.5 top-0.5 z-10 grid size-4 place-items-center rounded text-text-tertiary outline-none hover:bg-danger-subtle hover:text-danger focus-visible:ring-2 focus-visible:ring-accent/40"
                 aria-label={messages.common.delete}
                 title={messages.common.delete}
                 disabled={busy}
@@ -1304,31 +2374,39 @@ export function WorkspacePage() {
                 onPointerUp={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
-                  void deleteCanvasTask(task);
+                  void deleteCanvasChip(chip);
                 }}
               >
-                <X className="size-3.5" aria-hidden="true" />
+                <X className="size-3" aria-hidden="true" />
               </button>
               <span className={cn(
                 "workspace-node-icon",
-                task.kind === "extract" ? "is-extract" : "is-transform",
+                chip.kind === "extract" ? "is-extract" : "is-transform",
               )}>
                 <Icon aria-hidden="true" />
               </span>
-              <span className="w-full truncate text-xs font-semibold text-text">{task.name}</span>
-              <span className="text-[10px] font-medium uppercase tracking-wide text-text-tertiary">
-                {task.kind === "extract" ? messages.workspace.extract : messages.workspace.transform}
+              <span className="w-full truncate text-[11px] font-semibold leading-tight text-text">{chip.name}</span>
+              <span className="text-[9px] font-medium uppercase tracking-wide text-text-tertiary">
+                {chip.kind === "extract" ? messages.workspace.extract : messages.workspace.transform}
               </span>
-              {latest ? <StatusPill value={latest.status} /> : !configured ? (
-                <span className="text-[10px] text-text-tertiary">
-                  {messages.workspace.notConfigured}
-                </span>
-              ) : null}
+              <span className="mt-auto flex h-4 scale-90 items-center justify-center">
+                {latest ? <StatusPill value={latest.status} /> : null}
+              </span>
             </div>
           );
         })}
           </div>
         </section>
+        {workspaceId ? (
+          <WorkspaceMinimap
+            chips={chips}
+            positions={positions}
+            scroll={canvasScroll}
+            view={canvasView}
+            label={messages.workspace.minimapAria}
+            onJump={jumpCanvasTo}
+          />
+        ) : null}
         </div>
       </div>
     </SplitLayout>

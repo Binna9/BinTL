@@ -3,14 +3,16 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod api;
+mod access;
 mod auth;
 mod config;
 mod error;
 mod extract;
 mod state;
-mod task;
+mod chip;
 mod transform;
 mod ui;
+mod users;
 mod workspace;
 
 use std::sync::Arc;
@@ -55,13 +57,21 @@ async fn main() {
             std::process::exit(1);
         });
 
+    store
+        .ensure_bootstrap(&config.auth.username, &config.auth.password)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("bootstrap user error: {e}");
+            std::process::exit(1);
+        });
+
     let execution_permits = Arc::new(Semaphore::new(config.max_concurrent_jobs.max(1)));
     let (job_tx, job_rx) = mpsc::channel::<String>(64);
     let _worker = jobs::spawn_worker(store.clone(), job_rx, execution_permits.clone());
-    let (task_tx, task_rx) = mpsc::channel::<String>(64);
-    let _task_worker = task::spawn_worker(
+    let (chip_tx, chip_rx) = mpsc::channel::<String>(64);
+    let _chip_worker = chip::spawn_worker(
         store.clone(),
-        task_rx,
+        chip_rx,
         job_tx.clone(),
         execution_permits,
     );
@@ -69,7 +79,7 @@ async fn main() {
     let state = AppState {
         store,
         job_tx,
-        task_tx,
+        chip_tx,
         config: Arc::new(config),
     };
 
@@ -93,8 +103,12 @@ async fn main() {
             axum::http::Method::OPTIONS,
         ]);
 
+    let auth_state = state.clone();
     let protected = api::protected_routes(state.config.max_upload_bytes()).layer(
-        middleware::from_fn_with_state(state.clone(), auth::require_auth),
+        middleware::from_fn(move |request, next| {
+            let auth_state = auth_state.clone();
+            async move { auth::require_auth(auth_state, request, next).await }
+        }),
     );
 
     let app = Router::new()

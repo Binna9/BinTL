@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use storage::{DatasetRow, Store, TransformRow};
 
+use crate::access::{self, CurrentUser};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -31,6 +32,7 @@ pub fn routes() -> Router<AppState> {
 #[derive(Deserialize)]
 struct LimitQuery {
     limit: Option<usize>,
+    workspace_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,7 +80,7 @@ fn dataset_json(store: &Store, row: &DatasetRow) -> Value {
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "workspace_id": row.workspace_id,
-        "producer_task_run_id": row.producer_task_run_id,
+        "producer_chip_run_id": row.producer_chip_run_id,
         "available": available,
         "origin": if row.kind == "database" {
             json!({
@@ -101,6 +103,7 @@ fn transform_json(row: &TransformRow) -> Value {
         "spec": spec,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+        "workspace_id": row.workspace_id,
     })
 }
 
@@ -149,15 +152,15 @@ fn preview_json(preview: FramePreview) -> Value {
     })
 }
 
-async fn require_dataset(store: &Store, id: &str) -> Result<DatasetRow, AppError> {
-    store
-        .get_dataset(id)
-        .await?
-        .ok_or_else(|| AppError::not_found("dataset not found"))
-}
-
-async fn list_datasets(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let rows = state.store.list_datasets().await?;
+async fn list_datasets(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<LimitQuery>,
+) -> Result<Json<Value>, AppError> {
+    let rows = state
+        .store
+        .list_datasets(Some(&user.scope(q.workspace_id)))
+        .await?;
     let datasets: Vec<Value> = rows
         .iter()
         .map(|row| dataset_json(&state.store, row))
@@ -167,18 +170,20 @@ async fn list_datasets(State(state): State<AppState>) -> Result<Json<Value>, App
 
 async fn get_dataset(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let row = require_dataset(&state.store, &id).await?;
+    let row = access::require_dataset(&state.store, &user, &id).await?;
     Ok(Json(dataset_json(&state.store, &row)))
 }
 
 async fn inspect_dataset(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Query(q): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let row = require_dataset(&state.store, &id).await?;
+    let row = access::require_dataset(&state.store, &user, &id).await?;
     let path = state.store.resolve(&row.stored_path);
     if !path.is_file() {
         return Err(AppError::not_found("dataset file missing"));
@@ -231,10 +236,11 @@ async fn inspect_dataset(
 
 async fn preview_dataset(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Json(body): Json<PreviewBody>,
 ) -> Result<Json<Value>, AppError> {
-    let row = require_dataset(&state.store, &id).await?;
+    let row = access::require_dataset(&state.store, &user, &id).await?;
     let path = state.store.resolve(&row.stored_path);
     if !path.is_file() {
         return Err(AppError::not_found("dataset file missing"));
@@ -251,21 +257,25 @@ async fn preview_dataset(
     Ok(Json(preview_json(preview)))
 }
 
-async fn list_transforms(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let rows = state.store.list_transforms().await?;
+async fn list_transforms(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<LimitQuery>,
+) -> Result<Json<Value>, AppError> {
+    let rows = state
+        .store
+        .list_transforms(Some(&user.scope(q.workspace_id)))
+        .await?;
     let transforms: Vec<Value> = rows.iter().map(transform_json).collect();
     Ok(Json(json!({ "transforms": transforms })))
 }
 
 async fn get_transform(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let row = state
-        .store
-        .get_transform(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found("transform not found"))?;
+    let row = access::require_transform(&state.store, &user, &id).await?;
     Ok(Json(transform_json(&row)))
 }
 
@@ -275,9 +285,10 @@ fn spec_to_json(spec: &TransformSpec) -> Result<String, AppError> {
 
 async fn create_transform(
     State(state): State<AppState>,
+    user: CurrentUser,
     Json(body): Json<CreateTransformBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let dataset = require_dataset(&state.store, &body.dataset_id).await?;
+    let dataset = access::require_dataset(&state.store, &user, &body.dataset_id).await?;
     let spec = if let Some(value) = &body.spec {
         parse_v2_spec(value, &dataset)?
     } else {
@@ -292,19 +303,16 @@ async fn create_transform(
 
 async fn update_transform(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Json(body): Json<PatchTransformBody>,
 ) -> Result<Json<Value>, AppError> {
-    let current = state
-        .store
-        .get_transform(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found("transform not found"))?;
+    let current = access::require_transform(&state.store, &user, &id).await?;
     let dataset_id = body
         .dataset_id
         .as_deref()
         .unwrap_or(current.dataset_id.as_str());
-    let dataset = require_dataset(&state.store, dataset_id).await?;
+    let dataset = access::require_dataset(&state.store, &user, dataset_id).await?;
     let spec_json = if let Some(value) = &body.spec {
         Some(spec_to_json(&parse_v2_spec(value, &dataset)?)?)
     } else {
@@ -324,14 +332,11 @@ async fn update_transform(
 
 async fn run_transform(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let transform = state
-        .store
-        .get_transform(&id)
-        .await?
-        .ok_or_else(|| AppError::not_found("transform not found"))?;
-    let dataset = require_dataset(&state.store, &transform.dataset_id).await?;
+    let transform = access::require_transform(&state.store, &user, &id).await?;
+    let dataset = access::require_dataset(&state.store, &user, &transform.dataset_id).await?;
     if !state.store.resolve(&dataset.stored_path).is_file() {
         return Err(AppError::not_found("dataset file missing"));
     }
@@ -346,6 +351,7 @@ async fn run_transform(
             &spec_to_json(&spec)?,
             &transform.id,
             &dataset.id,
+            &transform.workspace_id,
         )
         .await?;
     state

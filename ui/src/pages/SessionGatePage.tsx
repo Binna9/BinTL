@@ -1,7 +1,8 @@
 import { FormEvent, useState } from "react";
-import { Eye, EyeOff, KeyRound, Lock, LogIn, Tag, UserPlus, UserRound } from "lucide-react";
+import { Eye, EyeOff, KeyRound, Lock, LogIn, UserPlus, UserRound } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { BrandMark } from "@/components/BrandMark";
+import { ReleaseBadge } from "@/components/ReleaseBadge";
 import { TopSubmenu } from "@/components/TopSubmenu";
 import { ShaderBackground } from "@/components/ui/adisyon-shader";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,8 @@ import { FormField } from "@/components/ui/form-field";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { toastError } from "@/lib/notifications";
 import { authApi } from "@/services/authApi";
+import { useSession } from "@/hooks/useSession";
+import { clearStoredLayouts } from "@/dashboard/layout";
 
 function GoogleMark() {
   return (
@@ -35,8 +38,9 @@ function GoogleMark() {
 
 export function SessionGatePage() {
   const { messages } = useLanguage();
+  const { refresh } = useSession();
   const navigate = useNavigate();
-  const [username, setUsername] = useState("admin");
+  const [userid, setUserid] = useState("admin");
   const [password, setPassword] = useState("admin");
   const [busy, setBusy] = useState(false);
   const [keepLogin, setKeepLogin] = useState(false);
@@ -46,7 +50,9 @@ export function SessionGatePage() {
     event.preventDefault();
     setBusy(true);
     try {
-      await authApi.login(username, password);
+      await authApi.login(userid, password);
+      clearStoredLayouts();
+      await refresh();
       navigate("/");
     } catch (err) {
       toastError(messages.errors.login, err);
@@ -62,12 +68,25 @@ export function SessionGatePage() {
         <TopSubmenu prefsOnly />
       </div>
       <div className="relative z-10 flex min-h-screen items-center justify-center p-6">
-        <section className="login-card relative flex w-full max-w-[30rem] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-[3px_4px_8px_-5px_rgba(15,23,42,0.35)] dark:shadow-[3px_4px_10px_-5px_rgba(0,0,0,0.65)]">
-          <span className="login-release">
-            <Tag className="login-release-icon" strokeWidth={2} aria-hidden="true" />
-            <span className="login-release-label">{messages.login.release}</span>
-            <span className="login-release-ver">{messages.login.releaseVersion}</span>
+        <section className="login-card relative flex w-full max-w-[30rem] flex-col overflow-hidden rounded-2xl border border-border">
+          <span className="login-card-slash" aria-hidden="true">
+            <svg viewBox="0 0 88 88">
+              <defs>
+                <linearGradient id="login-card-slash-grad" x1="1" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor="var(--login-slash)" />
+                  <stop offset="0.22" stopColor="var(--login-slash)" />
+                  <stop offset="0.36" stopColor="var(--login-slash-hi)" />
+                  <stop offset="0.5" stopColor="var(--login-slash-hi)" />
+                  <stop offset="0.64" stopColor="var(--login-slash-hi)" />
+                  <stop offset="0.78" stopColor="var(--login-slash)" />
+                  <stop offset="1" stopColor="var(--login-slash)" />
+                </linearGradient>
+              </defs>
+              <path className="login-card-slash-outer" d="M86 -4 L-4 86" />
+              <path className="login-card-slash-inner" d="M72 -4 L-4 72" />
+            </svg>
           </span>
+          <ReleaseBadge className="login-release" />
           <div className="px-9 pt-11">
             <div className="flex flex-col items-center text-center">
               <div className="-translate-x-3">
@@ -89,13 +108,13 @@ export function SessionGatePage() {
             onSubmit={(event) => void onSubmit(event)}
           >
               <div className="flex flex-col gap-2.5">
-                <FormField label={messages.login.username}>
+                <FormField label={messages.login.userid}>
                   <div className="relative">
                     <UserRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-tertiary" />
                     <input
                       className="field-control login-field has-start-icon"
-                      value={username}
-                      onChange={(event) => setUsername(event.target.value)}
+                      value={userid}
+                      onChange={(event) => setUserid(event.target.value)}
                       autoComplete="username"
                     />
                   </div>

@@ -16,8 +16,9 @@ import { SchedulePage } from "@/pages/SchedulePage";
 import { SessionGatePage } from "@/pages/SessionGatePage";
 import { TransformPage } from "@/pages/TransformPage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
-import { layout } from "@/lib/layout";
+import { SessionProvider } from "@/hooks/useSession";
 import { cn } from "@/lib/cn";
+import { layout } from "@/lib/layout";
 
 function ConsoleShell() {
   const loc = useLocation();
@@ -51,7 +52,8 @@ function ConsoleShell() {
             <Route path="/schedule" element={<SchedulePage />} />
             <Route path="/workspace" element={<WorkspacePage />} />
             <Route path="/workspace/:workspaceId" element={<WorkspacePage />} />
-            <Route path="/workspace/:workspaceId/tasks/:taskId" element={<WorkspacePage />} />
+            <Route path="/workspace/:workspaceId/chips/:chipId" element={<WorkspacePage />} />
+            <Route path="/workspace/:workspaceId/tasks/:taskId" element={<Navigate to={loc.pathname.replace("/tasks/", "/chips/")} replace />} />
             <Route path="/db" element={<QueryPage />} />
             <Route path="/query" element={<QueryPage />} />
             <Route path="/extracts" element={<ExtractResultsPage />} />
@@ -71,8 +73,9 @@ function ConsoleShell() {
 
 export default function App() {
   const loc = useLocation();
-  if (loc.pathname === "/login") {
-    return <SessionGatePage />;
-  }
-  return <ConsoleShell />;
+  return (
+    <SessionProvider>
+      {loc.pathname === "/login" ? <SessionGatePage /> : <ConsoleShell />}
+    </SessionProvider>
+  );
 }

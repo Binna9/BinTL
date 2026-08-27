@@ -40,7 +40,7 @@ import { toastError, toastSuccess } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extractApi";
 import { queryApi } from "@/services/queryApi";
-import { taskApi } from "@/services/taskApi";
+import { chipApi } from "@/services/chipApi";
 import { workspaceApi } from "@/services/workspaceApi";
 import type { Workspace } from "@/types/workspace";
 import type { CatalogSelection } from "@/types/connection";
@@ -459,7 +459,7 @@ export function QueryPage() {
     if (!browseId || !registerWorkspaceId || !registerName.trim() || !registerSql.trim()) return;
     setRegisterBusy(true);
     try {
-      await taskApi.create(registerWorkspaceId, {
+      await chipApi.create(registerWorkspaceId, {
         name: registerName.trim(),
         kind: "extract",
         config: {
@@ -476,7 +476,7 @@ export function QueryPage() {
       setIsRegisterOpen(false);
       toastSuccess(messages.query.taskRegistered);
     } catch (err) {
-      toastError(messages.workspace.saveTaskError, err);
+      toastError(messages.workspace.saveChipError, err);
     } finally {
       setRegisterBusy(false);
     }
@@ -974,7 +974,7 @@ export function QueryPage() {
               />
             </FormField>
           )}
-          <FormField label={messages.workspace.taskName}>
+          <FormField label={messages.workspace.chipName}>
             <input
               className="field-control"
               value={registerName}

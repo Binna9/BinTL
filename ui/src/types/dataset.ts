@@ -23,7 +23,7 @@ export interface Dataset {
   created_at: string;
   updated_at: string;
   workspace_id: string;
-  producer_task_run_id: string | null;
+  producer_chip_run_id: string | null;
   available: boolean;
   origin: DatasetOrigin | null;
 }

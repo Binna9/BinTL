@@ -74,7 +74,7 @@ pub fn spawn_worker(
                 if let Err(err) = run_one(&store, engine, &job_id).await {
                     tracing::error!(job_id, %err, "job failed");
                     let _ = store.append_log(&job_id, "error", &err.to_string()).await;
-                    let _ = store.fail_task_run_for_job(&job_id, &err.to_string()).await;
+                    let _ = store.fail_chip_run_for_job(&job_id, &err.to_string()).await;
                 }
             });
         }
@@ -193,7 +193,7 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
     transition(JobStatus::Running, JobStatus::Succeeded)
         .map_err(|e| RunError::State(e.to_string()))?;
     store.append_log(job_id, "info", "job succeeded").await?;
-    store.complete_task_run_for_job(job_id, &output_rel).await?;
+    store.complete_chip_run_for_job(job_id, &output_rel).await?;
     Ok(())
 }
 

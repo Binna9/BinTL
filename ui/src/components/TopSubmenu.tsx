@@ -5,6 +5,8 @@ import { useTheme } from "@/hooks/useTheme";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { authApi } from "@/services/authApi";
+import { useSession } from "@/hooks/useSession";
+import { clearStoredLayouts } from "@/dashboard/layout";
 
 function IconButton({
   label,
@@ -48,10 +50,12 @@ function IconButton({
 export function TopSubmenu({ prefsOnly = false }: { prefsOnly?: boolean }) {
   const { theme, toggleTheme } = useTheme();
   const { messages, toggleLocale } = useLanguage();
+  const { user } = useSession();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const isDark = theme === "dark";
 
   function logout() {
+    clearStoredLayouts();
     void authApi.logout().finally(() => location.assign("/login"));
   }
 
@@ -59,7 +63,13 @@ export function TopSubmenu({ prefsOnly = false }: { prefsOnly?: boolean }) {
     <div className="relative flex h-12 items-center justify-center">
       <article className="inline-flex h-full flex-row overflow-hidden rounded-2xl border border-border/80 bg-surface text-text shadow-[3px_4px_8px_-5px_rgba(15,23,42,0.35)] dark:shadow-[3px_4px_10px_-5px_rgba(0,0,0,0.65)]">
         {prefsOnly ? null : (
-          <IconButton label={messages.nav.profile}>
+          <IconButton
+            label={
+              user
+                ? `${user.username} (@${user.userid})`
+                : messages.nav.profile
+            }
+          >
             <User className="size-[18px]" />
           </IconButton>
         )}

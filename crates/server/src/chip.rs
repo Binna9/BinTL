@@ -7,36 +7,37 @@ use engine::TransformSpec;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use storage::{Store, TaskDefinitionRow, TaskRunRow};
+use storage::{ChipRow, ChipRunRow, Store};
 use tokio::sync::{mpsc, Semaphore};
 
+use crate::access::{self, CurrentUser};
 use crate::error::AppError;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/workspaces/{id}/tasks",
-            get(list_tasks).post(create_task),
+            "/api/workspaces/{id}/chips",
+            get(list_chips).post(create_chip),
         )
         .route(
-            "/api/tasks/{id}",
-            get(get_task).patch(update_task).delete(delete_task),
+            "/api/chips/{id}",
+            get(get_chip).patch(update_chip).delete(delete_chip),
         )
-        .route("/api/tasks/{id}/run", post(run_task))
+        .route("/api/chips/{id}/run", post(run_chip))
         .route("/api/workspaces/{id}/runs", get(list_runs))
-        .route("/api/task-runs/{id}", get(get_run))
-        .route("/api/task-runs/{id}/logs", get(get_run_logs))
+        .route("/api/chip-runs/{id}", get(get_run))
+        .route("/api/chip-runs/{id}/logs", get(get_run_logs))
 }
 
 pub fn spawn_worker(
     store: Store,
-    mut task_rx: mpsc::Receiver<String>,
+    mut chip_rx: mpsc::Receiver<String>,
     job_tx: mpsc::Sender<String>,
     semaphore: Arc<Semaphore>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        while let Some(run_id) = task_rx.recv().await {
+        while let Some(run_id) = chip_rx.recv().await {
             let permit = match semaphore.clone().acquire_owned().await {
                 Ok(permit) => permit,
                 Err(_) => break,
@@ -46,8 +47,8 @@ pub fn spawn_worker(
             tokio::spawn(async move {
                 let _permit = permit;
                 if let Err(error) = run_one(&store, &job_tx, &run_id).await {
-                    tracing::error!(run_id, %error, "task run failed");
-                    let _ = store.set_task_run_failed(&run_id, &error).await;
+                    tracing::error!(run_id, %error, "chip run failed");
+                    let _ = store.set_chip_run_failed(&run_id, &error).await;
                 }
             });
         }
@@ -55,14 +56,14 @@ pub fn spawn_worker(
 }
 
 #[derive(Deserialize)]
-struct CreateTaskBody {
+struct CreateChipBody {
     name: String,
     kind: String,
     config: Value,
 }
 
 #[derive(Deserialize)]
-struct PatchTaskBody {
+struct PatchChipBody {
     name: Option<String>,
     kind: Option<String>,
     config: Option<Value>,
@@ -70,7 +71,7 @@ struct PatchTaskBody {
 }
 
 #[derive(Deserialize)]
-struct RunTaskBody {
+struct RunChipBody {
     #[serde(default)]
     input_dataset_id: Option<String>,
 }
@@ -120,59 +121,65 @@ struct TransformConfig {
     spec: Value,
 }
 
-async fn list_tasks(
+async fn list_chips(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(workspace_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let tasks = state
+    access::require_workspace(&state.store, &user, &workspace_id).await?;
+    let chips = state
         .store
-        .list_task_definitions(&workspace_id)
+        .list_chips(&workspace_id)
         .await?
         .iter()
-        .map(task_json)
+        .map(chip_json)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Json(json!({ "tasks": tasks })))
+    Ok(Json(json!({ "chips": chips })))
 }
 
-async fn create_task(
+async fn create_chip(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(workspace_id): Path<String>,
-    Json(body): Json<CreateTaskBody>,
+    Json(body): Json<CreateChipBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    access::require_workspace(&state.store, &user, &workspace_id).await?;
     let config = validate_config(&state.store, &workspace_id, &body.kind, body.config).await?;
     let config_json =
         serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?;
-    let task = state
+    let chip = state
         .store
-        .insert_task_definition(&workspace_id, &body.name, &body.kind, &config_json)
+        .insert_chip(&workspace_id, &body.name, &body.kind, &config_json)
         .await?;
-    Ok((StatusCode::CREATED, Json(task_json(&task)?)))
+    Ok((StatusCode::CREATED, Json(chip_json(&chip)?)))
 }
 
-async fn get_task(
+async fn get_chip(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let task = require_task(&state.store, &id).await?;
-    Ok(Json(task_json(&task)?))
+    let chip = access::require_chip(&state.store, &user, &id).await?;
+    Ok(Json(chip_json(&chip)?))
 }
 
-async fn update_task(
+async fn update_chip(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
-    Json(body): Json<PatchTaskBody>,
+    Json(body): Json<PatchChipBody>,
 ) -> Result<Json<Value>, AppError> {
-    let current = require_task(&state.store, &id).await?;
+    let current = access::require_chip(&state.store, &user, &id).await?;
     if body.name.is_none() && body.kind.is_none() && body.config.is_none() && body.active.is_none()
     {
-        return Ok(Json(task_json(&current)?));
+        return Ok(Json(chip_json(&current)?));
     }
     let config_json = if body.kind.is_some() || body.config.is_some() {
         let kind = body.kind.as_deref().unwrap_or(current.kind.as_str());
         let raw_config = match body.config.as_ref() {
             Some(config) => config.clone(),
             None => serde_json::from_str(&current.config_json).map_err(|error| {
-                AppError::bad(format!("stored task config is invalid: {error}"))
+                AppError::bad(format!("stored chip config is invalid: {error}"))
             })?,
         };
         let config = validate_config(&state.store, &current.workspace_id, kind, raw_config).await?;
@@ -180,9 +187,9 @@ async fn update_task(
     } else {
         None
     };
-    let task = state
+    let chip = state
         .store
-        .update_task_definition(
+        .update_chip(
             &id,
             body.name.as_deref(),
             body.kind.as_deref(),
@@ -190,39 +197,41 @@ async fn update_task(
             body.active,
         )
         .await?;
-    Ok(Json(task_json(&task)?))
+    Ok(Json(chip_json(&chip)?))
 }
 
-async fn delete_task(
+async fn delete_chip(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let _task = require_task(&state.store, &id).await?;
-    state.store.delete_task_definition(&id).await?;
+    let _chip = access::require_chip(&state.store, &user, &id).await?;
+    state.store.delete_chip(&id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn run_task(
+async fn run_chip(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
-    Json(body): Json<RunTaskBody>,
+    Json(body): Json<RunChipBody>,
 ) -> Result<Json<Value>, AppError> {
-    let task = require_task(&state.store, &id).await?;
-    if task.active == 0 {
-        return Err(AppError::conflict("task is inactive"));
+    let chip = access::require_chip(&state.store, &user, &id).await?;
+    if chip.active == 0 {
+        return Err(AppError::conflict("chip is inactive"));
     }
-    if task.kind == "load" {
-        return Err(AppError::bad("load tasks are not supported"));
+    if chip.kind == "load" {
+        return Err(AppError::bad("load chips are not supported"));
     }
-    let config: Value = serde_json::from_str(&task.config_json)
-        .map_err(|error| AppError::bad(format!("stored task config is invalid: {error}")))?;
+    let config: Value = serde_json::from_str(&chip.config_json)
+        .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
     reject_forbidden_config(&config)?;
 
-    let input_dataset_id = match task.kind.as_str() {
+    let input_dataset_id = match chip.kind.as_str() {
         "extract" => {
             if body.input_dataset_id.is_some() {
                 return Err(AppError::bad(
-                    "extract tasks do not accept input_dataset_id",
+                    "extract chips do not accept input_dataset_id",
                 ));
             }
             let config = validate_extract_config(&state.store, config).await?;
@@ -233,23 +242,26 @@ async fn run_task(
                 .trim()
                 .is_empty()
             {
-                return Err(AppError::bad("configure the extract task before running"));
+                return Err(AppError::bad("configure the extract chip before running"));
             }
             None
         }
         "transform" => {
             let config =
-                validate_transform_config(&state.store, &task.workspace_id, config).await?;
-            let dataset_id = body
-                .input_dataset_id
-                .or(config.input_dataset_id)
-                .ok_or_else(|| AppError::bad("transform input_dataset_id required"))?;
+                validate_transform_config(&state.store, &chip.workspace_id, config).await?;
+            let dataset_id = resolve_transform_input(
+                &state.store,
+                &chip,
+                body.input_dataset_id,
+                config.input_dataset_id,
+            )
+            .await?;
             let dataset = state
                 .store
                 .get_dataset(&dataset_id)
                 .await?
                 .ok_or_else(|| AppError::not_found("input dataset not found"))?;
-            if dataset.workspace_id != task.workspace_id {
+            if dataset.workspace_id != chip.workspace_id {
                 return Err(AppError::bad("input dataset belongs to another workspace"));
             }
             if !state.store.resolve(&dataset.stored_path).is_file() {
@@ -257,66 +269,72 @@ async fn run_task(
             }
             Some(dataset_id)
         }
-        _ => return Err(AppError::bad("unsupported task kind")),
+        _ => return Err(AppError::bad("unsupported chip kind")),
     };
 
     let run = state
         .store
-        .create_task_run(&task.id, task.revision, input_dataset_id.as_deref())
+        .create_chip_run(&chip.id, chip.revision, input_dataset_id.as_deref())
         .await?;
-    if state.task_tx.try_send(run.id.clone()).is_err() {
+    if state.chip_tx.try_send(run.id.clone()).is_err() {
         let _ = state
             .store
-            .set_task_run_failed(&run.id, "task queue full")
+            .set_chip_run_failed(&run.id, "chip queue full")
             .await;
         return Err(AppError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "task queue full",
+            "chip queue full",
         ));
     }
     Ok(Json(json!({
         "ok": true,
         "id": run.id,
         "status": "queued",
-        "run": task_run_json(&run)?,
+        "run": chip_run_json(&run)?,
     })))
 }
 
 async fn list_runs(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(workspace_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_workspace(&state.store, &user, &workspace_id).await?;
     let runs = state
         .store
-        .list_task_runs(&workspace_id)
+        .list_chip_runs(&workspace_id)
         .await?
         .iter()
-        .map(task_run_json)
+        .map(chip_run_json)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(json!({ "runs": runs })))
 }
 
 async fn get_run(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let run = state
         .store
-        .get_task_run(&id)
+        .get_chip_run(&id)
         .await?
-        .ok_or_else(|| AppError::not_found("task run not found"))?;
-    Ok(Json(task_run_json(&run)?))
+        .ok_or_else(|| AppError::not_found("chip run not found"))?;
+    access::require_workspace(&state.store, &user, &run.workspace_id).await?;
+    Ok(Json(chip_run_json(&run)?))
 }
 
 async fn get_run_logs(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let run = state
         .store
-        .get_task_run(&id)
+        .get_chip_run(&id)
         .await?
-        .ok_or_else(|| AppError::not_found("task run not found"))?;
+        .ok_or_else(|| AppError::not_found("chip run not found"))?;
+    access::require_workspace(&state.store, &user, &run.workspace_id).await?;
     let text = if let Some(extract_id) = run.legacy_extract_id {
         state
             .store
@@ -337,16 +355,40 @@ async fn get_run_logs(
     Ok(Json(json!({ "id": id, "text": text })))
 }
 
-async fn require_task(store: &Store, id: &str) -> Result<TaskDefinitionRow, AppError> {
-    store
-        .get_task_definition(id)
+async fn resolve_transform_input(
+    store: &Store,
+    chip: &ChipRow,
+    requested: Option<String>,
+    config_input: Option<String>,
+) -> Result<String, AppError> {
+    if let Some(dataset_id) = requested {
+        return Ok(dataset_id);
+    }
+    let incoming = store
+        .list_chip_edges(&chip.workspace_id)
         .await?
-        .ok_or_else(|| AppError::not_found("task not found"))
+        .into_iter()
+        .filter(|edge| edge.to_chip_id == chip.id && edge.kind == "data")
+        .collect::<Vec<_>>();
+    if incoming.len() > 1 {
+        return Err(AppError::bad(
+            "multiple data edges into a chip are not supported",
+        ));
+    }
+    if let Some(edge) = incoming.first() {
+        return store
+            .latest_chip_output(&edge.from_chip_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::bad("upstream chip has no succeeded output dataset")
+            });
+    }
+    config_input.ok_or_else(|| AppError::bad("transform input_dataset_id required"))
 }
 
-pub(crate) fn task_json(row: &TaskDefinitionRow) -> Result<Value, AppError> {
+pub(crate) fn chip_json(row: &ChipRow) -> Result<Value, AppError> {
     let config = serde_json::from_str::<Value>(&row.config_json)
-        .map_err(|error| AppError::bad(format!("stored task config is invalid: {error}")))?;
+        .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
     Ok(json!({
         "id": row.id,
         "workspace_id": row.workspace_id,
@@ -360,12 +402,12 @@ pub(crate) fn task_json(row: &TaskDefinitionRow) -> Result<Value, AppError> {
     }))
 }
 
-fn task_run_json(row: &TaskRunRow) -> Result<Value, AppError> {
+fn chip_run_json(row: &ChipRunRow) -> Result<Value, AppError> {
     let config_snapshot = serde_json::from_str::<Value>(&row.config_snapshot_json)
-        .map_err(|error| AppError::bad(format!("stored task snapshot is invalid: {error}")))?;
+        .map_err(|error| AppError::bad(format!("stored chip snapshot is invalid: {error}")))?;
     Ok(json!({
         "id": row.id,
-        "task_id": row.task_id,
+        "chip_id": row.chip_id,
         "workspace_id": row.workspace_id,
         "kind": row.kind,
         "status": row.status,
@@ -394,9 +436,9 @@ pub(crate) async fn validate_config(
         "transform" => validate_transform_config(store, workspace_id, config)
             .await
             .and_then(normalized_transform_config),
-        "load" => Err(AppError::bad("load tasks are not supported")),
+        "load" => Err(AppError::bad("load chips are not supported")),
         _ => Err(AppError::bad(
-            "task kind must be extract, transform, or load",
+            "chip kind must be extract, transform, or load",
         )),
     }
 }
@@ -510,7 +552,7 @@ fn reject_forbidden_config(value: &Value) -> Result<(), AppError> {
                     "password" | "passwordcipher" | "outputpath" | "storedpath"
                 ) {
                     return Err(AppError::bad(format!(
-                        "task config must not contain `{key}`"
+                        "chip config must not contain `{key}`"
                     )));
                 }
                 reject_forbidden_config(value)?;
@@ -528,26 +570,26 @@ fn reject_forbidden_config(value: &Value) -> Result<(), AppError> {
 
 async fn run_one(store: &Store, job_tx: &mpsc::Sender<String>, run_id: &str) -> Result<(), String> {
     let run = store
-        .get_task_run(run_id)
+        .get_chip_run(run_id)
         .await
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("task run {run_id} missing"))?;
+        .ok_or_else(|| format!("chip run {run_id} missing"))?;
     if run.status != "queued" {
         return Ok(());
     }
     store
-        .set_task_run_running(run_id)
+        .set_chip_run_running(run_id)
         .await
         .map_err(|error| error.to_string())?;
     match run.kind.as_str() {
         "extract" => run_extract(store, &run).await,
         "transform" => run_transform(store, job_tx, &run).await,
-        "load" => Err("load tasks are not supported".into()),
-        kind => Err(format!("unsupported task kind {kind}")),
+        "load" => Err("load chips are not supported".into()),
+        kind => Err(format!("unsupported chip kind {kind}")),
     }
 }
 
-async fn run_extract(store: &Store, run: &TaskRunRow) -> Result<(), String> {
+async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     let config: ExtractConfig = serde_json::from_str(&run.config_snapshot_json)
         .map_err(|error| format!("invalid extract config snapshot: {error}"))?;
     let delimiter = config.delimiter.unwrap_or_else(|| ",".into());
@@ -565,11 +607,12 @@ async fn run_extract(store: &Store, run: &TaskRunRow) -> Result<(), String> {
             false,
             sql.as_deref(),
             database.as_deref(),
+            &run.workspace_id,
         )
         .await
         .map_err(|error| error.to_string())?;
     store
-        .attach_task_run_extract(&run.id, &extract.id)
+        .attach_chip_run_extract(&run.id, &extract.id)
         .await
         .map_err(|error| error.to_string())?;
     crate::extract::run(store, &extract.id).await
@@ -578,7 +621,7 @@ async fn run_extract(store: &Store, run: &TaskRunRow) -> Result<(), String> {
 async fn run_transform(
     store: &Store,
     job_tx: &mpsc::Sender<String>,
-    run: &TaskRunRow,
+    run: &ChipRunRow,
 ) -> Result<(), String> {
     let config: TransformConfig = serde_json::from_str(&run.config_snapshot_json)
         .map_err(|error| format!("invalid transform config snapshot: {error}"))?;
@@ -606,16 +649,22 @@ async fn run_transform(
     let spec_json = serde_json::to_string(&spec.with_read(delimiter, has_header))
         .map_err(|error| error.to_string())?;
     let job = store
-        .insert_transform_job(&dataset.stored_path, &spec_json, &run.task_id, &dataset.id)
+        .insert_transform_job(
+            &dataset.stored_path,
+            &spec_json,
+            &run.chip_id,
+            &dataset.id,
+            &run.workspace_id,
+        )
         .await
         .map_err(|error| error.to_string())?;
     store
-        .attach_task_run_job(&run.id, &job.id)
+        .attach_chip_run_job(&run.id, &job.id)
         .await
         .map_err(|error| error.to_string())?;
     if job_tx.try_send(job.id.clone()).is_err() {
         let error = "job queue full";
-        let _ = store.fail_task_run_for_job(&job.id, error).await;
+        let _ = store.fail_chip_run_for_job(&job.id, error).await;
         return Err(error.into());
     }
     Ok(())

@@ -1,11 +1,12 @@
 use axum::extract::Request;
-use axum::extract::State;
-use axum::middleware::Next;
-use axum::response::Response;
-use hmac::{Hmac, Mac};
 use axum::http::header::COOKIE;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use storage::UserRow;
 
+use crate::access::CurrentUser;
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -13,22 +14,21 @@ type HmacSha256 = Hmac<Sha256>;
 
 const COOKIE_NAME: &str = "session";
 
-pub fn sign(secret: &str, username: &str) -> String {
+pub fn sign(secret: &str, user_id: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac key");
-    mac.update(username.as_bytes());
+    mac.update(user_id.as_bytes());
     let sig = hex::encode(mac.finalize().into_bytes());
-    format!("{username}.{sig}")
+    format!("{user_id}.{sig}")
 }
 
 pub fn verify(secret: &str, cookie: &str) -> Option<String> {
-    let (username, sig) = cookie.rsplit_once('.')?;
+    let (user_id, sig) = cookie.rsplit_once('.')?;
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
-    mac.update(username.as_bytes());
+    mac.update(user_id.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
     if expected.len() != sig.len() {
         return None;
     }
-    // constant-ish compare via hmac verify on decoded bytes
     let Ok(got) = hex::decode(sig) else {
         return None;
     };
@@ -38,7 +38,7 @@ pub fn verify(secret: &str, cookie: &str) -> Option<String> {
     if got.len() != exp.len() || !constant_eq(&got, &exp) {
         return None;
     }
-    Some(username.to_string())
+    Some(user_id.to_string())
 }
 
 fn constant_eq(a: &[u8], b: &[u8]) -> bool {
@@ -51,8 +51,8 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
         == 0
 }
 
-pub fn session_cookie(secret: &str, username: &str) -> String {
-    let value = sign(secret, username);
+pub fn session_cookie(secret: &str, user_id: &str) -> String {
+    let value = sign(secret, user_id);
     format!("{COOKIE_NAME}={value}; HttpOnly; Path=/; SameSite=Lax")
 }
 
@@ -71,20 +71,42 @@ fn cookie_value(header: &str, name: &str) -> Option<String> {
     })
 }
 
-pub async fn require_auth(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, AppError> {
+async fn load_session_user(
+    state: &AppState,
+    cookie_header: &str,
+) -> Result<UserRow, AppError> {
     if state.config.skip_auth {
-        return Ok(next.run(request).await);
+        return state
+            .store
+            .ensure_bootstrap(&state.config.auth.username, &state.config.auth.password)
+            .await
+            .map_err(AppError::from);
     }
-    let header = request
+    let token = cookie_value(cookie_header, COOKIE_NAME).ok_or_else(AppError::unauthorized)?;
+    let user_id = verify(&state.config.session_secret, &token).ok_or_else(AppError::unauthorized)?;
+    let user = state
+        .store
+        .get_user(&user_id)
+        .await?
+        .ok_or_else(AppError::unauthorized)?;
+    if user.active == 0 {
+        return Err(AppError::unauthorized());
+    }
+    Ok(user)
+}
+
+pub async fn require_auth(state: AppState, mut request: Request, next: Next) -> Response {
+    let cookie_header = request
         .headers()
         .get(COOKIE)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let token = cookie_value(header, COOKIE_NAME).ok_or_else(AppError::unauthorized)?;
-    verify(&state.config.session_secret, &token).ok_or_else(AppError::unauthorized)?;
-    Ok(next.run(request).await)
+        .unwrap_or("")
+        .to_string();
+    match load_session_user(&state, &cookie_header).await {
+        Ok(user) => {
+            request.extensions_mut().insert(CurrentUser(user));
+            next.run(request).await
+        }
+        Err(error) => error.into_response(),
+    }
 }

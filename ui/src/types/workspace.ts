@@ -1,4 +1,13 @@
-import type { TaskConfig, TaskDefinition, TaskKind } from "@/types/task";
+import type { Chip, ChipConfig, ChipEdge, ChipKind } from "@/types/chip";
+
+export interface WorkspaceFolder {
+  id: string;
+  owner_user_id: string;
+  parent_id: string | null;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface Workspace {
   id: string;
@@ -8,6 +17,9 @@ export interface Workspace {
   version: number;
   created_at: string;
   updated_at: string;
+  owner_user_id?: string | null;
+  folder_id?: string | null;
+  edges?: ChipEdge[];
 }
 
 export interface WorkspaceLayout {
@@ -19,30 +31,57 @@ export interface WorkspaceListResponse {
   workspaces: Workspace[];
 }
 
+export interface WorkspaceFolderListResponse {
+  folders: WorkspaceFolder[];
+}
+
 export interface CreateWorkspaceRequest {
   name: string;
   description?: string;
+  folder_id?: string | null;
+}
+
+export interface CreateFolderRequest {
+  name: string;
+  parent_id?: string | null;
+}
+
+export interface UpdateFolderRequest {
+  name?: string;
+  parent_id?: string | null;
 }
 
 export interface UpdateWorkspaceRequest {
   name?: string;
   description?: string;
   layout?: WorkspaceLayout;
+  folder_id?: string | null;
 }
 
-export interface SaveWorkspaceTask {
+export interface SaveWorkspaceChip {
   id: string;
   name: string;
-  kind: TaskKind;
-  config: TaskConfig;
+  kind: ChipKind;
+  config: ChipConfig;
+}
+
+export interface SaveWorkspaceEdge {
+  id: string;
+  from_chip_id: string;
+  to_chip_id: string;
+  kind: ChipEdge["kind"];
+  from_port?: string;
+  to_port?: string;
 }
 
 export interface SaveWorkspaceRequest {
   layout: WorkspaceLayout;
-  tasks: SaveWorkspaceTask[];
+  chips: SaveWorkspaceChip[];
+  edges: SaveWorkspaceEdge[];
 }
 
 export interface SaveWorkspaceResponse {
   workspace: Workspace;
-  tasks: TaskDefinition[];
+  chips: Chip[];
+  edges: ChipEdge[];
 }

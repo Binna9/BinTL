@@ -37,14 +37,24 @@ export function PanelHeader({
   description,
   actions,
   icon,
+  className,
+  onPointerDown,
 }: {
   title: string;
   description?: string;
   actions?: ReactNode;
   icon?: ReactNode;
+  className?: string;
+  onPointerDown?: HTMLAttributes<HTMLElement>["onPointerDown"];
 }) {
   return (
-    <header className="flex min-h-11 items-center justify-between gap-4 rounded-t-xl border-b border-border bg-surface px-4 py-2.5">
+    <header
+      className={cn(
+        "flex min-h-11 items-center justify-between gap-4 rounded-t-xl border-b border-border bg-surface px-4 py-2.5",
+        className,
+      )}
+      onPointerDown={onPointerDown}
+    >
       <div className="flex min-w-0 items-center gap-2.5">
         {icon ? (
           <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-accent-subtle text-accent">
@@ -54,7 +64,9 @@ export function PanelHeader({
         <div className="min-w-0">
           <h2 className="text-sm font-semibold text-text">{title}</h2>
           {description ? (
-            <p className="mt-0.5 text-xs text-text-secondary">{description}</p>
+            <p className="mt-0.5 truncate text-xs text-text-secondary" title={description}>
+              {description}
+            </p>
           ) : null}
         </div>
       </div>
