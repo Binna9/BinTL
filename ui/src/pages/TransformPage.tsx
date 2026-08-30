@@ -5,7 +5,6 @@ import {
   BookmarkPlus,
   Braces,
   ChevronRight,
-  Copy,
   Database,
   Eye,
   FileDown,
@@ -37,7 +36,7 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
-import { toastError, toastSuccess } from "@/lib/notifications";
+import { toastError } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { datasetApi } from "@/services/datasetApi";
 import { transformApi } from "@/services/transformApi";
@@ -641,7 +640,7 @@ export function TransformPage() {
             </div>
           </aside>
 
-          <section className="flex min-h-0 flex-col overflow-hidden">
+          <section className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
             <PaneHeader
               title={messages.transform.setup}
               meta={messages.common.count(steps.length)}
@@ -695,68 +694,33 @@ export function TransformPage() {
               }
             />
             {!selected ? (
-              <div className="grid min-h-0 flex-1 place-items-center px-4">
+              <div className="flex min-h-0 flex-1 items-center justify-center px-4">
                 <p className="text-sm text-text-tertiary">{messages.transform.pickFile}</p>
               </div>
             ) : (
               <>
-                <div className="grid gap-4 border-b border-border px-4 py-3 md:grid-cols-2">
+                <div className="grid items-stretch gap-4 border-b border-border px-4 py-3 md:grid-cols-2">
                   <FormField label={messages.transform.namePlaceholder}>
-                    <div className="flex min-h-8 items-start gap-2 rounded border border-border bg-raised px-2.5 py-1.5 text-[13px]">
+                    <div className="flex h-[3.25rem] items-start gap-2 rounded border border-border bg-surface px-2.5 py-1.5 text-[13px] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
                       <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
                       <textarea
                         rows={2}
-                        className="min-h-[2.5rem] min-w-0 flex-1 resize-none bg-transparent leading-5 outline-none placeholder:text-text-tertiary"
+                        className="h-[2.5rem] min-w-0 flex-1 resize-none overflow-x-auto overflow-y-auto bg-transparent leading-5 text-text outline-none placeholder:text-text-tertiary"
                         value={name}
                         placeholder={messages.transform.namePlaceholder}
                         onChange={(event) => setName(event.target.value)}
                       />
-                      <Button
-                        type="button"
-                        variant="quiet"
-                        className="h-7 shrink-0 px-2"
-                        title={messages.transform.copyName}
-                        aria-label={messages.transform.copyName}
-                        onClick={() => {
-                          void navigator.clipboard.writeText(name).then(
-                            () => toastSuccess(messages.transform.copiedName),
-                            (err) => toastError(messages.transform.copyName, err),
-                          );
-                        }}
-                      >
-                        <Copy className="size-3.5" aria-hidden="true" />
-                      </Button>
                     </div>
                   </FormField>
                   <FormField label={messages.transform.selectedFile}>
-                    <div className="flex min-h-8 items-start gap-2 rounded border border-border bg-raised px-2.5 py-1.5 text-[13px]">
+                    <div className="flex h-[3.25rem] items-start gap-2 rounded border border-border bg-raised px-2.5 py-1.5 text-[13px]">
                       <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
                       <span
-                        draggable
                         title={selected.filename}
-                        className="min-w-0 flex-1 cursor-text select-text break-all leading-5"
-                        onDragStart={(event) => {
-                          event.dataTransfer.setData("text/plain", selected.filename);
-                          event.dataTransfer.effectAllowed = "copy";
-                        }}
+                        className="line-clamp-2 h-[2.5rem] min-w-0 flex-1 overflow-hidden break-all leading-5"
                       >
                         {selected.filename}
                       </span>
-                      <Button
-                        type="button"
-                        variant="quiet"
-                        className="h-7 shrink-0 px-2"
-                        title={messages.transform.copyName}
-                        aria-label={messages.transform.copyName}
-                        onClick={() => {
-                          void navigator.clipboard.writeText(selected.filename).then(
-                            () => toastSuccess(messages.transform.copiedName),
-                            (err) => toastError(messages.transform.copyName, err),
-                          );
-                        }}
-                      >
-                        <Copy className="size-3.5" aria-hidden="true" />
-                      </Button>
                     </div>
                   </FormField>
                 </div>
