@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { BrandMark } from "@/components/BrandMark";
 import { ConsoleRail } from "@/components/ConsoleRail";
 import { HeaderSearch } from "@/components/HeaderSearch";
@@ -14,11 +14,18 @@ import { OverviewPage } from "@/pages/OverviewPage";
 import { QueryPage } from "@/pages/QueryPage";
 import { SchedulePage } from "@/pages/SchedulePage";
 import { SessionGatePage } from "@/pages/SessionGatePage";
+import { TransformFilesPage } from "@/pages/TransformFilesPage";
 import { TransformPage } from "@/pages/TransformPage";
+import { TransformSoonPage } from "@/pages/TransformSoonPage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
 import { SessionProvider } from "@/hooks/useSession";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
+
+function LegacyTransformRedirect() {
+  const { id } = useParams();
+  return <Navigate to={id ? `/transform/clean/${id}` : "/transform/clean"} replace />;
+}
 
 function ConsoleShell() {
   const loc = useLocation();
@@ -57,8 +64,14 @@ function ConsoleShell() {
             <Route path="/db" element={<QueryPage />} />
             <Route path="/query" element={<QueryPage />} />
             <Route path="/extracts" element={<ExtractResultsPage />} />
-            <Route path="/transform" element={<TransformPage />} />
-            <Route path="/transform/:id" element={<TransformPage />} />
+            <Route path="/transforms" element={<TransformFilesPage />} />
+            <Route path="/transform" element={<Navigate to="/transform/clean" replace />} />
+            <Route path="/transform/clean" element={<TransformPage />} />
+            <Route path="/transform/clean/:id" element={<TransformPage />} />
+            <Route path="/transform/combine" element={<TransformSoonPage kind="combine" />} />
+            <Route path="/transform/aggregate" element={<TransformSoonPage kind="aggregate" />} />
+            <Route path="/transform/reshape" element={<TransformSoonPage kind="reshape" />} />
+            <Route path="/transform/:id" element={<LegacyTransformRedirect />} />
             <Route path="/load" element={<LoadPage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/jobs" element={<Navigate to="/history" replace />} />

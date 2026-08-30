@@ -6,6 +6,7 @@ import {
   storeTheme,
   THEME_STORAGE_KEY,
 } from "@/lib/theme";
+import { withViewTransition } from "@/lib/viewTransition";
 import type { ColorTheme } from "@/types/theme";
 
 export function useTheme() {
@@ -33,9 +34,12 @@ export function useTheme() {
   }, []);
 
   function toggleTheme() {
-    const nextTheme = theme === "dark" ? "light" : "dark";
-    storeTheme(nextTheme);
-    setTheme(nextTheme);
+    const nextTheme: ColorTheme = theme === "dark" ? "light" : "dark";
+    withViewTransition(() => {
+      storeTheme(nextTheme);
+      applyTheme(nextTheme);
+      setTheme(nextTheme);
+    });
   }
 
   return { theme, toggleTheme };

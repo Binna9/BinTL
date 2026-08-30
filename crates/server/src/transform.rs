@@ -1,5 +1,7 @@
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::{AppendHeaders, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::{FramePreview, PolarsEngine, TransformSpec};
@@ -15,7 +17,11 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/datasets", get(list_datasets))
-        .route("/api/datasets/{id}", get(get_dataset))
+        .route(
+            "/api/datasets/{id}",
+            get(get_dataset).delete(delete_dataset),
+        )
+        .route("/api/datasets/{id}/file", get(dataset_file))
         .route("/api/datasets/{id}/inspect", post(inspect_dataset))
         .route("/api/datasets/{id}/preview", post(preview_dataset))
         .route(
@@ -56,7 +62,7 @@ struct PatchTransformBody {
 }
 
 fn clamp_limit(limit: Option<usize>) -> usize {
-    limit.unwrap_or(50).clamp(1, 200)
+    limit.unwrap_or(200).clamp(1, 200)
 }
 
 fn dataset_json(store: &Store, row: &DatasetRow) -> Value {
@@ -175,6 +181,43 @@ async fn get_dataset(
 ) -> Result<Json<Value>, AppError> {
     let row = access::require_dataset(&state.store, &user, &id).await?;
     Ok(Json(dataset_json(&state.store, &row)))
+}
+
+async fn delete_dataset(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let _row = access::require_dataset(&state.store, &user, &id).await?;
+    state.store.delete_transform_dataset(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn dataset_file(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let row = access::require_dataset(&state.store, &user, &id).await?;
+    let path = state.store.resolve(&row.stored_path);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| AppError::not_found("dataset file missing"))?;
+    let disp = format!("attachment; filename=\"{}\"", row.filename);
+    let ctype = if row.filename.ends_with(".parquet") {
+        "application/vnd.apache.parquet"
+    } else if row.filename.ends_with(".tsv") {
+        "text/tab-separated-values; charset=utf-8"
+    } else {
+        "text/csv; charset=utf-8"
+    };
+    Ok((
+        AppendHeaders([
+            (CONTENT_TYPE, HeaderValue::from_str(ctype).unwrap()),
+            (CONTENT_DISPOSITION, HeaderValue::from_str(&disp).unwrap()),
+        ]),
+        bytes,
+    ))
 }
 
 async fn inspect_dataset(

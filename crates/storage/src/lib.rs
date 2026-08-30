@@ -1573,6 +1573,38 @@ impl Store {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        let job = self
+            .get_job(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("job not found".into()))?;
+        if let Some(stored_path) = job
+            .output_path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+        {
+            let abs = self.resolve(stored_path);
+            if abs.is_file() {
+                let filename = abs
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("result.parquet")
+                    .to_string();
+                let size = tokio::fs::metadata(&abs).await.ok().map(|meta| meta.len() as i64);
+                self.upsert_dataset(&DatasetUpsert {
+                    id: job.id.clone(),
+                    kind: "transform".into(),
+                    extract_id: None,
+                    filename,
+                    stored_path: stored_path.to_string(),
+                    size_bytes: size,
+                    delimiter: None,
+                    has_header: None,
+                    row_count: None,
+                    workspace_id: Some(job.workspace_id),
+                })
+                .await?;
+            }
+        }
         Ok(())
     }
 
@@ -2100,6 +2132,48 @@ impl Store {
             .ok_or_else(|| StorageError::NotFound("dataset disappeared after upsert".into()))
     }
 
+    pub async fn delete_transform_dataset(&self, id: &str) -> Result<(), StorageError> {
+        let row = self
+            .get_dataset(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("dataset not found".into()))?;
+        if row.kind != "transform" {
+            return Err(StorageError::Invalid(
+                "only transform datasets can be deleted here".into(),
+            ));
+        }
+        let path = self.resolve(&row.stored_path);
+        let outputs_root = self.data_dir.join(REL_OUTPUTS);
+        if let Some(parent) = path.parent() {
+            let remove = if parent == outputs_root {
+                tokio::fs::remove_file(&path).await
+            } else if parent.starts_with(&self.data_dir) {
+                tokio::fs::remove_dir_all(parent).await
+            } else {
+                Ok(())
+            };
+            match remove {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE chip_runs SET output_dataset_id = NULL WHERE output_dataset_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let deleted = sqlx::query("DELETE FROM datasets WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(StorageError::NotFound("dataset not found".into()));
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn set_dataset_provenance(
         &self,
         dataset_id: &str,
@@ -2456,6 +2530,50 @@ impl Store {
                 has_header: None,
                 row_count: None,
                 workspace_id: None,
+            })
+            .await?;
+        }
+
+        let jobs = sqlx::query_as::<_, JobRow>(&format!(
+            "SELECT {JOB_COLS} FROM jobs
+             WHERE status = 'succeeded' AND kind = 'transform' AND output_path IS NOT NULL"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        for job in jobs {
+            let Some(stored_path) = job.output_path.filter(|path| !path.is_empty()) else {
+                continue;
+            };
+            let linked: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM chip_runs WHERE legacy_job_id = ?",
+            )
+            .bind(&job.id)
+            .fetch_one(&self.pool)
+            .await?;
+            if linked > 0 {
+                continue;
+            }
+            let abs = self.resolve(&stored_path);
+            if !abs.is_file() {
+                continue;
+            }
+            let filename = abs
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("result.parquet")
+                .to_string();
+            let size = tokio::fs::metadata(&abs).await.ok().map(|meta| meta.len() as i64);
+            self.upsert_dataset(&DatasetUpsert {
+                id: job.id,
+                kind: "transform".into(),
+                extract_id: None,
+                filename,
+                stored_path,
+                size_bytes: size,
+                delimiter: None,
+                has_header: None,
+                row_count: None,
+                workspace_id: Some(job.workspace_id),
             })
             .await?;
         }

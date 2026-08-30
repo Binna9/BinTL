@@ -91,6 +91,22 @@ function useChartPalette(): Palette {
   }, [tick]);
 }
 
+/** Always light card + dark type so dark-mode hover stays readable. */
+function chartTooltip() {
+  return {
+    backgroundColor: "#ffffff",
+    titleColor: "#20242a",
+    bodyColor: "#3a4250",
+    footerColor: "#5d6672",
+    borderColor: "rgba(32, 36, 42, 0.12)",
+    borderWidth: 1,
+    cornerRadius: 10,
+    padding: 10,
+    displayColors: true,
+    boxPadding: 4,
+  };
+}
+
 function ChartFrame({ children }: { children: React.ReactNode }) {
   return <div className="dash-chart h-full min-h-0 w-full">{children}</div>;
 }
@@ -176,15 +192,7 @@ export function TrendChart({ days }: { days: DayPoint[] }) {
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: alpha(palette.ink, 0.9),
-          titleColor: "#fff",
-          bodyColor: "rgba(255,255,255,0.88)",
-          borderColor: alpha(palette.grid, 0.35),
-          borderWidth: 1,
-          cornerRadius: 10,
-          padding: 10,
-          displayColors: true,
-          boxPadding: 4,
+          ...chartTooltip(),
           callbacks: {
             footer(items) {
               const total = items.reduce((sum, item) => sum + Number(item.raw ?? 0), 0);
@@ -302,12 +310,8 @@ export function FlowChart({
       plugins: {
         legend: { display: false },
         tooltip: {
+          ...chartTooltip(),
           enabled: hasData,
-          backgroundColor: alpha(palette.ink, 0.9),
-          titleColor: "#fff",
-          bodyColor: "rgba(255,255,255,0.88)",
-          cornerRadius: 10,
-          padding: 10,
           callbacks: {
             label(item) {
               return ` ${messages.common.cases(Number(item.raw ?? 0))}`;
@@ -328,7 +332,7 @@ export function FlowChart({
         if (canvas) canvas.style.cursor = hasData && elements.length ? "pointer" : "default";
       },
     }),
-    [hasData, messages, navigate, palette.ink, realTotal, stages, unit],
+    [hasData, messages, navigate, realTotal, stages, unit],
   );
 
   return (
@@ -393,11 +397,7 @@ export function AssetsChart({
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: alpha(palette.ink, 0.9),
-          titleColor: "#fff",
-          bodyColor: "rgba(255,255,255,0.88)",
-          cornerRadius: 10,
-          padding: 10,
+          ...chartTooltip(),
           callbacks: {
             label(item) {
               return ` ${item.raw}`;

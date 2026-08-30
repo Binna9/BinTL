@@ -1,11 +1,15 @@
 import {
+  AppWindow,
+  Boxes,
   Braces,
   Cable,
   CalendarClock,
+  Columns2,
+  Combine,
   Database,
   DatabaseZap,
   FileText,
-  AppWindow,
+  GitBranch,
   History,
   LayoutDashboard,
   ListChecks,
@@ -62,6 +66,33 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       to: "/transform",
       label: messages.nav.transform,
       icon: <Workflow className={iconClassName} />,
+      children: [
+        {
+          to: "/transform/clean",
+          label: messages.nav.transformClean,
+          icon: <Columns2 className={iconClassName} />,
+        },
+        {
+          to: "/transform/combine",
+          label: messages.nav.transformCombine,
+          icon: <Combine className={iconClassName} />,
+        },
+        {
+          to: "/transform/aggregate",
+          label: messages.nav.transformAggregate,
+          icon: <Boxes className={iconClassName} />,
+        },
+        {
+          to: "/transform/reshape",
+          label: messages.nav.transformReshape,
+          icon: <GitBranch className={iconClassName} />,
+        },
+        {
+          to: "/transforms",
+          label: messages.nav.transformResults,
+          icon: <ListChecks className={iconClassName} />,
+        },
+      ],
     },
     {
       to: "/load",

@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { ScanSearch, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageProvider";
 
 export function HeaderSearch() {
@@ -12,8 +12,8 @@ export function HeaderSearch() {
 
   return (
     <div className="header-search">
-      <span className="header-bloom" aria-hidden="true">
-        <ScanSearch className="size-[1.05rem] text-accent" strokeWidth={1.75} />
+      <span className="header-search-brand" aria-hidden="true">
+        {messages.nav.searchBar}
       </span>
       <form className="header-search-form group" onSubmit={onSubmit}>
         <div className="header-search-shell">

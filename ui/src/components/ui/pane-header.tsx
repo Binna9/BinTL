@@ -4,12 +4,14 @@ import { cn } from "@/lib/cn";
 export function PaneHeader({
   title,
   meta,
+  afterMeta,
   description,
   actions,
   className,
 }: {
   title: string;
   meta?: string;
+  afterMeta?: ReactNode;
   description?: string;
   actions?: ReactNode;
   className?: string;
@@ -21,7 +23,7 @@ export function PaneHeader({
         className,
       )}
     >
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
         <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-text">
           {title}
@@ -31,6 +33,7 @@ export function PaneHeader({
             {meta}
           </span>
         ) : null}
+        {afterMeta ? <div className="shrink-0">{afterMeta}</div> : null}
         {description ? (
           <span className="truncate text-[11px] text-text-tertiary">{description}</span>
         ) : null}

@@ -1,5 +1,5 @@
 import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from "react";
-import { flushSync } from "react-dom";
+import { withViewTransition } from "@/lib/viewTransition";
 import { en } from "./en";
 import { ko, type Messages } from "./ko";
 
@@ -21,19 +21,6 @@ function preferredLocale(): Locale {
   return navigator.language.toLowerCase().startsWith("ko") ? "ko" : "en";
 }
 
-function applyLocale(next: Locale, setLocale: (locale: Locale) => void) {
-  flushSync(() => setLocale(next));
-}
-
-function withLocaleTransition(apply: () => void) {
-  const startViewTransition = document.startViewTransition?.bind(document);
-  if (startViewTransition && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    startViewTransition(apply);
-    return;
-  }
-  apply();
-}
-
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [locale, setLocale] = useState<Locale>(preferredLocale);
 
@@ -48,11 +35,11 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
       messages: locale === "ko" ? ko : en,
       setLocale: (next) => {
         if (next === locale) return;
-        withLocaleTransition(() => applyLocale(next, setLocale));
+        withViewTransition(() => setLocale(next));
       },
       toggleLocale: () => {
         const next = locale === "ko" ? "en" : "ko";
-        withLocaleTransition(() => applyLocale(next, setLocale));
+        withViewTransition(() => setLocale(next));
       },
     }),
     [locale],

@@ -68,45 +68,49 @@ export function SessionGatePage() {
         <TopSubmenu prefsOnly />
       </div>
       <div className="relative z-10 flex min-h-screen items-center justify-center p-6">
-        <section className="login-card relative flex w-full max-w-[30rem] flex-col overflow-hidden rounded-2xl border border-border">
-          <span className="login-card-slash" aria-hidden="true">
-            <svg viewBox="0 0 88 88">
-              <defs>
-                <linearGradient id="login-card-slash-grad" x1="1" y1="0" x2="0" y2="1">
-                  <stop offset="0" stopColor="var(--login-slash)" />
-                  <stop offset="0.22" stopColor="var(--login-slash)" />
-                  <stop offset="0.36" stopColor="var(--login-slash-hi)" />
-                  <stop offset="0.5" stopColor="var(--login-slash-hi)" />
-                  <stop offset="0.64" stopColor="var(--login-slash-hi)" />
-                  <stop offset="0.78" stopColor="var(--login-slash)" />
-                  <stop offset="1" stopColor="var(--login-slash)" />
-                </linearGradient>
-              </defs>
-              <path className="login-card-slash-outer" d="M86 -4 L-4 86" />
-              <path className="login-card-slash-inner" d="M72 -4 L-4 72" />
-            </svg>
-          </span>
-          <ReleaseBadge className="login-release" />
-          <div className="px-9 pt-11">
-            <div className="flex flex-col items-center text-center">
-              <div className="-translate-x-3">
-                <BrandMark large />
+        {/* Shell carries drop-shadow so the cut corner still casts a shaped shadow. */}
+        <div className="login-card-shell w-full max-w-[30rem]">
+          <section className="login-card relative flex w-full flex-col overflow-hidden border border-border">
+            <span className="login-card-slash" aria-hidden="true">
+              <svg viewBox="0 0 88 88">
+                <defs>
+                  <linearGradient id="login-card-slash-grad" x1="1" y1="0" x2="0" y2="1">
+                    <stop offset="0" stopColor="var(--login-slash)" />
+                    <stop offset="0.22" stopColor="var(--login-slash)" />
+                    <stop offset="0.36" stopColor="var(--login-slash-hi)" />
+                    <stop offset="0.5" stopColor="var(--login-slash-hi)" />
+                    <stop offset="0.64" stopColor="var(--login-slash-hi)" />
+                    <stop offset="0.78" stopColor="var(--login-slash)" />
+                    <stop offset="1" stopColor="var(--login-slash)" />
+                  </linearGradient>
+                </defs>
+                <path className="login-card-slash-outer" d="M86 -4 L-4 86" />
+                <path className="login-card-slash-inner" d="M72 -4 L-4 72" />
+                {/* Deeper parallel slash, ~2× outer thickness. */}
+                <path className="login-card-slash-deep" d="M48 -4 L-4 48" />
+              </svg>
+            </span>
+            <ReleaseBadge className="login-release" />
+            <div className="px-9 pt-11">
+              <div className="flex flex-col items-center text-center">
+                <div className="-translate-x-3">
+                  <BrandMark large />
+                </div>
+                <p className="mt-4 max-w-[22rem] text-center text-[13px] leading-6 text-text-secondary whitespace-pre-line">
+                  {messages.login.description}
+                </p>
+                <Button className="mt-5 h-9 w-[70%] gap-2 text-[13px]" type="button" disabled={busy}>
+                  <GoogleMark />
+                  {messages.login.google}
+                </Button>
+                <p className="mt-3 text-[14px] font-medium leading-none tracking-wide text-text-tertiary">or</p>
+                <div className="login-rule mt-3 w-full" />
               </div>
-              <p className="mt-4 max-w-[22rem] text-center text-[13px] leading-6 text-text-secondary whitespace-pre-line">
-                {messages.login.description}
-              </p>
-              <Button className="mt-5 h-9 w-[70%] gap-2 text-[13px]" type="button" disabled={busy}>
-                <GoogleMark />
-                {messages.login.google}
-              </Button>
-              <p className="mt-3 text-[14px] font-medium leading-none tracking-wide text-text-tertiary">or</p>
-              <div className="login-rule mt-3 w-full" />
             </div>
-          </div>
-          <form
-            className="flex flex-col gap-5 px-9 pt-3"
-            onSubmit={(event) => void onSubmit(event)}
-          >
+            <form
+              className="flex flex-col gap-5 px-9 pt-3"
+              onSubmit={(event) => void onSubmit(event)}
+            >
               <div className="flex flex-col gap-2.5">
                 <FormField label={messages.login.userid}>
                   <div className="relative">
@@ -176,10 +180,11 @@ export function SessionGatePage() {
               </div>
             </form>
 
-          <p className="px-9 pb-9 pt-10 text-center text-xs text-text-tertiary">
-            © {new Date().getFullYear()} {messages.login.footer}
-          </p>
-        </section>
+            <p className="px-9 pb-9 pt-10 text-center text-xs text-text-tertiary">
+              © {new Date().getFullYear()} {messages.login.footer}
+            </p>
+          </section>
+        </div>
       </div>
     </main>
   );

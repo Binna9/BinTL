@@ -1,21 +1,35 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import {
+  BookmarkPlus,
   Braces,
   ChevronRight,
+  Copy,
   Database,
+  Eye,
+  FileDown,
   FileOutput,
-  Play,
+  FileSpreadsheet,
   Plus,
-  Save,
+  RotateCcw,
   Search,
   Trash2,
   Upload,
 } from "lucide-react";
-import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
+import { AppDialog } from "@/components/AppDialog";
+import {
+  columnWidthsForContent,
+  DataGrid,
+  EmptyGridRow,
+  GridCell,
+  GridRow,
+} from "@/components/DataGrid";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { SplitLayout } from "@/components/SplitLayout";
 import { Button } from "@/components/ui/button";
+import { FormField } from "@/components/ui/form-field";
+import { MetaField } from "@/components/ui/meta-field";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
 import { Select } from "@/components/ui/select";
@@ -23,13 +37,12 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
-import { toastError } from "@/lib/notifications";
+import { toastError, toastSuccess } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { datasetApi } from "@/services/datasetApi";
 import { transformApi } from "@/services/transformApi";
 import type { Dataset, DatasetColumn, FramePreview } from "@/types/dataset";
 import type {
-  SavedTransform,
   StepOp,
   TransformSpecV2,
   TransformStep,
@@ -47,7 +60,7 @@ const STEP_OPS: StepOp[] = [
 ];
 
 const CAST_TYPES = ["Int64", "Int32", "Float64", "Float32", "String", "Boolean"];
-const KIND_ORDER = ["upload", "database", "transform", "api"] as const;
+const KIND_ORDER = ["upload", "database", "api", "transform"] as const;
 const KIND_APPEARANCE = {
   upload: {
     icon: Upload,
@@ -176,20 +189,18 @@ function PreviewGrid({
       </DataGrid>
     );
   }
-  const headers = ["#", ...preview.columns.map((column) => column.name)];
+  const headers = preview.columns.map((column) => column.name);
+  const widths = columnWidthsForContent(headers, preview.rows);
   return (
-    <DataGrid headers={headers}>
+    <DataGrid className="h-full min-h-64" headers={headers} columnWidths={widths}>
       {preview.rows.length === 0 ? (
         <EmptyGridRow cols={headers.length} text={empty} />
       ) : (
         preview.rows.map((row, index) => (
           <GridRow key={index}>
-            <GridCell mono muted>
-              {index + 1}
-            </GridCell>
-            {row.map((cell, cellIndex) => (
-              <GridCell key={cellIndex} mono>
-                {cell}
+            {headers.map((_, cellIndex) => (
+              <GridCell key={cellIndex} mono title={row[cellIndex] ?? ""}>
+                {row[cellIndex] ?? ""}
               </GridCell>
             ))}
           </GridRow>
@@ -199,35 +210,21 @@ function PreviewGrid({
   );
 }
 
-function SchemaChips({ columns }: { columns: DatasetColumn[] }) {
-  if (columns.length === 0) return null;
-  return (
-    <div className="flex flex-wrap gap-1.5 px-3 py-2">
-      {columns.map((column) => (
-        <span
-          key={column.name}
-          className="rounded-full border border-border bg-raised px-2 py-0.5 text-[11px] text-text"
-        >
-          <span className="font-medium">{column.name}</span>
-          <span className="ml-1 text-text-tertiary">{column.dtype}</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
 export function TransformPage() {
   const { messages } = useLanguage();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [transforms, setTransforms] = useState<SavedTransform[]>([]);
   const [datasetId, setDatasetId] = useState<string>();
   const [transformId, setTransformId] = useState<string>();
   const [name, setName] = useState("");
   const [steps, setSteps] = useState<TransformStep[]>([]);
   const [sourcePreview, setSourcePreview] = useState<FramePreview | null>(null);
   const [resultPreview, setResultPreview] = useState<FramePreview | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailTab, setDetailTab] = useState<"source" | "result">("source");
+  const [detailTick, setDetailTick] = useState(0);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [expandedKinds, setExpandedKinds] = useState<Set<(typeof KIND_ORDER)[number]>>(
     new Set(),
   );
@@ -240,6 +237,10 @@ export function TransformPage() {
     api: "",
   });
   const [busy, setBusy] = useState(false);
+  const [addStepOpen, setAddStepOpen] = useState(false);
+  const addStepRef = useRef<HTMLDivElement>(null);
+  const addStepMenuRef = useRef<HTMLDivElement>(null);
+  const [addStepPos, setAddStepPos] = useState<{ top: number; left: number } | null>(null);
 
   const selected = datasets.find((item) => item.id === datasetId) ?? null;
   const kindLabel: Record<string, string> = {
@@ -248,14 +249,30 @@ export function TransformPage() {
     transform: messages.transform.kindTransform,
     api: messages.transform.kindApi,
   };
+  const stepLabels: Record<StepOp, string> = {
+    select: messages.transform.opSelect,
+    drop: messages.transform.opDrop,
+    rename: messages.transform.opRename,
+    filter: messages.transform.opFilter,
+    cast: messages.transform.opCast,
+    fill_null: messages.transform.opFillNull,
+    sort: messages.transform.opSort,
+    unique: messages.transform.opUnique,
+  };
+  const stepHints: Record<StepOp, string> = {
+    select: messages.transform.opSelectHint,
+    drop: messages.transform.opDropHint,
+    rename: messages.transform.opRenameHint,
+    filter: messages.transform.opFilterHint,
+    cast: messages.transform.opCastHint,
+    fill_null: messages.transform.opFillNullHint,
+    sort: messages.transform.opSortHint,
+    unique: messages.transform.opUniqueHint,
+  };
 
   async function refreshCatalog() {
-    const [datasetResponse, transformResponse] = await Promise.all([
-      datasetApi.list(),
-      transformApi.list(),
-    ]);
+    const datasetResponse = await datasetApi.list();
     setDatasets(datasetResponse.datasets);
-    setTransforms(transformResponse.transforms);
   }
 
   useEffect(() => {
@@ -290,57 +307,98 @@ export function TransformPage() {
   }, [id, messages]);
 
   useEffect(() => {
-    if (!datasetId) {
-      setSourcePreview(null);
-      setResultPreview(null);
-      return;
-    }
+    if (!detailOpen || !datasetId) return;
+    const dataset = datasets.find((item) => item.id === datasetId) ?? null;
+    const spec = specFrom(dataset, steps);
     let cancelled = false;
-    setBusy(true);
-    void datasetApi
-      .inspect(datasetId, 50)
-      .then((result) => {
+    setDetailLoading(true);
+    void Promise.allSettled([
+      datasetApi.inspect(datasetId, 200),
+      datasetApi.preview(datasetId, spec, 200),
+    ])
+      .then(([inspected, previewed]) => {
         if (cancelled) return;
-        setDatasets((current) =>
-          current.map((item) => (item.id === result.dataset.id ? result.dataset : item)),
-        );
-        setSourcePreview(result.preview);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          toastError(messages.errors.inspect, err);
+        if (inspected.status === "fulfilled") {
+          setDatasets((current) =>
+            current.map((item) =>
+              item.id === inspected.value.dataset.id ? inspected.value.dataset : item,
+            ),
+          );
+          setSourcePreview(inspected.value.preview);
+        } else {
+          toastError(messages.errors.inspect, inspected.reason);
+        }
+        if (previewed.status === "fulfilled") {
+          setResultPreview(previewed.value);
+        } else {
+          setResultPreview(null);
+          if (usableSteps(steps).length > 0) {
+            toastError(messages.errors.previewTransform, previewed.reason);
+          }
         }
       })
       .finally(() => {
-        if (!cancelled) setBusy(false);
+        if (!cancelled) setDetailLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [datasetId, messages]);
+  }, [detailOpen, datasetId, detailTick, messages]);
 
   const grouped = useMemo(() => {
     return KIND_ORDER.map((kind) => ({
       kind,
       items: datasets.filter((item) => item.kind === kind),
-    })).filter((group) => group.items.length > 0);
+    }));
   }, [datasets]);
+
+  useEffect(() => {
+    if (!addStepOpen) {
+      setAddStepPos(null);
+      return;
+    }
+    const box = addStepRef.current;
+    if (box) {
+      const rect = box.getBoundingClientRect();
+      setAddStepPos({ top: rect.bottom + 6, left: rect.left });
+    }
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target as Node;
+      if (addStepRef.current?.contains(target) || addStepMenuRef.current?.contains(target)) {
+        return;
+      }
+      setAddStepOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setAddStepOpen(false);
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [addStepOpen]);
 
   function buildSpec(): TransformSpecV2 {
     return specFrom(selected, steps);
   }
 
-  async function onPreview() {
+  function openDetail(tab: "source" | "result") {
     if (!datasetId) return;
-    setBusy(true);
-    try {
-      const preview = await datasetApi.preview(datasetId, buildSpec(), 50);
-      setResultPreview(preview);
-    } catch (err) {
-      toastError(messages.errors.previewTransform, err);
-    } finally {
-      setBusy(false);
-    }
+    setDetailTab(tab);
+    setDetailOpen(true);
+    setDetailTick((tick) => tick + 1);
+  }
+
+  function onNew() {
+    setTransformId(undefined);
+    setDatasetId(undefined);
+    setName("");
+    setSteps([]);
+    setSourcePreview(null);
+    setResultPreview(null);
+    navigate("/transform/clean");
   }
 
   async function onSave() {
@@ -365,7 +423,7 @@ export function TransformPage() {
         setTransformId(row.id);
         setName(row.name);
         await refreshCatalog();
-        navigate(`/transform/${row.id}`, { replace: true });
+        navigate(`/transform/clean/${row.id}`, { replace: true });
       }
     } catch (err) {
       toastError(messages.errors.saveTransform, err);
@@ -394,7 +452,7 @@ export function TransformPage() {
         });
         savedId = row.id;
         setTransformId(row.id);
-        navigate(`/transform/${row.id}`, { replace: true });
+        navigate(`/transform/clean/${row.id}`, { replace: true });
       }
       const run = await transformApi.run(savedId);
       navigate(`/jobs/${run.id}`);
@@ -409,16 +467,9 @@ export function TransformPage() {
     setSteps((current) => current.map((step, i) => (i === index ? next : step)));
   }
 
-  const stepLabels: Record<StepOp, string> = {
-    select: messages.transform.opSelect,
-    drop: messages.transform.opDrop,
-    rename: messages.transform.opRename,
-    filter: messages.transform.opFilter,
-    cast: messages.transform.opCast,
-    fill_null: messages.transform.opFillNull,
-    sort: messages.transform.opSort,
-    unique: messages.transform.opUnique,
-  };
+  const columns = selected?.columns ?? [];
+  const activePreview = detailTab === "result" ? resultPreview : sourcePreview;
+  const previewHeaders = activePreview?.columns.map((column) => column.name) ?? [];
 
   return (
     <PageShell>
@@ -429,12 +480,22 @@ export function TransformPage() {
         description={messages.transform.description}
         actions={
           <>
-            <Button type="button" className="gap-2" disabled={!datasetId || busy} onClick={() => void onPreview()}>
+            <Button type="button" variant="quiet" className="gap-2" disabled={busy} onClick={onNew}>
+              <RotateCcw className="size-3.5" aria-hidden="true" />
+              {messages.transform.reset}
+            </Button>
+            <Button
+              type="button"
+              className="gap-2"
+              disabled={!datasetId || busy}
+              onClick={() => openDetail(usableSteps(steps).length > 0 ? "result" : "source")}
+            >
+              <Eye className="size-3.5" aria-hidden="true" />
               {messages.transform.previewSteps}
             </Button>
             <Button type="button" className="gap-2" disabled={!datasetId || busy} onClick={() => void onSave()}>
-              <Save className="size-3.5" aria-hidden="true" />
-              {busy ? messages.common.saving : messages.common.save}
+              <BookmarkPlus className="size-3.5" aria-hidden="true" />
+              {busy ? messages.common.saving : messages.transform.register}
             </Button>
             <Button
               variant="primary"
@@ -443,8 +504,8 @@ export function TransformPage() {
               disabled={!datasetId || busy}
               onClick={() => void onRun()}
             >
-              <Play className="size-3.5 fill-current" aria-hidden="true" />
-              {busy ? messages.common.running : messages.common.run}
+              <FileDown className="size-3.5" aria-hidden="true" />
+              {busy ? messages.transform.exporting : messages.transform.resultFile}
             </Button>
           </>
         }
@@ -457,40 +518,11 @@ export function TransformPage() {
         >
           <aside className="flex min-h-0 flex-col overflow-hidden">
             <PaneHeader
-              title={messages.transform.saved}
-              meta={messages.common.count(transforms.length)}
-            />
-            <div className="max-h-40 overflow-auto border-b border-border bg-surface">
-              {transforms.length === 0 ? (
-                <p className="p-3 text-xs text-text-tertiary">{messages.empty.transforms}</p>
-              ) : (
-                transforms.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={cn(
-                      "block w-full min-w-0 overflow-hidden border-b border-border px-3 py-2 text-left last:border-b-0",
-                      selectableClass(item.id === transformId),
-                    )}
-                    onClick={() => navigate(`/transform/${item.id}`)}
-                  >
-                    <span className="block truncate text-[13px]">{item.name}</span>
-                    <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
-                      {item.dataset_id.slice(0, 8)}
-                    </span>
-                  </button>
-                ))
-              )}
-            </div>
-            <PaneHeader
               title={messages.transform.catalog}
               meta={messages.common.count(datasets.length)}
             />
             <div className="min-h-0 flex-1 overflow-auto bg-surface">
-              {grouped.length === 0 ? (
-                <p className="p-3 text-xs text-text-tertiary">{messages.empty.datasets}</p>
-              ) : (
-                <div className="space-y-2 p-2">
+              <div className="space-y-2 p-2">
                   {grouped.map((group) => {
                     const appearance = KIND_APPEARANCE[group.kind];
                     const KindIcon = appearance.icon;
@@ -576,7 +608,7 @@ export function TransformPage() {
                               key={item.id}
                               type="button"
                               className={cn(
-                                "block w-full min-w-0 overflow-hidden border-b border-border px-3 py-2.5 text-left last:border-b-0",
+                                "flex w-full min-w-0 items-start gap-2 border-b border-border px-3 py-2.5 text-left last:border-b-0",
                                 selectableClass(item.id === datasetId),
                               )}
                               onClick={() => {
@@ -587,15 +619,18 @@ export function TransformPage() {
                                 }
                               }}
                             >
-                              <span className="block truncate text-[13px] font-medium">
-                                {item.filename}
-                              </span>
-                              <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
-                                {item.origin?.connection_name
-                                  ? `${item.origin.connection_name} · ${item.origin.table_name}`
-                                  : item.size_bytes != null
-                                    ? fmtBytes(item.size_bytes)
-                                    : item.id.slice(0, 8)}
+                              <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
+                              <span className="min-w-0 flex-1">
+                                <span className="block break-all text-[13px] font-medium leading-4">
+                                  {item.filename}
+                                </span>
+                                <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
+                                  {item.origin?.connection_name
+                                    ? `${item.origin.connection_name} · ${item.origin.table_name}`
+                                    : item.size_bytes != null
+                                      ? fmtBytes(item.size_bytes)
+                                      : item.id.slice(0, 8)}
+                                </span>
                               </span>
                             </button>
                           ))}
@@ -603,144 +638,288 @@ export function TransformPage() {
                     );
                   })}
                 </div>
-              )}
             </div>
           </aside>
 
-          <SplitLayout fill={false} className="min-h-0" defaultSizes={[layout.split.inspect]}>
-            <section className="flex min-h-0 flex-col overflow-hidden">
-              <PaneHeader
-                title={messages.transform.inspect}
-                description={selected?.filename}
-                meta={
-                  sourcePreview?.row_count != null
-                    ? messages.common.rows(sourcePreview.row_count)
-                    : undefined
-                }
-              />
-              {!selected ? (
-                <p className="p-4 text-sm text-text-secondary">{messages.transform.pickFile}</p>
-              ) : (
-                <>
-                  <SchemaChips
-                    columns={
-                      sourcePreview?.columns?.length
-                        ? sourcePreview.columns
-                        : selected.columns
-                    }
-                  />
-                  <div className="min-h-0 flex-1 overflow-auto">
-                    <PreviewGrid preview={sourcePreview} empty={messages.empty.preview} />
-                  </div>
-                </>
-              )}
-            </section>
-
-            <section className="flex min-h-0 flex-col overflow-hidden">
-              <PaneHeader
-                title={messages.transform.steps}
-                meta={messages.common.count(steps.length)}
-                actions={
-                  <Select
-                    placeholder={messages.transform.addStep}
-                    options={STEP_OPS.map((op) => ({ value: op, label: stepLabels[op] }))}
-                    value=""
-                    onChange={(value) => {
-                      if (!value) return;
-                      setSteps((current) => [...current, emptyStep(value as StepOp)]);
-                    }}
-                  />
-                }
-              />
-              <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-                <input
-                  className="field-control min-w-0 flex-1"
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  placeholder={messages.transform.namePlaceholder}
-                />
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto bg-surface">
-                {steps.length === 0 ? (
-                  <p className="p-3 text-xs text-text-tertiary">{messages.empty.steps}</p>
-                ) : (
-                  steps.map((step, index) => (
-                    <article key={`${step.op}-${index}`} className="border-b border-border p-3">
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.06em]">
-                          {index + 1}. {stepLabels[step.op]}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <Button
-                            type="button"
-                            variant="quiet"
-                            disabled={index === 0}
-                            onClick={() =>
-                              setSteps((current) => {
-                                const next = [...current];
-                                [next[index - 1], next[index]] = [next[index], next[index - 1]];
-                                return next;
-                              })
-                            }
-                          >
-                            ↑
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="quiet"
-                            disabled={index === steps.length - 1}
-                            onClick={() =>
-                              setSteps((current) => {
-                                const next = [...current];
-                                [next[index], next[index + 1]] = [next[index + 1], next[index]];
-                                return next;
-                              })
-                            }
-                          >
-                            ↓
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="quiet"
-                            onClick={() =>
-                              setSteps((current) => current.filter((_, i) => i !== index))
-                            }
-                          >
-                            <Trash2 className="size-3.5" aria-hidden="true" />
-                          </Button>
-                        </div>
-                      </div>
-                      <StepFields
-                        step={step}
-                        columns={sourcePreview?.columns ?? selected?.columns ?? []}
-                        onChange={(next) => updateStep(index, next)}
-                        messages={messages}
-                      />
-                    </article>
-                  ))
-                )}
-              </div>
-              <PaneHeader
-                title={messages.transform.resultPreview}
-                meta={
-                  resultPreview
-                    ? messages.common.rows(resultPreview.sampled_rows)
-                    : undefined
-                }
-                actions={
-                  <Button type="button" variant="quiet" disabled={!datasetId || busy} onClick={() => void onPreview()}>
-                    <Plus className="size-3.5" aria-hidden="true" />
-                    {messages.transform.previewSteps}
+          <section className="flex min-h-0 flex-col overflow-hidden">
+            <PaneHeader
+              title={messages.transform.setup}
+              meta={messages.common.count(steps.length)}
+              afterMeta={
+                <div className="relative" ref={addStepRef}>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-7 gap-1 px-2 text-[11px]"
+                    disabled={!selected}
+                    title={messages.transform.addStep}
+                    aria-expanded={addStepOpen}
+                    aria-haspopup="menu"
+                    onClick={() => setAddStepOpen((open) => !open)}
+                  >
+                    <Plus className="size-3.5 shrink-0" aria-hidden="true" />
+                    {messages.transform.addStep}
                   </Button>
-                }
-              />
-              <div className="min-h-40 overflow-auto">
-                <PreviewGrid preview={resultPreview} empty={messages.transform.previewHint} />
+                  {addStepOpen && addStepPos
+                    ? createPortal(
+                        <div
+                          ref={addStepMenuRef}
+                          role="menu"
+                          className="fixed z-[220] w-72 overflow-y-auto rounded-xl border border-border bg-surface py-1 shadow-[0_10px_28px_rgba(15,23,42,0.14)] dark:shadow-[0_14px_32px_rgba(0,0,0,0.48)]"
+                          style={{ top: addStepPos.top, left: addStepPos.left, maxHeight: 320 }}
+                        >
+                          {STEP_OPS.map((op) => (
+                            <button
+                              key={op}
+                              type="button"
+                              role="menuitem"
+                              className="flex w-full flex-col px-3 py-2 text-left hover:bg-accent-subtle"
+                              onClick={() => {
+                                setSteps((current) => [...current, emptyStep(op)]);
+                                setAddStepOpen(false);
+                              }}
+                            >
+                              <span className="text-[13px] font-semibold text-text">
+                                {stepLabels[op]}
+                              </span>
+                              <span className="mt-0.5 text-[11px] leading-4 text-text-tertiary">
+                                {stepHints[op]}
+                              </span>
+                            </button>
+                          ))}
+                        </div>,
+                        document.body,
+                      )
+                    : null}
+                </div>
+              }
+            />
+            {!selected ? (
+              <div className="grid min-h-0 flex-1 place-items-center px-4">
+                <p className="text-sm text-text-tertiary">{messages.transform.pickFile}</p>
               </div>
-            </section>
-          </SplitLayout>
+            ) : (
+              <>
+                <div className="grid gap-4 border-b border-border px-4 py-3 md:grid-cols-2">
+                  <FormField label={messages.transform.namePlaceholder}>
+                    <div className="flex min-h-8 items-start gap-2 rounded border border-border bg-raised px-2.5 py-1.5 text-[13px]">
+                      <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
+                      <textarea
+                        rows={2}
+                        className="min-h-[2.5rem] min-w-0 flex-1 resize-none bg-transparent leading-5 outline-none placeholder:text-text-tertiary"
+                        value={name}
+                        placeholder={messages.transform.namePlaceholder}
+                        onChange={(event) => setName(event.target.value)}
+                      />
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        className="h-7 shrink-0 px-2"
+                        title={messages.transform.copyName}
+                        aria-label={messages.transform.copyName}
+                        onClick={() => {
+                          void navigator.clipboard.writeText(name).then(
+                            () => toastSuccess(messages.transform.copiedName),
+                            (err) => toastError(messages.transform.copyName, err),
+                          );
+                        }}
+                      >
+                        <Copy className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </FormField>
+                  <FormField label={messages.transform.selectedFile}>
+                    <div className="flex min-h-8 items-start gap-2 rounded border border-border bg-raised px-2.5 py-1.5 text-[13px]">
+                      <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
+                      <span
+                        draggable
+                        title={selected.filename}
+                        className="min-w-0 flex-1 cursor-text select-text break-all leading-5"
+                        onDragStart={(event) => {
+                          event.dataTransfer.setData("text/plain", selected.filename);
+                          event.dataTransfer.effectAllowed = "copy";
+                        }}
+                      >
+                        {selected.filename}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="quiet"
+                        className="h-7 shrink-0 px-2"
+                        title={messages.transform.copyName}
+                        aria-label={messages.transform.copyName}
+                        onClick={() => {
+                          void navigator.clipboard.writeText(selected.filename).then(
+                            () => toastSuccess(messages.transform.copiedName),
+                            (err) => toastError(messages.transform.copyName, err),
+                          );
+                        }}
+                      >
+                        <Copy className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </FormField>
+                </div>
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <div className="min-h-0 flex-1 overflow-auto">
+                    {steps.length === 0 ? (
+                      <div className="grid h-full min-h-32 place-items-center px-4">
+                        <p className="text-sm text-text-tertiary">{messages.empty.steps}</p>
+                      </div>
+                    ) : (
+                      steps.map((step, index) => (
+                        <article key={`${step.op}-${index}`} className="border-b border-border p-3">
+                          <div className="mb-2 flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="text-xs font-semibold uppercase tracking-[0.06em]">
+                                {index + 1}. {stepLabels[step.op]}
+                              </span>
+                              <p className="mt-1 text-[11px] leading-4 text-text-tertiary">
+                                {stepHints[step.op]}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <Button
+                                type="button"
+                                variant="quiet"
+                                disabled={index === 0}
+                                onClick={() =>
+                                  setSteps((current) => {
+                                    const next = [...current];
+                                    [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                                    return next;
+                                  })
+                                }
+                              >
+                                ↑
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="quiet"
+                                disabled={index === steps.length - 1}
+                                onClick={() =>
+                                  setSteps((current) => {
+                                    const next = [...current];
+                                    [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                                    return next;
+                                  })
+                                }
+                              >
+                                ↓
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="quiet"
+                                onClick={() =>
+                                  setSteps((current) => current.filter((_, i) => i !== index))
+                                }
+                              >
+                                <Trash2 className="size-3.5" aria-hidden="true" />
+                              </Button>
+                            </div>
+                          </div>
+                          <StepFields
+                            step={step}
+                            columns={columns}
+                            onChange={(next) => updateStep(index, next)}
+                            messages={messages}
+                          />
+                        </article>
+                      ))
+                    )}
+                  </div>
+                  <p className="shrink-0 border-t border-border px-4 py-2.5 text-[11px] leading-4 text-text-tertiary">
+                    {messages.transform.registerHint}
+                  </p>
+                </div>
+              </>
+            )}
+          </section>
         </SplitLayout>
       </Panel>
+
+      <AppDialog
+        open={detailOpen}
+        title={selected?.filename ?? messages.transform.previewSteps}
+        icon={<FileSpreadsheet className="size-4 text-accent" aria-hidden="true" />}
+        className="h-[min(42rem,88vh)] w-[min(72rem,94vw)]"
+        minWidth={520}
+        minHeight={360}
+        onClose={() => setDetailOpen(false)}
+        headerExtra={
+          <div className="flex gap-1">
+            <Button
+              type="button"
+              variant={detailTab === "source" ? "secondary" : "quiet"}
+              onClick={() => setDetailTab("source")}
+            >
+              {messages.transform.inspect}
+            </Button>
+            <Button
+              type="button"
+              variant={detailTab === "result" ? "secondary" : "quiet"}
+              onClick={() => setDetailTab("result")}
+            >
+              {messages.transform.resultPreview}
+            </Button>
+          </div>
+        }
+        footer={
+          <Button type="button" variant="secondary" onClick={() => setDetailOpen(false)}>
+            {messages.common.close}
+          </Button>
+        }
+      >
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {activePreview ? (
+            <div className="flex min-w-0 shrink-0 flex-wrap items-start gap-5 border-b border-border px-4 py-2.5">
+              <MetaField label={messages.files.previewRows} technical>
+                {messages.common.rows(activePreview.sampled_rows)}
+              </MetaField>
+              {activePreview.row_count != null ? (
+                <MetaField label={messages.files.totalRows} technical>
+                  {messages.common.rows(activePreview.row_count)}
+                </MetaField>
+              ) : null}
+              {previewHeaders.length > 0 ? (
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] font-medium leading-none text-text-tertiary">
+                    {messages.common.columns}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {activePreview.columns.map((column) => (
+                      <span
+                        key={column.name}
+                        title={`${column.name} ${column.dtype}`}
+                        className="max-w-full truncate rounded-full border border-border bg-raised px-2 py-0.5 text-[11px] font-medium text-text"
+                      >
+                        {column.name}
+                        <span className="ml-1 text-text-tertiary">{column.dtype}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden p-4">
+            {detailLoading ? (
+              <div className="grid h-full min-h-64 place-items-center text-sm text-text-tertiary">
+                {messages.common.loading}
+              </div>
+            ) : (
+              <PreviewGrid
+                preview={activePreview}
+                empty={
+                  detailTab === "result"
+                    ? messages.transform.previewHint
+                    : messages.empty.preview
+                }
+              />
+            )}
+          </div>
+        </div>
+      </AppDialog>
     </PageShell>
   );
 }
