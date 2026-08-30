@@ -5,6 +5,7 @@ import {
   MouseEvent as ReactMouseEvent,
   ReactNode,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -16,6 +17,7 @@ export function SplitLayout({
   direction = "horizontal",
   reverse = false,
   defaultSizes,
+  defaultRatio,
   minSize,
   maxSize,
   fill = true,
@@ -26,6 +28,8 @@ export function SplitLayout({
   direction?: "horizontal" | "vertical";
   reverse?: boolean;
   defaultSizes: number[];
+  /** When set, first pane starts at this fraction of the host (e.g. 0.5 = half). */
+  defaultRatio?: number;
   minSize?: number;
   maxSize?: number;
   fill?: boolean;
@@ -40,6 +44,31 @@ export function SplitLayout({
   const [sizes, setSizes] = useState(defaultSizes);
   const hostRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ index: number; start: number; size: number } | null>(null);
+  const ratioApplied = useRef(false);
+
+  useLayoutEffect(() => {
+    if (defaultRatio == null || ratioApplied.current) return;
+    const ratio = defaultRatio;
+    const host = hostRef.current;
+    if (!host) return;
+
+    function apply() {
+      if (ratioApplied.current || !host) return;
+      const hostSize = isRow ? host.clientWidth : host.clientHeight;
+      if (hostSize <= 0) return;
+      const available = hostSize - floor - (panes.length - 1);
+      const ceiling = Math.max(floor, Math.min(maxSize ?? Number.POSITIVE_INFINITY, available));
+      const next = Math.min(ceiling, Math.max(floor, Math.round(hostSize * ratio)));
+      ratioApplied.current = true;
+      setSizes([next]);
+    }
+
+    apply();
+    if (ratioApplied.current) return;
+    const observer = new ResizeObserver(() => apply());
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [defaultRatio, floor, isRow, maxSize, panes.length]);
 
   useEffect(() => {
     function onMove(event: MouseEvent) {

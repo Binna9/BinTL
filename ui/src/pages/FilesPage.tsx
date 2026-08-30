@@ -347,7 +347,12 @@ export function FilesPage() {
               />
               <span>{messages.files.stored}</span>
             </label>
-            <span className="text-xs text-text-tertiary">{messages.common.count(files.length)}</span>
+            <span className="rounded-full bg-subtle px-2 py-0.5 text-[10px] font-semibold tabular-nums text-text-secondary">
+              {messages.common.count(files.length)}
+            </span>
+            <span className="ml-1 border-l border-border pl-3 text-xs font-normal text-text-tertiary">
+              {messages.files.storedHint}
+            </span>
           </ToolbarGroup>
           <ToolbarGroup>
             <Button

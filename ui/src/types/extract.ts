@@ -1,5 +1,8 @@
+export type ExtractKind = "database" | "api";
+
 export interface ExtractRecord {
   id: string;
+  kind: ExtractKind;
   connection_id: string;
   connection_name: string;
   table_name: string;

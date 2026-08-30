@@ -59,6 +59,12 @@ async fn extract_now(
     row: &storage::ExtractRow,
     log: Option<&ProcessLog>,
 ) -> Result<(), String> {
+    if row.kind == "api" {
+        return Err("api extract is not implemented yet".into());
+    }
+    if row.kind != "database" {
+        return Err(format!("unsupported extract kind: {}", row.kind));
+    }
     let live = store
         .live_connection(&row.connection_id)
         .await
@@ -81,7 +87,13 @@ async fn extract_now(
         quote: b'"',
         add_sequence: row.add_sequence != 0,
     };
-    let (filename, rel) = Store::extract_file_rel(&row.id, &row.table_name, &row.delimiter);
+    let (filename, rel) = Store::extract_file_rel(
+        &row.kind,
+        &row.id,
+        &row.table_name,
+        &row.delimiter,
+    )
+    .map_err(|e| e.to_string())?;
     let dest = store.resolve(&rel);
     let progress = ExtractProgress::new(store.clone(), row.id.clone(), log.cloned());
     let on_progress = |n: u64| progress.report(n);

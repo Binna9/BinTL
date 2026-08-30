@@ -1,10 +1,13 @@
 import { DragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowRight, ChevronDown, ChevronRight, CircleAlert, DatabaseZap, Folder, FolderKanban, FolderOpen, FolderPlus, Layers, RefreshCw, RotateCcw, Save, Spline, Workflow, X, type LucideIcon } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import { ArrowRight, ChevronDown, CircleAlert, DatabaseZap, Folder, FolderOpen, Layers, RefreshCw, RotateCcw, Save, Settings2, Spline, AppWindow, Workflow, X, type LucideIcon } from "lucide-react";
+import { AppDialog } from "@/components/AppDialog";
 import { SplitLayout } from "@/components/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { WorkspaceManageDialog } from "@/components/WorkspaceManageDialog";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
@@ -97,8 +100,42 @@ function canvasPoint(canvas: HTMLElement, clientX: number, clientY: number): Poi
   };
 }
 
+function pointerOutsideCanvas(canvas: HTMLElement, clientX: number, clientY: number) {
+  const rect = canvas.getBoundingClientRect();
+  return clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom;
+}
+
+function releasePointer(target: Element, pointerId: number) {
+  if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+}
+
+type MarqueeBox = { x0: number; y0: number; x1: number; y1: number };
+
+function normalizeMarquee(box: MarqueeBox) {
+  return {
+    x: Math.min(box.x0, box.x1),
+    y: Math.min(box.y0, box.y1),
+    w: Math.abs(box.x1 - box.x0),
+    h: Math.abs(box.y1 - box.y0),
+  };
+}
+
+function chipInMarquee(point: Point, box: MarqueeBox): boolean {
+  const area = normalizeMarquee(box);
+  return (
+    point.x < area.x + area.w &&
+    point.x + NODE_W > area.x &&
+    point.y < area.y + area.h &&
+    point.y + NODE_H > area.y
+  );
+}
+
 function roundPoint(point: Point): Point {
   return { x: Math.round(point.x), y: Math.round(point.y) };
+}
+
+function normalizeChipName(name: string) {
+  return name.trim().toLowerCase();
 }
 
 function scrollCanvasFromPointer(canvas: HTMLElement, clientX: number, clientY: number) {
@@ -363,6 +400,7 @@ function ChipLinkHandle({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  onPointerCancel,
 }: {
   side: PortSide;
   label: string;
@@ -370,6 +408,7 @@ function ChipLinkHandle({
   onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onPointerCancel?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
@@ -379,6 +418,7 @@ function ChipLinkHandle({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
     >
       <svg viewBox="0 0 18 14" aria-hidden="true">
         <path
@@ -709,6 +749,7 @@ export function WorkspacePage() {
     startX: number;
     startY: number;
     moved: boolean;
+    origins: Record<string, Point>;
   } | null>(null);
   const panRef = useRef<{
     pointerId: number;
@@ -716,6 +757,14 @@ export function WorkspacePage() {
     startY: number;
     scrollLeft: number;
     scrollTop: number;
+    moved: boolean;
+  } | null>(null);
+  const marqueeRef = useRef<{
+    pointerId: number;
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
     moved: boolean;
   } | null>(null);
   currentWorkspaceRef.current = workspaceId;
@@ -737,15 +786,16 @@ export function WorkspacePage() {
   const [runLog, setRunLog] = useState<{ id: string; text: string } | null>(null);
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
-  const [workspaceName, setWorkspaceName] = useState("");
-  const [folderName, setFolderName] = useState("");
-  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
-  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [canvasView, setCanvasView] = useState({ width: 800, height: 600 });
   const [canvasScroll, setCanvasScroll] = useState({ x: 0, y: 0 });
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedChipIds, setSelectedChipIds] = useState<string[]>([]);
+  const [marquee, setMarquee] = useState<MarqueeBox | null>(null);
   const [edgeTool, setEdgeTool] = useState<ChipEdgeKind>("data");
+  const selectedChipIdsRef = useRef(selectedChipIds);
+  selectedChipIdsRef.current = selectedChipIds;
   const [linking, setLinking] = useState<{
     fromId: string;
     kind: ChipEdgeKind;
@@ -767,6 +817,12 @@ export function WorkspacePage() {
   const [hasHeader, setHasHeader] = useState(true);
   const [inputDatasetId, setInputDatasetId] = useState("");
   const [spec, setSpec] = useState(EMPTY_SPEC);
+  const [pendingPlace, setPendingPlace] = useState<{
+    kind: "extract" | "transform";
+    point: Point;
+  } | null>(null);
+  const [placeName, setPlaceName] = useState("");
+  const [chipNameError, setChipNameError] = useState("");
   positionsRef.current = positions;
   dirtyRef.current = dirty;
   busyRef.current = busy;
@@ -920,7 +976,7 @@ export function WorkspacePage() {
         setExpandedFolders((current) => {
           const next = { ...current };
           for (const folder of folderResponse.folders) {
-            if (next[folder.id] === undefined) next[folder.id] = true;
+            if (next[folder.id] === undefined) next[folder.id] = false;
           }
           return next;
         });
@@ -947,6 +1003,8 @@ export function WorkspacePage() {
       setEdges([]);
       setRuns([]);
       setPositions({});
+      setSelectedChipIds([]);
+      setSelectedEdgeId(null);
       rememberSaved([], {}, []);
       pendingViewRef.current = null;
       return;
@@ -975,6 +1033,8 @@ export function WorkspacePage() {
         setEdges(nextEdges);
         setRuns(runResponse.runs);
         setPositions(nextPositions);
+        setSelectedChipIds([]);
+        setSelectedEdgeId(null);
         rememberSaved(chipResponse.chips, nextPositions, nextEdges);
       })
       .catch((reason: unknown) => {
@@ -1054,6 +1114,7 @@ export function WorkspacePage() {
     }
     const config = selectedChip.config;
     setName(selectedChip.name);
+    setChipNameError("");
     setKind(selectedChip.kind);
     const source = objectValue(config, "source");
     setMode(textValue(source, "type", "table"));
@@ -1068,17 +1129,25 @@ export function WorkspacePage() {
     setSpec(savedSpec && typeof savedSpec === "object"
       ? JSON.stringify(savedSpec, null, 2)
       : EMPTY_SPEC);
-  }, [selectedChip, chipId]);
+  }, [selectedChip?.id, chipId]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setLinking(null);
         setSelectedEdgeId(null);
+        setSelectedChipIds([]);
+        setMarquee(null);
+        marqueeRef.current = null;
         return;
       }
       if (event.key === "Delete" || event.key === "Backspace") {
         if (isEditableTarget(event.target)) return;
+        if (selectedChipIdsRef.current.length > 0) {
+          event.preventDefault();
+          void deleteSelectedChips();
+          return;
+        }
         if (selectedEdgeId && !busyRef.current) {
           event.preventDefault();
           dropEdgeLocally(selectedEdgeId);
@@ -1103,52 +1172,7 @@ export function WorkspacePage() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedEdgeId, workspaceId]);
-
-  async function createWorkspace(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const requestWorkspaceId = workspaceId;
-    setBusy(true);
-    setError("");
-    try {
-      const created = await workspaceApi.create({
-        name: workspaceName.trim(),
-        folder_id: selectedFolderId,
-      });
-      if (currentWorkspaceRef.current !== requestWorkspaceId) return;
-      setWorkspaces((current) => [...current, created]);
-      setWorkspaceName("");
-      setCreatingWorkspace(false);
-      navigate(`/workspace/${created.id}`);
-    } catch (reason) {
-      if (currentWorkspaceRef.current === requestWorkspaceId) {
-        setError(`${messages.workspace.createWorkspaceError}: ${String(reason)}`);
-      }
-    } finally {
-      if (currentWorkspaceRef.current === requestWorkspaceId) setBusy(false);
-    }
-  }
-
-  async function createFolder(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      const created = await workspaceApi.createFolder({
-        name: folderName.trim(),
-        parent_id: selectedFolderId,
-      });
-      setFolders((current) => [...current, created]);
-      setExpandedFolders((current) => ({ ...current, [created.id]: true }));
-      setSelectedFolderId(created.id);
-      setFolderName("");
-      setCreatingFolder(false);
-    } catch (reason) {
-      setError(`${messages.workspace.createFolderError}: ${String(reason)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
+  }, [selectedEdgeId, workspaceId, chips]);
 
   function chipConfig(): ChipConfig {
     if (kind === "extract") {
@@ -1171,12 +1195,26 @@ export function WorkspacePage() {
     return {};
   }
 
+  function isChipNameTaken(candidate: string, exceptId?: string) {
+    const key = normalizeChipName(candidate);
+    if (!key) return false;
+    return chips.some(
+      (chip) => chip.id !== exceptId && normalizeChipName(chip.name) === key,
+    );
+  }
+
   function applyChip(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!workspaceId || !selectedChip || kind === "load") return;
     try {
       const config = chipConfig();
       const nextName = name.trim();
+      if (!nextName) return;
+      if (isChipNameTaken(nextName, selectedChip.id)) {
+        setChipNameError(messages.workspace.duplicateChipName);
+        return;
+      }
+      setChipNameError("");
       const nextChips = chips.map((chip) =>
         chip.id === selectedChip.id ? { ...chip, name: nextName, config } : chip,
       );
@@ -1188,56 +1226,117 @@ export function WorkspacePage() {
     }
   }
 
+  function onChipNameChange(next: string) {
+    setName(next);
+    if (!selectedChip) return;
+    const trimmed = next.trim();
+    if (!trimmed) {
+      setChipNameError("");
+      return;
+    }
+    if (isChipNameTaken(trimmed, selectedChip.id)) {
+      setChipNameError(messages.workspace.duplicateChipName);
+      return;
+    }
+    setChipNameError("");
+    if (trimmed === selectedChip.name) return;
+    const nextChips = chips.map((chip) =>
+      chip.id === selectedChip.id ? { ...chip, name: trimmed } : chip,
+    );
+    setChips(nextChips);
+    markDirty(nextChips, positionsRef.current, edges);
+  }
+
   function placeTool(toolKind: "extract" | "transform", point: Point) {
     if (!workspaceId) return;
-    const count = chips.filter((chip) => chip.kind === toolKind).length + 1;
-    const placedName = toolKind === "extract"
-      ? messages.workspace.untitledExtract(count)
-      : messages.workspace.untitledTransform(count);
+    let n = chips.filter((chip) => chip.kind === toolKind).length + 1;
+    let suggested = "";
+    do {
+      suggested = toolKind === "extract"
+        ? messages.workspace.untitledExtract(n)
+        : messages.workspace.untitledTransform(n);
+      n += 1;
+    } while (isChipNameTaken(suggested));
+    setChipNameError("");
+    setPlaceName(suggested);
+    setPendingPlace({ kind: toolKind, point });
+  }
+
+  function confirmPlaceChip(event?: FormEvent) {
+    event?.preventDefault();
+    if (!workspaceId || !pendingPlace) return;
+    const placedName = placeName.trim();
+    if (!placedName) return;
+    if (isChipNameTaken(placedName)) {
+      setChipNameError(messages.workspace.duplicateChipName);
+      return;
+    }
+    setChipNameError("");
     const created: Chip = {
       id: crypto.randomUUID(),
       workspace_id: workspaceId,
       name: placedName,
-      kind: toolKind,
-      config: draftConfig(toolKind),
+      kind: pendingPlace.kind,
+      config: draftConfig(pendingPlace.kind),
       revision: 1,
       active: true,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    const nextPoint = clampPoint(point);
+    const nextPoint = clampPoint(pendingPlace.point);
     const next = { ...positionsRef.current, [created.id]: nextPoint };
     const nextChips = [created, ...chips];
     setChips(nextChips);
     setPositions(next);
     markDirty(nextChips, next, edges);
     setError("");
+    setSelectedChipIds([created.id]);
+    setSelectedEdgeId(null);
+    setPendingPlace(null);
+    setPlaceName("");
     navigate(`/workspace/${workspaceId}/chips/${created.id}`);
   }
 
-  function dropChipLocally(chipIdToDrop: string) {
-    const nextChips = chips.filter((item) => item.id !== chipIdToDrop);
-    const nextPositions = omitPoint(positionsRef.current, chipIdToDrop);
+  function cancelPlaceChip() {
+    setPendingPlace(null);
+    setPlaceName("");
+    setChipNameError("");
+  }
+
+  function dropChipsLocally(chipIdsToDrop: string[]) {
+    if (chipIdsToDrop.length === 0) return;
+    const dropSet = new Set(chipIdsToDrop);
+    const nextChips = chips.filter((item) => !dropSet.has(item.id));
+    let nextPositions = positionsRef.current;
+    for (const id of chipIdsToDrop) nextPositions = omitPoint(nextPositions, id);
     const nextEdges = edges.filter((edge) =>
-      edge.from_chip_id !== chipIdToDrop && edge.to_chip_id !== chipIdToDrop,
+      !dropSet.has(edge.from_chip_id) && !dropSet.has(edge.to_chip_id),
     );
     setPositions(nextPositions);
     setEdges(nextEdges);
     savedRef.current = {
-      chips: savedRef.current.chips.filter((item) => item.id !== chipIdToDrop),
-      positions: omitPoint(savedRef.current.positions, chipIdToDrop),
+      chips: savedRef.current.chips.filter((item) => !dropSet.has(item.id)),
+      positions: chipIdsToDrop.reduce(
+        (positions, id) => omitPoint(positions, id),
+        savedRef.current.positions,
+      ),
       edges: savedRef.current.edges.filter((edge) =>
-        edge.from_chip_id !== chipIdToDrop && edge.to_chip_id !== chipIdToDrop,
+        !dropSet.has(edge.from_chip_id) && !dropSet.has(edge.to_chip_id),
       ),
     };
-    savedIdsRef.current.delete(chipIdToDrop);
+    for (const id of chipIdsToDrop) savedIdsRef.current.delete(id);
     markDirty(nextChips, nextPositions, nextEdges);
     setChips(nextChips);
-    setRuns((current) => current.filter((run) => run.chip_id !== chipIdToDrop));
-    if (dragRef.current?.id === chipIdToDrop) dragRef.current = null;
+    setRuns((current) => current.filter((run) => !dropSet.has(run.chip_id)));
+    if (dragRef.current && dropSet.has(dragRef.current.id)) dragRef.current = null;
+    setSelectedChipIds((current) => current.filter((id) => !dropSet.has(id)));
     if (selectedEdgeId && nextEdges.every((edge) => edge.id !== selectedEdgeId)) {
       setSelectedEdgeId(null);
     }
+  }
+
+  function dropChipLocally(chipIdToDrop: string) {
+    dropChipsLocally([chipIdToDrop]);
   }
 
   async function deleteCanvasChip(chip: Chip) {
@@ -1267,8 +1366,53 @@ export function WorkspacePage() {
     }
   }
 
+  async function deleteSelectedChips() {
+    const ids = selectedChipIdsRef.current.filter((id) =>
+      chips.some((chip) => chip.id === id),
+    );
+    if (ids.length === 0 || busyRef.current) return;
+    if (ids.length === 1) {
+      const chip = chips.find((item) => item.id === ids[0]);
+      if (chip) await deleteCanvasChip(chip);
+      return;
+    }
+    const confirmed = await showConfirm(
+      messages.workspace.deleteChipsTitle,
+      messages.workspace.deleteChipsMessage(ids.length),
+      { tone: "danger", confirmLabel: messages.common.delete },
+    );
+    if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
+    setBusy(true);
+    setError("");
+    try {
+      await Promise.all(
+        ids
+          .filter((id) => savedIdsRef.current.has(id))
+          .map((id) => chipApi.remove(id)),
+      );
+      if (currentWorkspaceRef.current !== workspaceId) return;
+      dropChipsLocally(ids);
+      if (chipId && ids.includes(chipId) && workspaceId) {
+        navigate(`/workspace/${workspaceId}`);
+      }
+    } catch (reason) {
+      if (currentWorkspaceRef.current === workspaceId) {
+        setError(`${messages.workspace.deleteChipError}: ${String(reason)}`);
+      }
+    } finally {
+      if (currentWorkspaceRef.current === workspaceId) setBusy(false);
+    }
+  }
+
   async function saveCanvas() {
     if (!workspaceId) return;
+    if (selectedChip && kind !== "load") {
+      const nextName = name.trim();
+      if (nextName && isChipNameTaken(nextName, selectedChip.id)) {
+        setChipNameError(messages.workspace.duplicateChipName);
+        return;
+      }
+    }
     const requestWorkspaceId = workspaceId;
     setBusy(true);
     setError("");
@@ -1516,6 +1660,17 @@ export function WorkspacePage() {
     if (!canvas) return;
     const node = positionsRef.current[chip.id] ?? { x: 56, y: 48 };
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const nextSelection = selectedChipIdsRef.current.includes(chip.id)
+      ? selectedChipIdsRef.current
+      : [chip.id];
+    if (nextSelection.length === 1 && nextSelection[0] === chip.id) {
+      setSelectedChipIds([chip.id]);
+    }
+    setSelectedEdgeId(null);
+    const origins: Record<string, Point> = {};
+    for (const id of nextSelection) {
+      origins[id] = positionsRef.current[id] ?? { x: 56, y: 48 };
+    }
     dragRef.current = {
       id: chip.id,
       dx: grab.x - node.x,
@@ -1523,35 +1678,57 @@ export function WorkspacePage() {
       startX: node.x,
       startY: node.y,
       moved: false,
+      origins,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function finishNodeDrag(chipId: string, openInspector: boolean) {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (!drag || drag.id !== chipId) return;
+    if (drag.moved) {
+      markDirty(chips, positionsRef.current, edges);
+      return;
+    }
+    if (!openInspector) return;
+    setSelectedChipIds([chipId]);
+    setSelectedEdgeId(null);
+    navigate(`/workspace/${workspaceId}/chips/${chipId}`);
   }
 
   function onNodePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const drag = dragRef.current;
     const canvas = canvasRef.current;
     if (!drag || !canvas || drag.id !== event.currentTarget.dataset.chipId) return;
+    if (pointerOutsideCanvas(canvas, event.clientX, event.clientY)) {
+      releasePointer(event.currentTarget, event.pointerId);
+      finishNodeDrag(drag.id, false);
+      return;
+    }
     scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
     const tentative = { x: grab.x - drag.dx, y: grab.y - drag.dy };
-    const nextPoint = clampPoint(tentative);
-    if (Math.abs(nextPoint.x - drag.startX) > 3
-      || Math.abs(nextPoint.y - drag.startY) > 3) {
-      drag.moved = true;
-    }
-    setPositions((current) => ({ ...current, [drag.id]: nextPoint }));
+    const nextPrimary = clampPoint(tentative);
+    const deltaX = nextPrimary.x - drag.startX;
+    const deltaY = nextPrimary.y - drag.startY;
+    if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) drag.moved = true;
+    setPositions((current) => {
+      const next = { ...current };
+      for (const [id, origin] of Object.entries(drag.origins)) {
+        next[id] = clampPoint({ x: origin.x + deltaX, y: origin.y + deltaY });
+      }
+      return next;
+    });
   }
 
   function onNodePointerUp(chip: Chip) {
-    const drag = dragRef.current;
-    dragRef.current = null;
-    if (!drag || drag.id !== chip.id) return;
-    if (drag.moved) {
-      markDirty(chips, positionsRef.current, edges);
-      return;
-    }
-    setSelectedEdgeId(null);
-    navigate(`/workspace/${workspaceId}/chips/${chip.id}`);
+    finishNodeDrag(chip.id, true);
+  }
+
+  function onNodePointerCancel(chip: Chip, event: ReactPointerEvent<HTMLDivElement>) {
+    releasePointer(event.currentTarget, event.pointerId);
+    finishNodeDrag(chip.id, false);
   }
 
   function onPortPointerDown(
@@ -1575,6 +1752,11 @@ export function WorkspacePage() {
     if (!linkingRef.current) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    if (pointerOutsideCanvas(canvas, event.clientX, event.clientY)) {
+      releasePointer(event.currentTarget, event.pointerId);
+      setLinking(null);
+      return;
+    }
     scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
     setLinking((current) => current ? { ...current, x: grab.x, y: grab.y } : current);
@@ -1590,43 +1772,125 @@ export function WorkspacePage() {
     if (toId) connectChips(link.fromId, toId, link.kind);
   }
 
+  function onPortPointerCancel(event: ReactPointerEvent<HTMLButtonElement>) {
+    releasePointer(event.currentTarget, event.pointerId);
+    setLinking(null);
+  }
+
+  function cancelCanvasGesture(pointerId: number) {
+    const canvas = canvasRef.current;
+    if (canvas) releasePointer(canvas, pointerId);
+    panRef.current = null;
+    marqueeRef.current = null;
+    setMarquee(null);
+  }
+
   function onCanvasPanDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0 && event.button !== 1) return;
     const target = event.target as HTMLElement;
     if (target.closest("[data-chip-id], .chip-link, button, .chip-wire")) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    panRef.current = {
+
+    if (event.button === 1) {
+      panRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        scrollLeft: canvas.scrollLeft,
+        scrollTop: canvas.scrollTop,
+        moved: false,
+      };
+      canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
+
+    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    marqueeRef.current = {
       pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      scrollLeft: canvas.scrollLeft,
-      scrollTop: canvas.scrollTop,
+      x0: grab.x,
+      y0: grab.y,
+      x1: grab.x,
+      y1: grab.y,
       moved: false,
     };
+    setMarquee({ x0: grab.x, y0: grab.y, x1: grab.x, y1: grab.y });
     canvas.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
 
   function onCanvasPanMove(event: ReactPointerEvent<HTMLDivElement>) {
-    const pan = panRef.current;
     const canvas = canvasRef.current;
-    if (!pan || !canvas || pan.pointerId !== event.pointerId) return;
-    const dx = event.clientX - pan.startX;
-    const dy = event.clientY - pan.startY;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) pan.moved = true;
-    canvas.scrollLeft = pan.scrollLeft - dx;
-    canvas.scrollTop = pan.scrollTop - dy;
+    if (!canvas) return;
+
+    const pan = panRef.current;
+    const box = marqueeRef.current;
+    const active =
+      (pan && pan.pointerId === event.pointerId) ||
+      (box && box.pointerId === event.pointerId);
+    if (active && pointerOutsideCanvas(canvas, event.clientX, event.clientY)) {
+      cancelCanvasGesture(event.pointerId);
+      return;
+    }
+
+    if (pan && pan.pointerId === event.pointerId) {
+      const dx = event.clientX - pan.startX;
+      const dy = event.clientY - pan.startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) pan.moved = true;
+      canvas.scrollLeft = pan.scrollLeft - dx;
+      canvas.scrollTop = pan.scrollTop - dy;
+      return;
+    }
+
+    if (!box || box.pointerId !== event.pointerId) return;
+    scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
+    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    if (Math.abs(grab.x - box.x0) > 3 || Math.abs(grab.y - box.y0) > 3) box.moved = true;
+    box.x1 = grab.x;
+    box.y1 = grab.y;
+    setMarquee({ x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1 });
   }
 
   function onCanvasPanUp(event: ReactPointerEvent<HTMLDivElement>) {
     const pan = panRef.current;
-    if (!pan || pan.pointerId !== event.pointerId) return;
-    panRef.current = null;
-    if (!pan.moved && workspaceId) {
+    if (pan && pan.pointerId === event.pointerId) {
+      panRef.current = null;
+      if (!pan.moved && workspaceId) {
+        setSelectedEdgeId(null);
+        setSelectedChipIds([]);
+        navigate(`/workspace/${workspaceId}`);
+      }
+      return;
+    }
+
+    const box = marqueeRef.current;
+    if (!box || box.pointerId !== event.pointerId) return;
+    marqueeRef.current = null;
+    setMarquee(null);
+    if (!box.moved) {
       setSelectedEdgeId(null);
+      setSelectedChipIds([]);
+      if (workspaceId) navigate(`/workspace/${workspaceId}`);
+      return;
+    }
+    const picked = chips
+      .filter((chip) => {
+        const point = positionsRef.current[chip.id];
+        return point ? chipInMarquee(point, box) : false;
+      })
+      .map((chip) => chip.id);
+    setSelectedEdgeId(null);
+    setSelectedChipIds(picked);
+    if (picked.length === 1 && workspaceId) {
+      navigate(`/workspace/${workspaceId}/chips/${picked[0]}`);
+    } else if (workspaceId) {
       navigate(`/workspace/${workspaceId}`);
     }
+  }
+
+  function onCanvasPanCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    cancelCanvasGesture(event.pointerId);
   }
 
   function jumpCanvasTo(worldX: number, worldY: number) {
@@ -1686,6 +1950,29 @@ export function WorkspacePage() {
     },
   ];
 
+  useEffect(() => {
+    if (!workspaceId) return;
+    const current = workspaces.find((item) => item.id === workspaceId);
+    if (!current?.folder_id) return;
+    const path: string[] = [];
+    let cursor: string | null = current.folder_id;
+    while (cursor) {
+      path.push(cursor);
+      cursor = folders.find((folder) => folder.id === cursor)?.parent_id ?? null;
+    }
+    setExpandedFolders((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const id of path) {
+        if (!next[id]) {
+          next[id] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [workspaceId, workspaces, folders]);
+
   const rootFolders = useMemo(
     () => folders.filter((folder) => !folder.parent_id).sort((a, b) => a.name.localeCompare(b.name)),
     [folders],
@@ -1704,80 +1991,107 @@ export function WorkspacePage() {
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  function childWorkspaces(folderId: string) {
+  function childWorkspaces(folderId: string | null) {
     return workspaces
-      .filter((workspace) => workspace.folder_id === folderId)
+      .filter((workspace) => (folderId ? workspace.folder_id === folderId : !workspace.folder_id))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  function renderFolderTree(folder: WorkspaceFolder, depth: number): ReactNode {
-    const open = expandedFolders[folder.id] !== false;
-    const selected = selectedFolderId === folder.id;
+  function toggleFolder(id: string) {
+    setExpandedFolders((current) => ({ ...current, [id]: !current[id] }));
+  }
+
+  function renderWorkspaceRow(workspace: Workspace) {
+    const active = workspace.id === workspaceId;
     return (
-      <div key={folder.id}>
-        <div
+      <button
+        key={workspace.id}
+        type="button"
+        className={cn(
+          "flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] outline-none transition-colors",
+          active
+            ? "bg-accent-subtle font-semibold text-accent"
+            : "text-text-secondary hover:bg-subtle hover:text-text",
+        )}
+        onClick={() => navigate(`/workspace/${workspace.id}`)}
+      >
+        <AppWindow className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
+      </button>
+    );
+  }
+
+  function renderFolderTree(folder: WorkspaceFolder): ReactNode {
+    const open = Boolean(expandedFolders[folder.id]);
+    const selected = selectedFolderId === folder.id;
+    const nestedFolders = childFolders(folder.id);
+    const nestedWorkspaces = childWorkspaces(folder.id);
+    const hasChildren = nestedFolders.length > 0 || nestedWorkspaces.length > 0;
+
+    return (
+      <div key={folder.id} className="min-w-0">
+        <button
+          type="button"
           className={cn(
-            "flex items-center gap-1 rounded-xl px-1 py-1 text-left text-[12px]",
-            selected ? "bg-accent-subtle text-accent" : "text-text hover:bg-subtle",
+            "group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] outline-none transition-colors",
+            selected
+              ? "bg-accent-subtle font-semibold text-accent hover:bg-accent/15"
+              : "text-text hover:bg-subtle",
           )}
-          style={{ paddingLeft: `${0.25 + depth * 0.75}rem` }}
+          aria-expanded={open}
+          onClick={() => {
+            setSelectedFolderId(folder.id);
+            if (hasChildren) toggleFolder(folder.id);
+          }}
         >
-          <button
-            type="button"
-            className="grid size-5 place-items-center rounded text-text-tertiary outline-none hover:text-text"
-            aria-label={open ? messages.workspace.collapseFolder : messages.workspace.expandFolder}
-            onClick={() =>
-              setExpandedFolders((current) => ({ ...current, [folder.id]: !open }))
-            }
-          >
-            {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-          </button>
-          <button
-            type="button"
-            className="flex min-w-0 flex-1 items-center gap-1.5 truncate outline-none"
-            onClick={() => setSelectedFolderId(folder.id)}
-          >
-            {open ? <FolderOpen className="size-3.5 shrink-0" /> : <Folder className="size-3.5 shrink-0" />}
-            <span className="truncate">{folder.name}</span>
-          </button>
-        </div>
-        {open ? (
-          <div>
-            {childFolders(folder.id).map((child) => renderFolderTree(child, depth + 1))}
-            {childWorkspaces(folder.id).map((workspace) => (
-              <button
-                key={workspace.id}
-                type="button"
-                className={cn(
-                  "flex w-full items-center gap-1.5 truncate rounded-xl py-1.5 pr-2 text-left text-[12px] outline-none",
-                  workspace.id === workspaceId
-                    ? "bg-accent text-white"
-                    : "text-text-secondary hover:bg-subtle hover:text-text",
-                )}
-                style={{ paddingLeft: `${1.5 + depth * 0.75}rem` }}
-                onClick={() => navigate(`/workspace/${workspace.id}`)}
-              >
-                <FolderKanban className="size-3.5 shrink-0" aria-hidden="true" />
-                <span className="truncate">{workspace.name}</span>
-              </button>
-            ))}
-          </div>
-        ) : null}
+          <span className="size-3.5 shrink-0" aria-hidden="true">
+            {open ? <FolderOpen className="size-3.5" /> : <Folder className="size-3.5" />}
+          </span>
+          <span className="min-w-0 flex-1 truncate font-medium">{folder.name}</span>
+          {hasChildren ? (
+            <motion.span
+              className="size-3.5 shrink-0 text-text-tertiary"
+              animate={{ rotate: open ? 180 : 0 }}
+              transition={{ duration: 0.18 }}
+              aria-hidden="true"
+            >
+              <ChevronDown className="size-3.5" />
+            </motion.span>
+          ) : null}
+        </button>
+        <AnimatePresence initial={false}>
+          {open && hasChildren ? (
+            <motion.div
+              className="overflow-hidden"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2, ease: "easeInOut" }}
+            >
+              <div className="ml-3 space-y-0.5 border-l border-border py-0.5 pl-2">
+                {nestedFolders.map((child) => renderFolderTree(child))}
+                {nestedWorkspaces.map((workspace) => renderWorkspaceRow(workspace))}
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </div>
     );
   }
 
   return (
+    <>
     <SplitLayout
       reverse
       className="h-full min-h-0 bg-canvas"
-      defaultSizes={[layout.split.sidebar + 28]}
+      defaultSizes={[layout.split.sidebar + 80]}
     >
       <aside className="workspace-rail flex h-full min-h-0 flex-col overflow-hidden">
         <SplitLayout
           direction="vertical"
           className="workspace-rail-split min-h-0 flex-1"
           defaultSizes={[236]}
+          defaultRatio={0.5}
           minSize={148}
         >
           <section className="workspace-rail-card flex h-full min-h-0 flex-col overflow-hidden">
@@ -1790,61 +2104,15 @@ export function WorkspacePage() {
                 <span className="truncate rounded-full bg-subtle px-2 py-0.5 text-[10px] font-medium text-text-tertiary">
                   {selectedFolderId
                     ? folders.find((folder) => folder.id === selectedFolderId)?.name
-                    : messages.workspace.root}
+                    : messages.workspace.topLevel}
                 </span>
               </div>
-              <div className="mt-2.5 flex gap-2">
-                <Button
-                  className="flex-1"
-                  type="button"
-                  onClick={() => {
-                    setCreatingFolder((value) => !value);
-                    setCreatingWorkspace(false);
-                  }}
-                >
-                  <FolderPlus className="size-3.5" aria-hidden="true" />
-                  {messages.workspace.newFolder}
-                </Button>
-                <Button
-                  className="flex-1"
-                  type="button"
-                  onClick={() => {
-                    setCreatingWorkspace((value) => !value);
-                    setCreatingFolder(false);
-                  }}
-                >
-                  <FolderKanban className="size-3.5" aria-hidden="true" />
-                  {messages.workspace.newWorkspace}
+              <div className="mt-2.5">
+                <Button className="w-full" type="button" onClick={() => setManageOpen(true)}>
+                  <Settings2 className="size-3.5" aria-hidden="true" />
+                  {messages.workspace.manageTitle}
                 </Button>
               </div>
-              {creatingFolder ? (
-                <form className="mt-2.5 flex flex-col gap-2" onSubmit={(event) => void createFolder(event)}>
-                  <input
-                    className="field-control"
-                    value={folderName}
-                    required
-                    placeholder={messages.workspace.folderName}
-                    onChange={(event) => setFolderName(event.target.value)}
-                  />
-                  <Button type="submit" variant="primary" disabled={busy || !folderName.trim()}>
-                    {messages.workspace.create}
-                  </Button>
-                </form>
-              ) : null}
-              {creatingWorkspace ? (
-                <form className="mt-2.5 flex flex-col gap-2" onSubmit={(event) => void createWorkspace(event)}>
-                  <input
-                    className="field-control"
-                    value={workspaceName}
-                    required
-                    placeholder={messages.workspace.name}
-                    onChange={(event) => setWorkspaceName(event.target.value)}
-                  />
-                  <Button type="submit" variant="primary" disabled={busy || !workspaceName.trim()}>
-                    {messages.workspace.create}
-                  </Button>
-                </form>
-              ) : null}
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5">
               <div className="workspace-rail-tree p-1">
@@ -1853,38 +2121,10 @@ export function WorkspacePage() {
                 ) : folders.length === 0 && workspaces.length === 0 ? (
                   <p className="px-2 py-3 text-[12px] text-text-tertiary">{messages.workspace.noWorkspaces}</p>
                 ) : (
-                  <>
-                    <button
-                      type="button"
-                      className={cn(
-                        "mb-1 flex w-full items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-left text-[12px] outline-none",
-                        selectedFolderId === null
-                          ? "bg-accent-subtle text-accent"
-                          : "text-text-secondary hover:bg-subtle",
-                      )}
-                      onClick={() => setSelectedFolderId(null)}
-                    >
-                      <Folder className="size-3.5 shrink-0" aria-hidden="true" />
-                      {messages.workspace.root}
-                    </button>
-                    {rootFolders.map((folder) => renderFolderTree(folder, 0))}
-                    {rootWorkspaces.map((workspace) => (
-                      <button
-                        key={workspace.id}
-                        type="button"
-                        className={cn(
-                          "flex w-full items-center gap-1.5 truncate rounded-xl px-2.5 py-1.5 text-left text-[12px] outline-none",
-                          workspace.id === workspaceId
-                            ? "bg-accent text-white"
-                            : "text-text-secondary hover:bg-subtle hover:text-text",
-                        )}
-                        onClick={() => navigate(`/workspace/${workspace.id}`)}
-                      >
-                        <FolderKanban className="size-3.5 shrink-0" aria-hidden="true" />
-                        <span className="truncate">{workspace.name}</span>
-                      </button>
-                    ))}
-                  </>
+                  <div className="space-y-0.5">
+                    {rootFolders.map((folder) => renderFolderTree(folder))}
+                    {rootWorkspaces.map((workspace) => renderWorkspaceRow(workspace))}
+                  </div>
                 )}
               </div>
             </div>
@@ -1902,13 +2142,15 @@ export function WorkspacePage() {
                 <div className="flex flex-col gap-3">
                   <div className="flex items-center justify-between gap-2">
                     <h2 className="text-sm font-semibold text-text">{messages.workspace.edgeInspector}</h2>
-                    <Button
+                    <button
                       type="button"
-                      variant="quiet"
+                      className="grid size-8 shrink-0 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
+                      aria-label={messages.common.close}
+                      title={messages.common.close}
                       onClick={() => setSelectedEdgeId(null)}
                     >
-                      {messages.workspace.closeInspector}
-                    </Button>
+                      <X className="size-4" aria-hidden="true" />
+                    </button>
                   </div>
                   <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
                     {messages.workspace.edgeKind}
@@ -1935,17 +2177,28 @@ export function WorkspacePage() {
                 <form className="flex flex-col gap-3" onSubmit={applyChip}>
                   <div className="flex items-center justify-between gap-2">
                     <h2 className="text-sm font-semibold text-text">{messages.workspace.inspector}</h2>
-                    <Button
+                    <button
                       type="button"
-                      variant="quiet"
+                      className="grid size-8 shrink-0 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
+                      aria-label={messages.common.close}
+                      title={messages.common.close}
                       onClick={() => navigate(`/workspace/${workspaceId}`)}
                     >
-                      {messages.workspace.closeInspector}
-                    </Button>
+                      <X className="size-4" aria-hidden="true" />
+                    </button>
                   </div>
                   <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
                     {messages.workspace.chipName}
-                    <input className="field-control" value={name} required onChange={(event) => setName(event.target.value)} />
+                    <input
+                      className={cn("field-control", chipNameError && "border-danger")}
+                      value={name}
+                      required
+                      aria-invalid={Boolean(chipNameError)}
+                      onChange={(event) => onChipNameChange(event.target.value)}
+                    />
+                    {chipNameError ? (
+                      <span className="text-[11px] font-normal text-danger">{chipNameError}</span>
+                    ) : null}
                   </label>
 
                   {kind === "extract" ? (
@@ -2034,7 +2287,7 @@ export function WorkspacePage() {
                   )}
 
                   <div className="flex gap-2">
-                    <Button type="submit" variant="primary" disabled={busy || !canSave}>
+                    <Button type="submit" variant="primary" disabled={busy || !name.trim() || Boolean(chipNameError) || kind === "load"}>
                       {messages.workspace.applyChip}
                     </Button>
                     <Button
@@ -2095,11 +2348,13 @@ export function WorkspacePage() {
                   onSelectChip={(id) => {
                     if (!workspaceId) return;
                     setSelectedEdgeId(null);
+                    setSelectedChipIds([id]);
                     navigate(`/workspace/${workspaceId}/chips/${id}`);
                   }}
                   onSelectEdge={(id) => {
                     if (!workspaceId) return;
                     setSelectedEdgeId(id);
+                    setSelectedChipIds([]);
                     navigate(`/workspace/${workspaceId}`);
                   }}
                 />
@@ -2231,13 +2486,21 @@ export function WorkspacePage() {
           ref={canvasRef}
           role="application"
           aria-label={messages.workspace.canvasAria}
-          className="workspace-canvas relative h-full min-h-0 min-w-0 cursor-grab overflow-auto overscroll-contain active:cursor-grabbing"
+          className="workspace-canvas relative h-full min-h-0 min-w-0 cursor-crosshair overflow-auto overscroll-contain"
           onDragOver={(event) => event.preventDefault()}
           onDrop={onCanvasDrop}
           onPointerDown={onCanvasPanDown}
           onPointerMove={onCanvasPanMove}
           onPointerUp={onCanvasPanUp}
-          onPointerCancel={onCanvasPanUp}
+          onPointerCancel={onCanvasPanCancel}
+          onLostPointerCapture={(event) => {
+            if (
+              panRef.current?.pointerId === event.pointerId ||
+              marqueeRef.current?.pointerId === event.pointerId
+            ) {
+              cancelCanvasGesture(event.pointerId);
+            }
+          }}
         >
           <div
             className="relative"
@@ -2285,6 +2548,7 @@ export function WorkspacePage() {
                 onClick={(event) => {
                   event.stopPropagation();
                   setSelectedEdgeId(edge.id);
+                  setSelectedChipIds([]);
                   if (workspaceId) navigate(`/workspace/${workspaceId}`);
                 }}
               />
@@ -2316,12 +2580,16 @@ export function WorkspacePage() {
               aria-label={chip.name}
               className={cn(
                 "workspace-node absolute flex h-[96px] w-[100px] cursor-grab select-none flex-col items-center gap-0.5 px-1.5 pb-1.5 pt-4 text-center active:cursor-grabbing",
-                chip.id === chipId && "is-selected",
+                (chip.id === chipId || selectedChipIds.includes(chip.id)) && "is-selected",
               )}
               style={{ left: point.x, top: point.y }}
               onPointerDown={(event) => onNodePointerDown(chip, event)}
               onPointerMove={onNodePointerMove}
               onPointerUp={() => onNodePointerUp(chip)}
+              onPointerCancel={(event) => onNodePointerCancel(chip, event)}
+              onLostPointerCapture={() => {
+                if (dragRef.current?.id === chip.id) finishNodeDrag(chip.id, false);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
@@ -2336,6 +2604,7 @@ export function WorkspacePage() {
                 onPointerDown={(event) => onPortPointerDown(chip, "left", event)}
                 onPointerMove={onPortPointerMove}
                 onPointerUp={onPortPointerUp}
+                onPointerCancel={onPortPointerCancel}
               />
               <ChipLinkHandle
                 side="right"
@@ -2344,6 +2613,7 @@ export function WorkspacePage() {
                 onPointerDown={(event) => onPortPointerDown(chip, "right", event)}
                 onPointerMove={onPortPointerMove}
                 onPointerUp={onPortPointerUp}
+                onPointerCancel={onPortPointerCancel}
               />
               <ChipLinkHandle
                 side="top"
@@ -2352,6 +2622,7 @@ export function WorkspacePage() {
                 onPointerDown={(event) => onPortPointerDown(chip, "top", event)}
                 onPointerMove={onPortPointerMove}
                 onPointerUp={onPortPointerUp}
+                onPointerCancel={onPortPointerCancel}
               />
               <ChipLinkHandle
                 side="bottom"
@@ -2360,6 +2631,7 @@ export function WorkspacePage() {
                 onPointerDown={(event) => onPortPointerDown(chip, "bottom", event)}
                 onPointerMove={onPortPointerMove}
                 onPointerUp={onPortPointerUp}
+                onPointerCancel={onPortPointerCancel}
               />
               <button
                 type="button"
@@ -2395,6 +2667,20 @@ export function WorkspacePage() {
             </div>
           );
         })}
+            {marquee ? (() => {
+              const area = normalizeMarquee(marquee);
+              return (
+                <div
+                  className="workspace-marquee pointer-events-none absolute z-20"
+                  style={{
+                    left: area.x,
+                    top: area.y,
+                    width: area.w,
+                    height: area.h,
+                  }}
+                />
+              );
+            })() : null}
           </div>
         </section>
         {workspaceId ? (
@@ -2410,5 +2696,73 @@ export function WorkspacePage() {
         </div>
       </div>
     </SplitLayout>
+
+      <AppDialog
+        open={Boolean(pendingPlace)}
+        title={messages.workspace.nameChipTitle}
+        className="w-[min(24rem,94vw)]"
+        minWidth={320}
+        minHeight={180}
+        onClose={cancelPlaceChip}
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={cancelPlaceChip}>
+              {messages.common.cancel}
+            </Button>
+            <Button
+              type="submit"
+              form="workspace-name-chip"
+              variant="primary"
+              disabled={!placeName.trim() || Boolean(chipNameError)}
+            >
+              {messages.workspace.nameChipConfirm}
+            </Button>
+          </>
+        }
+      >
+        <form id="workspace-name-chip" className="flex flex-col gap-3 p-4" onSubmit={confirmPlaceChip}>
+          <p className="text-xs text-text-secondary">{messages.workspace.nameChipHint}</p>
+          <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
+            {messages.workspace.name}
+            <input
+              className={cn("field-control", chipNameError && "border-danger")}
+              value={placeName}
+              autoFocus
+              required
+              aria-invalid={Boolean(chipNameError)}
+              onChange={(event) => {
+                const next = event.target.value;
+                setPlaceName(next);
+                const trimmed = next.trim();
+                setChipNameError(
+                  trimmed && isChipNameTaken(trimmed)
+                    ? messages.workspace.duplicateChipName
+                    : "",
+                );
+              }}
+            />
+            {chipNameError ? (
+              <span className="text-[11px] font-normal text-danger">{chipNameError}</span>
+            ) : null}
+          </label>
+        </form>
+      </AppDialog>
+
+      <WorkspaceManageDialog
+        open={manageOpen}
+        folders={folders}
+        workspaces={workspaces}
+        focusFolderId={selectedFolderId}
+        currentWorkspaceId={workspaceId}
+        onClose={() => setManageOpen(false)}
+        onFoldersChange={setFolders}
+        onWorkspacesChange={setWorkspaces}
+        onOpenWorkspace={(id) => {
+          setManageOpen(false);
+          if (id) navigate(`/workspace/${id}`);
+          else navigate("/workspace");
+        }}
+      />
+    </>
   );
 }

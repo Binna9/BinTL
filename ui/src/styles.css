@@ -519,13 +519,11 @@ a {
   display: grid;
   flex-shrink: 0;
   place-items: center;
-  width: 2.35rem;
-  height: 2.35rem;
-  overflow: hidden;
+  width: 2.1rem;
+  height: 2.1rem;
   border-radius: 999px;
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 8px 16px rgba(124, 92, 196, 0.28);
+  background: color-mix(in srgb, var(--color-accent-subtle) 88%, var(--color-surface));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
 .header-search-form {
@@ -937,6 +935,12 @@ a {
     inset 0 1px 0 color-mix(in srgb, white 88%, transparent);
 }
 
+.workspace-marquee {
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 70%, transparent);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--theme-accent) 14%, transparent);
+}
+
 :root.dark .workspace-node.is-selected {
   box-shadow:
     -1.5px -1.5px 2.5px rgba(255, 255, 255, 0.16),
@@ -1035,8 +1039,17 @@ a {
   background: transparent;
 }
 
-.workspace-rail-split > button[aria-orientation="horizontal"]:hover,
-.workspace-rail-split > button[aria-orientation="horizontal"]:focus-visible {
+.workspace-rail-split > button[aria-orientation="horizontal"]::before {
+  content: "";
+  position: absolute;
+  inset: 0 0.85rem;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 0.2s ease;
+}
+
+.workspace-rail-split > button[aria-orientation="horizontal"]:hover::before,
+.workspace-rail-split > button[aria-orientation="horizontal"]:focus-visible::before {
   background: color-mix(in srgb, var(--theme-border) 55%, transparent);
 }
 

@@ -600,6 +600,7 @@ async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     };
     let extract = store
         .insert_extract(
+            "database",
             &config.connection_id,
             &table,
             &delimiter,

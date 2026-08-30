@@ -5,7 +5,7 @@ import {
   Database,
   DatabaseZap,
   FileText,
-  FolderOpen,
+  AppWindow,
   History,
   LayoutDashboard,
   ListChecks,
@@ -28,7 +28,7 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
     {
       to: "/workspace",
       label: messages.nav.workspace,
-      icon: <FolderOpen className={iconClassName} />,
+      icon: <AppWindow className={iconClassName} />,
     },
     {
       to: "/extract",

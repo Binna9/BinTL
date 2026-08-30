@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { extractApi } from "@/services/extractApi";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { toastError } from "@/lib/notifications";
@@ -12,29 +12,35 @@ export function useExtracts() {
   const { messages } = useLanguage();
   const [extracts, setExtracts] = useState<ExtractRecord[]>([]);
 
+  const refreshExtracts = useCallback(async () => {
+    const response = await extractApi.getExtracts();
+    setExtracts(response.extracts);
+    return response.extracts;
+  }, []);
+
   useEffect(() => {
     let timer: number | undefined;
     let cancelled = false;
 
-    async function refreshExtracts() {
+    async function poll() {
       try {
-        const response = await extractApi.getExtracts();
+        const next = await extractApi.getExtracts();
         if (cancelled) return;
-        setExtracts(response.extracts);
-        if (response.extracts.some((extract) => isExtractActive(extract.status))) {
-          timer = window.setTimeout(() => void refreshExtracts(), 2000);
+        setExtracts(next.extracts);
+        if (next.extracts.some((extract) => isExtractActive(extract.status))) {
+          timer = window.setTimeout(() => void poll(), 2000);
         }
       } catch (error) {
         if (!cancelled) toastError(messages.errors.extracts, error);
       }
     }
 
-    void refreshExtracts();
+    void poll();
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [messages]);
 
-  return { extracts };
+  return { extracts, refreshExtracts };
 }

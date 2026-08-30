@@ -252,6 +252,7 @@ pub struct StagedFile {
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ExtractRow {
     pub id: String,
+    pub kind: String,
     pub connection_id: String,
     pub table_name: String,
     pub delimiter: String,
@@ -271,7 +272,7 @@ pub struct ExtractRow {
     pub connection_name: String,
 }
 
-const EXTRACT_COLS: &str = "e.id, e.connection_id, e.table_name, e.delimiter, e.header,
+const EXTRACT_COLS: &str = "e.id, e.kind, e.connection_id, e.table_name, e.delimiter, e.header,
         e.add_sequence, e.status, e.stored_path, e.filename, e.row_count, e.error_message,
         e.created_at, e.started_at, e.finished_at, e.sql_text, e.catalog_database,
         e.workspace_id, COALESCE(c.name, '') AS connection_name";
@@ -507,6 +508,59 @@ impl Store {
             .ok_or_else(|| StorageError::NotFound("workspace disappeared after update".into()))
     }
 
+    pub async fn delete_workspace(&self, id: &str) -> Result<(), StorageError> {
+        if id == DEFAULT_WORKSPACE_ID {
+            return Err(StorageError::Invalid(
+                "cannot delete the default workspace".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let found: Option<String> = sqlx::query_scalar("SELECT id FROM workspaces WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if found.is_none() {
+            return Err(StorageError::NotFound("workspace not found".into()));
+        }
+        sqlx::query(
+            "UPDATE datasets SET producer_chip_run_id = NULL
+             WHERE producer_chip_run_id IN (SELECT id FROM chip_runs WHERE workspace_id = ?)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE datasets SET workspace_id = ? WHERE workspace_id = ?")
+            .bind(DEFAULT_WORKSPACE_ID)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM chip_edges WHERE workspace_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM chip_runs WHERE workspace_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM chips WHERE workspace_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM workspace_revisions WHERE workspace_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let result = sqlx::query("DELETE FROM workspaces WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound("workspace not found".into()));
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn list_visible_folders(
         &self,
         scope: Option<&DataScope>,
@@ -567,6 +621,8 @@ impl Store {
             self.require_folder_access(owner_user_id, false, parent_id)
                 .await?;
         }
+        self.ensure_folder_name_available(owner_user_id, parent_id, name, None)
+            .await?;
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         sqlx::query(
@@ -581,7 +637,8 @@ impl Store {
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(map_folder_sql)?;
         self.get_folder(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("folder disappeared after insert".into()))
@@ -620,6 +677,13 @@ impl Store {
                 ));
             }
         }
+        self.ensure_folder_name_available(
+            &current.owner_user_id,
+            next_parent.as_deref(),
+            name,
+            Some(id),
+        )
+        .await?;
         sqlx::query(
             "UPDATE workspace_folders SET name = ?, parent_id = ?, updated_at = ? WHERE id = ?",
         )
@@ -628,10 +692,57 @@ impl Store {
         .bind(now_rfc3339())
         .bind(id)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(map_folder_sql)?;
         self.get_folder(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("folder disappeared after update".into()))
+    }
+
+    async fn ensure_folder_name_available(
+        &self,
+        owner_user_id: &str,
+        parent_id: Option<&str>,
+        name: &str,
+        exclude_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let existing = match parent_id {
+            Some(parent_id) => {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT id FROM workspace_folders
+                     WHERE owner_user_id = ?
+                       AND parent_id = ?
+                       AND name = ? COLLATE NOCASE
+                     LIMIT 1",
+                )
+                .bind(owner_user_id)
+                .bind(parent_id)
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT id FROM workspace_folders
+                     WHERE owner_user_id = ?
+                       AND parent_id IS NULL
+                       AND name = ? COLLATE NOCASE
+                     LIMIT 1",
+                )
+                .bind(owner_user_id)
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?
+            }
+        };
+        if let Some(existing_id) = existing {
+            if exclude_id != Some(existing_id.as_str()) {
+                return Err(StorageError::Conflict(
+                    "folder name already exists under this parent".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub async fn delete_folder(&self, id: &str) -> Result<(), StorageError> {
@@ -1673,6 +1784,7 @@ impl Store {
 
     pub async fn insert_extract(
         &self,
+        kind: &str,
         connection_id: &str,
         table_name: &str,
         delimiter: &str,
@@ -1682,6 +1794,7 @@ impl Store {
         catalog_database: Option<&str>,
         workspace_id: &str,
     ) -> Result<ExtractRow, StorageError> {
+        let kind = validate_extract_kind(kind)?;
         self.require_workspace(workspace_id).await?;
         let _ = self
             .get_connection(connection_id)
@@ -1691,10 +1804,11 @@ impl Store {
         let created_at = now_rfc3339();
         sqlx::query(
             "INSERT INTO extracts
-             (id, connection_id, table_name, delimiter, header, add_sequence, status, created_at, sql_text, catalog_database, workspace_id)
-             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+             (id, kind, connection_id, table_name, delimiter, header, add_sequence, status, created_at, sql_text, catalog_database, workspace_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
         )
         .bind(&id)
+        .bind(kind)
         .bind(connection_id)
         .bind(table_name)
         .bind(delimiter)
@@ -1744,6 +1858,54 @@ impl Store {
         }
         let rows = query.bind(limit).fetch_all(&self.pool).await?;
         Ok(rows)
+    }
+
+    pub async fn delete_extract(&self, id: &str) -> Result<(), StorageError> {
+        let row = self
+            .get_extract(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("extract not found".into()))?;
+
+        let mut dirs = Vec::new();
+        if let Some(rel) = row.stored_path.as_deref() {
+            let path = self.resolve(rel);
+            if let Some(parent) = path.parent() {
+                dirs.push(parent.to_path_buf());
+            }
+        }
+        dirs.push(self.data_dir.join(REL_DATABASES).join(id));
+        dirs.push(self.data_dir.join(REL_API).join(id));
+        let mut seen = HashSet::new();
+        for dir in dirs {
+            if !seen.insert(dir.clone()) {
+                continue;
+            }
+            match tokio::fs::remove_dir_all(&dir).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE chip_runs SET legacy_extract_id = NULL WHERE legacy_extract_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM datasets WHERE id = ? OR extract_id = ?")
+            .bind(id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let deleted = sqlx::query("DELETE FROM extracts WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(StorageError::NotFound("extract not found".into()));
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn set_extract_running(&self, id: &str) -> Result<(), StorageError> {
@@ -1805,7 +1967,7 @@ impl Store {
             "INSERT INTO datasets
              (id, kind, extract_id, filename, stored_path, size_bytes, delimiter, has_header,
               row_count, created_at, updated_at, workspace_id, producer_chip_run_id)
-             VALUES (?, 'database', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                kind = excluded.kind,
                extract_id = excluded.extract_id,
@@ -1820,6 +1982,7 @@ impl Store {
                updated_at = excluded.updated_at",
         )
         .bind(id)
+        .bind(&row.kind)
         .bind(id)
         .bind(filename)
         .bind(stored_path)
@@ -2299,15 +2462,20 @@ impl Store {
         Ok(())
     }
 
-    pub fn extract_file_rel(id: &str, table: &str, delimiter: &str) -> (String, String) {
+    pub fn extract_file_rel(
+        kind: &str,
+        id: &str,
+        table: &str,
+        delimiter: &str,
+    ) -> Result<(String, String), StorageError> {
         let ext = match delimiter {
             "tab" | "\\t" | "\t" => "tsv",
             "," => "csv",
             _ => "txt",
         };
         let filename = format!("{}.{}", safe_filename(&table.replace('.', "_")), ext);
-        let rel = database_rel(id, &filename);
-        (filename, rel)
+        let rel = extract_rel(kind, id, &filename)?;
+        Ok((filename, rel))
     }
 
     pub async fn live_connection(&self, id: &str) -> Result<LiveConnection, StorageError> {
@@ -2363,6 +2531,20 @@ pub fn upload_rel(id: &str, filename: &str) -> String {
 
 pub fn database_rel(id: &str, filename: &str) -> String {
     format!("{REL_DATABASES}/{id}/{filename}")
+}
+
+pub fn api_rel(id: &str, filename: &str) -> String {
+    format!("{REL_API}/{id}/{filename}")
+}
+
+pub fn extract_rel(kind: &str, id: &str, filename: &str) -> Result<String, StorageError> {
+    match kind {
+        "database" => Ok(database_rel(id, filename)),
+        "api" => Ok(api_rel(id, filename)),
+        _ => Err(StorageError::Invalid(
+            "extract kind must be database or api".into(),
+        )),
+    }
 }
 
 pub fn job_db_extract_rel(job_id: &str) -> String {
@@ -2489,6 +2671,17 @@ fn required_text<'a>(value: &'a str, field: &str) -> Result<&'a str, StorageErro
     Ok(value)
 }
 
+fn map_folder_sql(error: sqlx::Error) -> StorageError {
+    if let sqlx::Error::Database(db) = &error {
+        if db.is_unique_violation() {
+            return StorageError::Conflict(
+                "folder name already exists under this parent".into(),
+            );
+        }
+    }
+    error.into()
+}
+
 fn trimmed_optional(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
@@ -2500,6 +2693,15 @@ fn validate_chip_kind(kind: &str) -> Result<(), StorageError> {
         ));
     }
     Ok(())
+}
+
+fn validate_extract_kind(kind: &str) -> Result<&str, StorageError> {
+    match kind {
+        "database" | "api" => Ok(kind),
+        _ => Err(StorageError::Invalid(
+            "extract kind must be database or api".into(),
+        )),
+    }
 }
 
 fn require_config_json(config_json: &str) -> Result<(), StorageError> {
@@ -2826,15 +3028,17 @@ mod tests {
             upload_rel("abc", "sales.csv"),
             "extracts/uploads/abc/sales.csv"
         );
-        let (name, rel) = Store::extract_file_rel("abc", "public.users", ",");
+        let (name, rel) = Store::extract_file_rel("database", "abc", "public.users", ",").unwrap();
         assert_eq!(name, "public_users.csv");
         assert_eq!(rel, "extracts/databases/abc/public_users.csv");
         assert_eq!(
             job_db_extract_rel("job-1"),
             "extracts/databases/job-1/extract.csv"
         );
-        let (_, tsv) = Store::extract_file_rel("id", "t", "tab");
+        let (_, tsv) = Store::extract_file_rel("database", "id", "t", "tab").unwrap();
         assert_eq!(tsv, "extracts/databases/id/t.tsv");
+        let (_, api) = Store::extract_file_rel("api", "id", "orders", ",").unwrap();
+        assert_eq!(api, "extracts/api/id/orders.csv");
     }
 
     #[test]
@@ -3132,6 +3336,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(nested.folder_id.as_deref(), Some(child.id.as_str()));
+        assert!(store
+            .insert_folder("국가사업", &analyst.id, None)
+            .await
+            .is_err());
+        assert!(store
+            .insert_folder("내 워크스페이스", &analyst.id, Some(&folder.id))
+            .await
+            .is_err());
+        let sibling = store
+            .insert_folder("내 워크스페이스", &analyst.id, None)
+            .await
+            .unwrap();
+        assert!(sibling.parent_id.is_none());
         assert!(store
             .update_folder(&folder.id, None, Some(Some(&child.id)))
             .await

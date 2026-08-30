@@ -55,9 +55,13 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
         .route("/api/connections/{id}/query", post(connection_query))
         .route("/api/logs/{area}/{id}", get(process_logs))
         .route("/api/extracts", post(create_extract).get(list_extracts))
-        .route("/api/extracts/{id}", get(get_extract))
         .route("/api/extracts/{id}/logs", get(extract_logs))
         .route("/api/extracts/{id}/file", get(extract_file))
+        .route("/api/extracts/{id}/preview", get(preview_extract))
+        .route(
+            "/api/extracts/{id}",
+            get(get_extract).delete(delete_extract),
+        )
         .route("/api/jobs", post(create_job).get(list_jobs))
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/run", post(run_job))
@@ -907,6 +911,7 @@ async fn create_extract(
     let row = state
         .store
         .insert_extract(
+            "database",
             &body.connection_id,
             &table,
             &delimiter,
@@ -944,6 +949,66 @@ async fn get_extract(
 ) -> Result<Json<Value>, AppError> {
     let row = access::require_extract(&state.store, &user, &id).await?;
     Ok(Json(serde_json::to_value(row).unwrap()))
+}
+
+async fn delete_extract(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    access::require_extract(&state.store, &user, &id).await?;
+    state.store.delete_extract(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn preview_extract(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let row = access::require_extract(&state.store, &user, &id).await?;
+    if row.status != "succeeded" {
+        return Err(AppError::conflict("preview available only when succeeded"));
+    }
+    let stored_path = row
+        .stored_path
+        .clone()
+        .ok_or_else(|| AppError::not_found("extract file missing"))?;
+    let path = state.store.resolve(&stored_path);
+    let delimiter_raw = if row.delimiter.trim().is_empty() {
+        ",".into()
+    } else {
+        row.delimiter.clone()
+    };
+    let delimiter = parse_delimiter(&delimiter_raw)?;
+    let has_header = row.header != 0;
+    let limit = query.limit.unwrap_or(200).clamp(1, 1000) as usize;
+    let preview = tokio::task::spawn_blocking(move || {
+        read_upload_preview(&path, delimiter, has_header, limit)
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("extract preview failed: {error}"),
+        )
+    })??;
+    let filename = row
+        .filename
+        .clone()
+        .unwrap_or_else(|| "extract.txt".into());
+    Ok(Json(json!({
+        "id": row.id,
+        "filename": filename,
+        "stored_path": stored_path,
+        "delimiter": delimiter_raw,
+        "has_header": has_header,
+        "columns": preview.columns,
+        "rows": preview.rows,
+        "row_count": preview.row_count,
+        "truncated": preview.truncated,
+    })))
 }
 
 async fn extract_logs(

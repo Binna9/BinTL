@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/api/workspaces/{id}",
-            get(get_workspace).patch(update_workspace),
+            get(get_workspace).patch(update_workspace).delete(delete_workspace),
         )
         .route("/api/workspaces/{id}/save", axum::routing::put(save_workspace))
         .route(
@@ -171,6 +171,16 @@ async fn update_workspace(
         )
         .await?;
     Ok(Json(workspace_json(&workspace, None)?))
+}
+
+async fn delete_workspace(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    access::require_workspace(&state.store, &user, &id).await?;
+    state.store.delete_workspace(&id).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn save_workspace(

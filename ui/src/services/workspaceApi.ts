@@ -25,6 +25,10 @@ export const workspaceApi = {
       method: "PATCH",
       body: JSON.stringify(request),
     }),
+  delete: (id: string) =>
+    httpRequest<{ ok: boolean }>(`/api/workspaces/${id}`, {
+      method: "DELETE",
+    }),
   save: (id: string, request: SaveWorkspaceRequest) =>
     httpRequest<SaveWorkspaceResponse>(`/api/workspaces/${id}/save`, {
       method: "PUT",

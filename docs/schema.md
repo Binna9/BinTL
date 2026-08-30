@@ -4,7 +4,7 @@
 
 SQLite는 `COMMENT ON`을 지원하지 않는다. 테이블·컬럼 의미는 이 문서가 기준이다.
 
-마이그레이션은 `crates/storage/migrations/`에 있다. 아래는 **현재(0014까지 적용된)** 구조다. 시각 컬럼은 RFC3339 문자열이다. 불리언은 INTEGER `0`/`1`이다.
+마이그레이션은 `crates/storage/migrations/`에 있다. 아래는 **현재(0016까지 적용된)** 구조다. 시각 컬럼은 RFC3339 문자열이다. 불리언은 INTEGER `0`/`1`이다.
 
 한 설치(SQLite 하나)는 회사 하나다. 커넥션은 조직 공유 자산이고, 일(파일·추출·변환·칩)은 작업 공간에 속한다. 사용자는 작업 공간을 여러 개 소유한다. 폴더는 디렉터리처럼 그룹만 잡는다.
 
@@ -271,17 +271,20 @@ ETL 설정, 실행, 파일을 묶는 프로젝트. 사용자는 여러 개를 �
 
 ## extracts — 추출 실행 (호환)
 
-DB에서 파일로 뽑은 기존 추출 이력. 새 Extract TaskRun도 이 테이블에 한 행을 남긴다.
+커넥션에서 서버 파일로 뽑은 추출 이력. 종류는 `database`(DB)와 `api`(HTTP)다.
+디스크 경로는 `extracts/{databases|api}/{id}/…` 이고, 성공 시 `datasets.kind`에도 같은 값이 들어간다.
+API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 
 
 | 컬럼                 | 한글명      | 설명                                            |
 | ------------------ | -------- | --------------------------------------------- |
 | `id`               | ID       | UUID                                          |
-| `connection_id`    | 커넥션 ID   | `connections.id`                              |
-| `table_name`       | 테이블명     | `schema.table` 또는 SQL 추출 표시명                  |
+| `kind`             | 추출 종류    | `database` \| `api`                           |
+| `connection_id`    | 커넥션 ID   | 소스 커넥션. DB는 `connections.id`, API는 이후 확장       |
+| `table_name`       | 추출 대상    | DB: `schema.table` 또는 `query`. API: 리소스/표시명   |
 | `delimiter`        | 구분자      | 출력 구분자. 쉼표, tab 등                             |
 | `header`           | 헤더 여부    | `0`/`1`                                       |
-| `status`           | 상태       | `queued` | `running` | `succeeded` | `failed` |
+| `status`           | 상태       | `queued` \| `running` \| `succeeded` \| `failed` |
 | `stored_path`      | 저장 경로    | 파일 상대 경로                                      |
 | `filename`         | 파일명      |                                               |
 | `row_count`        | 행 수      |                                               |
@@ -289,7 +292,7 @@ DB에서 파일로 뽑은 기존 추출 이력. 새 Extract TaskRun도 이 테�
 | `created_at`       | 생성 시각    |                                               |
 | `started_at`       | 시작 시각    |                                               |
 | `finished_at`      | 종료 시각    |                                               |
-| `sql_text`         | SQL      | 실행한 쿼리. 테이블 추출이면 비울 수 있음                      |
+| `sql_text`         | SQL      | DB 쿼리 추출 시 실행한 SQL. 테이블/API면 비울 수 있음          |
 | `catalog_database` | 카탈로그 DB  | 카탈로그에서 고른 데이터베이스                              |
 | `workspace_id`     | 작업 공간 ID | `workspaces.id`. 목록·접근은 소유 범위                 |
 

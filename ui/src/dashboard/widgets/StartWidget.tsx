@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Cable, ChevronRight, FolderOpen, Upload } from "lucide-react";
+import { Cable, ChevronRight, AppWindow, Upload } from "lucide-react";
 import { PanelBody } from "@/components/ui/panel";
 import { useLanguage } from "@/i18n/LanguageProvider";
 
@@ -20,7 +20,7 @@ export function StartWidget() {
       </Link>
       <Link to="/workspace" className="dash-start flex-1">
         <span className="dash-start-icon">
-          <FolderOpen className="size-4" />
+          <AppWindow className="size-4" />
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-[13px] font-semibold text-text">{messages.overview.startWorkspace}</span>

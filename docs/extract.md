@@ -57,8 +57,9 @@
 - 테이블 `extracts`는 접속정보와 같이 `data/etl.db`에 영구 보관
 - 파일 위치: `{data_dir}/extracts/{kind}/{id}/{filename}`
   - `uploads/` — 브라우저에서 올린 파일
-  - `databases/` — DB 테이블/쿼리 추출
-  - `api/` — HTTP 소스 (아직 비어 있음, 기동 시 디렉터리만 생성)
+  - `databases/` — DB 테이블/쿼리 추출 (`extracts.kind = database`)
+  - `api/` — HTTP 소스 (`extracts.kind = api`, 실행기는 이후)
+- `extracts.kind`는 `database` | `api`. 성공 시 `datasets.kind`에 동일 값이 들어간다.
 - 파일 내용 자체는 DB BLOB에 넣지 않는다
 - `Store::open`이 `extracts/{uploads,databases,api}` 와 `outputs/` 를 만든다
 - 예전 `data/uploads/` · `data/extracts/{id}/` 는 기동 시 새 경로로 옮긴다
