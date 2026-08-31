@@ -1,7 +1,8 @@
 import * as React from "react";
 import { AnimatePresence, motion, type Variants } from "framer-motion";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink } from "react-router-dom";
+import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 
@@ -15,21 +16,23 @@ export interface MenuItem {
   children?: MenuItem[];
 }
 
-function menuItemActive(pathname: string, item: MenuItem) {
-  if (item.disabled) return false;
+function menuItemActive(pathname: string, item: MenuItem, inactive: boolean) {
+  if (inactive || item.disabled) return false;
   if (item.isActive) return item.isActive(pathname);
   if (item.end) return pathname === item.to;
   return pathname === item.to || pathname.startsWith(`${item.to}/`);
 }
 
-function hasActiveDescendant(pathname: string, item: MenuItem): boolean {
-  if (!item.children?.length) return menuItemActive(pathname, item);
-  return item.children.some((child) => hasActiveDescendant(pathname, child));
+function hasActiveDescendant(pathname: string, item: MenuItem, inactive: boolean): boolean {
+  if (inactive) return false;
+  if (!item.children?.length) return menuItemActive(pathname, item, inactive);
+  return item.children.some((child) => hasActiveDescendant(pathname, child, inactive));
 }
 
 interface MenuSidebarProps {
   items: MenuItem[];
   className?: string;
+  inactive?: boolean;
 }
 
 const sidebarVariants: Variants = {
@@ -49,10 +52,18 @@ const itemVariants: Variants = {
   },
 };
 
-function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }) {
+function MenuLink({
+  item,
+  nested = false,
+  inactive = false,
+}: {
+  item: MenuItem;
+  nested?: boolean;
+  inactive?: boolean;
+}) {
   const { messages } = useLanguage();
-  const location = useLocation();
-  const active = menuItemActive(location.pathname, item);
+  const location = useRenderLocation();
+  const active = menuItemActive(location.pathname, item, inactive);
 
   if (item.disabled) {
     return (
@@ -130,10 +141,10 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
   );
 }
 
-function MenuGroup({ item, depth = 0 }: { item: MenuItem; depth?: number }) {
-  const location = useLocation();
+function MenuGroup({ item, depth = 0, inactive = false }: { item: MenuItem; depth?: number; inactive?: boolean }) {
+  const location = useRenderLocation();
   const { messages } = useLanguage();
-  const childActive = hasActiveDescendant(location.pathname, item);
+  const childActive = hasActiveDescendant(location.pathname, item, inactive);
   const [isOpen, setIsOpen] = React.useState(childActive);
 
   React.useEffect(() => {
@@ -192,9 +203,9 @@ function MenuGroup({ item, depth = 0 }: { item: MenuItem; depth?: number }) {
             >
               {item.children?.map((child) =>
                 child.children?.length ? (
-                  <MenuGroup key={child.to} item={child} depth={depth + 1} />
+                  <MenuGroup key={child.to} item={child} depth={depth + 1} inactive={inactive} />
                 ) : (
-                  <MenuLink key={child.to} item={child} nested />
+                  <MenuLink key={child.to} item={child} nested inactive={inactive} />
                 ),
               )}
             </div>
@@ -206,7 +217,7 @@ function MenuGroup({ item, depth = 0 }: { item: MenuItem; depth?: number }) {
 }
 
 export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
-  ({ items, className }, ref) => {
+  ({ items, className, inactive = false }, ref) => {
     const { messages } = useLanguage();
     return (
       <motion.aside
@@ -226,7 +237,11 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
         >
           {items.map((item) => (
             <motion.div key={item.to} variants={itemVariants}>
-              {item.children ? <MenuGroup item={item} /> : <MenuLink item={item} />}
+              {item.children ? (
+                <MenuGroup item={item} inactive={inactive} />
+              ) : (
+                <MenuLink item={item} inactive={inactive} />
+              )}
             </motion.div>
           ))}
         </nav>

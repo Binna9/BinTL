@@ -9,7 +9,7 @@ import type {
 } from "@/types/user";
 
 export const userApi = {
-  me: () => httpRequest<SessionUser>("/api/me"),
+  me: () => httpRequest<SessionUser>("/api/me", { silent: true }),
   list: () => httpRequest<UserListResponse>("/api/users"),
   create: (body: CreateUserRequest) =>
     httpRequest<SessionUser>("/api/users", {

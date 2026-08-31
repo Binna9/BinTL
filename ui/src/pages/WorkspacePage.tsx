@@ -1396,7 +1396,7 @@ export function WorkspacePage() {
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const response = await chipApi.listRuns(workspaceId);
+        const response = await chipApi.listRuns(workspaceId, { silent: true });
         if (cancelled) return;
         const stillActive = response.runs.some((run) => ACTIVE_STATUSES.has(run.status));
         if (stillActive) {

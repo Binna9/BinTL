@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pencil, Puzzle, RefreshCw, Trash2 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { AppDialog } from "@/components/AppDialog";
 import { PageHeader, PageShell } from "@/components/PageShell";
@@ -26,6 +27,7 @@ function bindingSummary(chip: Chip) {
 
 export function ChipsPage() {
   const { messages } = useLanguage();
+  const [params] = useSearchParams();
   const [chips, setChips] = useState<Chip[]>([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -52,6 +54,13 @@ export function ChipsPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const chipId = params.get("chip");
+    if (!chipId || loading) return;
+    const chip = chips.find((item) => item.id === chipId);
+    if (chip) setDetail(chip);
+  }, [chips, loading, params]);
 
   const activeCount = useMemo(() => chips.filter((chip) => chip.active).length, [chips]);
 

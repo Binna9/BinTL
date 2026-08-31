@@ -1,6 +1,7 @@
 mod identity;
 mod password;
 mod process_log;
+mod search;
 mod secret;
 
 pub use identity::{
@@ -11,6 +12,7 @@ pub use process_log::{
     safe_log_id, ProcessLog, LOG_AREAS, LOG_CONNECTIONS, LOG_EXTRACTS, LOG_FILES, LOG_JOBS,
     LOG_QUERY,
 };
+pub use search::SearchHit;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -486,6 +488,7 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        search::sync_search_best_effort(self, "workspace", self.sync_search_workspace(&id)).await;
         self.get_workspace(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("workspace disappeared after insert".into()))
@@ -545,6 +548,7 @@ impl Store {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        search::sync_search_best_effort(self, "workspace", self.sync_search_workspace(id)).await;
         self.get_workspace(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("workspace disappeared after update".into()))
@@ -600,6 +604,7 @@ impl Store {
             return Err(StorageError::NotFound("workspace not found".into()));
         }
         tx.commit().await?;
+        let _ = self.delete_search_document("workspace", id).await;
         Ok(())
     }
 
@@ -681,6 +686,12 @@ impl Store {
         .execute(&self.pool)
         .await
         .map_err(map_folder_sql)?;
+        search::sync_search_best_effort(
+            self,
+            "workspace_folder",
+            self.sync_search_workspace_folder(&id),
+        )
+        .await;
         self.get_folder(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("folder disappeared after insert".into()))
@@ -736,6 +747,12 @@ impl Store {
         .execute(&self.pool)
         .await
         .map_err(map_folder_sql)?;
+        search::sync_search_best_effort(
+            self,
+            "workspace_folder",
+            self.sync_search_workspace_folder(id),
+        )
+        .await;
         self.get_folder(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("folder disappeared after update".into()))
@@ -795,6 +812,7 @@ impl Store {
         if result.rows_affected() == 0 {
             return Err(StorageError::NotFound("folder not found".into()));
         }
+        let _ = self.delete_search_document("workspace_folder", id).await;
         Ok(())
     }
 
@@ -1147,6 +1165,7 @@ impl Store {
             .await?;
         }
         tx.commit().await?;
+        search::sync_search_best_effort(self, "chip", self.sync_search_chip(&chip_id)).await;
         self.get_chip(&chip_id)
             .await?
             .ok_or_else(|| StorageError::NotFound("chip disappeared after register".into()))
@@ -1215,6 +1234,7 @@ impl Store {
             .await?;
         }
         tx.commit().await?;
+        search::sync_search_best_effort(self, "chip", self.sync_search_chip(&chip_id)).await;
         self.get_chip(&chip_id)
             .await?
             .ok_or_else(|| StorageError::NotFound("chip disappeared after register".into()))
@@ -1259,6 +1279,7 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        search::sync_search_best_effort(self, "chip", self.sync_search_chip(&id)).await;
         self.get_chip(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("chip disappeared after insert".into()))
@@ -1315,6 +1336,7 @@ impl Store {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        search::sync_search_best_effort(self, "chip", self.sync_search_chip(id)).await;
         self.get_chip(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("chip disappeared after update".into()))
@@ -1350,6 +1372,7 @@ impl Store {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        let _ = self.delete_search_document("chip", id).await;
         Ok(())
     }
 
@@ -1602,6 +1625,7 @@ impl Store {
             let _ = tokio::fs::remove_dir_all(self.uploads_dir().join(&id)).await;
             return Err(error);
         }
+        search::sync_search_best_effort(self, "dataset", self.sync_search_dataset(&id)).await;
         Ok(FileMeta {
             id,
             filename,
@@ -1771,6 +1795,7 @@ impl Store {
         if !removed && deleted.rows_affected() == 0 {
             return Err(StorageError::NotFound(format!("file {id} not found")));
         }
+        let _ = self.delete_search_document("dataset", id).await;
         Ok(())
     }
 
@@ -2026,6 +2051,7 @@ impl Store {
         .bind(&created_at)
         .execute(&self.pool)
         .await?;
+        search::sync_search_best_effort(self, "connection", self.sync_search_connection(&id)).await;
         self.get_connection(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("connection disappeared after insert".into()))
@@ -2095,6 +2121,7 @@ impl Store {
             .await?;
         }
 
+        search::sync_search_best_effort(self, "connection", self.sync_search_connection(id)).await;
         self.get_connection(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("connection disappeared after update".into()))
@@ -2129,6 +2156,7 @@ impl Store {
         if res.rows_affected() == 0 {
             return Err(StorageError::NotFound("connection not found".into()));
         }
+        let _ = self.delete_search_document("connection", id).await;
         Ok(())
     }
 
@@ -2174,6 +2202,7 @@ impl Store {
         .bind(workspace_id)
         .execute(&self.pool)
         .await?;
+        search::sync_search_best_effort(self, "extract", self.sync_search_extract(&id)).await;
         self.get_extract(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("extract disappeared after insert".into()))
@@ -2259,6 +2288,7 @@ impl Store {
             return Err(StorageError::NotFound("extract not found".into()));
         }
         tx.commit().await?;
+        let _ = self.delete_search_document("extract", id).await;
         Ok(())
     }
 
@@ -2369,6 +2399,8 @@ impl Store {
             }
         }
         tx.commit().await?;
+        search::sync_search_best_effort(self, "extract", self.sync_search_extract(id)).await;
+        search::sync_search_best_effort(self, "dataset", self.sync_search_dataset(id)).await;
         Ok(())
     }
 
@@ -2736,6 +2768,7 @@ impl Store {
         .bind(&dataset.workspace_id)
         .execute(&self.pool)
         .await?;
+        search::sync_search_best_effort(self, "transform", self.sync_search_transform(&id)).await;
         self.get_transform(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("transform disappeared after insert".into()))
@@ -2773,6 +2806,7 @@ impl Store {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        search::sync_search_best_effort(self, "transform", self.sync_search_transform(id)).await;
         self.get_transform(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("transform disappeared after update".into()))

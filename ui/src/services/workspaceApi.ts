@@ -1,4 +1,4 @@
-import { httpRequest } from "@/services/httpClient";
+import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
 import type {
   CreateFolderRequest,
   CreateWorkspaceRequest,
@@ -13,7 +13,7 @@ import type {
 } from "@/types/workspace";
 
 export const workspaceApi = {
-  list: () => httpRequest<WorkspaceListResponse>("/api/workspaces"),
+  list: (init?: HttpRequestInit) => httpRequest<WorkspaceListResponse>("/api/workspaces", init),
   create: (request: CreateWorkspaceRequest) =>
     httpRequest<Workspace>("/api/workspaces", {
       method: "POST",

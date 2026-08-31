@@ -360,7 +360,8 @@ fn apply_lazy(mut lf: LazyFrame, spec: &TransformSpec) -> Result<LazyFrame, Engi
         return Ok(lf);
     }
     if let Some(raw) = spec.filter.as_deref().filter(|s| !s.trim().is_empty()) {
-        lf = lf.filter(parse_filter(raw)?);
+        let schema = lf.clone().collect_schema()?;
+        lf = lf.filter(parse_filter(schema.as_ref(), raw)?);
     }
     if !spec.select.is_empty() {
         let cols: Vec<Expr> = spec.select.iter().map(|c| col(c)).collect();
@@ -386,7 +387,10 @@ fn apply_step(lf: LazyFrame, step: &Step) -> Result<LazyFrame, EngineError> {
             let new: Vec<String> = map.values().cloned().collect();
             Ok(lf.rename(&old, &new, true))
         }
-        Step::Filter { expr } => Ok(lf.filter(parse_filter(expr)?)),
+        Step::Filter { expr } => {
+            let schema = lf.clone().collect_schema()?;
+            Ok(lf.filter(parse_filter(schema.as_ref(), expr)?))
+        }
         Step::Cast { columns } => {
             let exprs: Result<Vec<Expr>, EngineError> = columns
                 .iter()
@@ -438,17 +442,20 @@ fn parse_dtype(raw: &str) -> Result<DataType, EngineError> {
     }
 }
 
-fn parse_filter(raw: &str) -> Result<Expr, EngineError> {
+fn parse_filter(schema: &Schema, raw: &str) -> Result<Expr, EngineError> {
     let s = raw.trim();
     for op in [">=", "<=", "!=", "=", ">", "<"] {
         if let Some(at) = s.find(op) {
             let left = s[..at].trim();
             let right = s[at + op.len()..].trim();
-            if !is_ident(left) {
+            if !is_col_name(left) {
                 return Err(EngineError::Spec(format!("bad filter column `{left}`")));
             }
+            let dtype = schema.get(left).ok_or_else(|| {
+                EngineError::Spec(format!("unknown filter column `{left}`"))
+            })?;
             let lhs = col(left);
-            let rhs = parse_lit(right)?;
+            let rhs = parse_lit_for_dtype(right, dtype)?;
             return Ok(match op {
                 "=" => lhs.eq(rhs),
                 "!=" => lhs.neq(rhs),
@@ -461,8 +468,65 @@ fn parse_filter(raw: &str) -> Result<Expr, EngineError> {
         }
     }
     Err(EngineError::Spec(
-        "filter must look like `col >= 1` or `status = ok`".into(),
+        "filter must look like `컬럼 >= 1` or `컬럼 = ok`".into(),
     ))
+}
+
+fn is_string_dtype(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::String | DataType::Categorical(_, _) | DataType::Enum(_, _)
+    )
+}
+
+fn is_integer_dtype(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+    )
+}
+
+fn is_float_dtype(dtype: &DataType) -> bool {
+    matches!(dtype, DataType::Float32 | DataType::Float64)
+}
+
+fn parse_lit_for_dtype(raw: &str, dtype: &DataType) -> Result<Expr, EngineError> {
+    let trimmed = raw.trim();
+    let unquoted = trimmed.trim_matches('"').trim_matches('\'');
+    if is_string_dtype(dtype) {
+        return Ok(lit(unquoted.to_string()));
+    }
+    if matches!(dtype, DataType::Boolean) {
+        return match unquoted.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Ok(lit(true)),
+            "false" | "0" | "no" => Ok(lit(false)),
+            _ => Err(EngineError::Spec(format!("bad boolean `{trimmed}`"))),
+        };
+    }
+    if is_integer_dtype(dtype) {
+        let n: i64 = unquoted.parse().map_err(|_| {
+            EngineError::Spec(format!("bad integer `{trimmed}` for {dtype}"))
+        })?;
+        return Ok(lit(n).cast(dtype.clone()));
+    }
+    if is_float_dtype(dtype) {
+        let n: f64 = unquoted.parse().map_err(|_| {
+            EngineError::Spec(format!("bad float `{trimmed}` for {dtype}"))
+        })?;
+        return Ok(lit(n).cast(dtype.clone()));
+    }
+    Ok(lit(unquoted.to_string()))
+}
+
+fn is_col_name(s: &str) -> bool {
+    !s.trim().is_empty()
 }
 
 fn parse_lit(raw: &str) -> Result<Expr, EngineError> {
@@ -474,16 +538,6 @@ fn parse_lit(raw: &str) -> Result<Expr, EngineError> {
     }
     let t = raw.trim().trim_matches('"').trim_matches('\'').to_string();
     Ok(lit(t))
-}
-
-fn is_ident(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
-            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-        }
-        _ => false,
-    }
 }
 
 fn write_parquet(mut df: DataFrame, output: &Path) -> Result<(), EngineError> {
@@ -770,5 +824,47 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("dest"));
+    }
+
+    #[test]
+    fn filter_string_column_with_unquoted_numeric_value() {
+        let dir = tmp("filter-str");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "code,flag\n루다,1\n이루다,2\n").unwrap();
+        let spec = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [
+                    {"op": "filter", "expr": "code = 루다"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &spec, 10).unwrap();
+        assert_eq!(preview.rows.len(), 1);
+        assert_eq!(preview.rows[0][0], "루다");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn filter_int32_column_with_numeric_value() {
+        let dir = tmp("filter-i32");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "score\n1\n3\n5\n").unwrap();
+        let spec = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [
+                    {"op": "filter", "expr": "score >= 3"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &spec, 10).unwrap();
+        assert_eq!(preview.rows.len(), 2);
+        assert_eq!(preview.rows[0][0], "3");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

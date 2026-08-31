@@ -141,7 +141,7 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
   ];
 }
 
-export function ConsoleRail() {
+export function ConsoleRail({ inactive = false }: { inactive?: boolean }) {
   const { messages } = useLanguage();
-  return <MenuSidebar items={createLinks(messages)} />;
+  return <MenuSidebar items={createLinks(messages)} inactive={inactive} />;
 }

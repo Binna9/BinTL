@@ -1,4 +1,5 @@
-import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
+import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
 import { BrandMark } from "@/components/BrandMark";
 import { ConsoleRail } from "@/components/ConsoleRail";
 import { HeaderSearch } from "@/components/HeaderSearch";
@@ -19,6 +20,7 @@ import { TransformPage } from "@/pages/TransformPage";
 import { TransformSoonPage } from "@/pages/TransformSoonPage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
 import { ChipsPage } from "@/pages/ChipsPage";
+import { SearchPage } from "@/pages/SearchPage";
 import { WorkspaceRunsPage } from "@/pages/WorkspaceRunsPage";
 import { SessionProvider } from "@/hooks/useSession";
 import { cn } from "@/lib/cn";
@@ -30,10 +32,12 @@ function LegacyTransformRedirect() {
 }
 
 function ConsoleShell() {
-  const loc = useLocation();
+  const loc = useRenderLocation();
+  const onSearchPage = loc.pathname === "/search";
   const studio =
-    loc.pathname === "/workspace" ||
-    (loc.pathname.startsWith("/workspace/") && !loc.pathname.startsWith("/workspace/runs"));
+    !onSearchPage &&
+    (loc.pathname === "/workspace" ||
+      (loc.pathname.startsWith("/workspace/") && !loc.pathname.startsWith("/workspace/runs")));
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="sticky top-0 z-40 grid h-[4.75rem] shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border bg-surface px-5 shadow-[0_2px_5px_rgba(15,23,42,0.06)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.28)]">
@@ -49,14 +53,15 @@ function ConsoleShell() {
         minSize={layout.split.minNav}
         maxSize={layout.split.maxNav}
       >
-        <ConsoleRail />
+        <ConsoleRail inactive={onSearchPage} />
         <main
           className={cn(
             "min-h-0 min-w-0 flex-1",
-            studio ? "overflow-hidden" : "overflow-y-auto p-4",
+            onSearchPage ? "overflow-hidden" : studio ? "overflow-hidden" : "overflow-y-auto p-4",
           )}
         >
-          <Routes>
+          <Routes location={loc}>
+            <Route path="/search" element={<SearchPage />} />
             <Route path="/" element={<OverviewPage />} />
             <Route path="/files" element={<FilesPage />} />
             <Route path="/connections" element={<ConnectionsPage />} />
@@ -91,7 +96,7 @@ function ConsoleShell() {
 }
 
 export default function App() {
-  const loc = useLocation();
+  const loc = useRenderLocation();
   return (
     <SessionProvider>
       {loc.pathname === "/login" ? <SessionGatePage /> : <ConsoleShell />}

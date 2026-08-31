@@ -29,12 +29,13 @@ export function WorkspaceRunsPage() {
   const [logId, setLogId] = useState<string | null>(null);
   const [logText, setLogText] = useState("");
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setLoading(true);
     try {
+      const silent = options?.silent ? { silent: true as const } : undefined;
       const [workspaceResponse, chipResponse] = await Promise.all([
-        workspaceApi.list(),
-        chipApi.listCatalog(),
+        workspaceApi.list(silent),
+        chipApi.listCatalog(silent),
       ]);
       const workspaceMap = new Map(
         workspaceResponse.workspaces.map((workspace) => [workspace.id, workspace.name] as const),
@@ -43,7 +44,7 @@ export function WorkspaceRunsPage() {
 
       const batches = await Promise.all(
         workspaceResponse.workspaces.map(async (workspace) => {
-          const response = await chipApi.listRuns(workspace.id);
+          const response = await chipApi.listRuns(workspace.id, silent);
           return response.runs.map((run) => ({
             ...run,
             workspaceName: workspaceMap.get(run.workspace_id) ?? messages.chipRuns.unknownWorkspace,
@@ -60,7 +61,7 @@ export function WorkspaceRunsPage() {
     } catch (error) {
       toastError(messages.workspace.loadError, error);
     } finally {
-      setLoading(false);
+      if (!options?.silent) setLoading(false);
     }
   }, [messages]);
 
@@ -76,7 +77,7 @@ export function WorkspaceRunsPage() {
   useEffect(() => {
     if (activeCount === 0) return;
     const timer = window.setInterval(() => {
-      void refresh();
+      void refresh({ silent: true });
     }, 2000);
     return () => window.clearInterval(timer);
   }, [activeCount, refresh]);

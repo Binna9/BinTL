@@ -14,7 +14,6 @@ import {
   FileOutput,
   FileSpreadsheet,
   Filter,
-  ListX,
   Plus,
   Replace,
   RotateCcw,
@@ -59,7 +58,6 @@ import type {
 
 const STEP_OPS: StepOp[] = [
   "select",
-  "drop",
   "rename",
   "filter",
   "cast",
@@ -70,7 +68,7 @@ const STEP_OPS: StepOp[] = [
 
 const STEP_OP_ICONS: Record<StepOp, LucideIcon> = {
   select: Columns3,
-  drop: ListX,
+  drop: Columns3,
   rename: TextCursorInput,
   filter: Filter,
   cast: Type,
@@ -80,6 +78,8 @@ const STEP_OP_ICONS: Record<StepOp, LucideIcon> = {
 };
 
 const CAST_TYPES = ["Int64", "Int32", "Float64", "Float32", "String", "Boolean"];
+const FILTER_OPS = [">=", "<=", "!=", "=", ">", "<"] as const;
+type FilterOp = (typeof FILTER_OPS)[number];
 const KIND_ORDER = ["upload", "database", "api", "transform"] as const;
 const KIND_APPEARANCE = {
   upload: {
@@ -190,13 +190,11 @@ function resolveColumnsAtStep(
 function ColumnChipPicker({
   columns,
   value,
-  mode,
   emptyLabel,
   onChange,
 }: {
   columns: DatasetColumn[];
   value: string[];
-  mode: "select" | "drop";
   emptyLabel: string;
   onChange: (columns: string[]) => void;
 }) {
@@ -204,20 +202,22 @@ function ColumnChipPicker({
     return <p className="text-xs text-text-tertiary">{emptyLabel}</p>;
   }
 
+  const kept = new Set(value);
+
   function toggle(name: string) {
-    if (value.includes(name)) {
+    if (kept.has(name)) {
+      if (kept.size <= 1) return;
       onChange(value.filter((column) => column !== name));
-    } else {
-      onChange([...value, name]);
+      return;
     }
+    onChange([...value, name]);
   }
 
   return (
     <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
       <div className="flex flex-nowrap gap-1.5 pb-0.5">
         {columns.map((column) => {
-          const active = value.includes(column.name);
-          const isSelect = mode === "select";
+          const active = kept.has(column.name);
           return (
             <button
               key={column.name}
@@ -227,13 +227,9 @@ function ColumnChipPicker({
               onClick={() => toggle(column.name)}
               className={cn(
                 "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                isSelect
-                  ? active
-                    ? "border-accent bg-accent-subtle text-accent"
-                    : "border-border bg-surface text-text-secondary hover:border-accent/40 hover:bg-subtle"
-                  : active
-                    ? "border-danger/40 bg-danger-subtle text-danger line-through"
-                    : "border-border bg-surface text-text hover:bg-subtle",
+                active
+                  ? "border-accent bg-accent-subtle text-accent"
+                  : "border-border bg-raised text-text-tertiary hover:border-border hover:bg-subtle hover:text-text-secondary",
               )}
             >
               {column.name}
@@ -250,29 +246,71 @@ function ColumnChipPicker({
   );
 }
 
-function usableSteps(steps: TransformStep[]): TransformStep[] {
-  return steps.filter((step) => {
-    switch (step.op) {
-      case "select":
-      case "drop":
-        return step.columns.length > 0;
-      case "rename":
-        return Object.keys(step.map).length > 0;
-      case "cast":
-        return Object.keys(step.columns).length > 0;
-      case "filter":
-        return step.expr.trim().length > 0;
-      case "fill_null":
-        return step.columns.length > 0 && step.value.trim().length > 0;
-      case "sort":
-        return step.by.some((item) => item.column.trim());
-      case "unique":
-        return true;
-    }
-  });
+function keptColumnsForStep(
+  step: Extract<TransformStep, { op: "select" } | { op: "drop" }>,
+  columns: DatasetColumn[],
+): string[] {
+  const names = columns.map((column) => column.name);
+  if (step.op === "select") {
+    return step.columns.length > 0 ? step.columns : names;
+  }
+  const drop = new Set(step.columns);
+  return names.filter((name) => !drop.has(name));
 }
 
-function specFrom(dataset: Dataset | null, steps: TransformStep[]): TransformSpecV2 {
+function isColumnStepNoOp(
+  step: Extract<TransformStep, { op: "select" } | { op: "drop" }>,
+  columns: DatasetColumn[],
+): boolean {
+  const names = columns.map((column) => column.name);
+  if (names.length === 0) return true;
+  const kept = keptColumnsForStep(step, columns);
+  return kept.length === names.length;
+}
+
+function usableSteps(steps: TransformStep[], baseColumns: DatasetColumn[]): TransformStep[] {
+  const out: TransformStep[] = [];
+  for (const [index, step] of steps.entries()) {
+    const columnsAtStep = resolveColumnsAtStep(baseColumns, steps, index);
+    switch (step.op) {
+      case "select":
+        if (step.columns.length > 0 && !isColumnStepNoOp(step, columnsAtStep)) {
+          out.push({ op: "select", columns: step.columns });
+        }
+        break;
+      case "drop":
+        if (step.columns.length > 0 && !isColumnStepNoOp(step, columnsAtStep)) {
+          out.push({ op: "select", columns: keptColumnsForStep(step, columnsAtStep) });
+        }
+        break;
+      case "rename":
+        if (Object.keys(step.map).length > 0) out.push(step);
+        break;
+      case "cast":
+        if (Object.keys(step.columns).length > 0) out.push(step);
+        break;
+      case "filter":
+        if (step.expr.trim().length > 0) out.push(step);
+        break;
+      case "fill_null":
+        if (step.columns.length > 0 && step.value.trim().length > 0) out.push(step);
+        break;
+      case "sort":
+        if (step.by.some((item) => item.column.trim())) out.push(step);
+        break;
+      case "unique":
+        out.push(step);
+        break;
+    }
+  }
+  return out;
+}
+
+function specFrom(
+  dataset: Dataset | null,
+  steps: TransformStep[],
+  baseColumns: DatasetColumn[],
+): TransformSpecV2 {
   return {
     version: 2,
     sink: "parquet",
@@ -280,8 +318,220 @@ function specFrom(dataset: Dataset | null, steps: TransformStep[]): TransformSpe
       delimiter: dataset?.delimiter ?? undefined,
       has_header: dataset?.has_header ?? undefined,
     },
-    steps: usableSteps(steps),
+    steps: usableSteps(steps, baseColumns),
   };
+}
+
+function parseFilterExpr(expr: string): { column: string; op: FilterOp; value: string } | null {
+  const raw = expr.trim();
+  if (!raw) return null;
+  for (const op of FILTER_OPS) {
+    const at = raw.indexOf(op);
+    if (at === -1) continue;
+    const column = raw.slice(0, at).trim();
+    const value = raw.slice(at + op.length).trim();
+    if (!column) continue;
+    return {
+      column,
+      op,
+      value: value.replace(/^["']|["']$/g, ""),
+    };
+  }
+  return null;
+}
+
+function isNumericDtype(dtype?: string): boolean {
+  if (!dtype) return false;
+  const d = dtype.toLowerCase();
+  return (
+    d.includes("int") ||
+    d.includes("uint") ||
+    d.includes("float") ||
+    d === "i32" ||
+    d === "i64" ||
+    d === "f32" ||
+    d === "f64"
+  );
+}
+
+function isStringDtype(dtype?: string): boolean {
+  if (!dtype) return false;
+  const d = dtype.toLowerCase();
+  return d.includes("str") || d.includes("utf") || d.includes("string") || d.includes("categorical");
+}
+
+function formatFilterValue(value: string, dtype?: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed;
+  }
+  if (isStringDtype(dtype) || (!isNumericDtype(dtype) && !/^-?\d+(\.\d+)?$/.test(trimmed))) {
+    return `"${trimmed.replace(/"/g, '\\"')}"`;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return trimmed;
+  return `"${trimmed.replace(/"/g, '\\"')}"`;
+}
+
+function buildFilterExpr(column: string, op: FilterOp, value: string, dtype?: string): string {
+  const rhs = formatFilterValue(value, dtype);
+  if (!column.trim() || !rhs) return "";
+  return `${column.trim()} ${op} ${rhs}`;
+}
+
+function filterOpMeta(
+  op: FilterOp,
+  messages: ReturnType<typeof useLanguage>["messages"],
+): { label: string; title: string } {
+  switch (op) {
+    case "=":
+      return { label: "=", title: messages.transform.filterOpEq };
+    case "!=":
+      return { label: "≠", title: messages.transform.filterOpNe };
+    case ">":
+      return { label: ">", title: messages.transform.filterOpGt };
+    case "<":
+      return { label: "<", title: messages.transform.filterOpLt };
+    case ">=":
+      return { label: "≥", title: messages.transform.filterOpGte };
+    case "<=":
+      return { label: "≤", title: messages.transform.filterOpLte };
+  }
+}
+
+function FilterStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "filter" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  const parsed = useMemo(() => parseFilterExpr(step.expr), [step.expr]);
+  const [column, setColumn] = useState(parsed?.column ?? "");
+  const [op, setOp] = useState<FilterOp>(parsed?.op ?? "=");
+  const [value, setValue] = useState(parsed?.value ?? "");
+
+  useEffect(() => {
+    const next = parseFilterExpr(step.expr);
+    setColumn(next?.column ?? "");
+    setOp(next?.op ?? "=");
+    setValue(next?.value ?? "");
+  }, [step.expr]);
+
+  function columnDtype(name: string) {
+    return columns.find((item) => item.name === name)?.dtype;
+  }
+
+  function commit(nextColumn: string, nextOp: FilterOp, nextValue: string) {
+    onChange({
+      op: "filter",
+      expr: buildFilterExpr(nextColumn, nextOp, nextValue, columnDtype(nextColumn)),
+    });
+  }
+
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+
+  const preview =
+    column && value.trim()
+      ? messages.transform.filterPreview(column, op, value.trim())
+      : null;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
+        <div className="flex flex-nowrap gap-1.5 pb-0.5">
+          {columns.map((item) => {
+            const active = column === item.name;
+            return (
+              <button
+                key={item.name}
+                type="button"
+                title={item.dtype ? `${item.name} (${item.dtype})` : item.name}
+                aria-pressed={active}
+                onClick={() => {
+                  setColumn(item.name);
+                  commit(item.name, op, value);
+                }}
+                className={cn(
+                  "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                  active
+                    ? "border-accent bg-accent-subtle text-accent"
+                    : "border-border bg-surface text-text-secondary hover:border-accent/40 hover:bg-subtle",
+                )}
+              >
+                {item.name}
+                {item.dtype ? (
+                  <span className={cn("ml-1 font-normal", active ? "opacity-75" : "text-text-tertiary")}>
+                    {item.dtype}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {column ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-raised/40 p-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.06em] text-text-tertiary">
+            {messages.transform.filterOperators}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {FILTER_OPS.map((item) => {
+              const meta = filterOpMeta(item, messages);
+              const active = op === item;
+              return (
+                <button
+                  key={item}
+                  type="button"
+                  title={meta.title}
+                  aria-pressed={active}
+                  onClick={() => {
+                    setOp(item);
+                    commit(column, item, value);
+                  }}
+                  className={cn(
+                    "min-w-[2.25rem] rounded-lg border px-2 py-1 text-xs font-semibold transition-colors",
+                    active
+                      ? "border-accent bg-accent-subtle text-accent"
+                      : "border-border bg-surface text-text-secondary hover:bg-subtle",
+                  )}
+                >
+                  {meta.label}
+                </button>
+              );
+            })}
+          </div>
+          <FormField label={messages.transform.filterValueLabel}>
+            <input
+              className="field-control technical"
+              value={value}
+              placeholder={messages.transform.filterValuePlaceholder}
+              onChange={(event) => {
+                const next = event.target.value;
+                setValue(next);
+                commit(column, op, next);
+              }}
+            />
+          </FormField>
+          {preview ? (
+            <p className="font-mono text-[11px] text-text-secondary">{preview}</p>
+          ) : null}
+        </div>
+      ) : (
+        <p className="text-[11px] text-text-tertiary">{messages.transform.filterPickColumn}</p>
+      )}
+    </div>
+  );
 }
 
 function PreviewGrid({
@@ -363,7 +613,7 @@ export function TransformPage() {
   };
   const stepLabels: Record<StepOp, string> = {
     select: messages.transform.opSelect,
-    drop: messages.transform.opDrop,
+    drop: messages.transform.opSelect,
     rename: messages.transform.opRename,
     filter: messages.transform.opFilter,
     cast: messages.transform.opCast,
@@ -373,7 +623,7 @@ export function TransformPage() {
   };
   const stepHints: Record<StepOp, string> = {
     select: messages.transform.opSelectHint,
-    drop: messages.transform.opDropHint,
+    drop: messages.transform.opSelectHint,
     rename: messages.transform.opRenameHint,
     filter: messages.transform.opFilterHint,
     cast: messages.transform.opCastHint,
@@ -446,7 +696,7 @@ export function TransformPage() {
   useEffect(() => {
     if (!detailOpen || !datasetId) return;
     const dataset = datasets.find((item) => item.id === datasetId) ?? null;
-    const spec = specFrom(dataset, steps);
+    const spec = specFrom(dataset, steps, baseColumns);
     let cancelled = false;
     setDetailLoading(true);
     void Promise.allSettled([
@@ -469,7 +719,7 @@ export function TransformPage() {
           setResultPreview(previewed.value);
         } else {
           setResultPreview(null);
-          if (usableSteps(steps).length > 0) {
+          if (usableSteps(steps, baseColumns).length > 0) {
             toastError(messages.errors.previewTransform, previewed.reason);
           }
         }
@@ -518,7 +768,7 @@ export function TransformPage() {
   }, [addStepOpen]);
 
   function buildSpec(): TransformSpecV2 {
-    return specFrom(selected, steps);
+    return specFrom(selected, steps, baseColumns);
   }
 
   function openDetail(tab: "source" | "result") {
@@ -638,7 +888,7 @@ export function TransformPage() {
               type="button"
               className="gap-2"
               disabled={!datasetId || busy}
-              onClick={() => openDetail(usableSteps(steps).length > 0 ? "result" : "source")}
+              onClick={() => openDetail(usableSteps(steps, baseColumns).length > 0 ? "result" : "source")}
             >
               <Eye className="size-3.5" aria-hidden="true" />
               {messages.transform.previewSteps}
@@ -827,7 +1077,22 @@ export function TransformPage() {
                                 role="menuitem"
                                 className="flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-accent-subtle"
                                 onClick={() => {
-                                  setSteps((current) => [...current, emptyStep(op)]);
+                                  if (op === "select") {
+                                    const available = resolveColumnsAtStep(
+                                      baseColumns,
+                                      steps,
+                                      steps.length,
+                                    );
+                                    setSteps((current) => [
+                                      ...current,
+                                      {
+                                        op: "select",
+                                        columns: available.map((column) => column.name),
+                                      },
+                                    ]);
+                                  } else {
+                                    setSteps((current) => [...current, emptyStep(op)]);
+                                  }
                                   setAddStepOpen(false);
                                 }}
                               >
@@ -1110,16 +1375,17 @@ function StepFields({
   const names = columns.map((column) => column.name).join(", ");
   switch (step.op) {
     case "select":
-    case "drop":
+    case "drop": {
+      const kept = keptColumnsForStep(step, columns);
       return (
         <ColumnChipPicker
           columns={columns}
-          value={step.columns}
-          mode={step.op}
+          value={kept}
           emptyLabel={messages.transform.noColumns}
-          onChange={(next) => onChange({ ...step, columns: next })}
+          onChange={(next) => onChange({ op: "select", columns: next })}
         />
       );
+    }
     case "rename":
       return (
         <input
@@ -1131,11 +1397,11 @@ function StepFields({
       );
     case "filter":
       return (
-        <input
-          className="field-control technical"
-          value={step.expr}
-          placeholder="amount > 0"
-          onChange={(event) => onChange({ ...step, expr: event.target.value })}
+        <FilterStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
         />
       );
     case "cast":

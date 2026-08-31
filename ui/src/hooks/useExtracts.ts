@@ -24,7 +24,7 @@ export function useExtracts() {
 
     async function poll() {
       try {
-        const next = await extractApi.getExtracts();
+        const next = await extractApi.getExtracts(50, { silent: true });
         if (cancelled) return;
         setExtracts(next.extracts);
         if (next.extracts.some((extract) => isExtractActive(extract.status))) {

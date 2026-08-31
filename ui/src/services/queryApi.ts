@@ -14,5 +14,7 @@ export const queryApi = {
       body: JSON.stringify({ sql, limit, database, log_id: logId }),
     }),
   getLogs: (logId: string) =>
-    httpRequest<{ area: string; id: string; text: string }>(`/api/logs/query/${logId}`),
+    httpRequest<{ area: string; id: string; text: string }>(`/api/logs/query/${logId}`, {
+      silent: true,
+    }),
 };

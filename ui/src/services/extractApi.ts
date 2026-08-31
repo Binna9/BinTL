@@ -1,4 +1,4 @@
-import { httpRequest } from "@/services/httpClient";
+import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
 import type { CreateExtractRequest, ExtractRecord } from "@/types/extract";
 import type { FilePreview } from "@/types/file";
 
@@ -7,8 +7,8 @@ interface ExtractListResponse {
 }
 
 export const extractApi = {
-  getExtracts: (limit = 50) =>
-    httpRequest<ExtractListResponse>(`/api/extracts?limit=${limit}`),
+  getExtracts: (limit = 50, init?: HttpRequestInit) =>
+    httpRequest<ExtractListResponse>(`/api/extracts?limit=${limit}`, init),
   getExtract: (extractId: string) =>
     httpRequest<ExtractRecord>(`/api/extracts/${extractId}`),
   createExtract: (request: CreateExtractRequest) =>

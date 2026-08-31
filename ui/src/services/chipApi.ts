@@ -1,4 +1,4 @@
-import { httpRequest } from "@/services/httpClient";
+import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
 import type {
   Chip,
   ChipListResponse,
@@ -13,7 +13,7 @@ import type {
 } from "@/types/chip";
 
 export const chipApi = {
-  listCatalog: () => httpRequest<ChipListResponse>("/api/chips"),
+  listCatalog: (init?: HttpRequestInit) => httpRequest<ChipListResponse>("/api/chips", init),
   register: (request: RegisterChipRequest) =>
     httpRequest<Chip>("/api/chips", {
       method: "POST",
@@ -39,8 +39,8 @@ export const chipApi = {
       method: "POST",
       body: JSON.stringify(request),
     }),
-  listRuns: (workspaceId: string) =>
-    httpRequest<ChipRunListResponse>(`/api/workspaces/${workspaceId}/runs`),
+  listRuns: (workspaceId: string, init?: HttpRequestInit) =>
+    httpRequest<ChipRunListResponse>(`/api/workspaces/${workspaceId}/runs`, init),
   getRun: (id: string) => httpRequest<ChipRun>(`/api/chip-runs/${id}`),
   getRunLogs: (id: string) =>
     httpRequest<ChipRunLogsResponse>(`/api/chip-runs/${id}/logs`),

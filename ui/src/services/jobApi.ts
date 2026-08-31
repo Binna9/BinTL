@@ -10,7 +10,7 @@ export const jobApi = {
   getJobs: (limit = 20) =>
     httpRequest<JobListResponse>(`/api/jobs?limit=${limit}`),
   getJobRun: (jobId: string) =>
-    httpRequest<EtlJobRun>(`/api/jobs/${jobId}`),
+    httpRequest<EtlJobRun>(`/api/jobs/${jobId}`, { silent: true }),
   createJob: (request: CreateEtlJobRequest) =>
     httpRequest<EtlJob>("/api/jobs", {
       method: "POST",
