@@ -288,7 +288,7 @@ export function FilesPage() {
                     {messages.files.removeSelected}
                   </Button>
                 </div>
-                <ul className="max-h-48 overflow-auto">
+                <ul className="scroll-pane max-h-48 overflow-auto">
                   {queue.map((item) => (
                     <li
                       key={item.id}

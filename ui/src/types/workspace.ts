@@ -1,4 +1,4 @@
-import type { Chip, ChipConfig, ChipEdge, ChipKind } from "@/types/chip";
+import type { Chip, ChipEdge } from "@/types/chip";
 
 export interface WorkspaceFolder {
   id: string;
@@ -58,13 +58,6 @@ export interface UpdateWorkspaceRequest {
   folder_id?: string | null;
 }
 
-export interface SaveWorkspaceChip {
-  id: string;
-  name: string;
-  kind: ChipKind;
-  config: ChipConfig;
-}
-
 export interface SaveWorkspaceEdge {
   id: string;
   from_chip_id: string;
@@ -76,7 +69,7 @@ export interface SaveWorkspaceEdge {
 
 export interface SaveWorkspaceRequest {
   layout: WorkspaceLayout;
-  chips: SaveWorkspaceChip[];
+  chips: string[];
   edges: SaveWorkspaceEdge[];
 }
 

@@ -1087,6 +1087,29 @@ a {
   pointer-events: none;
 }
 
+.scroll-pane,
+.field-select-menu {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--theme-text) 28%, transparent) transparent;
+}
+
+.scroll-pane::-webkit-scrollbar,
+.field-select-menu::-webkit-scrollbar {
+  width: 8px;
+}
+
+.scroll-pane::-webkit-scrollbar-thumb,
+.field-select-menu::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text) 28%, transparent);
+}
+
+.scroll-pane::-webkit-scrollbar-track,
+.field-select-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .workspace-rail {
   padding: 0.2rem 0.25rem 0.2rem 0.15rem;
   background: color-mix(in srgb, var(--theme-subtle) 45%, var(--theme-canvas));
@@ -1102,13 +1125,13 @@ a {
   position: absolute;
   inset: 0 0.85rem;
   border-radius: 999px;
-  background: transparent;
+  background: color-mix(in srgb, var(--theme-border) 38%, transparent);
   transition: background-color 0.2s ease;
 }
 
 .workspace-rail-split > button[aria-orientation="horizontal"]:hover::before,
 .workspace-rail-split > button[aria-orientation="horizontal"]:focus-visible::before {
-  background: color-mix(in srgb, var(--theme-border) 55%, transparent);
+  background: color-mix(in srgb, var(--theme-border) 72%, transparent);
 }
 
 .workspace-rail-card {

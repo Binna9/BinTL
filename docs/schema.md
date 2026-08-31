@@ -147,20 +147,65 @@ ETL 설정, 실행, 파일을 묶는 프로젝트. 사용자는 여러 개를 �
 
 ## chips — 칩 (최소 작업 단위)
 
-반복 실행하는 Extract / Transform / Load 설정. 실행할 때마다 revision이 스냅샷으로 복사된다.
+재사용 가능한 Extract / Transform / Load 칩 카탈로그. 워크스페이스와 **M:N** (`workspace_chips`).
+실행 시 `chip_bindings`로 정의 테이블을 조회하고, `chip_runs.config_snapshot_json`에 스냅샷을 남긴다.
 
 
 | 컬럼             | 한글명      | 설명                                        |
 | -------------- | -------- | ----------------------------------------- |
 | `id`           | ID       | UUID                                      |
-| `workspace_id` | 작업 공간 ID | `workspaces.id`                           |
+| `owner_user_id` | 소유자 ID | `users.id`                                |
 | `name`         | 이름       | 표시 이름                                     |
-| `kind`         | 종류       | `extract` | `transform` | `load`          |
-| `config_json`  | 설정       | 종류별 JSON. 비밀번호는 넣지 않고 `connection_id`만 참조 |
-| `revision`     | 리비전      | 저장할 때마다 증가. 1 이상                          |
+| `kind`         | 종류       | `extract` \| `transform` \| `load`          |
+| `config_json`  | 설정 (레거시) | 등록 칩은 NULL. 초안 칩만 임시 저장                  |
+| `revision`     | 리비전      | 정의 변경 시 증가                                 |
 | `active`       | 활성       | `1` 활성, `0` 비활성                           |
 | `created_at`   | 생성 시각    |                                           |
 | `updated_at`   | 수정 시각    |                                           |
+
+
+## chip_bindings — 칩 ↔ 정의 매핑
+
+칩 1개당 정의 1개 (`extract_definitions` 또는 `transforms`).
+
+
+| 컬럼         | 한글명   | 설명                                              |
+| ---------- | ----- | ----------------------------------------------- |
+| `chip_id`  | 칩 ID  | PK, `chips.id`                                  |
+| `ref_kind` | 참조 종류 | `extract_definition` \| `transform`             |
+| `ref_id`   | 참조 ID | `extract_definitions.id` 또는 `transforms.id` |
+
+
+## workspace_chips — 워크스페이스 ↔ 칩 (M:N)
+
+캔버스에 올린 칩. 같은 칩을 여러 워크스페이스에 배치할 수 있다.
+
+
+| 컬럼             | 한글명      | 설명              |
+| -------------- | -------- | --------------- |
+| `workspace_id` | 작업 공간 ID | `workspaces.id` |
+| `chip_id`      | 칩 ID     | `chips.id`      |
+| `created_at`   | 배치 시각    |                 |
+
+
+## extract_definitions — 추출 정의
+
+DB/API 추출 레시피. `extracts`는 실행 이력, 이 테이블은 재사용 정의.
+
+
+| 컬럼              | 한글명      | 설명                          |
+| --------------- | -------- | --------------------------- |
+| `id`            | ID       | UUID                        |
+| `name`          | 이름       |                             |
+| `kind`          | 종류       | `database` \| `api`         |
+| `connection_id` | 커넥션 ID   | `connections.id`            |
+| `source_json`   | 소스       | `{ type, table/sql, ... }`  |
+| `delimiter`     | 구분자      |                             |
+| `header`        | 헤더 여부    |                             |
+| `add_sequence`  | 순번 추가    |                             |
+| `workspace_id`  | 작업 공간 ID | 정의를 만든 워크스페이스 (접근 범위)      |
+| `created_at`    | 생성 시각    |                             |
+| `updated_at`    | 수정 시각    |                             |
 
 
 ---

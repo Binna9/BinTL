@@ -179,7 +179,7 @@ export function ExcelSheetDialog({
               {messages.files.selectedSheets(selected.length)}
             </span>
           </div>
-          <ul className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border">
+          <ul className="scroll-pane mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border">
             {workbook.sheets.map((sheet) => {
               const checked = selectedSet.has(sheet.name);
               return (

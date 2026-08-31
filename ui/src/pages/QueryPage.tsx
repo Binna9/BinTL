@@ -41,8 +41,6 @@ import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extractApi";
 import { queryApi } from "@/services/queryApi";
 import { chipApi } from "@/services/chipApi";
-import { workspaceApi } from "@/services/workspaceApi";
-import type { Workspace } from "@/types/workspace";
 import type { CatalogSelection } from "@/types/connection";
 import type { ExtractRecord } from "@/types/extract";
 import type { QueryResult } from "@/types/query";
@@ -139,10 +137,7 @@ export function QueryPage() {
   const [isResultOpen, setIsResultOpen] = useState(false);
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [registerWorkspaceId, setRegisterWorkspaceId] = useState("");
   const [registerName, setRegisterName] = useState("");
-  const [registerSql, setRegisterSql] = useState("");
   const [registerBusy, setRegisterBusy] = useState(false);
   const [extractId, setExtractId] = useState("");
   const [extractRow, setExtractRow] = useState<ExtractRecord | null>(null);
@@ -160,6 +155,7 @@ export function QueryPage() {
   const [editorSize, setEditorSize] = useState<{ w: number; h: number } | null>(null);
   const runSeq = useRef(0);
   const toastedExtractFail = useRef("");
+  const toastedExtractSuccess = useRef("");
 
   const active = useMemo(
     () => connections.find((connection) => connection.id === browseId),
@@ -189,28 +185,6 @@ export function QueryPage() {
       setIsRegisterOpen(false);
     }
   }, [isResultOpen]);
-
-  useEffect(() => {
-    if (!isRegisterOpen) return;
-    let cancelled = false;
-    void workspaceApi
-      .list()
-      .then((response) => {
-        if (cancelled) return;
-        setWorkspaces(response.workspaces);
-        setRegisterWorkspaceId((current) =>
-          response.workspaces.some((item) => item.id === current)
-            ? current
-            : (response.workspaces[0]?.id ?? ""),
-        );
-      })
-      .catch((err) => {
-        if (!cancelled) toastError(messages.workspace.loadError, err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isRegisterOpen, messages]);
 
   useEffect(() => {
     function maxEditorWidth() {
@@ -255,7 +229,7 @@ export function QueryPage() {
   }, []);
 
   useEffect(() => {
-    if (!extractId || !isResultOpen) return;
+    if (!extractId) return;
     let cancelled = false;
     let timer: number | undefined;
 
@@ -267,7 +241,7 @@ export function QueryPage() {
         ]);
         if (cancelled) return;
         setExtractRow(row);
-        setExtractLog(logs.text);
+        if (isResultOpen) setExtractLog(logs.text);
         if (isExtractActive(row.status)) {
           timer = window.setTimeout(() => void refreshExtract(), 1000);
         }
@@ -286,10 +260,28 @@ export function QueryPage() {
   }, [extractId, isResultOpen]);
 
   useEffect(() => {
+    if (!extractId || !isResultOpen) return;
+    void extractApi
+      .getLogs(extractId)
+      .then((logs) => setExtractLog(logs.text))
+      .catch(() => {});
+  }, [extractId, isResultOpen]);
+
+  useEffect(() => {
     if (!extractRow || extractRow.status !== "failed") return;
     if (toastedExtractFail.current === extractRow.id) return;
     toastedExtractFail.current = extractRow.id;
     toastError(messages.errors.extract, extractRow.error_message);
+  }, [extractRow, messages]);
+
+  useEffect(() => {
+    if (!extractRow || extractRow.status !== "succeeded") return;
+    if (toastedExtractSuccess.current === extractRow.id) return;
+    toastedExtractSuccess.current = extractRow.id;
+    toastSuccess(
+      messages.query.extractComplete,
+      messages.query.extractDone(extractRow.row_count ?? 0),
+    );
   }, [extractRow, messages]);
 
   useEffect(() => {
@@ -451,22 +443,21 @@ export function QueryPage() {
 
   function openRegister() {
     setRegisterName(selected?.qualified || messages.workspace.untitledExtract(1));
-    setRegisterSql(sql);
     setIsRegisterOpen(true);
   }
 
   async function onRegisterTask() {
-    if (!browseId || !registerWorkspaceId || !registerName.trim() || !registerSql.trim()) return;
+    if (!browseId || !registerName.trim() || !sql.trim()) return;
     setRegisterBusy(true);
     try {
-      await chipApi.create(registerWorkspaceId, {
+      await chipApi.register({
         name: registerName.trim(),
         kind: "extract",
-        config: {
+        extract: {
           connection_id: browseId,
           source: {
             type: "query",
-            sql: registerSql,
+            sql,
             ...(selected?.database ? { database: selected.database } : {}),
           },
           delimiter,
@@ -485,8 +476,7 @@ export function QueryPage() {
   const canRun = Boolean(browseId && sql.trim());
   const extractBusy = extracting || (extractRow ? isExtractActive(extractRow.status) : false);
   const canExtract = canRun && result?.kind !== "exec" && !extractBusy;
-  const canRegister =
-    canRun && result?.kind !== "exec" && Boolean(registerName.trim() && registerSql.trim());
+  const canRegister = canRun && result?.kind !== "exec" && Boolean(registerName.trim() && sql.trim());
   const tickerLive = running || extractBusy;
   const tickerItems = useMemo(() => {
     const items: string[] = [];
@@ -569,7 +559,7 @@ export function QueryPage() {
             >
               <div className="flex h-full min-h-0 flex-col overflow-hidden">
                 <PaneHeader title={messages.common.connections} meta={messages.common.count(connections.length)} />
-                <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+                <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
                   {connections.length === 0 ? (
                     <p className="p-3 text-xs text-text-tertiary">{messages.empty.connections}</p>
                   ) : (
@@ -595,7 +585,7 @@ export function QueryPage() {
               </div>
               <div className="flex h-full min-h-0 flex-col overflow-hidden">
                 <PaneHeader title={messages.common.catalog} />
-                <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+                <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
                   {browseId ? (
                     <CatalogTree
                       connectionId={browseId}
@@ -613,13 +603,13 @@ export function QueryPage() {
           <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
             <ConnectionInfoPanel
               connection={active}
-              selectedTable={selected?.qualified}
+              selected={selected}
             />
 
             <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.columns]}>
               <section className="flex h-full min-h-0 flex-col overflow-hidden">
                 <PaneHeader title={messages.common.columns} meta={`${connectionColumns.length}`} />
-                <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+                <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
                   {connectionColumns.length === 0 ? (
                     <p className="p-3 text-xs text-text-tertiary">{messages.query.columnsHint}</p>
                   ) : (
@@ -938,9 +928,9 @@ export function QueryPage() {
         open={isRegisterOpen}
         title={messages.query.registerTaskTitle}
         icon={<BookmarkPlus className="size-4 text-accent" aria-hidden="true" />}
-        className="w-[32rem] max-w-[92vw]"
-        minWidth={420}
-        minHeight={320}
+        className="w-[min(22rem,92vw)]"
+        minWidth={320}
+        minHeight={240}
         zIndex={120}
         defaultOffset={{ x: 40, y: 28 }}
         onClose={() => setIsRegisterOpen(false)}
@@ -952,7 +942,7 @@ export function QueryPage() {
             <Button
               type="button"
               variant="primary"
-              disabled={!canRegister || registerBusy || !registerWorkspaceId}
+              disabled={!canRegister || registerBusy}
               onClick={() => void onRegisterTask()}
             >
               {registerBusy ? messages.common.saving : messages.common.save}
@@ -960,39 +950,29 @@ export function QueryPage() {
           </>
         }
       >
-        <div className="flex flex-col gap-3 overflow-auto p-4">
-          <p className="text-sm text-text-secondary">{messages.query.registerTaskHint}</p>
-          {workspaces.length === 0 ? (
-            <p className="text-sm text-text-tertiary">{messages.workspace.noWorkspaces}</p>
-          ) : (
-            <FormField label={messages.workspace.workspace}>
-              <Select
-                value={registerWorkspaceId}
-                placeholder={messages.workspace.selectWorkspace}
-                options={workspaces.map((item) => ({ value: item.id, label: item.name }))}
-                onChange={setRegisterWorkspaceId}
-              />
-            </FormField>
-          )}
+        <div className="flex flex-col gap-3 p-4">
+          <p className="text-[11px] leading-5 text-text-tertiary">{messages.query.registerTaskHint}</p>
           <FormField label={messages.workspace.chipName}>
             <input
               className="field-control"
               value={registerName}
+              autoFocus
               placeholder={messages.query.namePlaceholder}
               onChange={(event) => setRegisterName(event.target.value)}
             />
           </FormField>
-          <FormField label={messages.workspace.connection}>
-            <input className="field-control" value={active?.name ?? ""} readOnly />
-          </FormField>
-          <FormField label={messages.workspace.sql}>
-            <textarea
-              className="field-control technical min-h-28 resize-y"
-              value={registerSql}
-              spellCheck={false}
-              onChange={(event) => setRegisterSql(event.target.value)}
-            />
-          </FormField>
+          <dl className="space-y-2 border-t border-border/60 pt-3 text-[11px] text-text-tertiary">
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0">{messages.workspace.connection}</dt>
+              <dd className="min-w-0 truncate text-text-secondary">{active?.name ?? "—"}</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0">{messages.workspace.sql}</dt>
+              <dd className="line-clamp-3 min-w-0 font-mono text-[10px] leading-4 text-text-secondary">
+                {sql.trim() || "—"}
+              </dd>
+            </div>
+          </dl>
         </div>
       </AppDialog>
 

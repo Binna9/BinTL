@@ -1,7 +1,7 @@
 import { DragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowRight, ChevronDown, CircleAlert, DatabaseZap, Folder, FolderOpen, Layers, RefreshCw, RotateCcw, Save, Settings2, Spline, AppWindow, Workflow, X, type LucideIcon } from "lucide-react";
+import { AppWindow, ArrowRight, Check, ChevronDown, CircleAlert, DatabaseZap, Folder, FolderOpen, Layers, Plus, RefreshCw, RotateCcw, Save, Search, Settings2, Spline, Workflow, X, type LucideIcon } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { SplitLayout } from "@/components/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
@@ -20,7 +20,7 @@ import { chipApi } from "@/services/chipApi";
 import { workspaceApi } from "@/services/workspaceApi";
 import type { DataConnection } from "@/types/connection";
 import type { Dataset } from "@/types/dataset";
-import type { Chip, ChipConfig, ChipEdge, ChipEdgeKind, ChipKind, ChipRun } from "@/types/chip";
+import type { Chip, ChipConfig, ChipEdge, ChipEdgeKind, ChipKind, ChipRun, RunChipRequest } from "@/types/chip";
 import type { Workspace, WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
 
 const EMPTY_SPEC = JSON.stringify(
@@ -32,6 +32,7 @@ const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const TOOL_KIND = "application/x-bintl-tool";
 const NODE_W = 100;
 const NODE_H = 96;
+const CHIP_PLACE_GAP = 28;
 const CANVAS_W = 3200;
 const CANVAS_H = 2200;
 const CANVAS_EDGE = 56;
@@ -67,18 +68,6 @@ function objectValue(config: ChipConfig, key: string): ChipConfig {
 
 function nodesFromLayout(layout?: WorkspaceLayout): Record<string, Point> {
   return layout?.nodes ?? {};
-}
-
-function draftConfig(kind: "extract" | "transform"): ChipConfig {
-  if (kind === "extract") {
-    return {
-      connection_id: "",
-      source: { type: "table", table: "" },
-      delimiter: ",",
-      header: true,
-    };
-  }
-  return { spec: { version: 2, sink: "parquet", steps: [] } };
 }
 
 function fallbackPoint(index: number): Point {
@@ -136,6 +125,84 @@ function roundPoint(point: Point): Point {
 
 function normalizeChipName(name: string) {
   return name.trim().toLowerCase();
+}
+
+function folderPathLabel(
+  folderId: string | null | undefined,
+  folders: WorkspaceFolder[],
+  rootSegment: string,
+): string {
+  const segments = [rootSegment];
+  let cursor: string | null = folderId ?? null;
+  while (cursor) {
+    const folder = folders.find((item) => item.id === cursor);
+    if (!folder) break;
+    segments.push(folder.name);
+    cursor = folder.parent_id;
+  }
+  return segments.join("/");
+}
+
+function WorkspaceInfoRow({
+  icon: Icon,
+  label,
+  value,
+  valueClassName,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 rounded-xl px-2.5 py-2" title={`${label} ${value}`}>
+      <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-subtle">
+        <Icon className="size-3.5 text-text-secondary" aria-hidden="true" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">{label}</p>
+        <p className={cn("truncate text-[13px] font-medium text-text", valueClassName)}>{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceBrowserPanel({
+  messages,
+  folderPath,
+  workspaceName,
+  onManage,
+}: {
+  messages: Messages;
+  folderPath: string;
+  workspaceName: string;
+  onManage: () => void;
+}) {
+  return (
+    <section className="workspace-rail-group">
+      <div className="flex items-center gap-2 px-1 py-1.5">
+        <FolderOpen className="size-3.5 shrink-0 text-text-secondary" aria-hidden="true" />
+        <span className="text-sm font-semibold text-text">{messages.workspace.browser}</span>
+      </div>
+      <div className="flex flex-col gap-0.5 pt-1">
+        <WorkspaceInfoRow
+          icon={Folder}
+          label={messages.workspace.folderTree}
+          value={folderPath}
+          valueClassName="technical"
+        />
+        <WorkspaceInfoRow
+          icon={AppWindow}
+          label={messages.workspace.workspace}
+          value={workspaceName}
+        />
+      </div>
+      <Button className="mt-2.5 w-full" type="button" onClick={onManage}>
+        <Settings2 className="size-3.5" aria-hidden="true" />
+        {messages.workspace.manageTitle}
+      </Button>
+    </section>
+  );
 }
 
 function scrollCanvasFromPointer(canvas: HTMLElement, clientX: number, clientY: number) {
@@ -487,6 +554,61 @@ function EdgeWire({
   );
 }
 
+function CollapsibleRailSection({
+  title,
+  hint,
+  icon: Icon,
+  open,
+  onToggle,
+  expandLabel,
+  collapseLabel,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  icon: LucideIcon;
+  open: boolean;
+  onToggle: () => void;
+  expandLabel: string;
+  collapseLabel: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="workspace-rail-group border-b border-border/70 pb-3 last:border-b-0 last:pb-0">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 rounded-lg px-1 py-1.5 text-left outline-none transition-colors hover:bg-subtle/80 focus-visible:ring-2 focus-visible:ring-accent/40"
+        aria-expanded={open}
+        aria-label={`${title} ${open ? collapseLabel : expandLabel}`}
+        onClick={onToggle}
+      >
+        <Icon className="size-3.5 shrink-0 text-text-secondary" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text">{title}</span>
+        <ChevronDown
+          className={cn("size-3.5 shrink-0 text-text-tertiary transition-transform duration-200", open && "rotate-180")}
+          aria-hidden="true"
+        />
+      </button>
+      {hint && open ? (
+        <p className="mt-1 px-1 text-[11px] leading-4 text-text-tertiary">{hint}</p>
+      ) : null}
+      <AnimatePresence initial={false}>
+        {open ? (
+          <motion.div
+            className="overflow-hidden"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: "easeInOut" }}
+          >
+            <div className="pt-2">{children}</div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </section>
+  );
+}
+
 function LayerGroup({
   title,
   children,
@@ -548,6 +670,192 @@ function LayerRow({
   );
 }
 
+function ChipPickerDialog({
+  open,
+  kind,
+  chips,
+  canvasChipIds,
+  messages,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean;
+  kind: "extract" | "transform";
+  chips: Chip[];
+  canvasChipIds: Set<string>;
+  messages: Messages;
+  onClose: () => void;
+  onConfirm: (chipIds: string[]) => void;
+}) {
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const options = useMemo(
+    () => chips.filter((chip) => chip.kind === kind),
+    [chips, kind],
+  );
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return options;
+    return options.filter((chip) => chip.name.toLowerCase().includes(needle));
+  }, [options, query]);
+  const title = kind === "extract"
+    ? messages.workspace.pickExtractChip
+    : messages.workspace.pickTransformChip;
+  const emptyHint = kind === "extract"
+    ? messages.workspace.emptyCatalogExtract
+    : messages.workspace.emptyCatalogTransform;
+  const RowIcon = kind === "extract" ? DatabaseZap : Workflow;
+  const iconClassName = kind === "extract" ? "text-accent" : "text-success";
+  const registerPath = kind === "extract" ? "/query" : "/transform/clean";
+
+  useEffect(() => {
+    if (!open) return;
+    setQuery("");
+    setSelectedIds([]);
+  }, [open, kind]);
+
+  function goRegister() {
+    onClose();
+    navigate(registerPath);
+  }
+
+  function toggleSelected(chipId: string) {
+    setSelectedIds((current) =>
+      current.includes(chipId)
+        ? current.filter((id) => id !== chipId)
+        : [...current, chipId],
+    );
+  }
+
+  return (
+    <AppDialog
+      open={open}
+      title={title}
+      icon={<RowIcon className={cn("size-4", iconClassName)} aria-hidden="true" />}
+      className="w-[min(30rem,94vw)]"
+      minWidth={380}
+      minHeight={380}
+      hideHeaderClose
+      onClose={onClose}
+      headerExtra={(
+        <Button
+          type="button"
+          variant="secondary"
+          className="ml-auto h-7 gap-1 px-2 text-[11px] font-medium"
+          onClick={goRegister}
+        >
+          <Plus className="size-3.5" aria-hidden="true" />
+          {messages.workspace.registerNewChip}
+        </Button>
+      )}
+      footer={(
+        <div className="flex w-full items-center justify-between gap-3">
+          <span className="text-xs text-text-tertiary">
+            {options.length > 0 && selectedIds.length > 0
+              ? messages.workspace.pickChipSelected(selectedIds.length)
+              : "\u00a0"}
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              className="grid size-9 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
+              aria-label={messages.common.cancel}
+              title={messages.common.cancel}
+              onClick={onClose}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
+            {options.length > 0 ? (
+              <button
+                type="button"
+                className="grid size-9 place-items-center rounded-lg text-accent outline-none transition-colors hover:bg-accent-subtle disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/40"
+                aria-label={messages.workspace.pickChipPlace}
+                title={messages.workspace.pickChipPlace}
+                disabled={selectedIds.length === 0}
+                onClick={() => onConfirm(selectedIds)}
+              >
+                <Check className="size-4" aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
+        </div>
+      )}
+    >
+      {options.length === 0 ? (
+        <div className="flex min-h-[12rem] items-center justify-center px-8 py-10">
+          <p className="text-center text-xs leading-5 text-text-tertiary">{emptyHint}</p>
+        </div>
+      ) : (
+        <div className="flex min-h-[16rem] flex-col gap-4 px-5 py-4">
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-text-secondary">{messages.workspace.pickChipHint}</p>
+            <div className="group flex h-9 items-center overflow-hidden rounded-lg border border-border bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+              <span className="grid h-full w-9 shrink-0 place-items-center border-r border-border bg-subtle text-text-tertiary transition-colors group-focus-within:text-accent">
+                <Search className="size-3.5" aria-hidden="true" />
+              </span>
+              <input
+                type="search"
+                className="min-w-0 flex-1 bg-transparent px-3 text-xs text-text outline-none placeholder:text-text-tertiary [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
+                value={query}
+                placeholder={messages.workspace.pickChipSearch}
+                aria-label={messages.workspace.pickChipSearch}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </div>
+          </div>
+          {filtered.length === 0 ? (
+            <div className="flex flex-1 items-center justify-center py-8">
+              <p className="text-xs text-text-tertiary">{messages.workspace.pickChipSearchEmpty}</p>
+            </div>
+          ) : (
+            <ul className="scroll-pane max-h-[22rem] min-h-[10rem] flex-1 divide-y divide-border/50 overflow-y-auto rounded-xl border border-border/60">
+              {filtered.map((chip) => {
+                const selected = selectedIds.includes(chip.id);
+                return (
+                  <li key={chip.id}>
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors outline-none",
+                        selected
+                          ? "bg-accent-subtle/80 hover:bg-accent-subtle"
+                          : "hover:bg-subtle/70",
+                        "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40",
+                      )}
+                      aria-pressed={selected}
+                      onClick={() => toggleSelected(chip.id)}
+                    >
+                      <span
+                        className={cn(
+                          "grid size-4 shrink-0 place-items-center rounded border transition-colors",
+                          selected
+                            ? "border-accent bg-accent text-white"
+                            : "border-border bg-surface text-transparent",
+                        )}
+                        aria-hidden="true"
+                      >
+                        <Check className="size-3" />
+                      </span>
+                      <RowIcon className={cn("size-4 shrink-0", iconClassName)} aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-text">{chip.name}</span>
+                      {canvasChipIds.has(chip.id) ? (
+                        <span className="shrink-0 text-[11px] text-text-tertiary">
+                          {messages.workspace.chipOnCanvas}
+                        </span>
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </AppDialog>
+  );
+}
+
 function WorkspaceLayers({
   chips,
   edges,
@@ -555,6 +863,8 @@ function WorkspaceLayers({
   selectedEdgeId,
   messages,
   emptyHint,
+  open,
+  onToggle,
   onSelectChip,
   onSelectEdge,
 }: {
@@ -564,6 +874,8 @@ function WorkspaceLayers({
   selectedEdgeId: string | null;
   messages: Messages;
   emptyHint: string;
+  open: boolean;
+  onToggle: () => void;
   onSelectChip: (id: string) => void;
   onSelectEdge: (id: string) => void;
 }) {
@@ -577,16 +889,10 @@ function WorkspaceLayers({
         ? messages.workspace.edgeThen
         : messages.workspace.edgeOnError;
 
-  if (chips.length === 0 && edges.length === 0) {
-    return <p className="text-sm text-text-secondary">{emptyHint}</p>;
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      <h2 className="flex items-center gap-2 text-sm font-semibold text-text">
-        <Layers className="size-3.5 text-text-secondary" aria-hidden="true" />
-        {messages.workspace.layers}
-      </h2>
+  const body = chips.length === 0 && edges.length === 0 ? (
+    <p className="px-1 text-[12px] text-text-tertiary">{emptyHint}</p>
+  ) : (
+    <div className="flex flex-col gap-3">
       <LayerGroup title={messages.workspace.layerExtracts(extracts.length)}>
         {extracts.length === 0 ? (
           <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
@@ -643,6 +949,19 @@ function WorkspaceLayers({
         )}
       </LayerGroup>
     </div>
+  );
+
+  return (
+    <CollapsibleRailSection
+      title={messages.workspace.layers}
+      icon={Layers}
+      open={open}
+      onToggle={onToggle}
+      expandLabel={messages.workspace.expandPanel}
+      collapseLabel={messages.workspace.collapsePanel}
+    >
+      {body}
+    </CollapsibleRailSection>
   );
 }
 
@@ -771,9 +1090,9 @@ export function WorkspacePage() {
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [layersOpen, setLayersOpen] = useState(true);
   const [chips, setChips] = useState<Chip[]>([]);
+  const [catalogChips, setCatalogChips] = useState<Chip[]>([]);
   const [edges, setEdges] = useState<ChipEdge[]>([]);
   const [runs, setRuns] = useState<ChipRun[]>([]);
   const [connections, setConnections] = useState<DataConnection[]>([]);
@@ -821,16 +1140,19 @@ export function WorkspacePage() {
     kind: "extract" | "transform";
     point: Point;
   } | null>(null);
-  const [placeName, setPlaceName] = useState("");
   const [chipNameError, setChipNameError] = useState("");
   positionsRef.current = positions;
   dirtyRef.current = dirty;
   busyRef.current = busy;
 
   const selectedWorkspace = workspaces.find((item) => item.id === workspaceId);
-  const selectedChip = chips.find(
-    (item) => item.id === chipId && item.workspace_id === workspaceId,
+  const workspaceFolderPath = folderPathLabel(
+    selectedWorkspace?.folder_id,
+    folders,
+    messages.workspace.pathRoot,
   );
+  const workspaceName = selectedWorkspace?.name ?? messages.workspace.selectWorkspace;
+  const selectedChip = chips.find((item) => item.id === chipId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const hasActiveRun = runs.some((run) => ACTIVE_STATUSES.has(run.status));
   const selectedRuns = useMemo(
@@ -973,13 +1295,6 @@ export function WorkspacePage() {
         if (cancelled) return;
         setWorkspaces(workspaceResponse.workspaces);
         setFolders(folderResponse.folders);
-        setExpandedFolders((current) => {
-          const next = { ...current };
-          for (const folder of folderResponse.folders) {
-            if (next[folder.id] === undefined) next[folder.id] = false;
-          }
-          return next;
-        });
         setConnections(connectionResponse.connections);
         setDatasets(datasetResponse.datasets);
         if (!workspaceId && workspaceResponse.workspaces.length > 0) {
@@ -1017,8 +1332,9 @@ export function WorkspacePage() {
       workspaceApi.get(workspaceId),
       chipApi.list(workspaceId),
       chipApi.listRuns(workspaceId),
+      chipApi.listCatalog(),
     ])
-      .then(([workspace, chipResponse, runResponse]) => {
+      .then(([workspace, chipResponse, runResponse, catalogResponse]) => {
         if (cancelled) return;
         setWorkspaces((current) => {
           const exists = current.some((item) => item.id === workspace.id);
@@ -1032,6 +1348,7 @@ export function WorkspacePage() {
         setChips(chipResponse.chips);
         setEdges(nextEdges);
         setRuns(runResponse.runs);
+        setCatalogChips(catalogResponse.chips);
         setPositions(nextPositions);
         setSelectedChipIds([]);
         setSelectedEdgeId(null);
@@ -1249,58 +1566,49 @@ export function WorkspacePage() {
 
   function placeTool(toolKind: "extract" | "transform", point: Point) {
     if (!workspaceId) return;
-    let n = chips.filter((chip) => chip.kind === toolKind).length + 1;
-    let suggested = "";
-    do {
-      suggested = toolKind === "extract"
-        ? messages.workspace.untitledExtract(n)
-        : messages.workspace.untitledTransform(n);
-      n += 1;
-    } while (isChipNameTaken(suggested));
-    setChipNameError("");
-    setPlaceName(suggested);
     setPendingPlace({ kind: toolKind, point });
   }
 
-  function confirmPlaceChip(event?: FormEvent) {
-    event?.preventDefault();
-    if (!workspaceId || !pendingPlace) return;
-    const placedName = placeName.trim();
-    if (!placedName) return;
-    if (isChipNameTaken(placedName)) {
-      setChipNameError(messages.workspace.duplicateChipName);
-      return;
-    }
-    setChipNameError("");
-    const created: Chip = {
-      id: crypto.randomUUID(),
-      workspace_id: workspaceId,
-      name: placedName,
-      kind: pendingPlace.kind,
-      config: draftConfig(pendingPlace.kind),
-      revision: 1,
-      active: true,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    const nextPoint = clampPoint(pendingPlace.point);
-    const next = { ...positionsRef.current, [created.id]: nextPoint };
-    const nextChips = [created, ...chips];
+  function placeCatalogChips(catalogChipsToPlace: Chip[], origin: Point) {
+    if (catalogChipsToPlace.length === 0) return;
+    let nextPositions = { ...positionsRef.current };
+    let nextChips = [...chips];
+    const placedIds: string[] = [];
+    catalogChipsToPlace.forEach((catalogChip, index) => {
+      const nextPoint = clampPoint({
+        x: origin.x + index * (NODE_W + CHIP_PLACE_GAP),
+        y: origin.y,
+      });
+      nextPositions[catalogChip.id] = nextPoint;
+      if (!nextChips.some((chip) => chip.id === catalogChip.id)) {
+        nextChips = [catalogChip, ...nextChips];
+      }
+      placedIds.push(catalogChip.id);
+    });
     setChips(nextChips);
-    setPositions(next);
-    markDirty(nextChips, next, edges);
-    setError("");
-    setSelectedChipIds([created.id]);
+    setPositions(nextPositions);
+    markDirty(nextChips, nextPositions, edges);
+    setSelectedChipIds(placedIds);
     setSelectedEdgeId(null);
+    if (!workspaceId) return;
+    if (placedIds.length === 1) {
+      navigate(`/workspace/${workspaceId}/chips/${placedIds[0]}`);
+    } else {
+      navigate(`/workspace/${workspaceId}`);
+    }
+  }
+
+  function confirmCatalogChips(chipIds: string[]) {
+    if (!pendingPlace || chipIds.length === 0) return;
+    const picked = chipIds
+      .map((id) => catalogChips.find((chip) => chip.id === id))
+      .filter((chip): chip is Chip => Boolean(chip));
+    placeCatalogChips(picked, pendingPlace.point);
     setPendingPlace(null);
-    setPlaceName("");
-    navigate(`/workspace/${workspaceId}/chips/${created.id}`);
   }
 
   function cancelPlaceChip() {
     setPendingPlace(null);
-    setPlaceName("");
-    setChipNameError("");
   }
 
   function dropChipsLocally(chipIdsToDrop: string[]) {
@@ -1435,12 +1743,7 @@ export function WorkspacePage() {
             y: Math.round(canvasRef.current?.scrollTop ?? 0),
           },
         },
-        chips: nextChips.map((chip) => ({
-          id: chip.id,
-          name: chip.name,
-          kind: chip.kind,
-          config: chip.config,
-        })),
+        chips: nextChips.map((chip) => chip.id),
         edges: edges.map((edge) => {
           const fromPoint = positionsRef.current[edge.from_chip_id];
           const toPoint = positionsRef.current[edge.to_chip_id];
@@ -1532,10 +1835,11 @@ export function WorkspacePage() {
       setConnections(connectionResponse.connections);
       setDatasets(datasetResponse.datasets);
       if (!requestWorkspaceId) return;
-      const [workspace, chipResponse, runResponse] = await Promise.all([
+      const [workspace, chipResponse, runResponse, catalogResponse] = await Promise.all([
         workspaceApi.get(requestWorkspaceId),
         chipApi.list(requestWorkspaceId),
         chipApi.listRuns(requestWorkspaceId),
+        chipApi.listCatalog(),
       ]);
       if (refreshRequestRef.current !== requestId) return;
       setWorkspaces((current) => {
@@ -1545,6 +1849,7 @@ export function WorkspacePage() {
           : [...current, workspace];
       });
       setRuns(runResponse.runs);
+      setCatalogChips(catalogResponse.chips);
       if (dirtyRef.current) return;
       const nextPositions = positionsFrom(chipResponse.chips, workspace.layout);
       const nextEdges = workspace.edges ?? [];
@@ -1568,18 +1873,21 @@ export function WorkspacePage() {
   resetCanvasRef.current = resetCanvas;
 
   async function runChip() {
-    if (!selectedChip || selectedChip.kind === "load") return;
-    const requestWorkspaceId = selectedChip.workspace_id;
+    if (!selectedChip || selectedChip.kind === "load" || !workspaceId) return;
+    const requestWorkspaceId = workspaceId;
     setBusy(true);
     setError("");
     try {
       const wired = Boolean(incomingDataEdge(edges, selectedChip.id));
-      const request = selectedChip.kind === "transform" && inputDatasetId && !wired
-        ? { input_dataset_id: inputDatasetId }
-        : {};
+      const request: RunChipRequest = {
+        workspace_id: requestWorkspaceId,
+        ...(selectedChip.kind === "transform" && inputDatasetId && !wired
+          ? { input_dataset_id: inputDatasetId }
+          : {}),
+      };
       await chipApi.run(selectedChip.id, request);
       if (currentWorkspaceRef.current !== requestWorkspaceId) return;
-      const response = await chipApi.listRuns(selectedChip.workspace_id);
+      const response = await chipApi.listRuns(requestWorkspaceId);
       if (currentWorkspaceRef.current !== requestWorkspaceId) return;
       setRuns(response.runs);
     } catch (reason) {
@@ -1642,15 +1950,13 @@ export function WorkspacePage() {
 
   function onCanvasDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    const toolKind = event.dataTransfer.getData(TOOL_KIND);
-    if (toolKind !== "extract" && toolKind !== "transform") return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
-    placeTool(toolKind, {
-      x: grab.x - NODE_W / 2,
-      y: grab.y - NODE_H / 2,
-    });
+    const point = { x: grab.x - NODE_W / 2, y: grab.y - NODE_H / 2 };
+    const toolKind = event.dataTransfer.getData(TOOL_KIND);
+    if (toolKind !== "extract" && toolKind !== "transform") return;
+    placeTool(toolKind, point);
   }
 
   function onNodePointerDown(chip: Chip, event: ReactPointerEvent<HTMLDivElement>) {
@@ -1950,135 +2256,6 @@ export function WorkspacePage() {
     },
   ];
 
-  useEffect(() => {
-    if (!workspaceId) return;
-    const current = workspaces.find((item) => item.id === workspaceId);
-    if (!current?.folder_id) return;
-    const path: string[] = [];
-    let cursor: string | null = current.folder_id;
-    while (cursor) {
-      path.push(cursor);
-      cursor = folders.find((folder) => folder.id === cursor)?.parent_id ?? null;
-    }
-    setExpandedFolders((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const id of path) {
-        if (!next[id]) {
-          next[id] = true;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [workspaceId, workspaces, folders]);
-
-  const rootFolders = useMemo(
-    () => folders.filter((folder) => !folder.parent_id).sort((a, b) => a.name.localeCompare(b.name)),
-    [folders],
-  );
-  const rootWorkspaces = useMemo(
-    () =>
-      workspaces
-        .filter((workspace) => !workspace.folder_id)
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [workspaces],
-  );
-
-  function childFolders(parentId: string) {
-    return folders
-      .filter((folder) => folder.parent_id === parentId)
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  function childWorkspaces(folderId: string | null) {
-    return workspaces
-      .filter((workspace) => (folderId ? workspace.folder_id === folderId : !workspace.folder_id))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  function toggleFolder(id: string) {
-    setExpandedFolders((current) => ({ ...current, [id]: !current[id] }));
-  }
-
-  function renderWorkspaceRow(workspace: Workspace) {
-    const active = workspace.id === workspaceId;
-    return (
-      <button
-        key={workspace.id}
-        type="button"
-        className={cn(
-          "flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] outline-none transition-colors",
-          active
-            ? "bg-accent-subtle font-semibold text-accent"
-            : "text-text-secondary hover:bg-subtle hover:text-text",
-        )}
-        onClick={() => navigate(`/workspace/${workspace.id}`)}
-      >
-        <AppWindow className="size-3.5 shrink-0" aria-hidden="true" />
-        <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
-      </button>
-    );
-  }
-
-  function renderFolderTree(folder: WorkspaceFolder): ReactNode {
-    const open = Boolean(expandedFolders[folder.id]);
-    const selected = selectedFolderId === folder.id;
-    const nestedFolders = childFolders(folder.id);
-    const nestedWorkspaces = childWorkspaces(folder.id);
-    const hasChildren = nestedFolders.length > 0 || nestedWorkspaces.length > 0;
-
-    return (
-      <div key={folder.id} className="min-w-0">
-        <button
-          type="button"
-          className={cn(
-            "group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] outline-none transition-colors",
-            selected
-              ? "bg-accent-subtle font-semibold text-accent hover:bg-accent/15"
-              : "text-text hover:bg-subtle",
-          )}
-          aria-expanded={open}
-          onClick={() => {
-            setSelectedFolderId(folder.id);
-            if (hasChildren) toggleFolder(folder.id);
-          }}
-        >
-          <span className="size-3.5 shrink-0" aria-hidden="true">
-            {open ? <FolderOpen className="size-3.5" /> : <Folder className="size-3.5" />}
-          </span>
-          <span className="min-w-0 flex-1 truncate font-medium">{folder.name}</span>
-          {hasChildren ? (
-            <motion.span
-              className="size-3.5 shrink-0 text-text-tertiary"
-              animate={{ rotate: open ? 180 : 0 }}
-              transition={{ duration: 0.18 }}
-              aria-hidden="true"
-            >
-              <ChevronDown className="size-3.5" />
-            </motion.span>
-          ) : null}
-        </button>
-        <AnimatePresence initial={false}>
-          {open && hasChildren ? (
-            <motion.div
-              className="overflow-hidden"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2, ease: "easeInOut" }}
-            >
-              <div className="ml-3 space-y-0.5 border-l border-border py-0.5 pl-2">
-                {nestedFolders.map((child) => renderFolderTree(child))}
-                {nestedWorkspaces.map((workspace) => renderWorkspaceRow(workspace))}
-              </div>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-      </div>
-    );
-  }
-
   return (
     <>
     <SplitLayout
@@ -2087,59 +2264,55 @@ export function WorkspacePage() {
       defaultSizes={[layout.split.sidebar + 80]}
     >
       <aside className="workspace-rail flex h-full min-h-0 flex-col overflow-hidden">
-        <SplitLayout
-          direction="vertical"
-          className="workspace-rail-split min-h-0 flex-1"
-          defaultSizes={[236]}
-          defaultRatio={0.5}
-          minSize={148}
-        >
-          <section className="workspace-rail-card flex h-full min-h-0 flex-col overflow-hidden">
-            <header className="workspace-rail-card-head">
-              <div className="flex items-center justify-between gap-2">
-                <p className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
-                  <FolderOpen className="size-3.5" aria-hidden="true" />
-                  {messages.workspace.browser}
-                </p>
-                <span className="truncate rounded-full bg-subtle px-2 py-0.5 text-[10px] font-medium text-text-tertiary">
-                  {selectedFolderId
-                    ? folders.find((folder) => folder.id === selectedFolderId)?.name
-                    : messages.workspace.topLevel}
-                </span>
-              </div>
-              <div className="mt-2.5">
-                <Button className="w-full" type="button" onClick={() => setManageOpen(true)}>
-                  <Settings2 className="size-3.5" aria-hidden="true" />
-                  {messages.workspace.manageTitle}
-                </Button>
-              </div>
-            </header>
-            <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5">
-              <div className="workspace-rail-tree p-1">
-                {loading ? (
-                  <p className="px-2 py-3 text-[12px] text-text-tertiary">{messages.common.loading}</p>
-                ) : folders.length === 0 && workspaces.length === 0 ? (
-                  <p className="px-2 py-3 text-[12px] text-text-tertiary">{messages.workspace.noWorkspaces}</p>
-                ) : (
-                  <div className="space-y-0.5">
-                    {rootFolders.map((folder) => renderFolderTree(folder))}
-                    {rootWorkspaces.map((workspace) => renderWorkspaceRow(workspace))}
-                  </div>
-                )}
-              </div>
+        <section className="workspace-rail-card flex h-full min-h-0 flex-col overflow-hidden">
+          <SplitLayout
+            direction="vertical"
+            className="workspace-rail-split min-h-0 flex-1"
+            defaultSizes={[238]}
+            minSize={layout.split.minStack}
+            insetGutter
+          >
+            <div className="scroll-pane min-h-0 flex-1 overflow-y-auto p-3 pb-2">
+              <WorkspaceBrowserPanel
+                messages={messages}
+                folderPath={workspaceFolderPath}
+                workspaceName={workspaceName}
+                onManage={() => setManageOpen(true)}
+              />
             </div>
-          </section>
 
-          <section className="workspace-rail-card flex h-full min-h-0 flex-col overflow-hidden">
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="scroll-pane min-h-0 flex-1 overflow-y-auto p-3 pt-2">
               {error || pollError ? (
                 <div role="alert" className="mb-3 rounded-xl border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
                   {error || pollError}
                 </div>
               ) : null}
 
-              {selectedEdge ? (
-                <div className="flex flex-col gap-3">
+              <WorkspaceLayers
+                chips={chips}
+                edges={edges}
+                chipId={chipId}
+                selectedEdgeId={selectedEdgeId}
+                messages={messages}
+                emptyHint={workspaceId ? messages.workspace.emptyLayers : messages.workspace.noWorkspaces}
+                open={layersOpen}
+                onToggle={() => setLayersOpen((current) => !current)}
+                onSelectChip={(id) => {
+                  if (!workspaceId) return;
+                  setSelectedEdgeId(null);
+                  setSelectedChipIds([id]);
+                  navigate(`/workspace/${workspaceId}/chips/${id}`);
+                }}
+                onSelectEdge={(id) => {
+                  if (!workspaceId) return;
+                  setSelectedEdgeId(id);
+                  setSelectedChipIds([]);
+                  navigate(`/workspace/${workspaceId}`);
+                }}
+              />
+
+            {selectedEdge ? (
+              <div className="mt-4 flex flex-col gap-3 border-t border-border/70 pt-4">
                   <div className="flex items-center justify-between gap-2">
                     <h2 className="text-sm font-semibold text-text">{messages.workspace.edgeInspector}</h2>
                     <button
@@ -2173,8 +2346,10 @@ export function WorkspacePage() {
                     {messages.workspace.deleteEdge}
                   </Button>
                 </div>
-              ) : selectedChip ? (
-                <form className="flex flex-col gap-3" onSubmit={applyChip}>
+            ) : null}
+
+            {selectedChip ? (
+              <form className="mt-4 flex flex-col gap-3 border-t border-border/70 pt-4" onSubmit={applyChip}>
                   <div className="flex items-center justify-between gap-2">
                     <h2 className="text-sm font-semibold text-text">{messages.workspace.inspector}</h2>
                     <button
@@ -2336,32 +2511,12 @@ export function WorkspacePage() {
                       ) : null}
                     </div>
                   ) : null}
-                </form>
-              ) : (
-                <WorkspaceLayers
-                  chips={chips}
-                  edges={edges}
-                  chipId={chipId}
-                  selectedEdgeId={selectedEdgeId}
-                  messages={messages}
-                  emptyHint={workspaceId ? messages.workspace.emptyLayers : messages.workspace.noWorkspaces}
-                  onSelectChip={(id) => {
-                    if (!workspaceId) return;
-                    setSelectedEdgeId(null);
-                    setSelectedChipIds([id]);
-                    navigate(`/workspace/${workspaceId}/chips/${id}`);
-                  }}
-                  onSelectEdge={(id) => {
-                    if (!workspaceId) return;
-                    setSelectedEdgeId(id);
-                    setSelectedChipIds([]);
-                    navigate(`/workspace/${workspaceId}`);
-                  }}
-                />
-              )}
+              </form>
+            ) : null}
             </div>
+          </SplitLayout>
 
-            {workspaceId ? (
+          {workspaceId ? (
               <div className="workspace-rail-card-foot grid shrink-0 grid-cols-2 items-center gap-2">
                 <span className="col-start-2 justify-self-end rounded-full border border-border bg-subtle/70 px-2.5 py-1 text-[11px] font-semibold tabular-nums text-text-secondary">
                   {messages.workspace.version(selectedWorkspace?.version ?? 1)}
@@ -2388,8 +2543,7 @@ export function WorkspacePage() {
                 </Button>
               </div>
             ) : null}
-          </section>
-        </SplitLayout>
+        </section>
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -2697,62 +2851,21 @@ export function WorkspacePage() {
       </div>
     </SplitLayout>
 
-      <AppDialog
+      <ChipPickerDialog
         open={Boolean(pendingPlace)}
-        title={messages.workspace.nameChipTitle}
-        className="w-[min(24rem,94vw)]"
-        minWidth={320}
-        minHeight={180}
+        kind={pendingPlace?.kind ?? "extract"}
+        chips={catalogChips}
+        canvasChipIds={new Set(chips.map((chip) => chip.id))}
+        messages={messages}
         onClose={cancelPlaceChip}
-        footer={
-          <>
-            <Button type="button" variant="secondary" onClick={cancelPlaceChip}>
-              {messages.common.cancel}
-            </Button>
-            <Button
-              type="submit"
-              form="workspace-name-chip"
-              variant="primary"
-              disabled={!placeName.trim() || Boolean(chipNameError)}
-            >
-              {messages.workspace.nameChipConfirm}
-            </Button>
-          </>
-        }
-      >
-        <form id="workspace-name-chip" className="flex flex-col gap-3 p-4" onSubmit={confirmPlaceChip}>
-          <p className="text-xs text-text-secondary">{messages.workspace.nameChipHint}</p>
-          <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-            {messages.workspace.name}
-            <input
-              className={cn("field-control", chipNameError && "border-danger")}
-              value={placeName}
-              autoFocus
-              required
-              aria-invalid={Boolean(chipNameError)}
-              onChange={(event) => {
-                const next = event.target.value;
-                setPlaceName(next);
-                const trimmed = next.trim();
-                setChipNameError(
-                  trimmed && isChipNameTaken(trimmed)
-                    ? messages.workspace.duplicateChipName
-                    : "",
-                );
-              }}
-            />
-            {chipNameError ? (
-              <span className="text-[11px] font-normal text-danger">{chipNameError}</span>
-            ) : null}
-          </label>
-        </form>
-      </AppDialog>
+        onConfirm={confirmCatalogChips}
+      />
 
       <WorkspaceManageDialog
         open={manageOpen}
         folders={folders}
         workspaces={workspaces}
-        focusFolderId={selectedFolderId}
+        focusFolderId={selectedWorkspace?.folder_id ?? null}
         currentWorkspaceId={workspaceId}
         onClose={() => setManageOpen(false)}
         onFoldersChange={setFolders}

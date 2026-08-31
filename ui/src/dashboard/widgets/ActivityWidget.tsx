@@ -17,7 +17,7 @@ export function ActivityWidget() {
   }
 
   return (
-    <ul className="min-h-0 flex-1 divide-y divide-border overflow-auto">
+    <ul className="scroll-pane min-h-0 flex-1 divide-y divide-border overflow-auto">
       {model.feed.slice(0, 8).map((item) => (
         <li key={`${item.kind}-${item.id}`}>
           <FeedRow item={item} extra={<StatusPill value={item.status} />} />

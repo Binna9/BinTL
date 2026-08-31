@@ -1,13 +1,16 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { DragEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AppWindow,
+  Check,
   ChevronDown,
   Folder,
   FolderOpen,
   FolderPlus,
   Pencil,
   Trash2,
+  X,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { SplitLayout } from "@/components/SplitLayout";
@@ -24,6 +27,19 @@ type Editor =
   | { mode: "create-workspace"; parentId: string | null }
   | { mode: "edit-folder"; id: string }
   | { mode: "edit-workspace"; id: string };
+
+type DragPayload = { type: "folder"; id: string } | { type: "workspace"; id: string };
+
+const DRAG_MIME = "application/x-bintl-manage";
+const DRAFT_PREFIX = "draft:";
+
+function isDraftId(id: string) {
+  return id.startsWith(DRAFT_PREFIX);
+}
+
+function draftId() {
+  return `${DRAFT_PREFIX}${crypto.randomUUID()}`;
+}
 
 function folderPathLabel(
   folders: WorkspaceFolder[],
@@ -95,6 +111,71 @@ function isFolderDescendant(
   return false;
 }
 
+function foldersSnapshotEqual(a: WorkspaceFolder[], b: WorkspaceFolder[]) {
+  if (a.length !== b.length) return false;
+  const map = new Map(a.map((folder) => [folder.id, folder]));
+  return b.every(
+    (folder) => {
+      const other = map.get(folder.id);
+      return (
+        other &&
+        other.name === folder.name &&
+        (other.parent_id ?? null) === (folder.parent_id ?? null)
+      );
+    },
+  );
+}
+
+function workspacesSnapshotEqual(a: Workspace[], b: Workspace[]) {
+  if (a.length !== b.length) return false;
+  const map = new Map(a.map((workspace) => [workspace.id, workspace]));
+  return b.every((workspace) => {
+    const other = map.get(workspace.id);
+    return (
+      other &&
+      other.name === workspace.name &&
+      (other.description ?? "") === (workspace.description ?? "") &&
+      (other.folder_id ?? null) === (workspace.folder_id ?? null)
+    );
+  });
+}
+
+function folderDeleteOrder(folders: WorkspaceFolder[]) {
+  const ids = new Set(folders.map((folder) => folder.id));
+  const depth = (folder: WorkspaceFolder) => {
+    let level = 0;
+    let cursor = folder.parent_id;
+    while (cursor && ids.has(cursor)) {
+      level += 1;
+      cursor = folders.find((item) => item.id === cursor)?.parent_id ?? null;
+    }
+    return level;
+  };
+  return [...folders].sort((a, b) => depth(b) - depth(a));
+}
+
+function folderCreateOrder(folders: WorkspaceFolder[]) {
+  const ids = new Set(folders.map((folder) => folder.id));
+  const depth = (folder: WorkspaceFolder) => {
+    let level = 0;
+    let cursor = folder.parent_id;
+    while (cursor && ids.has(cursor)) {
+      level += 1;
+      cursor = folders.find((item) => item.id === cursor)?.parent_id ?? null;
+    }
+    return level;
+  };
+  return [...folders].sort((a, b) => depth(a) - depth(b));
+}
+
+function resolveFolderRef(
+  id: string | null,
+  idMap: Map<string, string>,
+): string | null {
+  if (!id) return null;
+  return idMap.get(id) ?? id;
+}
+
 export function WorkspaceManageDialog({
   open,
   folders,
@@ -117,6 +198,10 @@ export function WorkspaceManageDialog({
   onOpenWorkspace: (workspaceId: string) => void;
 }) {
   const { messages } = useLanguage();
+  const originalFoldersRef = useRef<WorkspaceFolder[]>([]);
+  const originalWorkspacesRef = useRef<Workspace[]>([]);
+  const [draftFolders, setDraftFolders] = useState<WorkspaceFolder[]>([]);
+  const [draftWorkspaces, setDraftWorkspaces] = useState<Workspace[]>([]);
   const [treeOpen, setTreeOpen] = useState<Record<string, boolean>>({});
   const [editor, setEditor] = useState<Editor | null>(null);
   const [name, setName] = useState("");
@@ -124,40 +209,55 @@ export function WorkspaceManageDialog({
   const [parentId, setParentId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [dragging, setDragging] = useState<DragPayload | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | "root" | null>(null);
 
   useEffect(() => {
     if (!open) {
       setEditor(null);
       setError("");
       setBusy(false);
+      setDragging(null);
+      setDropTarget(null);
       return;
     }
+    originalFoldersRef.current = folders;
+    originalWorkspacesRef.current = workspaces;
+    setDraftFolders(folders);
+    setDraftWorkspaces(workspaces);
     setTreeOpen(ancestorOpenMap(folders, focusFolderId));
-  }, [open, focusFolderId, folders]);
+  }, [open, focusFolderId, folders, workspaces]);
+
+  const isDirty = useMemo(
+    () =>
+      !foldersSnapshotEqual(originalFoldersRef.current, draftFolders) ||
+      !workspacesSnapshotEqual(originalWorkspacesRef.current, draftWorkspaces),
+    [draftFolders, draftWorkspaces],
+  );
 
   const rootFolders = useMemo(
     () =>
-      folders
+      draftFolders
         .filter((folder) => !folder.parent_id)
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [folders],
+    [draftFolders],
   );
   const rootWorkspaces = useMemo(
     () =>
-      workspaces
+      draftWorkspaces
         .filter((workspace) => !workspace.folder_id)
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [workspaces],
+    [draftWorkspaces],
   );
 
   function childFolders(parent: string) {
-    return folders
+    return draftFolders
       .filter((folder) => folder.parent_id === parent)
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   function childWorkspaces(folderId: string | null) {
-    return workspaces
+    return draftWorkspaces
       .filter((workspace) =>
         folderId ? workspace.folder_id === folderId : !workspace.folder_id,
       )
@@ -169,7 +269,7 @@ export function WorkspaceManageDialog({
     if (
       editor.mode === "edit-folder" &&
       next &&
-      (next === editor.id || isFolderDescendant(folders, next, editor.id))
+      (next === editor.id || isFolderDescendant(draftFolders, next, editor.id))
     ) {
       setError(messages.workspace.folderMoveIntoSelf);
       return;
@@ -194,12 +294,138 @@ export function WorkspaceManageDialog({
     setError("");
   }
 
+  function toggleCreateFolder(under: string | null) {
+    if (editor?.mode === "create-folder" && (editor.parentId ?? null) === under) {
+      cancelEditor();
+      return;
+    }
+    startCreateFolder(under);
+  }
+
+  function toggleCreateWorkspace(under: string | null) {
+    if (editor?.mode === "create-workspace" && (editor.parentId ?? null) === under) {
+      cancelEditor();
+      return;
+    }
+    startCreateWorkspace(under);
+  }
+
+  function parseDragPayload(event: DragEvent): DragPayload | null {
+    const raw = event.dataTransfer.getData(DRAG_MIME);
+    if (!raw) return dragging;
+    try {
+      const parsed = JSON.parse(raw) as DragPayload;
+      if (parsed?.type === "folder" || parsed?.type === "workspace") return parsed;
+    } catch {
+      return dragging;
+    }
+    return dragging;
+  }
+
+  function canDropOnFolder(folderId: string, payload: DragPayload | null) {
+    if (!payload) return false;
+    if (payload.type === "workspace") return true;
+    if (payload.id === folderId) return false;
+    return !isFolderDescendant(draftFolders, folderId, payload.id);
+  }
+
+  function canDropOnRoot(payload: DragPayload | null) {
+    if (!payload) return false;
+    if (payload.type === "workspace") return true;
+    const folder = draftFolders.find((item) => item.id === payload.id);
+    return Boolean(folder?.parent_id);
+  }
+
+  function moveFolder(folderId: string, newParentId: string | null) {
+    const folder = draftFolders.find((item) => item.id === folderId);
+    if (!folder || (folder.parent_id ?? null) === newParentId) return;
+    if (
+      newParentId &&
+      (newParentId === folderId || isFolderDescendant(draftFolders, newParentId, folderId))
+    ) {
+      setError(messages.workspace.folderMoveIntoSelf);
+      return;
+    }
+    if (folderNameTaken(draftFolders, folder.name, newParentId, folderId)) {
+      setError(messages.workspace.folderNameTaken);
+      return;
+    }
+    setDraftFolders(
+      draftFolders.map((item) =>
+        item.id === folderId ? { ...item, parent_id: newParentId } : item,
+      ),
+    );
+    if (editor?.mode === "edit-folder" && editor.id === folderId) {
+      setParentId(newParentId);
+    }
+    if (newParentId) {
+      setTreeOpen((current) => ({ ...current, [newParentId]: true }));
+    }
+    if (error) setError("");
+  }
+
+  function moveWorkspace(workspaceId: string, newFolderId: string | null) {
+    const workspace = draftWorkspaces.find((item) => item.id === workspaceId);
+    if (!workspace || (workspace.folder_id ?? null) === newFolderId) return;
+    setDraftWorkspaces(
+      draftWorkspaces.map((item) =>
+        item.id === workspaceId ? { ...item, folder_id: newFolderId } : item,
+      ),
+    );
+    if (editor?.mode === "edit-workspace" && editor.id === workspaceId) {
+      setParentId(newFolderId);
+    }
+    if (newFolderId) {
+      setTreeOpen((current) => ({ ...current, [newFolderId]: true }));
+    }
+    if (error) setError("");
+  }
+
+  function handleDrop(targetFolderId: string | null, event: DragEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const payload = parseDragPayload(event);
+    setDropTarget(null);
+    setDragging(null);
+    if (!payload) return;
+    if (payload.type === "folder") {
+      moveFolder(payload.id, targetFolderId);
+      return;
+    }
+    moveWorkspace(payload.id, targetFolderId);
+  }
+
+  function bindDropZone(target: string | "root", folderId: string | null) {
+    return {
+      onDragOver: (event: DragEvent) => {
+        const payload = dragging ?? parseDragPayload(event);
+        const allowed = folderId ? canDropOnFolder(folderId, payload) : canDropOnRoot(payload);
+        if (!allowed) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "move";
+        setDropTarget(target);
+      },
+      onDragLeave: (event: DragEvent) => {
+        const next = event.relatedTarget as Node | null;
+        if (next && event.currentTarget.contains(next)) return;
+        setDropTarget((current) => (current === target ? null : current));
+      },
+      onDrop: (event: DragEvent) => {
+        handleDrop(folderId, event);
+      },
+    };
+  }
+
   function startEditFolder(folder: WorkspaceFolder) {
     setEditor({ mode: "edit-folder", id: folder.id });
     setName(folder.name);
     setDescription("");
     setParentId(folder.parent_id);
-    setTreeOpen((current) => ({ ...current, ...ancestorOpenMap(folders, folder.parent_id) }));
+    setTreeOpen((current) => ({
+      ...current,
+      ...ancestorOpenMap(draftFolders, folder.parent_id),
+    }));
     setError("");
   }
 
@@ -210,7 +436,7 @@ export function WorkspaceManageDialog({
     setParentId(workspace.folder_id ?? null);
     setTreeOpen((current) => ({
       ...current,
-      ...ancestorOpenMap(folders, workspace.folder_id ?? null),
+      ...ancestorOpenMap(draftFolders, workspace.folder_id ?? null),
     }));
     setError("");
   }
@@ -223,17 +449,16 @@ export function WorkspaceManageDialog({
   const editingFolderId = editor?.mode === "edit-folder" ? editor.id : undefined;
   const nameConflict =
     editor?.mode === "create-folder" || editor?.mode === "edit-folder"
-      ? folderNameTaken(folders, name, parentId, editingFolderId)
+      ? folderNameTaken(draftFolders, name, parentId, editingFolderId)
       : editor?.mode === "create-workspace" || editor?.mode === "edit-workspace"
         ? workspaceNameTaken(
-            workspaces,
+            draftWorkspaces,
             name,
             editor.mode === "edit-workspace" ? editor.id : undefined,
           )
         : false;
 
-  async function submitEditor(event: FormEvent) {
-    event.preventDefault();
+  function commitEditor() {
     if (!editor || busy) return;
     const trimmed = name.trim();
     if (!trimmed || nameConflict) {
@@ -246,55 +471,165 @@ export function WorkspaceManageDialog({
       }
       return;
     }
+
+    const now = new Date().toISOString();
+    const ownerId =
+      draftFolders[0]?.owner_user_id ?? draftWorkspaces[0]?.owner_user_id ?? "";
+
+    if (editor.mode === "create-folder") {
+      const created: WorkspaceFolder = {
+        id: draftId(),
+        owner_user_id: ownerId,
+        parent_id: parentId,
+        name: trimmed,
+        created_at: now,
+        updated_at: now,
+      };
+      setDraftFolders([...draftFolders, created]);
+      setTreeOpen((current) => ({
+        ...current,
+        ...(parentId ? { [parentId]: true } : {}),
+        [created.id]: true,
+      }));
+    } else if (editor.mode === "edit-folder") {
+      if (
+        parentId &&
+        (parentId === editor.id || isFolderDescendant(draftFolders, parentId, editor.id))
+      ) {
+        setError(messages.workspace.folderMoveIntoSelf);
+        return;
+      }
+      setDraftFolders(
+        draftFolders.map((folder) =>
+          folder.id === editor.id
+            ? { ...folder, name: trimmed, parent_id: parentId, updated_at: now }
+            : folder,
+        ),
+      );
+    } else if (editor.mode === "create-workspace") {
+      const created: Workspace = {
+        id: draftId(),
+        name: trimmed,
+        description: description.trim() || null,
+        layout: {},
+        version: 0,
+        created_at: now,
+        updated_at: now,
+        folder_id: parentId,
+      };
+      setDraftWorkspaces([...draftWorkspaces, created]);
+      if (parentId) {
+        setTreeOpen((current) => ({ ...current, [parentId]: true }));
+      }
+    } else {
+      setDraftWorkspaces(
+        draftWorkspaces.map((workspace) =>
+          workspace.id === editor.id
+            ? {
+                ...workspace,
+                name: trimmed,
+                description: description.trim(),
+                folder_id: parentId,
+                updated_at: now,
+              }
+            : workspace,
+        ),
+      );
+    }
+    cancelEditor();
+  }
+
+  async function saveDraft() {
+    if (!isDirty || busy) return;
     setBusy(true);
     setError("");
     try {
-      if (editor.mode === "create-folder") {
+      const originalFolders = originalFoldersRef.current;
+      const originalWorkspaces = originalWorkspacesRef.current;
+      const folderIdMap = new Map<string, string>();
+      let nextFolders = [...draftFolders];
+      let nextWorkspaces = [...draftWorkspaces];
+
+      const draftFolderIds = new Set(draftFolders.map((folder) => folder.id));
+      const foldersToDelete = originalFolders.filter((folder) => !draftFolderIds.has(folder.id));
+      for (const folder of folderDeleteOrder(foldersToDelete)) {
+        if (isDraftId(folder.id)) continue;
+        await workspaceApi.deleteFolder(folder.id);
+      }
+
+      const foldersToCreate = draftFolders.filter((folder) => isDraftId(folder.id));
+      for (const folder of folderCreateOrder(foldersToCreate)) {
         const created = await workspaceApi.createFolder({
-          name: trimmed,
-          parent_id: parentId,
+          name: folder.name,
+          parent_id: resolveFolderRef(folder.parent_id, folderIdMap),
         });
-        onFoldersChange([...folders, created]);
-        setTreeOpen((current) => ({
-          ...current,
-          ...(parentId ? { [parentId]: true } : {}),
-          [created.id]: true,
-        }));
-      } else if (editor.mode === "edit-folder") {
+        folderIdMap.set(folder.id, created.id);
+        nextFolders = nextFolders.map((item) => (item.id === folder.id ? created : item));
+      }
+
+      for (const folder of nextFolders) {
+        if (isDraftId(folder.id)) continue;
+        const original = originalFolders.find((item) => item.id === folder.id);
+        const parentIdResolved = resolveFolderRef(folder.parent_id, folderIdMap);
         if (
-          parentId &&
-          (parentId === editor.id || isFolderDescendant(folders, parentId, editor.id))
+          !original ||
+          original.name === folder.name &&
+            (original.parent_id ?? null) === (parentIdResolved ?? null)
         ) {
-          setError(messages.workspace.folderMoveIntoSelf);
-          return;
+          continue;
         }
-        const updated = await workspaceApi.updateFolder(editor.id, {
-          name: trimmed,
-          parent_id: parentId,
+        const updated = await workspaceApi.updateFolder(folder.id, {
+          name: folder.name,
+          parent_id: parentIdResolved,
         });
-        onFoldersChange(folders.map((folder) => (folder.id === updated.id ? updated : folder)));
-      } else if (editor.mode === "create-workspace") {
+        nextFolders = nextFolders.map((item) => (item.id === updated.id ? updated : item));
+      }
+
+      const draftWorkspaceIds = new Set(draftWorkspaces.map((workspace) => workspace.id));
+      const workspacesToDelete = originalWorkspaces.filter(
+        (workspace) => !draftWorkspaceIds.has(workspace.id),
+      );
+      for (const workspace of workspacesToDelete) {
+        if (isDraftId(workspace.id)) continue;
+        await workspaceApi.delete(workspace.id);
+      }
+
+      for (const workspace of draftWorkspaces.filter((item) => isDraftId(item.id))) {
         const created = await workspaceApi.create({
-          name: trimmed,
-          description: description.trim() || undefined,
-          folder_id: parentId,
+          name: workspace.name,
+          description: workspace.description?.trim() || undefined,
+          folder_id: resolveFolderRef(workspace.folder_id ?? null, folderIdMap),
         });
-        onWorkspacesChange([...workspaces, created]);
-        if (parentId) {
-          setTreeOpen((current) => ({ ...current, [parentId]: true }));
-        }
-        onOpenWorkspace(created.id);
-      } else {
-        const updated = await workspaceApi.update(editor.id, {
-          name: trimmed,
-          description: description.trim(),
-          folder_id: parentId,
-        });
-        onWorkspacesChange(
-          workspaces.map((workspace) => (workspace.id === updated.id ? updated : workspace)),
+        nextWorkspaces = nextWorkspaces.map((item) =>
+          item.id === workspace.id ? created : item,
         );
       }
-      cancelEditor();
+
+      for (const workspace of nextWorkspaces) {
+        if (isDraftId(workspace.id)) continue;
+        const original = originalWorkspaces.find((item) => item.id === workspace.id);
+        const folderRef = resolveFolderRef(workspace.folder_id ?? null, folderIdMap);
+        if (
+          !original ||
+          (original.name === workspace.name &&
+            (original.description ?? "") === (workspace.description ?? "") &&
+            (original.folder_id ?? null) === (folderRef ?? null))
+        ) {
+          continue;
+        }
+        const updated = await workspaceApi.update(workspace.id, {
+          name: workspace.name,
+          description: workspace.description ?? "",
+          folder_id: folderRef,
+        });
+        nextWorkspaces = nextWorkspaces.map((item) =>
+          item.id === updated.id ? updated : item,
+        );
+      }
+
+      onFoldersChange(nextFolders);
+      onWorkspacesChange(nextWorkspaces);
+      onClose();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       if (message.includes("already exists")) {
@@ -307,6 +642,49 @@ export function WorkspaceManageDialog({
     }
   }
 
+  const saveDraftRef = useRef(saveDraft);
+  saveDraftRef.current = saveDraft;
+
+  const triggerSaveRef = useRef<() => void>(() => {});
+  triggerSaveRef.current = () => {
+    if (busy) return;
+    if (editor) {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      if (nameConflict) {
+        setError(
+          editor.mode === "create-folder" || editor.mode === "edit-folder"
+            ? messages.workspace.folderNameTaken
+            : messages.workspace.workspaceNameTaken,
+        );
+        return;
+      }
+      flushSync(() => commitEditor());
+    }
+    void saveDraftRef.current();
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      const mod = event.ctrlKey || event.metaKey;
+      if (mod && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        triggerSaveRef.current();
+        return;
+      }
+      if (event.key !== "Enter" || event.shiftKey) return;
+      if (event.target instanceof HTMLTextAreaElement) return;
+      event.preventDefault();
+      event.stopPropagation();
+      triggerSaveRef.current();
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [open]);
+
   async function removeFolder(folder: WorkspaceFolder) {
     const confirmed = await showConfirm(
       messages.workspace.deleteFolderTitle,
@@ -314,34 +692,26 @@ export function WorkspaceManageDialog({
       { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed) return;
-    setBusy(true);
-    setError("");
-    try {
-      await workspaceApi.deleteFolder(folder.id);
-      const dropIds = new Set<string>();
-      const queue = [folder.id];
-      while (queue.length > 0) {
-        const id = queue.pop()!;
-        dropIds.add(id);
-        for (const child of folders) {
-          if (child.parent_id === id) queue.push(child.id);
-        }
+
+    const dropIds = new Set<string>();
+    const queue = [folder.id];
+    while (queue.length > 0) {
+      const id = queue.pop()!;
+      dropIds.add(id);
+      for (const child of draftFolders) {
+        if (child.parent_id === id) queue.push(child.id);
       }
-      onFoldersChange(folders.filter((item) => !dropIds.has(item.id)));
-      onWorkspacesChange(
-        workspaces.map((workspace) =>
-          workspace.folder_id && dropIds.has(workspace.folder_id)
-            ? { ...workspace, folder_id: null }
-            : workspace,
-        ),
-      );
-      if (editor && "id" in editor && dropIds.has(editor.id)) cancelEditor();
-      if (parentId && dropIds.has(parentId)) setParentId(null);
-    } catch (reason) {
-      setError(`${messages.workspace.deleteFolderError}: ${String(reason)}`);
-    } finally {
-      setBusy(false);
     }
+    setDraftFolders(draftFolders.filter((item) => !dropIds.has(item.id)));
+    setDraftWorkspaces(
+      draftWorkspaces.map((workspace) =>
+        workspace.folder_id && dropIds.has(workspace.folder_id)
+          ? { ...workspace, folder_id: null }
+          : workspace,
+      ),
+    );
+    if (editor && "id" in editor && dropIds.has(editor.id)) cancelEditor();
+    if (parentId && dropIds.has(parentId)) setParentId(null);
   }
 
   async function removeWorkspace(workspace: Workspace) {
@@ -351,21 +721,26 @@ export function WorkspaceManageDialog({
       { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed) return;
-    setBusy(true);
-    setError("");
-    try {
-      await workspaceApi.delete(workspace.id);
-      const next = workspaces.filter((item) => item.id !== workspace.id);
-      onWorkspacesChange(next);
-      if (editor?.mode === "edit-workspace" && editor.id === workspace.id) cancelEditor();
-      if (currentWorkspaceId === workspace.id) {
-        onOpenWorkspace(next[0]?.id ?? "");
-      }
-    } catch (reason) {
-      setError(`${messages.workspace.deleteWorkspaceError}: ${String(reason)}`);
-    } finally {
-      setBusy(false);
+
+    const next = draftWorkspaces.filter((item) => item.id !== workspace.id);
+    setDraftWorkspaces(next);
+    if (editor?.mode === "edit-workspace" && editor.id === workspace.id) cancelEditor();
+    if (currentWorkspaceId === workspace.id && !isDraftId(workspace.id)) {
+      onOpenWorkspace(next.find((item) => !isDraftId(item.id))?.id ?? "");
     }
+  }
+
+  async function requestClose() {
+    if (busy) return;
+    if (isDirty) {
+      const confirmed = await showConfirm(
+        messages.workspace.manageDiscardTitle,
+        messages.workspace.manageDiscardMessage,
+        { tone: "danger", confirmLabel: messages.common.close },
+      );
+      if (!confirmed) return;
+    }
+    onClose();
   }
 
   function rowActions(children: ReactNode) {
@@ -408,7 +783,10 @@ export function WorkspaceManageDialog({
     const selected = Boolean(editor) && parentId === folder.id;
     const banned =
       editor?.mode === "edit-folder" &&
-      (folder.id === editor.id || isFolderDescendant(folders, folder.id, editor.id));
+      (folder.id === editor.id || isFolderDescendant(draftFolders, folder.id, editor.id));
+    const isDragging = dragging?.type === "folder" && dragging.id === folder.id;
+    const dropActive = dropTarget === folder.id;
+    const isDraft = isDraftId(folder.id);
 
     return (
       <div key={folder.id} className="min-w-0">
@@ -420,11 +798,16 @@ export function WorkspaceManageDialog({
               : selected
                 ? "bg-accent-subtle font-semibold text-accent hover:bg-accent/15"
                 : "text-text hover:bg-subtle",
+            isDragging && "opacity-45",
+            dropActive && "bg-accent/10 ring-1 ring-inset ring-accent/45",
+            isDraft && "border border-dashed border-accent/35",
           )}
+          {...bindDropZone(folder.id, folder.id)}
         >
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left outline-none"
+            draggable={!busy && !banned}
+            className="flex min-w-0 flex-1 cursor-grab items-center gap-2 rounded-lg px-1 py-1 text-left outline-none active:cursor-grabbing"
             aria-expanded={openNode}
             disabled={banned}
             onClick={() => {
@@ -435,6 +818,20 @@ export function WorkspaceManageDialog({
               if (hasChildren) {
                 setTreeOpen((current) => ({ ...current, [folder.id]: !current[folder.id] }));
               }
+            }}
+            onDragStart={(event) => {
+              if (busy || banned) {
+                event.preventDefault();
+                return;
+              }
+              const payload: DragPayload = { type: "folder", id: folder.id };
+              event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
+              event.dataTransfer.effectAllowed = "move";
+              setDragging(payload);
+            }}
+            onDragEnd={() => {
+              setDragging(null);
+              setDropTarget(null);
             }}
           >
             <span className="size-3.5 shrink-0" aria-hidden="true">
@@ -464,10 +861,10 @@ export function WorkspaceManageDialog({
           ) : null}
           {rowActions(
             <>
-              {iconButton(messages.workspace.newFolder, () => startCreateFolder(folder.id), (
+              {iconButton(messages.workspace.newFolder, () => toggleCreateFolder(folder.id), (
                 <FolderPlus className="size-3.5" aria-hidden="true" />
               ))}
-              {iconButton(messages.workspace.newWorkspace, () => startCreateWorkspace(folder.id), (
+              {iconButton(messages.workspace.newWorkspace, () => toggleCreateWorkspace(folder.id), (
                 <AppWindow className="size-3.5" aria-hidden="true" />
               ))}
               {iconButton(messages.common.edit, () => startEditFolder(folder), (
@@ -503,15 +900,40 @@ export function WorkspaceManageDialog({
   }
 
   function renderWorkspaceNode(workspace: Workspace) {
+    const isDragging = dragging?.type === "workspace" && dragging.id === workspace.id;
+    const isDraft = isDraftId(workspace.id);
+
     return (
       <div
         key={workspace.id}
-        className="group flex w-full min-w-0 items-center gap-1 rounded-lg px-1 py-0.5 text-[12px] text-text-secondary transition-colors hover:bg-subtle hover:text-text"
+        className={cn(
+          "group flex w-full min-w-0 items-center gap-1 rounded-lg px-1 py-0.5 text-[12px] text-text-secondary transition-colors hover:bg-subtle hover:text-text",
+          isDragging && "opacity-45",
+          isDraft && "border border-dashed border-accent/35",
+        )}
       >
         <button
           type="button"
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left outline-none"
-          onClick={() => onOpenWorkspace(workspace.id)}
+          draggable={!busy}
+          className="flex min-w-0 flex-1 cursor-grab items-center gap-2 rounded-lg px-1 py-1 text-left outline-none active:cursor-grabbing"
+          onClick={() => {
+            if (isDraft) return;
+            onOpenWorkspace(workspace.id);
+          }}
+          onDragStart={(event) => {
+            if (busy) {
+              event.preventDefault();
+              return;
+            }
+            const payload: DragPayload = { type: "workspace", id: workspace.id };
+            event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
+            event.dataTransfer.effectAllowed = "move";
+            setDragging(payload);
+          }}
+          onDragEnd={() => {
+            setDragging(null);
+            setDropTarget(null);
+          }}
         >
           <AppWindow className="size-3.5 shrink-0" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
@@ -544,6 +966,118 @@ export function WorkspaceManageDialog({
             ? messages.workspace.editWorkspaceTitle
             : "";
 
+  const rootDropActive = dropTarget === "root";
+
+  function renderTree(className?: string) {
+    return (
+      <div
+        className={cn(
+          "scroll-pane h-full min-h-0 overflow-y-auto rounded-xl border border-border bg-subtle/30 p-2",
+          className,
+          rootDropActive && "ring-1 ring-inset ring-accent/50 bg-accent/8",
+        )}
+        {...bindDropZone("root", null)}
+      >
+        {rootFolders.length === 0 && rootWorkspaces.length === 0 ? (
+          <p className="px-2 py-3 text-[12px] text-text-tertiary">{messages.workspace.noWorkspaces}</p>
+        ) : (
+          <div className="space-y-0.5">
+            {rootFolders.map((folder) => renderFolderNode(folder))}
+            {rootWorkspaces.map((workspace) => renderWorkspaceNode(workspace))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderEditorForm() {
+    if (!editor) return null;
+    return (
+      <section className="scroll-pane flex h-full min-h-0 flex-col gap-3 overflow-y-auto rounded-xl border border-border bg-surface p-3">
+        <div className="flex shrink-0 items-start justify-between gap-2">
+          <h3 className="text-sm font-semibold text-text">{editorTitle}</h3>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              className="grid size-7 place-items-center rounded-lg text-text-tertiary outline-none transition-colors hover:bg-subtle hover:text-text"
+              aria-label={messages.common.cancel}
+              title={messages.common.cancel}
+              disabled={busy}
+              onClick={cancelEditor}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="grid size-7 place-items-center rounded-lg text-accent outline-none transition-colors hover:bg-accent-subtle disabled:opacity-40"
+              aria-label={messages.workspace.applyDraft}
+              title={messages.workspace.applyDraft}
+              disabled={busy || !name.trim() || nameConflict}
+              onClick={commitEditor}
+            >
+              <Check className="size-4" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+        <FormField
+          label={
+            editor.mode === "create-folder" || editor.mode === "edit-folder"
+              ? messages.workspace.folderName
+              : messages.workspace.name
+          }
+        >
+          <input
+            className="field-control"
+            value={name}
+            autoFocus
+            required
+            disabled={busy}
+            onChange={(event) => {
+              setName(event.target.value);
+              if (error) setError("");
+            }}
+          />
+        </FormField>
+        {editor.mode === "create-workspace" || editor.mode === "edit-workspace" ? (
+          <FormField label={messages.workspace.workspaceDescription}>
+            <textarea
+              className="field-control min-h-12 resize-y"
+              value={description}
+              disabled={busy}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </FormField>
+        ) : null}
+        <FormField label={messages.workspace.createParent} hint={messages.workspace.createParentHint}>
+          <div className="flex items-center justify-between gap-2 rounded-lg bg-subtle px-2.5 py-1.5 text-[11px] text-text-secondary">
+            <p className="min-w-0 truncate">
+              <span className="font-medium text-text">{messages.workspace.createLocation}: </span>
+              {folderPathLabel(draftFolders, parentId, messages.workspace.topLevel)}
+            </p>
+            {parentId ? (
+              <button
+                type="button"
+                className="shrink-0 text-[11px] font-medium text-accent outline-none hover:underline"
+                disabled={busy}
+                onClick={() => selectParent(null)}
+              >
+                {messages.workspace.topLevel}
+              </button>
+            ) : null}
+          </div>
+        </FormField>
+        {error || nameConflict ? (
+          <p role="alert" className="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
+            {error ||
+              (editor.mode === "create-folder" || editor.mode === "edit-folder"
+                ? messages.workspace.folderNameTaken
+                : messages.workspace.workspaceNameTaken)}
+          </p>
+        ) : null}
+      </section>
+    );
+  }
+
   return (
     <AppDialog
       open={open}
@@ -552,128 +1086,87 @@ export function WorkspaceManageDialog({
       className="h-[min(48rem,92vh)] w-[min(42rem,94vw)]"
       minWidth={420}
       minHeight={400}
-      onClose={onClose}
+      onClose={() => void requestClose()}
       footer={
-        <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>
-          {messages.common.close}
-        </Button>
+        <div className="flex w-full items-center justify-between gap-2">
+          <p className="text-[11px] text-text-tertiary">
+            {isDirty ? messages.workspace.manageUnsaved : messages.workspace.manageSavedHint}
+          </p>
+          <Button
+            type="button"
+            variant="primary"
+            disabled={busy || !isDirty}
+            onClick={() => triggerSaveRef.current()}
+          >
+            {busy ? messages.common.saving : messages.common.save}
+          </Button>
+        </div>
       }
     >
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4">
-        <p className="shrink-0 text-xs text-text-secondary">{messages.workspace.manageHint}</p>
+        <p className="shrink-0 text-xs text-text-secondary">
+          {messages.workspace.manageHint} {messages.workspace.dragToMove}
+        </p>
         <div className="flex shrink-0 flex-wrap gap-2">
-          <Button type="button" disabled={busy} onClick={() => startCreateFolder(null)}>
+          <Button
+            type="button"
+            variant={editor?.mode === "create-folder" && editor.parentId === null ? "primary" : "secondary"}
+            disabled={busy}
+            onClick={() => toggleCreateFolder(null)}
+          >
             <FolderPlus className="size-3.5" aria-hidden="true" />
             {messages.workspace.newFolder}
           </Button>
-          <Button type="button" disabled={busy} onClick={() => startCreateWorkspace(null)}>
+          <Button
+            type="button"
+            variant={editor?.mode === "create-workspace" && editor.parentId === null ? "primary" : "secondary"}
+            disabled={busy}
+            onClick={() => toggleCreateWorkspace(null)}
+          >
             <AppWindow className="size-3.5" aria-hidden="true" />
             {messages.workspace.newWorkspace}
           </Button>
         </div>
 
-        {editor ? (
-          <SplitLayout
-            direction="vertical"
-            className="min-h-0 flex-1"
-            defaultSizes={[240]}
-            defaultRatio={0.55}
-            minSize={120}
-          >
-            <div className="h-full min-h-0 overflow-y-auto rounded-xl border border-border bg-subtle/30 p-2">
-              {rootFolders.length === 0 && rootWorkspaces.length === 0 ? (
-                <p className="px-2 py-3 text-[12px] text-text-tertiary">{messages.workspace.noWorkspaces}</p>
-              ) : (
-                <div className="space-y-0.5">
-                  {rootFolders.map((folder) => renderFolderNode(folder))}
-                  {rootWorkspaces.map((workspace) => renderWorkspaceNode(workspace))}
-                </div>
-              )}
-            </div>
-            <form
-              className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto rounded-xl border border-border bg-surface p-3"
-              onSubmit={(event) => void submitEditor(event)}
-            >
-              <h3 className="shrink-0 text-sm font-semibold text-text">{editorTitle}</h3>
-              <FormField
-                label={
-                  editor.mode === "create-folder" || editor.mode === "edit-folder"
-                    ? messages.workspace.folderName
-                    : messages.workspace.name
-                }
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <AnimatePresence initial={false} mode="wait">
+            {editor ? (
+              <motion.div
+                key="manage-split"
+                className="flex h-full min-h-0 flex-col"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.18, ease: "easeInOut" }}
               >
-                <input
-                  className="field-control"
-                  value={name}
-                  autoFocus
-                  required
-                  disabled={busy}
-                  onChange={(event) => {
-                    setName(event.target.value);
-                    if (error) setError("");
-                  }}
-                />
-              </FormField>
-              {editor.mode === "create-workspace" || editor.mode === "edit-workspace" ? (
-                <FormField label={messages.workspace.workspaceDescription}>
-                  <textarea
-                    className="field-control min-h-12 resize-y"
-                    value={description}
-                    disabled={busy}
-                    onChange={(event) => setDescription(event.target.value)}
-                  />
-                </FormField>
-              ) : null}
-              <FormField label={messages.workspace.createParent} hint={messages.workspace.createParentHint}>
-                <div className="flex items-center justify-between gap-2 rounded-lg bg-subtle px-2.5 py-1.5 text-[11px] text-text-secondary">
-                  <p className="min-w-0 truncate">
-                    <span className="font-medium text-text">{messages.workspace.createLocation}: </span>
-                    {folderPathLabel(folders, parentId, messages.workspace.topLevel)}
-                  </p>
-                  {parentId ? (
-                    <button
-                      type="button"
-                      className="shrink-0 text-[11px] font-medium text-accent outline-none hover:underline"
-                      disabled={busy}
-                      onClick={() => selectParent(null)}
-                    >
-                      {messages.workspace.topLevel}
-                    </button>
-                  ) : null}
-                </div>
-              </FormField>
-              {error || nameConflict ? (
-                <p role="alert" className="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
-                  {error ||
-                    (editor.mode === "create-folder" || editor.mode === "edit-folder"
-                      ? messages.workspace.folderNameTaken
-                      : messages.workspace.workspaceNameTaken)}
-                </p>
-              ) : null}
-              <div className="mt-auto flex shrink-0 justify-end gap-2 pt-1">
-                <Button type="button" variant="secondary" disabled={busy} onClick={cancelEditor}>
-                  {messages.common.cancel}
-                </Button>
-                <Button type="submit" variant="primary" disabled={busy || !name.trim() || nameConflict}>
-                  {busy ? messages.common.saving : messages.workspace.createSave}
-                </Button>
-              </div>
-            </form>
-          </SplitLayout>
-        ) : (
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-subtle/30 p-2">
-            {rootFolders.length === 0 && rootWorkspaces.length === 0 ? (
-              <p className="px-2 py-3 text-[12px] text-text-tertiary">{messages.workspace.noWorkspaces}</p>
+                <SplitLayout
+                  direction="vertical"
+                  className="min-h-0 flex-1"
+                  defaultSizes={[240]}
+                  defaultRatio={0.55}
+                  minSize={120}
+                  insetGutter
+                >
+                  {renderTree()}
+                  {renderEditorForm()}
+                </SplitLayout>
+              </motion.div>
             ) : (
-              <div className="space-y-0.5">
-                {rootFolders.map((folder) => renderFolderNode(folder))}
-                {rootWorkspaces.map((workspace) => renderWorkspaceNode(workspace))}
-              </div>
+              <motion.div
+                key="manage-tree"
+                className="h-full min-h-0"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.18, ease: "easeInOut" }}
+              >
+                {renderTree("h-full")}
+              </motion.div>
             )}
-          </div>
-        )}
+          </AnimatePresence>
+        </div>
 
-        {!editor && error ? (
+        {error && !editor ? (
           <p role="alert" className="shrink-0 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
             {error}
           </p>

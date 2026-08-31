@@ -364,7 +364,7 @@ export function ConnectionsPage() {
         <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.sidebar]}>
           <aside className="flex h-full min-h-0 flex-col overflow-hidden">
             <PaneHeader title={messages.common.connections} meta={messages.common.count(connections.length)} />
-            <div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+            <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
               {connections.length === 0 ? (
                 <p className="p-4 text-xs text-text-tertiary">{messages.empty.connections}</p>
               ) : (
@@ -448,7 +448,7 @@ export function ConnectionsPage() {
             <SplitLayout className="h-full min-w-0" defaultSizes={[layout.split.catalog]}>
               <aside className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
                 <PaneHeader title={messages.common.catalog} />
-                <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="scroll-pane min-h-0 flex-1 overflow-y-auto">
                   <CatalogTree
                     connectionId={activeConnection.id}
                     selected={selected}
@@ -556,7 +556,7 @@ export function ConnectionsPage() {
           <form
             id="edit-connection-form"
             key={editing.id}
-            className="grid min-h-0 flex-1 grid-cols-2 content-start gap-3 overflow-auto p-4"
+            className="scroll-pane grid min-h-0 flex-1 grid-cols-2 content-start gap-3 overflow-auto p-4"
             onSubmit={(event) => void onUpdate(event)}
           >
             <FormField label={messages.connectionsPage.name}>

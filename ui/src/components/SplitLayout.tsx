@@ -21,6 +21,7 @@ export function SplitLayout({
   minSize,
   maxSize,
   fill = true,
+  insetGutter = false,
   className,
   style,
   children,
@@ -33,6 +34,8 @@ export function SplitLayout({
   minSize?: number;
   maxSize?: number;
   fill?: boolean;
+  /** Shorten the visible gutter line so it stays inside rounded panes. */
+  insetGutter?: boolean;
   className?: string;
   style?: CSSProperties;
   children: ReactNode;
@@ -138,21 +141,30 @@ export function SplitLayout({
                 aria-label={messages.common.resizePane}
                 aria-orientation={isRow ? "vertical" : "horizontal"}
                 className={cn(
-                  "group relative z-10 shrink-0 border-0 bg-border/70 p-0 outline-none transition-colors duration-200 hover:bg-border-strong focus-visible:bg-border-strong",
-                  isRow
-                    ? "w-px cursor-col-resize after:absolute after:inset-y-0 after:-left-1 after:w-2.5 after:content-['']"
-                    : "h-px cursor-row-resize after:absolute after:inset-x-0 after:-top-1 after:h-2.5 after:content-['']",
+                  "group relative z-10 shrink-0 border-0 p-0 outline-none transition-colors duration-200",
+                  insetGutter
+                    ? isRow
+                      ? "w-[0.35rem] cursor-col-resize bg-transparent before:absolute before:inset-y-3 before:left-1/2 before:w-px before:-translate-x-1/2 before:rounded-full before:bg-border/70 before:content-[''] before:transition-colors hover:before:bg-border-strong focus-visible:before:bg-border-strong after:absolute after:inset-y-0 after:-left-1 after:w-2.5 after:content-['']"
+                      : "h-[0.35rem] cursor-row-resize bg-transparent before:absolute before:inset-x-3 before:inset-y-1/2 before:h-px before:-translate-y-1/2 before:rounded-full before:bg-border/70 before:content-[''] before:transition-colors hover:before:bg-border-strong focus-visible:before:bg-border-strong after:absolute after:inset-x-0 after:-top-1 after:h-2.5 after:content-['']"
+                    : cn(
+                        "bg-border/70 hover:bg-border-strong focus-visible:bg-border-strong",
+                        isRow
+                          ? "w-px cursor-col-resize after:absolute after:inset-y-0 after:-left-1 after:w-2.5 after:content-['']"
+                          : "h-px cursor-row-resize after:absolute after:inset-x-0 after:-top-1 after:h-2.5 after:content-['']",
+                      ),
                 )}
                 onMouseDown={(event) => onGutterDown(index - 1, event)}
               >
-                <span
-                  className={cn(
-                    "pointer-events-none absolute left-1/2 top-1/2 rounded-full bg-text-tertiary/50 opacity-0 shadow-sm transition-[opacity,background-color,transform] duration-200 group-hover:opacity-100 group-focus-visible:opacity-100 group-active:bg-text-secondary group-active:opacity-100",
-                    isRow
-                      ? "h-10 w-1 -translate-x-1/2 -translate-y-1/2 group-hover:scale-y-110"
-                      : "h-1 w-10 -translate-x-1/2 -translate-y-1/2 group-hover:scale-x-110",
-                  )}
-                />
+                {!insetGutter ? (
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute left-1/2 top-1/2 rounded-full bg-text-tertiary/50 opacity-0 shadow-sm transition-[opacity,background-color,transform] duration-200 group-hover:opacity-100 group-focus-visible:opacity-100 group-active:bg-text-secondary group-active:opacity-100",
+                      isRow
+                        ? "h-10 w-1 -translate-x-1/2 -translate-y-1/2 group-hover:scale-y-110"
+                        : "h-1 w-10 -translate-x-1/2 -translate-y-1/2 group-hover:scale-x-110",
+                    )}
+                  />
+                ) : null}
               </button>
             ) : null}
             <div

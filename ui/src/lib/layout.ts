@@ -1,8 +1,8 @@
 export const layout = {
   split: {
-    nav: 240,
-    minNav: 148,
-    maxNav: 320,
+    nav: 270,
+    minNav: 200,
+    maxNav: 360,
     connections: 176,
     sidebar: 272,
     catalog: 256,

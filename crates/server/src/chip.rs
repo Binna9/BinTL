@@ -7,7 +7,7 @@ use engine::TransformSpec;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use storage::{ChipRow, ChipRunRow, Store};
+use storage::{ChipRow, ChipRunRow, RegisterExtractChip, RegisterTransformChip, Store};
 use tokio::sync::{mpsc, Semaphore};
 
 use crate::access::{self, CurrentUser};
@@ -16,6 +16,7 @@ use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/api/chips", get(list_catalog).post(register_chip))
         .route(
             "/api/workspaces/{id}/chips",
             get(list_chips).post(create_chip),
@@ -72,8 +73,23 @@ struct PatchChipBody {
 
 #[derive(Deserialize)]
 struct RunChipBody {
+    workspace_id: String,
     #[serde(default)]
     input_dataset_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RegisterChipBody {
+    name: String,
+    kind: String,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    place_on_workspace: bool,
+    #[serde(default)]
+    extract: Option<Value>,
+    #[serde(default)]
+    transform_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +137,106 @@ struct TransformConfig {
     spec: Value,
 }
 
+async fn list_catalog(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<Json<Value>, AppError> {
+    let chips = state.store.list_owned_chips(user.id()).await?;
+    let mut out = Vec::with_capacity(chips.len());
+    for chip in &chips {
+        out.push(chip_json(&state.store, chip).await?);
+    }
+    Ok(Json(json!({ "chips": out })))
+}
+
+async fn register_chip(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<RegisterChipBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    if body.place_on_workspace {
+        let workspace_id = body
+            .workspace_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| AppError::bad("workspace_id required when place_on_workspace"))?;
+        access::require_workspace(&state.store, &user, workspace_id).await?;
+    }
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(AppError::bad("chip name required"));
+    }
+    let chip = match body.kind.as_str() {
+        "extract" => {
+            let raw = body
+                .extract
+                .ok_or_else(|| AppError::bad("extract definition required"))?;
+            let config = validate_extract_config(&state.store, raw).await?;
+            let connection_id = config
+                .get("connection_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if connection_id.is_empty() {
+                return Err(AppError::bad("connection_id required"));
+            }
+            let source = config
+                .get("source")
+                .cloned()
+                .ok_or_else(|| AppError::bad("source required"))?;
+            let delimiter = config
+                .get("delimiter")
+                .and_then(Value::as_str)
+                .unwrap_or(",")
+                .to_string();
+            let header = config
+                .get("header")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let source_json = serde_json::to_string(&source)
+                .map_err(|error| AppError::bad(error.to_string()))?;
+            state
+                .store
+                .register_extract_chip(&RegisterExtractChip {
+                    name: name.to_string(),
+                    owner_user_id: user.id().to_string(),
+                    workspace_id: body.workspace_id.clone(),
+                    kind: "database".into(),
+                    connection_id,
+                    source_json,
+                    delimiter,
+                    header,
+                    add_sequence: false,
+                    place_on_workspace: body.place_on_workspace,
+                })
+                .await?
+        }
+        "transform" => {
+            let transform_id = body
+                .transform_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::bad("transform_id required"))?;
+            access::require_transform(&state.store, &user, transform_id).await?;
+            state
+                .store
+                .register_transform_chip(&RegisterTransformChip {
+                    name: name.to_string(),
+                    owner_user_id: user.id().to_string(),
+                    workspace_id: body.workspace_id.clone(),
+                    transform_id: transform_id.to_string(),
+                    place_on_workspace: body.place_on_workspace,
+                })
+                .await?
+        }
+        _ => return Err(AppError::bad("chip kind must be extract or transform")),
+    };
+    Ok((StatusCode::CREATED, Json(chip_json(&state.store, &chip).await?)))
+}
+
 async fn list_chips(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -130,11 +246,12 @@ async fn list_chips(
     let chips = state
         .store
         .list_chips(&workspace_id)
-        .await?
-        .iter()
-        .map(chip_json)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Json(json!({ "chips": chips })))
+        .await?;
+    let mut out = Vec::with_capacity(chips.len());
+    for chip in &chips {
+        out.push(chip_json(&state.store, chip).await?);
+    }
+    Ok(Json(json!({ "chips": out })))
 }
 
 async fn create_chip(
@@ -149,9 +266,9 @@ async fn create_chip(
         serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?;
     let chip = state
         .store
-        .insert_chip(&workspace_id, &body.name, &body.kind, &config_json)
+        .insert_chip(user.id(), &workspace_id, &body.name, &body.kind, &config_json)
         .await?;
-    Ok((StatusCode::CREATED, Json(chip_json(&chip)?)))
+    Ok((StatusCode::CREATED, Json(chip_json(&state.store, &chip).await?)))
 }
 
 async fn get_chip(
@@ -160,7 +277,7 @@ async fn get_chip(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let chip = access::require_chip(&state.store, &user, &id).await?;
-    Ok(Json(chip_json(&chip)?))
+    Ok(Json(chip_json(&state.store, &chip).await?))
 }
 
 async fn update_chip(
@@ -172,17 +289,34 @@ async fn update_chip(
     let current = access::require_chip(&state.store, &user, &id).await?;
     if body.name.is_none() && body.kind.is_none() && body.config.is_none() && body.active.is_none()
     {
-        return Ok(Json(chip_json(&current)?));
+        return Ok(Json(chip_json(&state.store, &current).await?));
     }
     let config_json = if body.kind.is_some() || body.config.is_some() {
+        if state.store.get_chip_binding(&id).await?.is_some() {
+            return Err(AppError::bad(
+                "registered chips update definitions, not inline config",
+            ));
+        }
         let kind = body.kind.as_deref().unwrap_or(current.kind.as_str());
         let raw_config = match body.config.as_ref() {
             Some(config) => config.clone(),
-            None => serde_json::from_str(&current.config_json).map_err(|error| {
-                AppError::bad(format!("stored chip config is invalid: {error}"))
-            })?,
+            None => {
+                let raw = state.store.resolve_chip_config_json(&current).await.map_err(|error| {
+                    AppError::bad(error.to_string())
+                })?;
+                serde_json::from_str(&raw).map_err(|error| {
+                    AppError::bad(format!("stored chip config is invalid: {error}"))
+                })?
+            }
         };
-        let config = validate_config(&state.store, &current.workspace_id, kind, raw_config).await?;
+        let workspace_id = state
+            .store
+            .chip_workspace_hint(&id)
+            .await
+            .map_err(|error| AppError::bad(error.to_string()))?
+            .ok_or_else(|| AppError::bad("chip is not placed on a workspace"))?;
+        let config =
+            validate_config(&state.store, &workspace_id, kind, raw_config).await?;
         Some(serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?)
     } else {
         None
@@ -197,7 +331,7 @@ async fn update_chip(
             body.active,
         )
         .await?;
-    Ok(Json(chip_json(&chip)?))
+    Ok(Json(chip_json(&state.store, &chip).await?))
 }
 
 async fn delete_chip(
@@ -217,13 +351,19 @@ async fn run_chip(
     Json(body): Json<RunChipBody>,
 ) -> Result<Json<Value>, AppError> {
     let chip = access::require_chip(&state.store, &user, &id).await?;
+    access::require_workspace(&state.store, &user, &body.workspace_id).await?;
     if chip.active == 0 {
         return Err(AppError::conflict("chip is inactive"));
     }
     if chip.kind == "load" {
         return Err(AppError::bad("load chips are not supported"));
     }
-    let config: Value = serde_json::from_str(&chip.config_json)
+    let config_raw = state
+        .store
+        .resolve_chip_config_json(&chip)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let config: Value = serde_json::from_str(&config_raw)
         .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
     reject_forbidden_config(&config)?;
 
@@ -248,10 +388,11 @@ async fn run_chip(
         }
         "transform" => {
             let config =
-                validate_transform_config(&state.store, &chip.workspace_id, config).await?;
+                validate_transform_config(&state.store, &body.workspace_id, config).await?;
             let dataset_id = resolve_transform_input(
                 &state.store,
-                &chip,
+                &body.workspace_id,
+                &chip.id,
                 body.input_dataset_id,
                 config.input_dataset_id,
             )
@@ -261,7 +402,7 @@ async fn run_chip(
                 .get_dataset(&dataset_id)
                 .await?
                 .ok_or_else(|| AppError::not_found("input dataset not found"))?;
-            if dataset.workspace_id != chip.workspace_id {
+            if dataset.workspace_id != body.workspace_id {
                 return Err(AppError::bad("input dataset belongs to another workspace"));
             }
             if !state.store.resolve(&dataset.stored_path).is_file() {
@@ -274,7 +415,13 @@ async fn run_chip(
 
     let run = state
         .store
-        .create_chip_run(&chip.id, chip.revision, input_dataset_id.as_deref())
+        .create_chip_run(
+            &chip.id,
+            &body.workspace_id,
+            chip.revision,
+            &config_raw,
+            input_dataset_id.as_deref(),
+        )
         .await?;
     if state.chip_tx.try_send(run.id.clone()).is_err() {
         let _ = state
@@ -357,7 +504,8 @@ async fn get_run_logs(
 
 async fn resolve_transform_input(
     store: &Store,
-    chip: &ChipRow,
+    workspace_id: &str,
+    chip_id: &str,
     requested: Option<String>,
     config_input: Option<String>,
 ) -> Result<String, AppError> {
@@ -365,10 +513,10 @@ async fn resolve_transform_input(
         return Ok(dataset_id);
     }
     let incoming = store
-        .list_chip_edges(&chip.workspace_id)
+        .list_chip_edges(workspace_id)
         .await?
         .into_iter()
-        .filter(|edge| edge.to_chip_id == chip.id && edge.kind == "data")
+        .filter(|edge| edge.to_chip_id == chip_id && edge.kind == "data")
         .collect::<Vec<_>>();
     if incoming.len() > 1 {
         return Err(AppError::bad(
@@ -386,14 +534,24 @@ async fn resolve_transform_input(
     config_input.ok_or_else(|| AppError::bad("transform input_dataset_id required"))
 }
 
-pub(crate) fn chip_json(row: &ChipRow) -> Result<Value, AppError> {
-    let config = serde_json::from_str::<Value>(&row.config_json)
+pub(crate) async fn chip_json(store: &Store, row: &ChipRow) -> Result<Value, AppError> {
+    let binding = store.get_chip_binding(&row.id).await.map_err(|error| {
+        AppError::bad(error.to_string())
+    })?;
+    let config_raw = store.resolve_chip_config_json(row).await.map_err(|error| {
+        AppError::bad(error.to_string())
+    })?;
+    let config = serde_json::from_str::<Value>(&config_raw)
         .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
     Ok(json!({
         "id": row.id,
-        "workspace_id": row.workspace_id,
+        "owner_user_id": row.owner_user_id,
         "name": row.name,
         "kind": row.kind,
+        "binding": binding.map(|item| json!({
+            "ref_kind": item.ref_kind,
+            "ref_id": item.ref_id,
+        })),
         "config": config,
         "revision": row.revision,
         "active": row.active != 0,

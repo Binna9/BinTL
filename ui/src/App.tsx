@@ -18,6 +18,8 @@ import { TransformFilesPage } from "@/pages/TransformFilesPage";
 import { TransformPage } from "@/pages/TransformPage";
 import { TransformSoonPage } from "@/pages/TransformSoonPage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
+import { ChipsPage } from "@/pages/ChipsPage";
+import { WorkspaceRunsPage } from "@/pages/WorkspaceRunsPage";
 import { SessionProvider } from "@/hooks/useSession";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
@@ -29,7 +31,9 @@ function LegacyTransformRedirect() {
 
 function ConsoleShell() {
   const loc = useLocation();
-  const studio = loc.pathname.startsWith("/workspace");
+  const studio =
+    loc.pathname === "/workspace" ||
+    (loc.pathname.startsWith("/workspace/") && !loc.pathname.startsWith("/workspace/runs"));
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="sticky top-0 z-40 grid h-[4.75rem] shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border bg-surface px-5 shadow-[0_2px_5px_rgba(15,23,42,0.06)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.28)]">
@@ -57,9 +61,11 @@ function ConsoleShell() {
             <Route path="/files" element={<FilesPage />} />
             <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/schedule" element={<SchedulePage />} />
+            <Route path="/workspace/runs" element={<WorkspaceRunsPage />} />
             <Route path="/workspace" element={<WorkspacePage />} />
             <Route path="/workspace/:workspaceId" element={<WorkspacePage />} />
             <Route path="/workspace/:workspaceId/chips/:chipId" element={<WorkspacePage />} />
+            <Route path="/chips" element={<ChipsPage />} />
             <Route path="/workspace/:workspaceId/tasks/:taskId" element={<Navigate to={loc.pathname.replace("/tasks/", "/chips/")} replace />} />
             <Route path="/db" element={<QueryPage />} />
             <Route path="/query" element={<QueryPage />} />

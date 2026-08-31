@@ -8,8 +8,7 @@ use serde_json::{json, Value};
 use crate::access::{self, CurrentUser};
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::chip::validate_config;
-use storage::{ChipEdgeRow, WorkspaceFolderRow, WorkspaceRow, WorkspaceSaveChip, WorkspaceSaveEdge};
+use storage::{ChipEdgeRow, WorkspaceFolderRow, WorkspaceRow, WorkspaceSaveEdge};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -45,17 +44,9 @@ struct CreateWorkspaceBody {
 struct SaveWorkspaceBody {
     layout: Value,
     #[serde(default)]
-    chips: Vec<SaveWorkspaceChipBody>,
+    chips: Vec<String>,
     #[serde(default)]
     edges: Vec<SaveWorkspaceEdgeBody>,
-}
-
-#[derive(Deserialize)]
-struct SaveWorkspaceChipBody {
-    id: String,
-    name: String,
-    kind: String,
-    config: Value,
 }
 
 #[derive(Deserialize)]
@@ -195,17 +186,14 @@ async fn save_workspace(
     }
     let layout_json =
         serde_json::to_string(&body.layout).map_err(|error| AppError::bad(error.to_string()))?;
-    let mut chips = Vec::with_capacity(body.chips.len());
-    for chip in body.chips {
-        let config_json = validate_config(&state.store, &id, &chip.kind, chip.config.clone()).await?;
-        let config_json = serde_json::to_string(&config_json)
-            .map_err(|error| AppError::bad(error.to_string()))?;
-        chips.push(WorkspaceSaveChip {
-            id: chip.id,
-            name: chip.name,
-            kind: chip.kind,
-            config_json,
-        });
+    let mut chip_ids = Vec::with_capacity(body.chips.len());
+    for chip_id in body.chips {
+        let chip_id = chip_id.trim().to_string();
+        if chip_id.is_empty() {
+            continue;
+        }
+        let _chip = access::require_chip(&state.store, &user, &chip_id).await?;
+        chip_ids.push(chip_id);
     }
     let mut edges = Vec::with_capacity(body.edges.len());
     for edge in body.edges {
@@ -223,12 +211,12 @@ async fn save_workspace(
     }
     let (workspace, saved, saved_edges) = state
         .store
-        .save_workspace(&id, &layout_json, &chips, &edges)
+        .save_workspace(&id, &layout_json, &chip_ids, &edges)
         .await?;
-    let chips = saved
-        .iter()
-        .map(crate::chip::chip_json)
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut chips = Vec::with_capacity(saved.len());
+    for chip in &saved {
+        chips.push(crate::chip::chip_json(&state.store, chip).await?);
+    }
     let edges = saved_edges.iter().map(edge_json).collect::<Vec<_>>();
     Ok(Json(json!({
         "workspace": workspace_json(&workspace, Some(saved_edges.as_slice()))?,

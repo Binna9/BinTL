@@ -2,12 +2,18 @@ export type ChipKind = "extract" | "transform" | "load";
 export type ChipEdgeKind = "data" | "then" | "on_error";
 export type ChipConfig = Record<string, unknown>;
 
+export interface ChipBinding {
+  ref_kind: "extract_definition" | "transform";
+  ref_id: string;
+}
+
 export interface Chip {
   id: string;
-  workspace_id: string;
+  owner_user_id: string;
   name: string;
   kind: ChipKind;
   config: ChipConfig;
+  binding?: ChipBinding | null;
   revision: number;
   active: boolean;
   created_at: string;
@@ -66,7 +72,17 @@ export interface UpdateChipRequest {
   active?: boolean;
 }
 
+export interface RegisterChipRequest {
+  name: string;
+  kind: ChipKind;
+  workspace_id?: string;
+  place_on_workspace?: boolean;
+  extract?: ChipConfig;
+  transform_id?: string;
+}
+
 export interface RunChipRequest {
+  workspace_id: string;
   input_dataset_id?: string;
 }
 

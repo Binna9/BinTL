@@ -154,14 +154,36 @@ pub struct WorkspaceFolderRow {
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ChipRow {
     pub id: String,
-    pub workspace_id: String,
+    pub owner_user_id: String,
     pub name: String,
     pub kind: String,
-    pub config_json: String,
+    pub config_json: Option<String>,
     pub revision: i64,
     pub active: i64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ExtractDefinitionRow {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub connection_id: String,
+    pub source_json: String,
+    pub delimiter: String,
+    pub header: i64,
+    pub add_sequence: i64,
+    pub workspace_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ChipBindingRow {
+    pub chip_id: String,
+    pub ref_kind: String,
+    pub ref_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -188,11 +210,26 @@ const WORKSPACE_COLS: &str =
 const FOLDER_COLS: &str = "id, owner_user_id, parent_id, name, created_at, updated_at";
 
 #[derive(Debug, Clone)]
-pub struct WorkspaceSaveChip {
-    pub id: String,
+pub struct RegisterExtractChip {
     pub name: String,
+    pub owner_user_id: String,
+    pub workspace_id: Option<String>,
     pub kind: String,
-    pub config_json: String,
+    pub connection_id: String,
+    pub source_json: String,
+    pub delimiter: String,
+    pub header: bool,
+    pub add_sequence: bool,
+    pub place_on_workspace: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegisterTransformChip {
+    pub name: String,
+    pub owner_user_id: String,
+    pub workspace_id: Option<String>,
+    pub transform_id: String,
+    pub place_on_workspace: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -217,8 +254,12 @@ pub struct ChipEdgeRow {
     pub created_at: String,
 }
 
-const CHIP_COLS: &str = "id, workspace_id, name, kind, config_json, revision,
+const CHIP_COLS: &str = "id, owner_user_id, name, kind, config_json, revision,
         active, created_at, updated_at";
+const CHIP_JOIN_COLS: &str = "c.id, c.owner_user_id, c.name, c.kind, c.config_json, c.revision,
+        c.active, c.created_at, c.updated_at";
+const EXTRACT_DEFINITION_COLS: &str = "id, name, kind, connection_id, source_json, delimiter,
+        header, add_sequence, workspace_id, created_at, updated_at";
 const CHIP_RUN_COLS: &str = "id, chip_id, workspace_id, kind, status, config_snapshot_json,
         revision_snapshot, input_dataset_id, output_dataset_id, legacy_extract_id,
         legacy_job_id, error_message, created_at, started_at, finished_at";
@@ -344,6 +385,7 @@ impl Store {
         };
         store.backfill_datasets().await?;
         store.backfill_workspace_revisions().await?;
+        store.backfill_chip_bindings().await?;
         Ok(store)
     }
 
@@ -542,7 +584,7 @@ impl Store {
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM chips WHERE workspace_id = ?")
+        sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -779,7 +821,7 @@ impl Store {
         &self,
         id: &str,
         layout_json: &str,
-        chips: &[WorkspaceSaveChip],
+        chip_ids: &[String],
         edges: &[WorkspaceSaveEdge],
     ) -> Result<(WorkspaceRow, Vec<ChipRow>, Vec<ChipEdgeRow>), StorageError> {
         require_config_json(layout_json)?;
@@ -790,63 +832,33 @@ impl Store {
         let now = now_rfc3339();
         let version = current.version + 1;
         let mut tx = self.pool.begin().await?;
-        for chip in chips {
-            let name = required_text(&chip.name, "chip name")?;
-            validate_chip_kind(&chip.kind)?;
-            require_config_json(&chip.config_json)?;
-            let existing = sqlx::query_as::<_, ChipRow>(&format!(
+        let mut saved_chips = Vec::with_capacity(chip_ids.len());
+        for chip_id in chip_ids {
+            let chip_id = required_text(chip_id, "chip id")?;
+            let chip = sqlx::query_as::<_, ChipRow>(&format!(
                 "SELECT {CHIP_COLS} FROM chips WHERE id = ?"
             ))
-            .bind(&chip.id)
+            .bind(chip_id)
             .fetch_optional(&mut *tx)
-            .await?;
-            if let Some(existing) = existing {
-                if existing.workspace_id != id {
-                    return Err(StorageError::Invalid(
-                        "chip does not belong to this workspace".into(),
-                    ));
-                }
-                let bump = existing.name != name
-                    || existing.kind != chip.kind
-                    || existing.config_json != chip.config_json;
-                sqlx::query(
-                    "UPDATE chips
-                     SET name = ?, kind = ?, config_json = ?,
-                         revision = revision + ?, updated_at = ?
-                     WHERE id = ?",
-                )
-                .bind(name)
-                .bind(&chip.kind)
-                .bind(&chip.config_json)
-                .bind(i64::from(bump))
-                .bind(&now)
-                .bind(&chip.id)
-                .execute(&mut *tx)
-                .await?;
-            } else {
-                sqlx::query(
-                    "INSERT INTO chips
-                     (id, workspace_id, name, kind, config_json, revision, active, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)",
-                )
-                .bind(&chip.id)
-                .bind(id)
-                .bind(name)
-                .bind(&chip.kind)
-                .bind(&chip.config_json)
-                .bind(&now)
-                .bind(&now)
-                .execute(&mut *tx)
-                .await?;
-            }
+            .await?
+            .ok_or_else(|| StorageError::NotFound(format!("chip {chip_id} not found")))?;
+            saved_chips.push(chip);
         }
-        let saved_chips = sqlx::query_as::<_, ChipRow>(&format!(
-            "SELECT {CHIP_COLS} FROM chips
-             WHERE workspace_id = ? ORDER BY updated_at DESC"
-        ))
-        .bind(id)
-        .fetch_all(&mut *tx)
-        .await?;
+        sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        for chip in &saved_chips {
+            sqlx::query(
+                "INSERT INTO workspace_chips (workspace_id, chip_id, created_at)
+                 VALUES (?, ?, ?)",
+            )
+            .bind(id)
+            .bind(&chip.id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
         let saved_edges = replace_workspace_edges(&mut tx, id, edges, &saved_chips, &now).await?;
         sqlx::query(
             "UPDATE workspaces SET layout_json = ?, version = ?, updated_at = ? WHERE id = ?",
@@ -893,8 +905,9 @@ impl Store {
                 continue;
             }
             let chips = sqlx::query_as::<_, ChipRow>(&format!(
-                "SELECT {CHIP_COLS} FROM chips
-                 WHERE workspace_id = ? ORDER BY updated_at DESC"
+                "SELECT {CHIP_JOIN_COLS} FROM chips c
+                 INNER JOIN workspace_chips wc ON wc.chip_id = c.id
+                 WHERE wc.workspace_id = ? ORDER BY c.updated_at DESC"
             ))
             .bind(&workspace.id)
             .fetch_all(&self.pool)
@@ -920,10 +933,24 @@ impl Store {
     ) -> Result<Vec<ChipRow>, StorageError> {
         self.require_workspace(workspace_id).await?;
         Ok(sqlx::query_as::<_, ChipRow>(&format!(
-            "SELECT {CHIP_COLS} FROM chips
-             WHERE workspace_id = ? ORDER BY updated_at DESC"
+            "SELECT {CHIP_JOIN_COLS} FROM chips c
+             INNER JOIN workspace_chips wc ON wc.chip_id = c.id
+             WHERE wc.workspace_id = ? ORDER BY c.updated_at DESC"
         ))
         .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn list_owned_chips(
+        &self,
+        owner_user_id: &str,
+    ) -> Result<Vec<ChipRow>, StorageError> {
+        Ok(sqlx::query_as::<_, ChipRow>(&format!(
+            "SELECT {CHIP_COLS} FROM chips
+             WHERE owner_user_id = ? ORDER BY updated_at DESC"
+        ))
+        .bind(owner_user_id)
         .fetch_all(&self.pool)
         .await?)
     }
@@ -940,33 +967,298 @@ impl Store {
         .await?)
     }
 
+    pub async fn attach_chip_to_workspace(
+        &self,
+        workspace_id: &str,
+        chip_id: &str,
+    ) -> Result<(), StorageError> {
+        self.require_workspace(workspace_id).await?;
+        self.get_chip(chip_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("chip not found".into()))?;
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO workspace_chips (workspace_id, chip_id, created_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(workspace_id, chip_id) DO NOTHING",
+        )
+        .bind(workspace_id)
+        .bind(chip_id)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_chip_binding(
+        &self,
+        chip_id: &str,
+    ) -> Result<Option<ChipBindingRow>, StorageError> {
+        Ok(sqlx::query_as::<_, ChipBindingRow>(
+            "SELECT chip_id, ref_kind, ref_id FROM chip_bindings WHERE chip_id = ?",
+        )
+        .bind(chip_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn get_extract_definition(
+        &self,
+        id: &str,
+    ) -> Result<Option<ExtractDefinitionRow>, StorageError> {
+        Ok(sqlx::query_as::<_, ExtractDefinitionRow>(&format!(
+            "SELECT {EXTRACT_DEFINITION_COLS} FROM extract_definitions WHERE id = ?"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn resolve_chip_config_json(&self, chip: &ChipRow) -> Result<String, StorageError> {
+        if let Some(binding) = self.get_chip_binding(&chip.id).await? {
+            return self.config_json_for_binding(&binding).await;
+        }
+        let legacy = chip
+            .config_json
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| StorageError::Invalid("chip has no binding or config".into()))?;
+        Ok(legacy.to_string())
+    }
+
+    async fn config_json_for_binding(
+        &self,
+        binding: &ChipBindingRow,
+    ) -> Result<String, StorageError> {
+        match binding.ref_kind.as_str() {
+            "extract_definition" => {
+                let row = self
+                    .get_extract_definition(&binding.ref_id)
+                    .await?
+                    .ok_or_else(|| StorageError::NotFound("extract definition not found".into()))?;
+                let source: serde_json::Value = serde_json::from_str(&row.source_json)
+                    .map_err(|error| StorageError::Invalid(error.to_string()))?;
+                Ok(serde_json::json!({
+                    "connection_id": row.connection_id,
+                    "source": source,
+                    "delimiter": row.delimiter,
+                    "header": row.header != 0,
+                })
+                .to_string())
+            }
+            "transform" => {
+                let row = self
+                    .get_transform(&binding.ref_id)
+                    .await?
+                    .ok_or_else(|| StorageError::NotFound("transform not found".into()))?;
+                let spec: serde_json::Value = serde_json::from_str(&row.spec_json)
+                    .map_err(|error| StorageError::Invalid(error.to_string()))?;
+                Ok(serde_json::json!({
+                    "input_dataset_id": row.dataset_id,
+                    "spec": spec,
+                })
+                .to_string())
+            }
+            other => Err(StorageError::Invalid(format!("unknown chip binding kind {other}"))),
+        }
+    }
+
+    pub async fn register_extract_chip(
+        &self,
+        input: &RegisterExtractChip,
+    ) -> Result<ChipRow, StorageError> {
+        validate_extract_kind(&input.kind)?;
+        let name = required_text(&input.name, "chip name")?;
+        if input.place_on_workspace {
+            let workspace_id = input
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| StorageError::Invalid("workspace_id required".into()))?;
+            self.require_workspace(workspace_id).await?;
+        } else if let Some(workspace_id) = input.workspace_id.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            self.require_workspace(workspace_id).await?;
+        }
+        let _ = self
+            .get_connection(&input.connection_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("connection not found".into()))?;
+        require_config_json(&input.source_json)?;
+        let extract_id = Uuid::new_v4().to_string();
+        let chip_id = Uuid::new_v4().to_string();
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO extract_definitions
+             (id, name, kind, connection_id, source_json, delimiter, header, add_sequence,
+              workspace_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&extract_id)
+        .bind(name)
+        .bind(&input.kind)
+        .bind(&input.connection_id)
+        .bind(&input.source_json)
+        .bind(&input.delimiter)
+        .bind(i64::from(input.header))
+        .bind(i64::from(input.add_sequence))
+        .bind(input.workspace_id.as_deref())
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO chips
+             (id, owner_user_id, name, kind, config_json, revision, active, created_at, updated_at)
+             VALUES (?, ?, ?, 'extract', NULL, 1, 1, ?, ?)",
+        )
+        .bind(&chip_id)
+        .bind(&input.owner_user_id)
+        .bind(name)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO chip_bindings (chip_id, ref_kind, ref_id)
+             VALUES (?, 'extract_definition', ?)",
+        )
+        .bind(&chip_id)
+        .bind(&extract_id)
+        .execute(&mut *tx)
+        .await?;
+        if input.place_on_workspace {
+            let workspace_id = input
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| StorageError::Invalid("workspace_id required".into()))?;
+            sqlx::query(
+                "INSERT INTO workspace_chips (workspace_id, chip_id, created_at)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(workspace_id, chip_id) DO NOTHING",
+            )
+            .bind(workspace_id)
+            .bind(&chip_id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.get_chip(&chip_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("chip disappeared after register".into()))
+    }
+
+    pub async fn register_transform_chip(
+        &self,
+        input: &RegisterTransformChip,
+    ) -> Result<ChipRow, StorageError> {
+        let name = required_text(&input.name, "chip name")?;
+        if input.place_on_workspace {
+            let workspace_id = input
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| StorageError::Invalid("workspace_id required".into()))?;
+            self.require_workspace(workspace_id).await?;
+        } else if let Some(workspace_id) = input.workspace_id.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            self.require_workspace(workspace_id).await?;
+        }
+        let transform = self
+            .get_transform(&input.transform_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("transform not found".into()))?;
+        let _ = transform;
+        let chip_id = Uuid::new_v4().to_string();
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO chips
+             (id, owner_user_id, name, kind, config_json, revision, active, created_at, updated_at)
+             VALUES (?, ?, ?, 'transform', NULL, 1, 1, ?, ?)",
+        )
+        .bind(&chip_id)
+        .bind(&input.owner_user_id)
+        .bind(name)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO chip_bindings (chip_id, ref_kind, ref_id)
+             VALUES (?, 'transform', ?)",
+        )
+        .bind(&chip_id)
+        .bind(&input.transform_id)
+        .execute(&mut *tx)
+        .await?;
+        if input.place_on_workspace {
+            let workspace_id = input
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| StorageError::Invalid("workspace_id required".into()))?;
+            sqlx::query(
+                "INSERT INTO workspace_chips (workspace_id, chip_id, created_at)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(workspace_id, chip_id) DO NOTHING",
+            )
+            .bind(workspace_id)
+            .bind(&chip_id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.get_chip(&chip_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("chip disappeared after register".into()))
+    }
+
     pub async fn insert_chip(
         &self,
+        owner_user_id: &str,
         workspace_id: &str,
         name: &str,
         kind: &str,
         config_json: &str,
     ) -> Result<ChipRow, StorageError> {
-        self.require_workspace(workspace_id).await?;
         let name = required_text(name, "chip name")?;
         validate_chip_kind(kind)?;
         require_config_json(config_json)?;
+        self.require_workspace(workspace_id).await?;
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO chips
-             (id, workspace_id, name, kind, config_json, revision, active, created_at, updated_at)
+             (id, owner_user_id, name, kind, config_json, revision, active, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)",
         )
         .bind(&id)
-        .bind(workspace_id)
+        .bind(owner_user_id)
         .bind(name)
         .bind(kind)
         .bind(config_json)
         .bind(&now)
         .bind(&now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "INSERT INTO workspace_chips (workspace_id, chip_id, created_at)
+             VALUES (?, ?, ?)",
+        )
+        .bind(workspace_id)
+        .bind(&id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         self.get_chip(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("chip disappeared after insert".into()))
@@ -993,17 +1285,31 @@ impl Store {
         };
         let kind = kind.unwrap_or(current.kind.as_str());
         validate_chip_kind(kind)?;
-        let config_json = config_json.unwrap_or(current.config_json.as_str());
-        require_config_json(config_json)?;
+        let config_json = match config_json {
+            Some(value) => {
+                if self.get_chip_binding(id).await?.is_some() {
+                    return Err(StorageError::Invalid(
+                        "registered chips update definitions, not inline config".into(),
+                    ));
+                }
+                require_config_json(value)?;
+                Some(value.to_string())
+            }
+            None => current.config_json.clone(),
+        };
+        let bump = name != current.name
+            || kind != current.kind
+            || config_json != current.config_json;
         sqlx::query(
             "UPDATE chips
-             SET name = ?, kind = ?, config_json = ?, revision = revision + 1,
+             SET name = ?, kind = ?, config_json = ?, revision = revision + ?,
                  active = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(name)
         .bind(kind)
-        .bind(config_json)
+        .bind(config_json.as_deref())
+        .bind(i64::from(bump))
         .bind(active.map(i64::from).unwrap_or(current.active))
         .bind(now_rfc3339())
         .bind(id)
@@ -1050,7 +1356,9 @@ impl Store {
     pub async fn create_chip_run(
         &self,
         chip_id: &str,
+        workspace_id: &str,
         expected_revision: i64,
+        config_snapshot_json: &str,
         input_dataset_id: Option<&str>,
     ) -> Result<ChipRunRow, StorageError> {
         let task = self
@@ -1062,12 +1370,25 @@ impl Store {
                 "chip changed before the run could be queued".into(),
             ));
         }
+        let on_workspace: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM workspace_chips WHERE workspace_id = ? AND chip_id = ?",
+        )
+        .bind(workspace_id)
+        .bind(chip_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if on_workspace == 0 {
+            return Err(StorageError::Invalid(
+                "chip is not placed on this workspace".into(),
+            ));
+        }
+        require_config_json(config_snapshot_json)?;
         if let Some(dataset_id) = input_dataset_id {
             let dataset = self
                 .get_dataset(dataset_id)
                 .await?
                 .ok_or_else(|| StorageError::NotFound("input dataset not found".into()))?;
-            if dataset.workspace_id != task.workspace_id {
+            if dataset.workspace_id != workspace_id {
                 return Err(StorageError::Invalid(
                     "input dataset belongs to another workspace".into(),
                 ));
@@ -1078,15 +1399,16 @@ impl Store {
             "INSERT INTO chip_runs
              (id, chip_id, workspace_id, kind, status, config_snapshot_json,
               revision_snapshot, input_dataset_id, created_at)
-             SELECT ?, id, workspace_id, kind, 'queued', config_json, revision, ?, ?
-             FROM chips
-             WHERE id = ? AND revision = ? AND active = 1",
+             VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
         )
         .bind(&id)
+        .bind(chip_id)
+        .bind(workspace_id)
+        .bind(&task.kind)
+        .bind(config_snapshot_json)
+        .bind(expected_revision)
         .bind(input_dataset_id)
         .bind(now_rfc3339())
-        .bind(chip_id)
-        .bind(expected_revision)
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
@@ -2618,6 +2940,134 @@ impl Store {
             ssl: row.ssl != 0,
         })
     }
+
+    pub async fn backfill_chip_bindings(&self) -> Result<(), StorageError> {
+        let chips = sqlx::query_as::<_, ChipRow>(&format!(
+            "SELECT {CHIP_COLS} FROM chips
+             WHERE config_json IS NOT NULL AND TRIM(config_json) != ''
+             AND id NOT IN (SELECT chip_id FROM chip_bindings)"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        for chip in chips {
+            let Some(raw) = chip.config_json.as_deref() else {
+                continue;
+            };
+            let value: serde_json::Value = match serde_json::from_str(raw) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let binding = match chip.kind.as_str() {
+                "extract" => {
+                    let connection_id = value
+                        .get("connection_id")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    if connection_id.is_empty() {
+                        continue;
+                    }
+                    let source = value.get("source").cloned().unwrap_or_else(|| {
+                        serde_json::json!({ "type": "table", "table": "", "database": null })
+                    });
+                    let delimiter = value
+                        .get("delimiter")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or(",");
+                    let header = value
+                        .get("header")
+                        .and_then(|item| item.as_bool())
+                        .unwrap_or(true);
+                    let workspace_id = sqlx::query_scalar::<_, String>(
+                        "SELECT workspace_id FROM workspace_chips WHERE chip_id = ? LIMIT 1",
+                    )
+                    .bind(&chip.id)
+                    .fetch_optional(&self.pool)
+                    .await?
+                    .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string());
+                    let extract_id = Uuid::new_v4().to_string();
+                    let now = now_rfc3339();
+                    let source_json = serde_json::to_string(&source)
+                        .map_err(|error| StorageError::Invalid(error.to_string()))?;
+                    sqlx::query(
+                        "INSERT INTO extract_definitions
+                         (id, name, kind, connection_id, source_json, delimiter, header,
+                          add_sequence, workspace_id, created_at, updated_at)
+                         VALUES (?, ?, 'database', ?, ?, ?, ?, 0, ?, ?, ?)",
+                    )
+                    .bind(&extract_id)
+                    .bind(&chip.name)
+                    .bind(connection_id)
+                    .bind(&source_json)
+                    .bind(delimiter)
+                    .bind(i64::from(header))
+                    .bind(&workspace_id)
+                    .bind(&now)
+                    .bind(&now)
+                    .execute(&self.pool)
+                    .await?;
+                    ("extract_definition", extract_id)
+                }
+                "transform" => {
+                    let spec = value.get("spec").cloned().unwrap_or_else(|| {
+                        serde_json::json!({ "version": 2, "steps": [], "sink": "parquet" })
+                    });
+                    let dataset_id = value
+                        .get("input_dataset_id")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    if dataset_id.is_empty() {
+                        continue;
+                    }
+                    let spec_json = serde_json::to_string(&spec)
+                        .map_err(|error| StorageError::Invalid(error.to_string()))?;
+                    let transform = self
+                        .insert_transform(&chip.name, dataset_id, &spec_json)
+                        .await?;
+                    ("transform", transform.id)
+                }
+                _ => continue,
+            };
+            sqlx::query(
+                "INSERT OR IGNORE INTO chip_bindings (chip_id, ref_kind, ref_id)
+                 VALUES (?, ?, ?)",
+            )
+            .bind(&chip.id)
+            .bind(binding.0)
+            .bind(&binding.1)
+            .execute(&self.pool)
+            .await?;
+            sqlx::query("UPDATE chips SET config_json = NULL WHERE id = ?")
+                .bind(&chip.id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn chip_workspace_hint(
+        &self,
+        chip_id: &str,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(sqlx::query_scalar(
+            "SELECT workspace_id FROM workspace_chips WHERE chip_id = ? LIMIT 1",
+        )
+        .bind(chip_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn bump_definition_revision(&self, chip_id: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE chips SET revision = revision + 1, updated_at = ? WHERE id = ?",
+        )
+        .bind(now_rfc3339())
+        .bind(chip_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -2848,8 +3298,11 @@ fn workspace_snapshot_json(
     let chips = chips
         .iter()
         .map(|chip| {
-            let config: serde_json::Value = serde_json::from_str(&chip.config_json)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            let config: serde_json::Value = chip
+                .config_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
             serde_json::json!({
                 "id": chip.id,
                 "name": chip.name,
@@ -3241,6 +3694,7 @@ mod tests {
             .unwrap();
         let task = store
             .insert_chip(
+                &admin.id,
                 &workspace.id,
                 "Users",
                 "extract",
@@ -3248,8 +3702,15 @@ mod tests {
             )
             .await
             .unwrap();
+        let config_raw = store.resolve_chip_config_json(&task).await.unwrap();
         let run = store
-            .create_chip_run(&task.id, task.revision, None)
+            .create_chip_run(
+                &task.id,
+                &workspace.id,
+                task.revision,
+                &config_raw,
+                None,
+            )
             .await
             .unwrap();
         store
@@ -3286,6 +3747,7 @@ mod tests {
             .unwrap();
         let extract = store
             .insert_chip(
+                &admin.id,
                 &workspace.id,
                 "Users",
                 "extract",
@@ -3295,6 +3757,7 @@ mod tests {
             .unwrap();
         let transform = store
             .insert_chip(
+                &admin.id,
                 &workspace.id,
                 "Clean",
                 "transform",
@@ -3306,20 +3769,7 @@ mod tests {
             .save_workspace(
                 &workspace.id,
                 r#"{"nodes":{}}"#,
-                &[
-                    WorkspaceSaveChip {
-                        id: extract.id.clone(),
-                        name: extract.name.clone(),
-                        kind: extract.kind.clone(),
-                        config_json: extract.config_json.clone(),
-                    },
-                    WorkspaceSaveChip {
-                        id: transform.id.clone(),
-                        name: transform.name.clone(),
-                        kind: transform.kind.clone(),
-                        config_json: transform.config_json.clone(),
-                    },
-                ],
+                &[extract.id.clone(), transform.id.clone()],
                 &[WorkspaceSaveEdge {
                     id: Uuid::new_v4().to_string(),
                     from_chip_id: extract.id.clone(),
@@ -3339,20 +3789,7 @@ mod tests {
             .save_workspace(
                 &workspace.id,
                 r#"{"nodes":{}}"#,
-                &[
-                    WorkspaceSaveChip {
-                        id: extract.id.clone(),
-                        name: extract.name.clone(),
-                        kind: extract.kind.clone(),
-                        config_json: extract.config_json.clone(),
-                    },
-                    WorkspaceSaveChip {
-                        id: transform.id.clone(),
-                        name: transform.name.clone(),
-                        kind: transform.kind.clone(),
-                        config_json: transform.config_json.clone(),
-                    },
-                ],
+                &[extract.id.clone(), transform.id.clone()],
                 &[
                     WorkspaceSaveEdge {
                         id: String::new(),

@@ -12,7 +12,9 @@ import {
   GitBranch,
   History,
   LayoutDashboard,
+  LayoutTemplate,
   ListChecks,
+  Puzzle,
   Upload,
   Workflow,
 } from "lucide-react";
@@ -33,6 +35,28 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       to: "/workspace",
       label: messages.nav.workspace,
       icon: <AppWindow className={iconClassName} />,
+      children: [
+        {
+          to: "/workspace",
+          label: messages.nav.workspaceCanvas,
+          icon: <LayoutTemplate className={iconClassName} />,
+          isActive: (pathname) =>
+            pathname === "/workspace" ||
+            (pathname.startsWith("/workspace/") && !pathname.startsWith("/workspace/runs")),
+        },
+        {
+          to: "/chips",
+          label: messages.nav.chipCatalog,
+          icon: <Puzzle className={iconClassName} />,
+          end: true,
+        },
+        {
+          to: "/workspace/runs",
+          label: messages.nav.chipRuns,
+          icon: <History className={iconClassName} />,
+          end: true,
+        },
+      ],
     },
     {
       to: "/extract",

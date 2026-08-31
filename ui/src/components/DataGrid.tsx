@@ -139,7 +139,7 @@ export function DataGrid({
   const tableMinWidth = colWidths.reduce((sum, width) => sum + width, 0);
 
   return (
-    <div ref={wrapRef} className={cn("min-w-0 w-full overflow-auto", className)}>
+    <div ref={wrapRef} className={cn("scroll-pane min-w-0 w-full overflow-auto", className)}>
       <table
         className="border-collapse text-[13px]"
         style={{ width: tableMinWidth, minWidth: tableMinWidth, tableLayout: "fixed" }}

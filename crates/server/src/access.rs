@@ -152,6 +152,8 @@ pub async fn require_chip(
         .get_chip(id)
         .await?
         .ok_or_else(|| AppError::not_found("chip not found"))?;
-    require_workspace(store, user, &row.workspace_id).await?;
+    if !user.scope(None).admin && row.owner_user_id != user.id() {
+        return Err(AppError::not_found("chip not found"));
+    }
     Ok(row)
 }

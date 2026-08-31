@@ -1,7 +1,7 @@
 import { Database } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
-import type { DataConnection } from "@/types/connection";
+import type { CatalogSelection, DataConnection } from "@/types/connection";
 
 function ConnectionInfoItem({
   label,
@@ -19,7 +19,7 @@ function ConnectionInfoItem({
       </div>
       <div
         className={cn(
-          "mt-1 truncate text-[12px] text-text-secondary",
+          "mt-1 truncate text-[13px] font-semibold text-text",
           technical && "technical",
         )}
         title={value}
@@ -32,10 +32,10 @@ function ConnectionInfoItem({
 
 export function ConnectionInfoPanel({
   connection,
-  selectedTable,
+  selected,
 }: {
   connection?: DataConnection;
-  selectedTable?: string;
+  selected?: CatalogSelection | null;
 }) {
   const { messages } = useLanguage();
   if (!connection) {
@@ -53,6 +53,9 @@ export function ConnectionInfoPanel({
       </div>
     );
   }
+
+  const database = selected?.database || connection.database_name || "—";
+  const schema = selected?.schema || "—";
 
   return (
     <section
@@ -80,9 +83,9 @@ export function ConnectionInfoPanel({
           value={`${connection.host}:${connection.port}`}
           technical
         />
-        <ConnectionInfoItem label={messages.connectionInfo.database} value={connection.database_name} technical />
+        <ConnectionInfoItem label={messages.connectionInfo.database} value={database} technical />
+        <ConnectionInfoItem label={messages.connectionInfo.schema} value={schema} technical />
         <ConnectionInfoItem label={messages.connectionInfo.user} value={connection.username} technical />
-        <ConnectionInfoItem label={messages.common.selectedTable} value={selectedTable || "—"} technical />
       </div>
     </section>
   );

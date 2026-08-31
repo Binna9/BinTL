@@ -20,7 +20,7 @@ export function AttentionWidget() {
   }
 
   return (
-    <ul className="min-h-0 flex-1 divide-y divide-border overflow-auto">
+    <ul className="scroll-pane min-h-0 flex-1 divide-y divide-border overflow-auto">
       {model.attention.map((item) => (
         <li key={`${item.kind}-${item.id}`}>
           <FeedRow item={item} detail showArrow />

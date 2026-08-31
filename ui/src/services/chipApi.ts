@@ -5,6 +5,7 @@ import type {
   ChipRun,
   ChipRunListResponse,
   ChipRunLogsResponse,
+  RegisterChipRequest,
   RunChipRequest,
   RunChipResponse,
   SaveChipRequest,
@@ -12,6 +13,12 @@ import type {
 } from "@/types/chip";
 
 export const chipApi = {
+  listCatalog: () => httpRequest<ChipListResponse>("/api/chips"),
+  register: (request: RegisterChipRequest) =>
+    httpRequest<Chip>("/api/chips", {
+      method: "POST",
+      body: JSON.stringify(request),
+    }),
   list: (workspaceId: string) =>
     httpRequest<ChipListResponse>(`/api/workspaces/${workspaceId}/chips`),
   create: (workspaceId: string, request: SaveChipRequest) =>
@@ -27,7 +34,7 @@ export const chipApi = {
     }),
   remove: (id: string) =>
     httpRequest<{ ok: true }>(`/api/chips/${id}`, { method: "DELETE" }),
-  run: (id: string, request: RunChipRequest = {}) =>
+  run: (id: string, request: RunChipRequest) =>
     httpRequest<RunChipResponse>(`/api/chips/${id}/run`, {
       method: "POST",
       body: JSON.stringify(request),

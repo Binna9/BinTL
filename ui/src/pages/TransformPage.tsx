@@ -2,19 +2,28 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import {
+  ArrowUpDown,
   BookmarkPlus,
   Braces,
   ChevronRight,
+  Columns3,
+  CopyMinus,
   Database,
   Eye,
   FileDown,
   FileOutput,
   FileSpreadsheet,
+  Filter,
+  ListX,
   Plus,
+  Replace,
   RotateCcw,
   Search,
+  TextCursorInput,
   Trash2,
+  Type,
   Upload,
+  type LucideIcon,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import {
@@ -36,8 +45,9 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
-import { toastError } from "@/lib/notifications";
+import { toastError, toastSuccess } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
+import { chipApi } from "@/services/chipApi";
 import { datasetApi } from "@/services/datasetApi";
 import { transformApi } from "@/services/transformApi";
 import type { Dataset, DatasetColumn, FramePreview } from "@/types/dataset";
@@ -57,6 +67,17 @@ const STEP_OPS: StepOp[] = [
   "sort",
   "unique",
 ];
+
+const STEP_OP_ICONS: Record<StepOp, LucideIcon> = {
+  select: Columns3,
+  drop: ListX,
+  rename: TextCursorInput,
+  filter: Filter,
+  cast: Type,
+  fill_null: Replace,
+  sort: ArrowUpDown,
+  unique: CopyMinus,
+};
 
 const CAST_TYPES = ["Int64", "Int32", "Float64", "Float32", "String", "Boolean"];
 const KIND_ORDER = ["upload", "database", "api", "transform"] as const;
@@ -138,6 +159,95 @@ function formatCast(map: Record<string, string>): string {
   return Object.entries(map)
     .map(([from, to]) => `${from}:${to}`)
     .join(", ");
+}
+
+function resolveColumnsAtStep(
+  base: DatasetColumn[],
+  steps: TransformStep[],
+  stepIndex: number,
+): DatasetColumn[] {
+  let cols = [...base];
+  for (let i = 0; i < stepIndex; i++) {
+    const step = steps[i];
+    if (step.op === "select" && step.columns.length > 0) {
+      const byName = new Map(cols.map((column) => [column.name, column]));
+      cols = step.columns
+        .map((name) => byName.get(name))
+        .filter((column): column is DatasetColumn => column != null);
+    } else if (step.op === "drop" && step.columns.length > 0) {
+      const drop = new Set(step.columns);
+      cols = cols.filter((column) => !drop.has(column.name));
+    } else if (step.op === "rename") {
+      cols = cols.map((column) => ({
+        ...column,
+        name: step.map[column.name] ?? column.name,
+      }));
+    }
+  }
+  return cols;
+}
+
+function ColumnChipPicker({
+  columns,
+  value,
+  mode,
+  emptyLabel,
+  onChange,
+}: {
+  columns: DatasetColumn[];
+  value: string[];
+  mode: "select" | "drop";
+  emptyLabel: string;
+  onChange: (columns: string[]) => void;
+}) {
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{emptyLabel}</p>;
+  }
+
+  function toggle(name: string) {
+    if (value.includes(name)) {
+      onChange(value.filter((column) => column !== name));
+    } else {
+      onChange([...value, name]);
+    }
+  }
+
+  return (
+    <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
+      <div className="flex flex-nowrap gap-1.5 pb-0.5">
+        {columns.map((column) => {
+          const active = value.includes(column.name);
+          const isSelect = mode === "select";
+          return (
+            <button
+              key={column.name}
+              type="button"
+              title={column.dtype ? `${column.name} (${column.dtype})` : column.name}
+              aria-pressed={active}
+              onClick={() => toggle(column.name)}
+              className={cn(
+                "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                isSelect
+                  ? active
+                    ? "border-accent bg-accent-subtle text-accent"
+                    : "border-border bg-surface text-text-secondary hover:border-accent/40 hover:bg-subtle"
+                  : active
+                    ? "border-danger/40 bg-danger-subtle text-danger line-through"
+                    : "border-border bg-surface text-text hover:bg-subtle",
+              )}
+            >
+              {column.name}
+              {column.dtype ? (
+                <span className={cn("ml-1 font-normal", active ? "opacity-75" : "text-text-tertiary")}>
+                  {column.dtype}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function usableSteps(steps: TransformStep[]): TransformStep[] {
@@ -240,6 +350,9 @@ export function TransformPage() {
   const addStepRef = useRef<HTMLDivElement>(null);
   const addStepMenuRef = useRef<HTMLDivElement>(null);
   const [addStepPos, setAddStepPos] = useState<{ top: number; left: number } | null>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [registerChipName, setRegisterChipName] = useState("");
+  const [registerBusy, setRegisterBusy] = useState(false);
 
   const selected = datasets.find((item) => item.id === datasetId) ?? null;
   const kindLabel: Record<string, string> = {
@@ -304,6 +417,31 @@ export function TransformPage() {
       cancelled = true;
     };
   }, [id, messages]);
+
+  useEffect(() => {
+    if (!datasetId) {
+      setSourcePreview(null);
+      return;
+    }
+    let cancelled = false;
+    void datasetApi
+      .inspect(datasetId, 100)
+      .then((inspected) => {
+        if (cancelled) return;
+        setDatasets((current) =>
+          current.map((item) => (item.id === inspected.dataset.id ? inspected.dataset : item)),
+        );
+        setSourcePreview(inspected.preview);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          toastError(messages.errors.inspect, err);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetId, messages]);
 
   useEffect(() => {
     if (!detailOpen || !datasetId) return;
@@ -400,35 +538,46 @@ export function TransformPage() {
     navigate("/transform/clean");
   }
 
-  async function onSave() {
-    if (!datasetId) return;
-    const title = name.trim() || selected?.filename || messages.transform.untitled;
-    setBusy(true);
+  async function onRegisterChip() {
+    if (!datasetId || !registerChipName.trim()) return;
+    setRegisterBusy(true);
     try {
-      if (transformId) {
-        const row = await transformApi.update(transformId, {
+      const title = name.trim() || selected?.filename || messages.transform.untitled;
+      let savedTransformId = transformId;
+      if (savedTransformId) {
+        await transformApi.update(savedTransformId, {
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
         });
-        setName(row.name);
-        await refreshCatalog();
       } else {
         const row = await transformApi.create({
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
         });
+        savedTransformId = row.id;
         setTransformId(row.id);
         setName(row.name);
-        await refreshCatalog();
         navigate(`/transform/clean/${row.id}`, { replace: true });
       }
+      await chipApi.register({
+        name: registerChipName.trim(),
+        kind: "transform",
+        transform_id: savedTransformId,
+      });
+      setRegisterOpen(false);
+      toastSuccess(messages.query.taskRegistered);
     } catch (err) {
       toastError(messages.errors.saveTransform, err);
     } finally {
-      setBusy(false);
+      setRegisterBusy(false);
     }
+  }
+
+  function openRegister() {
+    setRegisterChipName(name.trim() || selected?.filename || messages.transform.untitled);
+    setRegisterOpen(true);
   }
 
   async function onRun() {
@@ -467,6 +616,8 @@ export function TransformPage() {
   }
 
   const columns = selected?.columns ?? [];
+  const baseColumns =
+    sourcePreview && sourcePreview.columns.length > 0 ? sourcePreview.columns : columns;
   const activePreview = detailTab === "result" ? resultPreview : sourcePreview;
   const previewHeaders = activePreview?.columns.map((column) => column.name) ?? [];
 
@@ -492,7 +643,7 @@ export function TransformPage() {
               <Eye className="size-3.5" aria-hidden="true" />
               {messages.transform.previewSteps}
             </Button>
-            <Button type="button" className="gap-2" disabled={!datasetId || busy} onClick={() => void onSave()}>
+            <Button type="button" className="gap-2" disabled={!datasetId || busy} onClick={openRegister}>
               <BookmarkPlus className="size-3.5" aria-hidden="true" />
               {busy ? messages.common.saving : messages.transform.register}
             </Button>
@@ -520,7 +671,7 @@ export function TransformPage() {
               title={messages.transform.catalog}
               meta={messages.common.count(datasets.length)}
             />
-            <div className="min-h-0 flex-1 overflow-auto bg-surface">
+            <div className="scroll-pane min-h-0 flex-1 overflow-auto bg-surface">
               <div className="space-y-2 p-2">
                   {grouped.map((group) => {
                     const appearance = KIND_APPEARANCE[group.kind];
@@ -664,28 +815,37 @@ export function TransformPage() {
                         <div
                           ref={addStepMenuRef}
                           role="menu"
-                          className="fixed z-[220] w-72 overflow-y-auto rounded-xl border border-border bg-surface py-1 shadow-[0_10px_28px_rgba(15,23,42,0.14)] dark:shadow-[0_14px_32px_rgba(0,0,0,0.48)]"
+                          className="scroll-pane fixed z-[220] w-72 overflow-y-auto rounded-xl border border-border bg-surface py-1 shadow-[0_10px_28px_rgba(15,23,42,0.14)] dark:shadow-[0_14px_32px_rgba(0,0,0,0.48)]"
                           style={{ top: addStepPos.top, left: addStepPos.left, maxHeight: 320 }}
                         >
-                          {STEP_OPS.map((op) => (
-                            <button
-                              key={op}
-                              type="button"
-                              role="menuitem"
-                              className="flex w-full flex-col px-3 py-2 text-left hover:bg-accent-subtle"
-                              onClick={() => {
-                                setSteps((current) => [...current, emptyStep(op)]);
-                                setAddStepOpen(false);
-                              }}
-                            >
-                              <span className="text-[13px] font-semibold text-text">
-                                {stepLabels[op]}
-                              </span>
-                              <span className="mt-0.5 text-[11px] leading-4 text-text-tertiary">
-                                {stepHints[op]}
-                              </span>
-                            </button>
-                          ))}
+                          {STEP_OPS.map((op) => {
+                            const Icon = STEP_OP_ICONS[op];
+                            return (
+                              <button
+                                key={op}
+                                type="button"
+                                role="menuitem"
+                                className="flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-accent-subtle"
+                                onClick={() => {
+                                  setSteps((current) => [...current, emptyStep(op)]);
+                                  setAddStepOpen(false);
+                                }}
+                              >
+                                <Icon
+                                  className="mt-0.5 size-4 shrink-0 text-text-tertiary"
+                                  aria-hidden="true"
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-[13px] font-semibold text-text">
+                                    {stepLabels[op]}
+                                  </span>
+                                  <span className="mt-0.5 block text-[11px] leading-4 text-text-tertiary">
+                                    {stepHints[op]}
+                                  </span>
+                                </span>
+                              </button>
+                            );
+                          })}
                         </div>,
                         document.body,
                       )
@@ -725,7 +885,7 @@ export function TransformPage() {
                   </FormField>
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <div className="min-h-0 flex-1 overflow-auto">
+                  <div className="scroll-pane min-h-0 flex-1 overflow-auto">
                     {steps.length === 0 ? (
                       <div className="grid h-full min-h-32 place-items-center px-4">
                         <p className="text-sm text-text-tertiary">{messages.empty.steps}</p>
@@ -784,7 +944,7 @@ export function TransformPage() {
                           </div>
                           <StepFields
                             step={step}
-                            columns={columns}
+                            columns={resolveColumnsAtStep(baseColumns, steps, index)}
                             onChange={(next) => updateStep(index, next)}
                             messages={messages}
                           />
@@ -884,6 +1044,54 @@ export function TransformPage() {
           </div>
         </div>
       </AppDialog>
+
+      <AppDialog
+        open={registerOpen}
+        title={messages.transform.register}
+        icon={<BookmarkPlus className="size-4 text-accent" aria-hidden="true" />}
+        className="w-[min(22rem,92vw)]"
+        minWidth={320}
+        minHeight={220}
+        zIndex={120}
+        onClose={() => setRegisterOpen(false)}
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setRegisterOpen(false)}>
+              {messages.common.cancel}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={registerBusy || !registerChipName.trim()}
+              onClick={() => void onRegisterChip()}
+            >
+              {registerBusy ? messages.common.saving : messages.common.save}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3 p-4">
+          <p className="text-[11px] leading-5 text-text-tertiary">{messages.transform.registerHint}</p>
+          <FormField label={messages.workspace.chipName}>
+            <input
+              className="field-control"
+              value={registerChipName}
+              autoFocus
+              onChange={(event) => setRegisterChipName(event.target.value)}
+            />
+          </FormField>
+          <dl className="space-y-2 border-t border-border/60 pt-3 text-[11px] text-text-tertiary">
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0">{messages.transform.selectedFile}</dt>
+              <dd className="min-w-0 truncate text-text-secondary">{selected?.filename ?? "—"}</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0">{messages.transform.steps}</dt>
+              <dd className="text-text-secondary">{messages.transform.registerSummarySteps(steps.length)}</dd>
+            </div>
+          </dl>
+        </div>
+      </AppDialog>
     </PageShell>
   );
 }
@@ -904,11 +1112,12 @@ function StepFields({
     case "select":
     case "drop":
       return (
-        <input
-          className="field-control technical"
-          value={step.columns.join(", ")}
-          placeholder={names || "id, amount"}
-          onChange={(event) => onChange({ ...step, columns: parseList(event.target.value) })}
+        <ColumnChipPicker
+          columns={columns}
+          value={step.columns}
+          mode={step.op}
+          emptyLabel={messages.transform.noColumns}
+          onChange={(next) => onChange({ ...step, columns: next })}
         />
       );
     case "rename":

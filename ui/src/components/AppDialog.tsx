@@ -27,6 +27,7 @@ export function AppDialog({
   minHeight = 240,
   defaultOffset = { x: 0, y: 0 },
   labelledBy,
+  hideHeaderClose = false,
   onClose,
 }: {
   open: boolean;
@@ -42,6 +43,7 @@ export function AppDialog({
   minHeight?: number;
   defaultOffset?: { x: number; y: number };
   labelledBy?: string;
+  hideHeaderClose?: boolean;
   onClose: () => void;
 }) {
   const { messages } = useLanguage();
@@ -186,15 +188,17 @@ export function AppDialog({
             {title}
           </h2>
           <div className="flex min-w-0 flex-1 items-center gap-3">{headerExtra}</div>
-          <button
-            type="button"
-            className="grid size-8 shrink-0 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
-            aria-label={messages.common.close}
-            title={messages.common.close}
-            onClick={onClose}
-          >
-            <X className="size-4" aria-hidden="true" />
-          </button>
+          {!hideHeaderClose ? (
+            <button
+              type="button"
+              className="grid size-8 shrink-0 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
+              aria-label={messages.common.close}
+              title={messages.common.close}
+              onClick={onClose}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
+          ) : null}
         </header>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
         {footer ? (

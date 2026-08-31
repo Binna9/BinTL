@@ -33,6 +33,7 @@ curl -s localhost:8080/api/health
 변환(파일 → parquet)의 회로·API·화면은 [docs/transform.md](docs/transform.md)에 있다.
 반복 가능한 작업과 작업 공간 모델은 [docs/workspace.md](docs/workspace.md)에 있다.
 SQLite 테이블·컬럼 한글 설명은 [docs/schema.md](docs/schema.md)에 있다.
+서버 배포 절차는 [docs/deploy.md](docs/deploy.md)에 있다.
 
 기본 계정: `admin` / `admin` (`skip_auth = false`). 개발 편의를 위해 `skip_auth = true` 또는 `ETL_SKIP_AUTH=true`를 허용한다.
 

@@ -11,7 +11,20 @@ export interface MenuItem {
   to: string;
   end?: boolean;
   disabled?: boolean;
+  isActive?: (pathname: string) => boolean;
   children?: MenuItem[];
+}
+
+function menuItemActive(pathname: string, item: MenuItem) {
+  if (item.disabled) return false;
+  if (item.isActive) return item.isActive(pathname);
+  if (item.end) return pathname === item.to;
+  return pathname === item.to || pathname.startsWith(`${item.to}/`);
+}
+
+function hasActiveDescendant(pathname: string, item: MenuItem): boolean {
+  if (!item.children?.length) return menuItemActive(pathname, item);
+  return item.children.some((child) => hasActiveDescendant(pathname, child));
 }
 
 interface MenuSidebarProps {
@@ -38,6 +51,9 @@ const itemVariants: Variants = {
 
 function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }) {
   const { messages } = useLanguage();
+  const location = useLocation();
+  const active = menuItemActive(location.pathname, item);
+
   if (item.disabled) {
     return (
       <div
@@ -66,20 +82,20 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
       to={item.to}
       end={item.end}
       title={item.label}
-      className={({ isActive }) =>
+      className={() =>
         cn(
           "group flex min-w-0 items-center gap-2.5 rounded-lg py-2.5 text-sm font-medium !text-text no-underline outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40",
           nested ? "px-2" : "px-3",
-          isActive ? "bg-accent-subtle" : "hover:bg-subtle",
+          active ? "bg-accent-subtle text-accent" : "hover:bg-subtle",
         )
       }
     >
-      {({ isActive }) => (
+      {() => (
         <>
           <span
             className={cn(
               "h-5 w-[3px] shrink-0 rounded-full",
-              isActive ? "bg-accent" : "bg-transparent",
+              active ? "bg-accent" : "bg-transparent",
             )}
             aria-hidden="true"
           />
@@ -87,18 +103,24 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
             className={cn(
               "shrink-0 transition-transform duration-150 group-hover:scale-110",
               nested ? "size-4" : "size-[18px]",
+              active && "text-accent",
             )}
             aria-hidden="true"
           >
             {item.icon}
           </span>
-          <span className="min-w-0 flex-1 origin-left truncate transition-transform duration-150 group-hover:scale-110 group-hover:font-bold">
+          <span
+            className={cn(
+              "min-w-0 flex-1 origin-left truncate transition-transform duration-150 group-hover:scale-110",
+              active ? "font-semibold" : "group-hover:font-bold",
+            )}
+          >
             {item.label}
           </span>
           <ChevronRight
             className={cn(
               "size-4 shrink-0 transition-opacity",
-              isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+              active ? "text-accent opacity-100" : "opacity-0 group-hover:opacity-100",
             )}
             aria-hidden="true"
           />
@@ -108,42 +130,34 @@ function MenuLink({ item, nested = false }: { item: MenuItem; nested?: boolean }
   );
 }
 
-function MenuGroup({ item }: { item: MenuItem }) {
+function MenuGroup({ item, depth = 0 }: { item: MenuItem; depth?: number }) {
   const location = useLocation();
   const { messages } = useLanguage();
-  const hasActiveChild =
-    item.children?.some(
-      (child) =>
-        !child.disabled &&
-        (location.pathname === child.to ||
-          (!child.end && location.pathname.startsWith(`${child.to}/`))),
-    ) ?? false;
-  const [isOpen, setIsOpen] = React.useState(hasActiveChild);
+  const childActive = hasActiveDescendant(location.pathname, item);
+  const [isOpen, setIsOpen] = React.useState(childActive);
 
   React.useEffect(() => {
-    if (hasActiveChild) setIsOpen(true);
-  }, [hasActiveChild]);
+    if (childActive) setIsOpen(true);
+  }, [childActive]);
 
   return (
     <>
       <button
         type="button"
         className={cn(
-          "group flex w-full min-w-0 items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40",
-          hasActiveChild ? "bg-accent-subtle text-text" : "text-text hover:bg-subtle",
+          "group flex w-full min-w-0 items-center gap-2.5 rounded-lg py-2.5 text-sm font-medium text-text outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40",
+          depth > 0 ? "px-2" : "px-3",
+          childActive ? "bg-subtle" : "hover:bg-subtle",
         )}
         aria-expanded={isOpen}
         onClick={() => setIsOpen((open) => !open)}
       >
+        <span className="h-5 w-[3px] shrink-0 rounded-full bg-transparent" aria-hidden="true" />
         <span
           className={cn(
-            "h-5 w-[3px] shrink-0 rounded-full",
-            hasActiveChild ? "bg-accent" : "bg-transparent",
+            "shrink-0 transition-transform duration-150 group-hover:scale-110",
+            depth > 0 ? "size-4" : "size-[18px]",
           )}
-          aria-hidden="true"
-        />
-        <span
-          className="size-[18px] shrink-0 transition-transform duration-150 group-hover:scale-110"
           aria-hidden="true"
         >
           {item.icon}
@@ -152,7 +166,7 @@ function MenuGroup({ item }: { item: MenuItem }) {
           {item.label}
         </span>
         <motion.span
-          className="size-4 shrink-0 text-text"
+          className="size-4 shrink-0 text-text-secondary"
           animate={{ rotate: isOpen ? 180 : 0 }}
           transition={{ duration: 0.2 }}
           aria-hidden="true"
@@ -170,12 +184,19 @@ function MenuGroup({ item }: { item: MenuItem }) {
             transition={{ duration: 0.22, ease: "easeInOut" }}
           >
             <div
-              className="ml-5 space-y-1 border-l border-border py-1 pl-2"
+              className={cn(
+                "space-y-1 border-l border-border py-1 pl-2",
+                depth === 0 ? "ml-5" : "ml-3",
+              )}
               aria-label={messages.nav.submenu(item.label)}
             >
-              {item.children?.map((child) => (
-                <MenuLink key={child.to} item={child} nested />
-              ))}
+              {item.children?.map((child) =>
+                child.children?.length ? (
+                  <MenuGroup key={child.to} item={child} depth={depth + 1} />
+                ) : (
+                  <MenuLink key={child.to} item={child} nested />
+                ),
+              )}
             </div>
           </motion.div>
         ) : null}
@@ -188,29 +209,28 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
   ({ items, className }, ref) => {
     const { messages } = useLanguage();
     return (
-    <motion.aside
-      ref={ref}
-      className={cn(
-        "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface p-3 text-text",
-        className,
-      )}
-      initial="hidden"
-      animate="visible"
-      variants={sidebarVariants}
-      aria-label={messages.nav.mainMenu}
-    >
-      <nav className="flex-1 space-y-1" aria-label={messages.nav.platform}>
-        {items.map((item) => (
-          <motion.div key={item.to} variants={itemVariants}>
-            {item.children ? (
-              <MenuGroup item={item} />
-            ) : (
-              <MenuLink item={item} />
-            )}
-          </motion.div>
-        ))}
-      </nav>
-    </motion.aside>
+      <motion.aside
+        ref={ref}
+        className={cn(
+          "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface p-3 text-text",
+          className,
+        )}
+        initial="hidden"
+        animate="visible"
+        variants={sidebarVariants}
+        aria-label={messages.nav.mainMenu}
+      >
+        <nav
+          className="scroll-pane min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain"
+          aria-label={messages.nav.platform}
+        >
+          {items.map((item) => (
+            <motion.div key={item.to} variants={itemVariants}>
+              {item.children ? <MenuGroup item={item} /> : <MenuLink item={item} />}
+            </motion.div>
+          ))}
+        </nav>
+      </motion.aside>
     );
   },
 );
