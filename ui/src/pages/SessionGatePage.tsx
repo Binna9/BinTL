@@ -8,7 +8,7 @@ import { ShaderBackground } from "@/components/ui/adisyon-shader";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { useLanguage } from "@/i18n/LanguageProvider";
-import { toastError } from "@/lib/notifications";
+import { toastError, toastSuccess } from "@/lib/notifications";
 import { authApi } from "@/services/authApi";
 import { useSession } from "@/hooks/useSession";
 import { clearStoredLayouts } from "@/dashboard/layout";
@@ -53,6 +53,7 @@ export function SessionGatePage() {
       await authApi.login(userid, password);
       clearStoredLayouts();
       await refresh();
+      toastSuccess(messages.login.success);
       navigate("/");
     } catch (err) {
       toastError(messages.errors.login, err);

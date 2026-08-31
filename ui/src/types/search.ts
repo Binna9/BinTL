@@ -22,3 +22,7 @@ export interface SearchResponse {
   items: SearchHit[];
   total: number;
 }
+
+export interface RecentSearchesResponse {
+  items: string[];
+}

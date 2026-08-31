@@ -86,6 +86,9 @@ struct RegisterChipBody {
     workspace_id: Option<String>,
     #[serde(default)]
     place_on_workspace: bool,
+    /// Queue a workspace run after register. Defaults to true when `place_on_workspace`.
+    #[serde(default)]
+    run_after: Option<bool>,
     #[serde(default)]
     extract: Option<Value>,
     #[serde(default)]
@@ -234,7 +237,27 @@ async fn register_chip(
         }
         _ => return Err(AppError::bad("chip kind must be extract or transform")),
     };
-    Ok((StatusCode::CREATED, Json(chip_json(&state.store, &chip).await?)))
+    let chip_json = chip_json(&state.store, &chip).await?;
+    let should_run = body.run_after.unwrap_or(body.place_on_workspace);
+    if body.place_on_workspace && should_run {
+        if let Some(workspace_id) = body
+            .workspace_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Err(error) =
+                queue_chip_run(&state, &user, &chip, workspace_id, None).await
+            {
+                tracing::warn!(
+                    chip_id = %chip.id,
+                    ?error,
+                    "register succeeded but initial run failed"
+                );
+            }
+        }
+    }
+    Ok((StatusCode::CREATED, Json(chip_json)))
 }
 
 async fn list_chips(
@@ -344,14 +367,14 @@ async fn delete_chip(
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn run_chip(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<String>,
-    Json(body): Json<RunChipBody>,
-) -> Result<Json<Value>, AppError> {
-    let chip = access::require_chip(&state.store, &user, &id).await?;
-    access::require_workspace(&state.store, &user, &body.workspace_id).await?;
+async fn queue_chip_run(
+    state: &AppState,
+    user: &CurrentUser,
+    chip: &ChipRow,
+    workspace_id: &str,
+    requested_input: Option<String>,
+) -> Result<ChipRunRow, AppError> {
+    access::require_workspace(&state.store, user, workspace_id).await?;
     if chip.active == 0 {
         return Err(AppError::conflict("chip is inactive"));
     }
@@ -360,7 +383,7 @@ async fn run_chip(
     }
     let config_raw = state
         .store
-        .resolve_chip_config_json(&chip)
+        .resolve_chip_config_json(chip)
         .await
         .map_err(|error| AppError::bad(error.to_string()))?;
     let config: Value = serde_json::from_str(&config_raw)
@@ -369,7 +392,7 @@ async fn run_chip(
 
     let input_dataset_id = match chip.kind.as_str() {
         "extract" => {
-            if body.input_dataset_id.is_some() {
+            if requested_input.is_some() {
                 return Err(AppError::bad(
                     "extract chips do not accept input_dataset_id",
                 ));
@@ -388,12 +411,12 @@ async fn run_chip(
         }
         "transform" => {
             let config =
-                validate_transform_config(&state.store, &body.workspace_id, config).await?;
+                validate_transform_config(&state.store, workspace_id, config).await?;
             let dataset_id = resolve_transform_input(
                 &state.store,
-                &body.workspace_id,
+                workspace_id,
                 &chip.id,
-                body.input_dataset_id,
+                requested_input,
                 config.input_dataset_id,
             )
             .await?;
@@ -402,7 +425,7 @@ async fn run_chip(
                 .get_dataset(&dataset_id)
                 .await?
                 .ok_or_else(|| AppError::not_found("input dataset not found"))?;
-            if dataset.workspace_id != body.workspace_id {
+            if dataset.workspace_id != workspace_id {
                 return Err(AppError::bad("input dataset belongs to another workspace"));
             }
             if !state.store.resolve(&dataset.stored_path).is_file() {
@@ -417,7 +440,7 @@ async fn run_chip(
         .store
         .create_chip_run(
             &chip.id,
-            &body.workspace_id,
+            workspace_id,
             chip.revision,
             &config_raw,
             input_dataset_id.as_deref(),
@@ -433,6 +456,24 @@ async fn run_chip(
             "chip queue full",
         ));
     }
+    Ok(run)
+}
+
+async fn run_chip(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<RunChipBody>,
+) -> Result<Json<Value>, AppError> {
+    let chip = access::require_chip(&state.store, &user, &id).await?;
+    let run = queue_chip_run(
+        &state,
+        &user,
+        &chip,
+        &body.workspace_id,
+        body.input_dataset_id,
+    )
+    .await?;
     Ok(Json(json!({
         "ok": true,
         "id": run.id,
@@ -525,7 +566,7 @@ async fn resolve_transform_input(
     }
     if let Some(edge) = incoming.first() {
         return store
-            .latest_chip_output(&edge.from_chip_id)
+            .latest_chip_output_for_workspace(workspace_id, &edge.from_chip_id)
             .await?
             .ok_or_else(|| {
                 AppError::bad("upstream chip has no succeeded output dataset")
@@ -767,6 +808,7 @@ async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {
             sql.as_deref(),
             database.as_deref(),
             &run.workspace_id,
+            None,
         )
         .await
         .map_err(|error| error.to_string())?;

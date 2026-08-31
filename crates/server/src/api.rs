@@ -862,6 +862,10 @@ struct CreateExtractBody {
     database: Option<String>,
     #[serde(default)]
     workspace_id: Option<String>,
+    #[serde(default)]
+    filename: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 async fn create_extract(
@@ -909,6 +913,12 @@ async fn create_extract(
         None => None,
     };
     let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
+    let output_filename = body
+        .filename
+        .as_deref()
+        .or(body.name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let row = state
         .store
         .insert_extract(
@@ -921,6 +931,7 @@ async fn create_extract(
             sql.as_deref(),
             catalog_database.as_deref(),
             &workspace_id,
+            output_filename,
         )
         .await?;
     crate::extract::spawn(state.store.clone(), row.id.clone());

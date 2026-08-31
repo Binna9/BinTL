@@ -1799,6 +1799,24 @@ export function WorkspacePage() {
     }
   }
 
+  async function requestOpenWorkspace(id: string) {
+    if (id && id === workspaceId) {
+      setManageOpen(false);
+      return;
+    }
+    if (dirtyRef.current) {
+      const confirmed = await showConfirm(
+        messages.workspace.switchConfirmTitle,
+        messages.workspace.switchConfirmMessage,
+        { tone: "danger", confirmLabel: messages.workspace.switchConfirmAction },
+      );
+      if (!confirmed) return;
+    }
+    setManageOpen(false);
+    if (id) navigate(`/workspace/${id}`);
+    else navigate("/workspace");
+  }
+
   function resetCanvas() {
     const saved = cloneCanvas(
       savedRef.current.chips,
@@ -2871,9 +2889,7 @@ export function WorkspacePage() {
         onFoldersChange={setFolders}
         onWorkspacesChange={setWorkspaces}
         onOpenWorkspace={(id) => {
-          setManageOpen(false);
-          if (id) navigate(`/workspace/${id}`);
-          else navigate("/workspace");
+          void requestOpenWorkspace(id);
         }}
       />
     </>

@@ -1,22 +1,26 @@
 # SQLite 스키마 (`data/etl.db`)
 
-작성: 2026-08-27
+작성: 2026-08-31 (0016 → 0021 반영)
 
 SQLite는 `COMMENT ON`을 지원하지 않는다. 테이블·컬럼 의미는 이 문서가 기준이다.
 
-마이그레이션은 `crates/storage/migrations/`에 있다. 아래는 **현재(0016까지 적용된)** 구조다. 시각 컬럼은 RFC3339 문자열이다. 불리언은 INTEGER `0`/`1`이다.
+마이그레이션은 `crates/storage/migrations/`에 있다. 아래는 **현재(0021까지 적용된)** 구조다. 시각 컬럼은 RFC3339 문자열이다. 불리언은 INTEGER `0`/`1`이다.
 
 한 설치(SQLite 하나)는 회사 하나다. 커넥션은 조직 공유 자산이고, 일(파일·추출·변환·칩)은 작업 공간에 속한다. 사용자는 작업 공간을 여러 개 소유한다. 폴더는 디렉터리처럼 그룹만 잡는다.
 
 ```
 users
   ├─ user_roles ──► roles ──► role_permissions ──► permissions
+  ├─ search_recent_queries
   └─ workspaces.owner_user_id          (1:N)
         ├─ folder_id ──► workspace_folders (중첩 parent_id)
         ├─ workspace_revisions
-        ├─ chips / chip_runs / chip_edges
+        ├─ workspace_chips ──► chips ──► chip_bindings
+        ├─ chip_edges / chip_runs / chip_output_slots
         └─ datasets / extracts / jobs / transforms
 connections          (전역. 쓰기 권한 CONNECTION_WRITE)
+search_documents     (통합검색 인덱스. 엔티티별 upsert)
+extract_definitions  (칩 카탈로그용 추출 정의. workspace_id 선택)
 ```
 
 접근은 역할 문자열이 아니라 `permissions.code`로 판단한다.
@@ -203,7 +207,7 @@ DB/API 추출 레시피. `extracts`는 실행 이력, 이 테이블은 재사용
 | `delimiter`     | 구분자      |                             |
 | `header`        | 헤더 여부    |                             |
 | `add_sequence`  | 순번 추가    |                             |
-| `workspace_id`  | 작업 공간 ID | 정의를 만든 워크스페이스 (접근 범위)      |
+| `workspace_id`  | 작업 공간 ID | 배치 전에는 비울 수 있음 (0018). 캔버스에 올릴 때와 무관하게 카탈로그에만 둘 수 있다 |
 | `created_at`    | 생성 시각    |                             |
 | `updated_at`    | 수정 시각    |                             |
 
@@ -230,6 +234,20 @@ DB/API 추출 레시피. `extracts`는 실행 이력, 이 테이블은 재사용
 
 
 같은 워크스페이스에서 `(from_chip_id, to_chip_id, kind)`는 유일하다. 사이클은 저장 시 거부한다. `data` 선은 추출·변환에서 시작해 변환·적재로만 갈 수 있다.
+
+## chip_output_slots — 칩 산출 슬롯
+
+워크스페이스에 배치된 칩마다 **최신 성공 산출 dataset**을 한 칸에 고정한다. 같은 `(workspace_id, chip_id)`에서 재실행하면 dataset 행을 덮어쓴다.
+
+| 컬럼             | 한글명      | 설명                          |
+| -------------- | -------- | --------------------------- |
+| `workspace_id` | 작업 공간 ID | PK 일부, `workspaces.id`      |
+| `chip_id`      | 칩 ID     | PK 일부, `chips.id`           |
+| `dataset_id`   | 데이터셋 ID  | `datasets.id`. 유일 (한 파일은 슬롯 하나) |
+| `created_at`   | 생성 시각    |                             |
+| `updated_at`   | 수정 시각    |                             |
+
+슬롯이 없으면 `chip_runs`에서 마지막 succeeded 출력을 fallback으로 본다.
 
 ---
 
@@ -339,6 +357,7 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 | `finished_at`      | 종료 시각    |                                               |
 | `sql_text`         | SQL      | DB 쿼리 추출 시 실행한 SQL. 테이블/API면 비울 수 있음          |
 | `catalog_database` | 카탈로그 DB  | 카탈로그에서 고른 데이터베이스                              |
+| `output_filename`  | 출력 파일명   | DB 내보내기 시 사용자가 지정한 이름 (0021). 칩 실행과 무관      |
 | `workspace_id`     | 작업 공간 ID | `workspaces.id`. 목록·접근은 소유 범위                 |
 
 
@@ -348,18 +367,54 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 
 ## transforms — 변환 정의 (호환)
 
-기존 변환 화면의 저장 정의. 입력 데이터셋과 TransformSpec JSON.
+기존 변환 화면의 저장 정의. 입력 데이터셋(기준/왼쪽)과 TransformSpec v2 JSON.
 
 
 | 컬럼             | 한글명        | 설명                    |
 | -------------- | ---------- | --------------------- |
 | `id`           | ID         | UUID                  |
 | `name`         | 이름         |                       |
-| `dataset_id`   | 입력 데이터셋 ID | `datasets.id`         |
-| `spec_json`    | 스펙         | TransformSpec v2 JSON |
+| `dataset_id`   | 입력 데이터셋 ID | `datasets.id`. combine 시 기준 파일 |
+| `spec_json`    | 스펙         | TransformSpec v2 JSON (아래) |
 | `created_at`   | 생성 시각      |                       |
 | `updated_at`   | 수정 시각      |                       |
 | `workspace_id` | 작업 공간 ID   | 입력 데이터셋과 같은 작업 공간     |
+
+### `spec_json` (TransformSpec v2)
+
+엔진·UI 공통. SQLite 컬럼은 아니지만 이 테이블에 저장되는 JSON 형태다.
+
+```json
+{
+  "version": 2,
+  "read": { "delimiter": ",", "has_header": true },
+  "steps": [
+    { "op": "filter", "expr": "amount >= 1" },
+    { "op": "select", "columns": ["id", "amount"] }
+  ],
+  "sink": "parquet",
+  "combine": {
+    "mode": "join",
+    "right_dataset_id": "<datasets.id>",
+    "on": ["id"],
+    "how": "left"
+  }
+}
+```
+
+| 필드 | 설명 |
+| --- | --- |
+| `steps` | 정제 스텝. `select`, `drop`, `rename`, `filter`, `cast`, `fill_null`, `sort`, `unique` |
+| `combine` | 선택. **붙이기** 화면용. `steps` 앞에 적용된다 |
+| `combine.mode` | `join` (가로) \| `union` (세로 이어 붙이기) |
+| `combine.right_dataset_id` | join 시 오른쪽 `datasets.id` |
+| `combine.union_dataset_ids` | union 시 기준 파일 아래에 붙일 `datasets.id` 목록 |
+| `combine.on` | join 키 컬럼 (양쪽 동일 이름) |
+| `combine.how` | `left` \| `inner` (join만) |
+
+미리보기·실행 시 서버가 `right_dataset_id` / `union_dataset_ids`를 파일 경로로 풀어 엔진에 넘긴다. DB에는 dataset ID만 남긴다.
+
+정제(`/transform/clean`)는 `steps`만, 붙이기(`/transform/combine`)는 `combine`을 쓴다. 둘 다 같은 `transforms` 행에 저장 가능하다.
 
 
 ---
@@ -377,7 +432,7 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 | `status`        | 상태       | `queued` | `running` | `succeeded` | `failed` | `canceled` |
 | `source_path`   | 입력 경로    | 입력 파일 상대 경로                                                |
 | `output_path`   | 출력 경로    | 출력 파일 상대 경로                                                |
-| `spec_json`     | 스펙       | 변환 스펙 JSON                                                 |
+| `spec_json`     | 스펙       | 실행 시점 TransformSpec JSON. combine 실행 시 경로가 풀린 스냅샷이 들어갈 수 있다 |
 | `error_message` | 오류 메시지   |                                                            |
 | `created_at`    | 생성 시각    |                                                            |
 | `started_at`    | 시작 시각    |                                                            |
@@ -405,4 +460,47 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 | `level`   | 레벨    | `info` | `error` 등 |
 | `message` | 내용    |                    |
 
+
+---
+
+
+
+## search_documents — 통합검색 인덱스
+
+헤더 통합검색용 **비정규화 인덱스**. 원본 테이블 변경 시 storage가 upsert한다. `(entity_type, entity_id)`가 유일하다.
+
+
+| 컬럼              | 한글명      | 설명 |
+| --------------- | -------- | --- |
+| `id`            | ID       | `{entity_type}:{entity_id}` 형태 |
+| `entity_type`   | 엔티티 종류  | `workspace_folder` \| `workspace` \| `chip` \| `dataset` \| `connection` \| `extract` \| `transform` |
+| `entity_id`     | 엔티티 ID   | 원본 PK |
+| `title`         | 제목       | 검색 결과 한 줄 제목 |
+| `subtitle`      | 부제       | 종류·출처 라벨 |
+| `keywords`      | 키워드      | LIKE 검색용. 이름·경로·SQL 등을 소문자로 이어 붙임 |
+| `route`         | 이동 경로    | UI 라우트 (예: `/transform/clean/:id`) |
+| `scope`         | 노출 범위    | `global` (전원) \| `user` (소유자) \| `workspace` (작업 공간 소유) |
+| `workspace_id`  | 작업 공간 ID | `scope = workspace`일 때 |
+| `owner_user_id` | 소유자 ID   | `scope = user`일 때 |
+| `updated_at`    | 갱신 시각    | 정렬·표시용 |
+
+
+쿼리가 비어 있으면 최근 갱신 순 browse, 있으면 `title` / `subtitle` / `keywords` LIKE 매칭 후 `updated_at` 내림차순.
+
+
+---
+
+
+
+## search_recent_queries — 최근 검색어
+
+사용자별 최근 검색어. 저장 시 `(user_id, query)` 중복은 갱신, 사용자당 최대 8건 유지.
+
+
+| 컬럼            | 한글명   | 설명 |
+| ------------- | ----- | --- |
+| `id`          | ID    | UUID |
+| `user_id`     | 사용자  | `users.id`. CASCADE 삭제 |
+| `query`       | 검색어  | 대소문자 무시 유일 (user_id와 쌍) |
+| `searched_at` | 검색 시각 | RFC3339 |
 

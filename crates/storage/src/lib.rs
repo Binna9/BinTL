@@ -1,3 +1,5 @@
+pub mod chip_slot;
+mod delete_guard;
 mod identity;
 mod password;
 mod process_log;
@@ -235,6 +237,13 @@ pub struct RegisterTransformChip {
 }
 
 #[derive(Debug, Clone)]
+pub struct LinkedChipRun {
+    pub run_id: String,
+    pub chip_id: String,
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct WorkspaceSaveEdge {
     pub id: String,
     pub from_chip_id: String,
@@ -304,6 +313,7 @@ pub struct ExtractRow {
     pub status: String,
     pub stored_path: Option<String>,
     pub filename: Option<String>,
+    pub output_filename: Option<String>,
     pub row_count: Option<i64>,
     pub error_message: Option<String>,
     pub created_at: String,
@@ -316,8 +326,8 @@ pub struct ExtractRow {
 }
 
 const EXTRACT_COLS: &str = "e.id, e.kind, e.connection_id, e.table_name, e.delimiter, e.header,
-        e.add_sequence, e.status, e.stored_path, e.filename, e.row_count, e.error_message,
-        e.created_at, e.started_at, e.finished_at, e.sql_text, e.catalog_database,
+        e.add_sequence, e.status, e.stored_path, e.filename, e.output_filename, e.row_count,
+        e.error_message, e.created_at, e.started_at, e.finished_at, e.sql_text, e.catalog_database,
         e.workspace_id, COALESCE(c.name, '') AS connection_name";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -1496,6 +1506,150 @@ impl Store {
         .await?)
     }
 
+    pub async fn latest_chip_output_for_workspace(
+        &self,
+        workspace_id: &str,
+        chip_id: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let slot_id: Option<String> = sqlx::query_scalar(
+            "SELECT s.dataset_id FROM chip_output_slots s
+             INNER JOIN datasets d ON d.id = s.dataset_id
+             WHERE s.workspace_id = ? AND s.chip_id = ?
+               AND d.stored_path IS NOT NULL AND TRIM(d.stored_path) != ''",
+        )
+        .bind(workspace_id)
+        .bind(chip_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if slot_id.is_some() {
+            return Ok(slot_id);
+        }
+        Ok(sqlx::query_scalar(
+            "SELECT output_dataset_id FROM chip_runs
+             WHERE chip_id = ? AND workspace_id = ? AND status = 'succeeded'
+               AND output_dataset_id IS NOT NULL
+             ORDER BY COALESCE(finished_at, created_at) DESC, created_at DESC
+             LIMIT 1",
+        )
+        .bind(chip_id)
+        .bind(workspace_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn linked_chip_run_for_extract(
+        &self,
+        extract_id: &str,
+    ) -> Result<Option<LinkedChipRun>, StorageError> {
+        Ok(sqlx::query_as::<_, (String, String, String)>(
+            "SELECT id, chip_id, workspace_id FROM chip_runs
+             WHERE legacy_extract_id = ? AND status IN ('queued', 'running')",
+        )
+        .bind(extract_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|(run_id, chip_id, workspace_id)| LinkedChipRun {
+            run_id,
+            chip_id,
+            workspace_id,
+        }))
+    }
+
+    pub async fn linked_chip_run_for_job(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<LinkedChipRun>, StorageError> {
+        Ok(sqlx::query_as::<_, (String, String, String)>(
+            "SELECT id, chip_id, workspace_id FROM chip_runs
+             WHERE legacy_job_id = ? AND status IN ('queued', 'running')",
+        )
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|(run_id, chip_id, workspace_id)| LinkedChipRun {
+            run_id,
+            chip_id,
+            workspace_id,
+        }))
+    }
+
+    async fn upsert_chip_output_slot_dataset(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        workspace_id: &str,
+        chip_id: &str,
+        chip_run_id: &str,
+        kind: &str,
+        filename: &str,
+        stored_path: &str,
+        size_bytes: Option<i64>,
+        row_count: Option<i64>,
+        delimiter: Option<&str>,
+        has_header: Option<bool>,
+        extract_id: Option<&str>,
+    ) -> Result<String, StorageError> {
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT dataset_id FROM chip_output_slots
+             WHERE workspace_id = ? AND chip_id = ?",
+        )
+        .bind(workspace_id)
+        .bind(chip_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let dataset_id = existing.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let now = now_rfc3339();
+        let has_header_i64 = has_header.map(i64::from);
+        sqlx::query(
+            "INSERT INTO datasets
+             (id, kind, extract_id, filename, stored_path, size_bytes, delimiter, has_header,
+              row_count, created_at, updated_at, workspace_id, producer_chip_run_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               kind = excluded.kind,
+               extract_id = excluded.extract_id,
+               filename = excluded.filename,
+               stored_path = excluded.stored_path,
+               size_bytes = excluded.size_bytes,
+               delimiter = COALESCE(excluded.delimiter, datasets.delimiter),
+               has_header = COALESCE(excluded.has_header, datasets.has_header),
+               row_count = COALESCE(excluded.row_count, datasets.row_count),
+               workspace_id = excluded.workspace_id,
+               producer_chip_run_id = excluded.producer_chip_run_id,
+               updated_at = excluded.updated_at",
+        )
+        .bind(&dataset_id)
+        .bind(kind)
+        .bind(extract_id)
+        .bind(filename)
+        .bind(stored_path)
+        .bind(size_bytes)
+        .bind(delimiter)
+        .bind(has_header_i64)
+        .bind(row_count)
+        .bind(&now)
+        .bind(&now)
+        .bind(workspace_id)
+        .bind(chip_run_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO chip_output_slots
+             (workspace_id, chip_id, dataset_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(workspace_id, chip_id) DO UPDATE SET
+               dataset_id = excluded.dataset_id,
+               updated_at = excluded.updated_at",
+        )
+        .bind(workspace_id)
+        .bind(chip_id)
+        .bind(&dataset_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut **tx)
+        .await?;
+        Ok(dataset_id)
+    }
+
     pub async fn set_chip_run_running(&self, id: &str) -> Result<(), StorageError> {
         let result = sqlx::query(
             "UPDATE chip_runs SET status = 'running', started_at = ?, error_message = NULL
@@ -1780,23 +1934,61 @@ impl Store {
 
     pub async fn delete_upload(&self, id: &str) -> Result<(), StorageError> {
         validate_uuid(id, "file_id")?;
+        let dataset_ids = self.dataset_ids_for_upload(id).await?;
         let dir = self.uploads_dir().join(id);
-        let removed = match tokio::fs::remove_dir_all(&dir).await {
-            Ok(()) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => return Err(error.into()),
-        };
+        let dir_exists = dir.is_dir();
+        if dataset_ids.is_empty() && !dir_exists {
+            return Err(StorageError::NotFound(format!("file {id} not found")));
+        }
+        delete_guard::ensure_datasets_deletable_by_chips(&self.pool, &dataset_ids).await?;
+
         let prefix = format!("{REL_UPLOADS}/{id}/%");
+        let mut tx = self.pool.begin().await?;
+        let transform_ids =
+            delete_guard::delete_transforms_for_datasets(&mut tx, &dataset_ids).await?;
         let deleted = sqlx::query("DELETE FROM datasets WHERE id = ? OR stored_path LIKE ?")
             .bind(id)
             .bind(&prefix)
-            .execute(&self.pool)
-            .await?;
-        if !removed && deleted.rows_affected() == 0 {
+            .execute(&mut *tx)
+            .await
+            .map_err(delete_guard::map_delete_sql)?;
+        tx.commit().await?;
+        if !dir_exists && deleted.rows_affected() == 0 && transform_ids.is_empty() {
             return Err(StorageError::NotFound(format!("file {id} not found")));
         }
-        let _ = self.delete_search_document("dataset", id).await;
+        for transform_id in &transform_ids {
+            let _ = self.delete_search_document("transform", transform_id).await;
+        }
+        for dataset_id in &dataset_ids {
+            let _ = self.delete_search_document("dataset", dataset_id).await;
+        }
+        if dir_exists {
+            match tokio::fs::remove_dir_all(&dir).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
         Ok(())
+    }
+
+    async fn dataset_ids_for_upload(&self, id: &str) -> Result<Vec<String>, StorageError> {
+        let prefix = format!("{REL_UPLOADS}/{id}/%");
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM datasets WHERE id = ? OR stored_path LIKE ?",
+        )
+        .bind(id)
+        .bind(&prefix)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    async fn dataset_ids_for_extract(&self, id: &str) -> Result<Vec<String>, StorageError> {
+        Ok(sqlx::query_scalar("SELECT id FROM datasets WHERE id = ? OR extract_id = ?")
+            .bind(id)
+            .bind(id)
+            .fetch_all(&self.pool)
+            .await?)
     }
 
     pub async fn source_for_file_id(&self, file_id: &str) -> Result<String, StorageError> {
@@ -2149,10 +2341,12 @@ impl Store {
     }
 
     pub async fn delete_connection(&self, id: &str) -> Result<(), StorageError> {
+        delete_guard::ensure_connection_deletable(&self.pool, id).await?;
         let res = sqlx::query("DELETE FROM connections WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(delete_guard::map_delete_sql)?;
         if res.rows_affected() == 0 {
             return Err(StorageError::NotFound("connection not found".into()));
         }
@@ -2175,6 +2369,7 @@ impl Store {
         sql_text: Option<&str>,
         catalog_database: Option<&str>,
         workspace_id: &str,
+        output_filename: Option<&str>,
     ) -> Result<ExtractRow, StorageError> {
         let kind = validate_extract_kind(kind)?;
         self.require_workspace(workspace_id).await?;
@@ -2186,8 +2381,9 @@ impl Store {
         let created_at = now_rfc3339();
         sqlx::query(
             "INSERT INTO extracts
-             (id, kind, connection_id, table_name, delimiter, header, add_sequence, status, created_at, sql_text, catalog_database, workspace_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+             (id, kind, connection_id, table_name, delimiter, header, add_sequence, status, created_at,
+              sql_text, catalog_database, workspace_id, output_filename)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(kind)
@@ -2200,6 +2396,7 @@ impl Store {
         .bind(sql_text)
         .bind(catalog_database)
         .bind(workspace_id)
+        .bind(output_filename)
         .execute(&self.pool)
         .await?;
         search::sync_search_best_effort(self, "extract", self.sync_search_extract(&id)).await;
@@ -2249,6 +2446,37 @@ impl Store {
             .await?
             .ok_or_else(|| StorageError::NotFound("extract not found".into()))?;
 
+        let dataset_ids = self.dataset_ids_for_extract(id).await?;
+        delete_guard::ensure_datasets_deletable_by_chips(&self.pool, &dataset_ids).await?;
+
+        let mut tx = self.pool.begin().await?;
+        let transform_ids =
+            delete_guard::delete_transforms_for_datasets(&mut tx, &dataset_ids).await?;
+        sqlx::query("UPDATE chip_runs SET legacy_extract_id = NULL WHERE legacy_extract_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM datasets WHERE id = ? OR extract_id = ?")
+            .bind(id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(delete_guard::map_delete_sql)?;
+        let deleted = sqlx::query("DELETE FROM extracts WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(StorageError::NotFound("extract not found".into()));
+        }
+        tx.commit().await?;
+        for transform_id in &transform_ids {
+            let _ = self.delete_search_document("transform", transform_id).await;
+        }
+        for dataset_id in &dataset_ids {
+            let _ = self.delete_search_document("dataset", dataset_id).await;
+        }
+
         let mut dirs = Vec::new();
         if let Some(rel) = row.stored_path.as_deref() {
             let path = self.resolve(rel);
@@ -2270,24 +2498,6 @@ impl Store {
             }
         }
 
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE chip_runs SET legacy_extract_id = NULL WHERE legacy_extract_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM datasets WHERE id = ? OR extract_id = ?")
-            .bind(id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        let deleted = sqlx::query("DELETE FROM extracts WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        if deleted.rows_affected() == 0 {
-            return Err(StorageError::NotFound("extract not found".into()));
-        }
-        tx.commit().await?;
         let _ = self.delete_search_document("extract", id).await;
         Ok(())
     }
@@ -2319,18 +2529,13 @@ impl Store {
             .await
             .ok()
             .map(|metadata| metadata.len() as i64);
-        let linked_run = sqlx::query_as::<_, (String, String)>(
-            "SELECT id, workspace_id FROM chip_runs
+        let linked_run = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT id, chip_id, workspace_id FROM chip_runs
              WHERE legacy_extract_id = ? AND status = 'running'",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        let workspace_id = linked_run
-            .as_ref()
-            .map(|(_, workspace_id)| workspace_id.as_str())
-            .unwrap_or(row.workspace_id.as_str());
-        let producer_chip_run_id = linked_run.as_ref().map(|(run_id, _)| run_id.as_str());
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         sqlx::query(
@@ -2347,47 +2552,39 @@ impl Store {
         .bind(id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query(
-            "INSERT INTO datasets
-             (id, kind, extract_id, filename, stored_path, size_bytes, delimiter, has_header,
-              row_count, created_at, updated_at, workspace_id, producer_chip_run_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               kind = excluded.kind,
-               extract_id = excluded.extract_id,
-               filename = excluded.filename,
-               stored_path = excluded.stored_path,
-               size_bytes = excluded.size_bytes,
-               delimiter = excluded.delimiter,
-               has_header = excluded.has_header,
-               row_count = excluded.row_count,
-               workspace_id = excluded.workspace_id,
-               producer_chip_run_id = excluded.producer_chip_run_id,
-               updated_at = excluded.updated_at",
-        )
-        .bind(id)
-        .bind(&row.kind)
-        .bind(id)
-        .bind(filename)
-        .bind(stored_path)
-        .bind(size)
-        .bind(&row.delimiter)
-        .bind(row.header)
-        .bind(row_count)
-        .bind(&now)
-        .bind(&now)
-        .bind(workspace_id)
-        .bind(producer_chip_run_id)
-        .execute(&mut *tx)
-        .await?;
-        if let Some((run_id, _)) = linked_run {
+
+        let mut dataset_sync_id = id.to_string();
+        if let Some((run_id, chip_id, workspace_id)) = &linked_run {
+            let chip_name = self
+                .get_chip(chip_id)
+                .await?
+                .map(|chip| chip.name)
+                .unwrap_or_else(|| filename.to_string());
+            let display_name =
+                chip_slot::display_filename(&chip_name, "extract", &row.delimiter);
+            dataset_sync_id = self
+                .upsert_chip_output_slot_dataset(
+                    &mut tx,
+                    workspace_id,
+                    chip_id,
+                    run_id,
+                    &row.kind,
+                    &display_name,
+                    stored_path,
+                    size,
+                    Some(row_count),
+                    Some(row.delimiter.as_str()),
+                    Some(row.header != 0),
+                    Some(id),
+                )
+                .await?;
             let result = sqlx::query(
                 "UPDATE chip_runs
                  SET status = 'succeeded', output_dataset_id = ?, error_message = NULL,
                      finished_at = ?
                  WHERE id = ? AND status = 'running'",
             )
-            .bind(id)
+            .bind(&dataset_sync_id)
             .bind(&now)
             .bind(run_id)
             .execute(&mut *tx)
@@ -2397,10 +2594,47 @@ impl Store {
                     "linked chip run is not running".into(),
                 ));
             }
+        } else {
+            sqlx::query(
+                "INSERT INTO datasets
+                 (id, kind, extract_id, filename, stored_path, size_bytes, delimiter, has_header,
+                  row_count, created_at, updated_at, workspace_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   kind = excluded.kind,
+                   extract_id = excluded.extract_id,
+                   filename = excluded.filename,
+                   stored_path = excluded.stored_path,
+                   size_bytes = excluded.size_bytes,
+                   delimiter = excluded.delimiter,
+                   has_header = excluded.has_header,
+                   row_count = excluded.row_count,
+                   workspace_id = excluded.workspace_id,
+                   updated_at = excluded.updated_at",
+            )
+            .bind(id)
+            .bind(&row.kind)
+            .bind(id)
+            .bind(filename)
+            .bind(stored_path)
+            .bind(size)
+            .bind(&row.delimiter)
+            .bind(row.header)
+            .bind(row_count)
+            .bind(&now)
+            .bind(&now)
+            .bind(&row.workspace_id)
+            .execute(&mut *tx)
+            .await?;
         }
         tx.commit().await?;
         search::sync_search_best_effort(self, "extract", self.sync_search_extract(id)).await;
-        search::sync_search_best_effort(self, "dataset", self.sync_search_dataset(id)).await;
+        search::sync_search_best_effort(
+            self,
+            "dataset",
+            self.sync_search_dataset(&dataset_sync_id),
+        )
+        .await;
         Ok(())
     }
 
@@ -2496,8 +2730,25 @@ impl Store {
                 "only transform datasets can be deleted here".into(),
             ));
         }
+        delete_guard::ensure_datasets_deletable(&self.pool, &[id.to_string()]).await?;
+
         let path = self.resolve(&row.stored_path);
         let outputs_root = self.data_dir.join(REL_OUTPUTS);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE chip_runs SET output_dataset_id = NULL WHERE output_dataset_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let deleted = sqlx::query("DELETE FROM datasets WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(delete_guard::map_delete_sql)?;
+        if deleted.rows_affected() == 0 {
+            return Err(StorageError::NotFound("dataset not found".into()));
+        }
+        tx.commit().await?;
+
         if let Some(parent) = path.parent() {
             let remove = if parent == outputs_root {
                 tokio::fs::remove_file(&path).await
@@ -2512,19 +2763,7 @@ impl Store {
                 Err(error) => return Err(error.into()),
             }
         }
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE chip_runs SET output_dataset_id = NULL WHERE output_dataset_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        let deleted = sqlx::query("DELETE FROM datasets WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        if deleted.rows_affected() == 0 {
-            return Err(StorageError::NotFound("dataset not found".into()));
-        }
-        tx.commit().await?;
+        let _ = self.delete_search_document("dataset", id).await;
         Ok(())
     }
 
@@ -2581,10 +2820,12 @@ impl Store {
                 "linked chip run is not running".into(),
             ));
         }
-        let filename = Path::new(stored_path)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("result.parquet");
+        let chip_name = self
+            .get_chip(&run.chip_id)
+            .await?
+            .map(|chip| chip.name)
+            .unwrap_or_else(|| "result".into());
+        let display_name = chip_slot::display_filename(&chip_name, "transform", ",");
         let size = tokio::fs::metadata(self.resolve(stored_path)).await?.len() as i64;
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
@@ -2601,29 +2842,29 @@ impl Store {
                 "linked job is not running".into(),
             ));
         }
-        sqlx::query(
-            "INSERT INTO datasets
-             (id, kind, filename, stored_path, size_bytes, created_at, updated_at,
-              workspace_id, producer_chip_run_id)
-             VALUES (?, 'transform', ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&run.id)
-        .bind(filename)
-        .bind(stored_path)
-        .bind(size)
-        .bind(&now)
-        .bind(&now)
-        .bind(&run.workspace_id)
-        .bind(&run.id)
-        .execute(&mut *tx)
-        .await?;
+        let dataset_id = self
+            .upsert_chip_output_slot_dataset(
+                &mut tx,
+                &run.workspace_id,
+                &run.chip_id,
+                &run.id,
+                "transform",
+                &display_name,
+                stored_path,
+                Some(size),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
         let result = sqlx::query(
             "UPDATE chip_runs
              SET status = 'succeeded', output_dataset_id = ?, error_message = NULL,
                  finished_at = ?
              WHERE id = ? AND status = 'running'",
         )
-        .bind(&run.id)
+        .bind(&dataset_id)
         .bind(&now)
         .bind(&run.id)
         .execute(&mut *tx)
@@ -2634,7 +2875,9 @@ impl Store {
             ));
         }
         tx.commit().await?;
-        Ok(Some(run.id))
+        search::sync_search_best_effort(self, "dataset", self.sync_search_dataset(&dataset_id))
+            .await;
+        Ok(Some(dataset_id))
     }
 
     pub async fn fail_chip_run_for_job(
@@ -2823,6 +3066,20 @@ impl Store {
         Ok(row)
     }
 
+    pub async fn delete_transform(&self, id: &str) -> Result<(), StorageError> {
+        delete_guard::ensure_transform_deletable(&self.pool, id).await?;
+        let deleted = sqlx::query("DELETE FROM transforms WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(delete_guard::map_delete_sql)?;
+        if deleted.rows_affected() == 0 {
+            return Err(StorageError::NotFound("transform not found".into()));
+        }
+        let _ = self.delete_search_document("transform", id).await;
+        Ok(())
+    }
+
     pub async fn list_transforms(&self, scope: Option<&DataScope>) -> Result<Vec<TransformRow>, StorageError> {
         let (extra, binds) = match scope {
             Some(scope) => Self::workspace_scope_sql(scope, "workspace_id"),
@@ -2942,14 +3199,14 @@ impl Store {
         table: &str,
         delimiter: &str,
     ) -> Result<(String, String), StorageError> {
-        let ext = match delimiter {
-            "tab" | "\\t" | "\t" => "tsv",
-            "," => "csv",
-            _ => "txt",
-        };
+        let ext = chip_slot::extract_ext(delimiter);
         let filename = format!("{}.{}", safe_filename(&table.replace('.', "_")), ext);
         let rel = extract_rel(kind, id, &filename)?;
         Ok((filename, rel))
+    }
+
+    pub fn extract_named_rel(kind: &str, id: &str, filename: &str) -> Result<String, StorageError> {
+        extract_rel(kind, id, &safe_filename(filename))
     }
 
     pub async fn live_connection(&self, id: &str) -> Result<LiveConnection, StorageError> {
@@ -3591,7 +3848,7 @@ pub fn resolve_upload_filename(original: &str, requested: Option<&str>) -> Strin
     name
 }
 
-fn safe_filename(name: &str) -> String {
+pub(crate) fn safe_filename(name: &str) -> String {
     let base = Path::new(name)
         .file_name()
         .and_then(|s| s.to_str())

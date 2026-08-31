@@ -2,7 +2,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use connectors::{extract_query, extract_table, parse_delimiter, with_database, ExtractOptions};
-use storage::{ProcessLog, Store, LOG_EXTRACTS};
+use storage::{chip_slot, ProcessLog, Store, LOG_EXTRACTS};
 
 pub fn spawn(store: Store, id: String) {
     tokio::spawn(async move {
@@ -87,14 +87,42 @@ async fn extract_now(
         quote: b'"',
         add_sequence: row.add_sequence != 0,
     };
-    let (filename, rel) = Store::extract_file_rel(
-        &row.kind,
-        &row.id,
-        &row.table_name,
-        &row.delimiter,
-    )
-    .map_err(|e| e.to_string())?;
+    let linked = store
+        .linked_chip_run_for_extract(&row.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let (filename, rel) = if let Some(link) = &linked {
+        let chip = store
+            .get_chip(&link.chip_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("chip {} missing", link.chip_id))?;
+        let slot_file = chip_slot::slot_file_name("extract", &row.delimiter);
+        let rel = chip_slot::stored_rel(&link.workspace_id, &link.chip_id, &slot_file)
+            .map_err(|e| e.to_string())?;
+        let filename = chip_slot::display_filename(&chip.name, "extract", &row.delimiter);
+        (filename, rel)
+    } else if let Some(requested) = row
+        .output_filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let filename =
+            chip_slot::standalone_export_filename(Some(requested), &row.table_name, &row.delimiter);
+        let rel = Store::extract_named_rel(&row.kind, &row.id, &filename)
+            .map_err(|e| e.to_string())?;
+        (filename, rel)
+    } else {
+        Store::extract_file_rel(&row.kind, &row.id, &row.table_name, &row.delimiter)
+            .map_err(|e| e.to_string())?
+    };
     let dest = store.resolve(&rel);
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let progress = ExtractProgress::new(store.clone(), row.id.clone(), log.cloned());
     let on_progress = |n: u64| progress.report(n);
     let n = if let Some(sql) = row.sql_text.as_deref().filter(|s| !s.trim().is_empty()) {

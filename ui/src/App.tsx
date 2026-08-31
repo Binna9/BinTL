@@ -16,6 +16,7 @@ import { QueryPage } from "@/pages/QueryPage";
 import { SchedulePage } from "@/pages/SchedulePage";
 import { SessionGatePage } from "@/pages/SessionGatePage";
 import { TransformFilesPage } from "@/pages/TransformFilesPage";
+import { CombinePage } from "@/pages/CombinePage";
 import { TransformPage } from "@/pages/TransformPage";
 import { TransformSoonPage } from "@/pages/TransformSoonPage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
@@ -79,7 +80,8 @@ function ConsoleShell() {
             <Route path="/transform" element={<Navigate to="/transform/clean" replace />} />
             <Route path="/transform/clean" element={<TransformPage />} />
             <Route path="/transform/clean/:id" element={<TransformPage />} />
-            <Route path="/transform/combine" element={<TransformSoonPage kind="combine" />} />
+            <Route path="/transform/combine" element={<CombinePage />} />
+            <Route path="/transform/combine/:id" element={<CombinePage />} />
             <Route path="/transform/aggregate" element={<TransformSoonPage kind="aggregate" />} />
             <Route path="/transform/reshape" element={<TransformSoonPage kind="reshape" />} />
             <Route path="/transform/:id" element={<LegacyTransformRedirect />} />

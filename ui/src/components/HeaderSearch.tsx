@@ -89,6 +89,7 @@ export function HeaderSearch() {
   function goSearch(next: string) {
     const nextTrimmed = next.trim();
     setFocused(false);
+    if (nextTrimmed) void searchApi.recordRecent(nextTrimmed).catch(() => {});
     navigate(nextTrimmed ? `/search?q=${encodeURIComponent(nextTrimmed)}` : "/search");
   }
 

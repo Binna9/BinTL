@@ -211,6 +211,7 @@ export function WorkspaceManageDialog({
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState<DragPayload | null>(null);
   const [dropTarget, setDropTarget] = useState<string | "root" | null>(null);
+  const confirmingSaveRef = useRef(false);
 
   useEffect(() => {
     if (!open) {
@@ -540,10 +541,16 @@ export function WorkspaceManageDialog({
   }
 
   async function saveDraft() {
-    if (!isDirty || busy) return;
-    setBusy(true);
-    setError("");
+    if (!isDirty || busy || confirmingSaveRef.current) return;
+    confirmingSaveRef.current = true;
     try {
+      const confirmed = await showConfirm(
+        messages.workspace.manageSaveConfirmTitle,
+        messages.workspace.manageSaveConfirmMessage,
+      );
+      if (!confirmed) return;
+      setBusy(true);
+      setError("");
       const originalFolders = originalFoldersRef.current;
       const originalWorkspaces = originalWorkspacesRef.current;
       const folderIdMap = new Map<string, string>();
@@ -639,7 +646,21 @@ export function WorkspaceManageDialog({
       }
     } finally {
       setBusy(false);
+      confirmingSaveRef.current = false;
     }
+  }
+
+  async function openWorkspace(workspaceId: string) {
+    if (isDraftId(workspaceId) || busy) return;
+    if (isDirty) {
+      const confirmed = await showConfirm(
+        messages.workspace.manageDiscardTitle,
+        messages.workspace.manageDiscardMessage,
+        { tone: "danger", confirmLabel: messages.common.close },
+      );
+      if (!confirmed) return;
+    }
+    onOpenWorkspace(workspaceId);
   }
 
   const saveDraftRef = useRef(saveDraft);
@@ -917,8 +938,7 @@ export function WorkspaceManageDialog({
           draggable={!busy}
           className="flex min-w-0 flex-1 cursor-grab items-center gap-2 rounded-lg px-1 py-1 text-left outline-none active:cursor-grabbing"
           onClick={() => {
-            if (isDraft) return;
-            onOpenWorkspace(workspace.id);
+            void openWorkspace(workspace.id);
           }}
           onDragStart={(event) => {
             if (busy) {

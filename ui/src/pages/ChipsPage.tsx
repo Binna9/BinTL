@@ -3,6 +3,7 @@ import { Pencil, Puzzle, RefreshCw, Trash2 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { AppDialog } from "@/components/AppDialog";
+import { ChipDetailView } from "@/components/ChipDetailView";
 import { PageHeader, PageShell } from "@/components/PageShell";
 import { Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/panel";
@@ -18,11 +19,6 @@ function kindLabel(kind: ChipKind, messages: ReturnType<typeof useLanguage>["mes
   if (kind === "extract") return messages.workspace.extract;
   if (kind === "transform") return messages.workspace.transform;
   return messages.workspace.load;
-}
-
-function bindingSummary(chip: Chip) {
-  if (!chip.binding) return "—";
-  return `${chip.binding.ref_kind} · ${chip.binding.ref_id.slice(0, 8)}`;
 }
 
 export function ChipsPage() {
@@ -215,9 +211,9 @@ export function ChipsPage() {
         open={Boolean(detail)}
         title={detail?.name ?? ""}
         icon={<Puzzle className="size-4 text-accent" aria-hidden="true" />}
-        className="w-[min(36rem,94vw)]"
-        minWidth={360}
-        minHeight={280}
+        className="w-[min(40rem,94vw)]"
+        minWidth={380}
+        minHeight={320}
         onClose={() => setDetail(null)}
         headerExtra={
           <div className="flex flex-1 justify-end">
@@ -234,7 +230,7 @@ export function ChipsPage() {
         }
       >
         {detail ? (
-          <div className="flex flex-col gap-3 p-4 text-sm">
+          <div className="flex flex-col gap-4 p-4">
             <dl className="grid grid-cols-2 gap-3 text-xs">
               <div>
                 <dt className="text-text-tertiary">{messages.workspace.chipName}</dt>
@@ -244,16 +240,8 @@ export function ChipsPage() {
                 <dt className="text-text-tertiary">{messages.chips.headers[2]}</dt>
                 <dd className="mt-1 font-medium text-text">{kindLabel(detail.kind, messages)}</dd>
               </div>
-              <div className="col-span-2">
-                <dt className="text-text-tertiary">{messages.chips.binding}</dt>
-                <dd className="mt-1 font-mono text-[12px] text-text-secondary">
-                  {bindingSummary(detail)}
-                </dd>
-              </div>
             </dl>
-            <pre className="scroll-pane max-h-64 overflow-auto rounded-lg border border-border bg-subtle/40 p-3 text-[11px] leading-relaxed text-text-secondary">
-              {JSON.stringify(detail.config, null, 2)}
-            </pre>
+            <ChipDetailView chip={detail} />
           </div>
         ) : null}
       </AppDialog>

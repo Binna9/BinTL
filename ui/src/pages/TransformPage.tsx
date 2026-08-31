@@ -44,7 +44,8 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
-import { toastError, toastSuccess } from "@/lib/notifications";
+import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
+import { HttpError } from "@/services/httpClient";
 import { selectableClass } from "@/lib/selectable";
 import { chipApi } from "@/services/chipApi";
 import { datasetApi } from "@/services/datasetApi";
@@ -58,12 +59,12 @@ import type {
 
 const STEP_OPS: StepOp[] = [
   "select",
-  "rename",
   "filter",
   "cast",
   "fill_null",
   "sort",
   "unique",
+  "rename",
 ];
 
 const STEP_OP_ICONS: Record<StepOp, LucideIcon> = {
@@ -124,43 +125,6 @@ function emptyStep(op: StepOp): TransformStep {
   }
 }
 
-function parseList(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function parseRename(raw: string): Record<string, string> {
-  const map: Record<string, string> = {};
-  for (const part of raw.split(",")) {
-    const [from, to] = part.split(":").map((value) => value.trim());
-    if (from && to) map[from] = to;
-  }
-  return map;
-}
-
-function formatRename(map: Record<string, string>): string {
-  return Object.entries(map)
-    .map(([from, to]) => `${from}:${to}`)
-    .join(", ");
-}
-
-function parseCast(raw: string): Record<string, string> {
-  const map: Record<string, string> = {};
-  for (const part of raw.split(",")) {
-    const [from, to] = part.split(":").map((value) => value.trim());
-    if (from && to) map[from] = to;
-  }
-  return map;
-}
-
-function formatCast(map: Record<string, string>): string {
-  return Object.entries(map)
-    .map(([from, to]) => `${from}:${to}`)
-    .join(", ");
-}
-
 function resolveColumnsAtStep(
   base: DatasetColumn[],
   steps: TransformStep[],
@@ -192,11 +156,13 @@ function ColumnChipPicker({
   value,
   emptyLabel,
   onChange,
+  minSelected = 1,
 }: {
   columns: DatasetColumn[];
   value: string[];
   emptyLabel: string;
   onChange: (columns: string[]) => void;
+  minSelected?: number;
 }) {
   if (columns.length === 0) {
     return <p className="text-xs text-text-tertiary">{emptyLabel}</p>;
@@ -206,7 +172,7 @@ function ColumnChipPicker({
 
   function toggle(name: string) {
     if (kept.has(name)) {
-      if (kept.size <= 1) return;
+      if (kept.size <= minSelected) return;
       onChange(value.filter((column) => column !== name));
       return;
     }
@@ -242,6 +208,281 @@ function ColumnChipPicker({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function ColumnChipSinglePicker({
+  columns,
+  value,
+  emptyLabel,
+  onChange,
+  badge,
+}: {
+  columns: DatasetColumn[];
+  value: string;
+  emptyLabel: string;
+  onChange: (column: string) => void;
+  badge?: (column: DatasetColumn) => string | null;
+}) {
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{emptyLabel}</p>;
+  }
+
+  return (
+    <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
+      <div className="flex flex-nowrap gap-1.5 pb-0.5">
+        {columns.map((column) => {
+          const active = value === column.name;
+          const extra = badge?.(column);
+          return (
+            <button
+              key={column.name}
+              type="button"
+              title={column.dtype ? `${column.name} (${column.dtype})` : column.name}
+              aria-pressed={active}
+              onClick={() => onChange(column.name)}
+              className={cn(
+                "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                active
+                  ? "border-accent bg-accent-subtle text-accent"
+                  : extra
+                    ? "border-success/40 bg-success-subtle/40 text-text-secondary hover:border-success/50"
+                    : "border-border bg-raised text-text-tertiary hover:border-border hover:bg-subtle hover:text-text-secondary",
+              )}
+            >
+              {column.name}
+              {extra ? <span className="ml-1 font-normal opacity-80">{extra}</span> : null}
+              {!extra && column.dtype ? (
+                <span className={cn("ml-1 font-normal", active ? "opacity-75" : "text-text-tertiary")}>
+                  {column.dtype}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function RenameStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "rename" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  const [active, setActive] = useState(() => columns[0]?.name ?? "");
+
+  useEffect(() => {
+    if (active && columns.some((column) => column.name === active)) return;
+    setActive(columns[0]?.name ?? "");
+  }, [active, columns]);
+
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <ColumnChipSinglePicker
+        columns={columns}
+        value={active}
+        emptyLabel={messages.transform.noColumns}
+        onChange={setActive}
+        badge={(column) => {
+          const renamed = step.map[column.name];
+          return renamed ? `→ ${renamed}` : null;
+        }}
+      />
+      {active ? (
+        <FormField label={messages.transform.renameNewName}>
+          <input
+            className="field-control"
+            value={step.map[active] ?? ""}
+            placeholder={active}
+            onChange={(event) => {
+              const nextName = event.target.value.trim();
+              const next = { ...step.map };
+              if (!nextName || nextName === active) delete next[active];
+              else next[active] = nextName;
+              onChange({ ...step, map: next });
+            }}
+          />
+        </FormField>
+      ) : (
+        <p className="text-[11px] text-text-tertiary">{messages.transform.pickColumn}</p>
+      )}
+    </div>
+  );
+}
+
+function CastStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "cast" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  const [active, setActive] = useState(() => columns[0]?.name ?? "");
+
+  useEffect(() => {
+    if (active && columns.some((column) => column.name === active)) return;
+    setActive(columns[0]?.name ?? "");
+  }, [active, columns]);
+
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <ColumnChipSinglePicker
+        columns={columns}
+        value={active}
+        emptyLabel={messages.transform.noColumns}
+        onChange={setActive}
+        badge={(column) => step.columns[column.name] ?? null}
+      />
+      {active ? (
+        <FormField label={messages.transform.castPickType}>
+          <Select
+            value={step.columns[active] ?? ""}
+            options={[
+              { value: "", label: messages.transform.castKeepOriginal },
+              ...CAST_TYPES.map((type) => ({ value: type, label: type })),
+            ]}
+            onChange={(dtype) => {
+              const next = { ...step.columns };
+              if (!dtype) delete next[active];
+              else next[active] = dtype;
+              onChange({ ...step, columns: next });
+            }}
+          />
+        </FormField>
+      ) : (
+        <p className="text-[11px] text-text-tertiary">{messages.transform.pickColumn}</p>
+      )}
+    </div>
+  );
+}
+
+function SortStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "sort" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {step.by.map((item, index) => (
+        <div
+          key={index}
+          className="flex flex-col gap-2 rounded-lg border border-border/60 bg-raised/40 p-2.5"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <span className="pt-0.5 text-[10px] font-medium uppercase tracking-[0.06em] text-text-tertiary">
+              {index + 1}
+            </span>
+            {step.by.length > 1 ? (
+              <button
+                type="button"
+                className="grid size-6 place-items-center rounded text-text-tertiary hover:bg-subtle hover:text-danger"
+                aria-label={messages.common.delete}
+                onClick={() =>
+                  onChange({
+                    ...step,
+                    by: step.by.filter((_, rowIndex) => rowIndex !== index),
+                  })
+                }
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
+          <ColumnChipSinglePicker
+            columns={columns}
+            value={item.column}
+            emptyLabel={messages.transform.noColumns}
+            onChange={(column) => {
+              const by = step.by.map((row, rowIndex) =>
+                rowIndex === index ? { ...row, column } : row,
+              );
+              onChange({ ...step, by });
+            }}
+          />
+          <div className="flex flex-wrap gap-1">
+            <button
+              type="button"
+              aria-pressed={!item.descending}
+              onClick={() => {
+                const by = step.by.map((row, rowIndex) =>
+                  rowIndex === index ? { ...row, descending: false } : row,
+                );
+                onChange({ ...step, by });
+              }}
+              className={cn(
+                "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+                !item.descending
+                  ? "border-accent bg-accent-subtle text-accent"
+                  : "border-border bg-surface text-text-secondary hover:bg-subtle",
+              )}
+            >
+              {messages.transform.ascending}
+            </button>
+            <button
+              type="button"
+              aria-pressed={item.descending}
+              onClick={() => {
+                const by = step.by.map((row, rowIndex) =>
+                  rowIndex === index ? { ...row, descending: true } : row,
+                );
+                onChange({ ...step, by });
+              }}
+              className={cn(
+                "rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors",
+                item.descending
+                  ? "border-accent bg-accent-subtle text-accent"
+                  : "border-border bg-surface text-text-secondary hover:bg-subtle",
+              )}
+            >
+              {messages.transform.descending}
+            </button>
+          </div>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="secondary"
+        className="h-8 self-start gap-1 px-2.5 text-[11px]"
+        onClick={() =>
+          onChange({
+            ...step,
+            by: [...step.by, { column: columns[0]?.name ?? "", descending: false }],
+          })
+        }
+      >
+        <Plus className="size-3.5" aria-hidden="true" />
+        {messages.transform.sortAddKey}
+      </Button>
     </div>
   );
 }
@@ -603,8 +844,11 @@ export function TransformPage() {
   const [registerOpen, setRegisterOpen] = useState(false);
   const [registerChipName, setRegisterChipName] = useState("");
   const [registerBusy, setRegisterBusy] = useState(false);
+  const [linkedTransformId, setLinkedTransformId] = useState<string>();
+  const [sourceMissing, setSourceMissing] = useState(false);
 
   const selected = datasets.find((item) => item.id === datasetId) ?? null;
+  const savedTransformId = transformId ?? linkedTransformId;
   const kindLabel: Record<string, string> = {
     upload: messages.transform.kindUpload,
     database: messages.transform.kindDatabase,
@@ -671,8 +915,15 @@ export function TransformPage() {
   useEffect(() => {
     if (!datasetId) {
       setSourcePreview(null);
+      setSourceMissing(false);
       return;
     }
+    if (selected && !selected.available) {
+      setSourcePreview(null);
+      setSourceMissing(true);
+      return;
+    }
+    setSourceMissing(false);
     let cancelled = false;
     void datasetApi
       .inspect(datasetId, 100)
@@ -684,14 +935,39 @@ export function TransformPage() {
         setSourcePreview(inspected.preview);
       })
       .catch((err) => {
-        if (!cancelled) {
-          toastError(messages.errors.inspect, err);
+        if (cancelled) return;
+        setSourcePreview(null);
+        if (err instanceof HttpError && err.status === 404) {
+          setSourceMissing(true);
+          return;
         }
+        toastError(messages.errors.inspect, err);
       });
     return () => {
       cancelled = true;
     };
-  }, [datasetId, messages]);
+  }, [datasetId, selected?.available, messages]);
+
+  useEffect(() => {
+    if (!datasetId || transformId) {
+      setLinkedTransformId(undefined);
+      return;
+    }
+    let cancelled = false;
+    void transformApi
+      .list()
+      .then((response) => {
+        if (cancelled) return;
+        const linked = response.transforms.find((row) => row.dataset_id === datasetId);
+        setLinkedTransformId(linked?.id);
+      })
+      .catch(() => {
+        if (!cancelled) setLinkedTransformId(undefined);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetId, transformId]);
 
   useEffect(() => {
     if (!detailOpen || !datasetId) return;
@@ -830,6 +1106,30 @@ export function TransformPage() {
     setRegisterOpen(true);
   }
 
+  async function onDeleteSaved() {
+    if (!savedTransformId) return;
+    const title = name.trim() || selected?.filename || messages.transform.untitled;
+    const confirmed = await showConfirm(
+      messages.transform.deleteSavedRecipe,
+      messages.transform.deleteSavedRecipeConfirm(title),
+      { tone: "danger" },
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      await transformApi.delete(savedTransformId);
+      toastSuccess(messages.transform.deleteSavedRecipeDone);
+      setLinkedTransformId(undefined);
+      if (transformId) {
+        onNew();
+      }
+    } catch (err) {
+      toastDeleteError(messages.errors.deleteTransform, messages.errors.deleteBlocked, err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onRun() {
     setBusy(true);
     try {
@@ -884,6 +1184,18 @@ export function TransformPage() {
               <RotateCcw className="size-3.5" aria-hidden="true" />
               {messages.transform.reset}
             </Button>
+            {savedTransformId ? (
+              <Button
+                type="button"
+                variant="quiet"
+                className="gap-2"
+                disabled={busy}
+                onClick={() => void onDeleteSaved()}
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+                {messages.transform.deleteSavedRecipe}
+              </Button>
+            ) : null}
             <Button
               type="button"
               className="gap-2"
@@ -1023,6 +1335,11 @@ export function TransformPage() {
                               <span className="min-w-0 flex-1">
                                 <span className="block break-all text-[13px] font-medium leading-4">
                                   {item.filename}
+                                  {!item.available ? (
+                                    <span className="ml-1 text-[11px] font-normal text-warning">
+                                      ({messages.transform.sourceUnavailable})
+                                    </span>
+                                  ) : null}
                                 </span>
                                 <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
                                   {item.origin?.connection_name
@@ -1149,6 +1466,11 @@ export function TransformPage() {
                     </div>
                   </FormField>
                 </div>
+                {sourceMissing ? (
+                  <p className="border-b border-border px-4 py-2.5 text-[11px] leading-5 text-warning">
+                    {messages.transform.sourceFileMissing}
+                  </p>
+                ) : null}
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="scroll-pane min-h-0 flex-1 overflow-auto">
                     {steps.length === 0 ? (
@@ -1372,7 +1694,6 @@ function StepFields({
   onChange: (step: TransformStep) => void;
   messages: ReturnType<typeof useLanguage>["messages"];
 }) {
-  const names = columns.map((column) => column.name).join(", ");
   switch (step.op) {
     case "select":
     case "drop": {
@@ -1388,11 +1709,11 @@ function StepFields({
     }
     case "rename":
       return (
-        <input
-          className="field-control technical"
-          value={formatRename(step.map)}
-          placeholder="amount:amt, id:user_id"
-          onChange={(event) => onChange({ ...step, map: parseRename(event.target.value) })}
+        <RenameStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
         />
       );
     case "filter":
@@ -1406,71 +1727,51 @@ function StepFields({
       );
     case "cast":
       return (
-        <input
-          className="field-control technical"
-          value={formatCast(step.columns)}
-          placeholder={`id:Int64 · ${CAST_TYPES.join(", ")}`}
-          onChange={(event) => onChange({ ...step, columns: parseCast(event.target.value) })}
+        <CastStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
         />
       );
     case "fill_null":
       return (
-        <div className="grid gap-2">
-          <input
-            className="field-control technical"
-            value={step.columns.join(", ")}
-            placeholder={names || "amount"}
-            onChange={(event) => onChange({ ...step, columns: parseList(event.target.value) })}
+        <div className="flex flex-col gap-3">
+          <ColumnChipPicker
+            columns={columns}
+            value={step.columns}
+            emptyLabel={messages.transform.noColumns}
+            minSelected={0}
+            onChange={(next) => onChange({ ...step, columns: next })}
           />
-          <input
-            className="field-control technical"
-            value={step.value}
-            placeholder={messages.transform.fillValue}
-            onChange={(event) => onChange({ ...step, value: event.target.value })}
-          />
+          <FormField label={messages.transform.fillValue}>
+            <input
+              className="field-control"
+              value={step.value}
+              placeholder={messages.transform.fillValue}
+              onChange={(event) => onChange({ ...step, value: event.target.value })}
+            />
+          </FormField>
         </div>
       );
     case "sort":
       return (
-        <div className="grid gap-2">
-          {step.by.map((item, index) => (
-            <div key={index} className="flex gap-2">
-              <input
-                className="field-control technical min-w-0 flex-1"
-                value={item.column}
-                placeholder={names || "id"}
-                onChange={(event) => {
-                  const by = step.by.map((row, i) =>
-                    i === index ? { ...row, column: event.target.value } : row,
-                  );
-                  onChange({ ...step, by });
-                }}
-              />
-              <label className="flex items-center gap-1 text-xs text-text-secondary">
-                <input
-                  type="checkbox"
-                  checked={item.descending}
-                  onChange={(event) => {
-                    const by = step.by.map((row, i) =>
-                      i === index ? { ...row, descending: event.target.checked } : row,
-                    );
-                    onChange({ ...step, by });
-                  }}
-                />
-                {messages.transform.descending}
-              </label>
-            </div>
-          ))}
-        </div>
+        <SortStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
+        />
       );
     case "unique":
       return (
-        <div className="grid gap-2">
-          <input
-            className="field-control technical"
-            value={(step.subset ?? []).join(", ")}
-            placeholder={messages.transform.uniqueSubset}
-            onChange={(event) => onChange({ ...step, subset: parseList(event.target.value) })}
+        <div className="flex flex-col gap-3">
+          <ColumnChipPicker
+            columns={columns}
+            value={step.subset ?? []}
+            emptyLabel={messages.transform.noColumns}
+            minSelected={0}
+            onChange={(next) => onChange({ ...step, subset: next })}
           />
           <Select
             value={step.keep ?? "first"}

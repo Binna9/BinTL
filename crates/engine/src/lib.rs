@@ -43,6 +43,21 @@ pub struct ReadHint {
     pub has_header: Option<bool>,
 }
 
+/// Join or stack multiple datasets before pipeline steps. Dataset IDs live in JSON;
+/// `resolved_paths` is filled in by the server at preview/run time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CombineSpec {
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_dataset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub union_dataset_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub how: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Step {
@@ -107,6 +122,10 @@ pub struct TransformSpec {
     pub read: Option<ReadHint>,
     #[serde(default)]
     pub steps: Vec<Step>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combine: Option<CombineSpec>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub resolved_paths: BTreeMap<String, String>,
 }
 
 fn default_op() -> String {
@@ -131,6 +150,8 @@ impl TransformSpec {
             has_header: None,
             read: None,
             steps: Vec::new(),
+            combine: None,
+            resolved_paths: BTreeMap::new(),
         }
     }
 
@@ -147,6 +168,8 @@ impl TransformSpec {
             has_header: None,
             read: None,
             steps: Vec::new(),
+            combine: None,
+            resolved_paths: BTreeMap::new(),
         }
     }
 
@@ -196,6 +219,9 @@ impl TransformSpec {
                 for step in &self.steps {
                     validate_step(step)?;
                 }
+                if let Some(combine) = &self.combine {
+                    validate_combine(combine)?;
+                }
             }
             other => {
                 return Err(EngineError::Spec(format!("unsupported version {other}")));
@@ -213,6 +239,37 @@ impl TransformSpec {
         }
         Ok(())
     }
+}
+
+fn validate_combine(combine: &CombineSpec) -> Result<(), EngineError> {
+    match combine.mode.as_str() {
+        "join" => {
+            if combine
+                .right_dataset_id
+                .as_ref()
+                .is_none_or(|id| id.trim().is_empty())
+            {
+                return Err(EngineError::Spec("join needs right_dataset_id".into()));
+            }
+            if combine.on.is_empty() {
+                return Err(EngineError::Spec("join needs on columns".into()));
+            }
+            if let Some(how) = combine.how.as_deref() {
+                if how != "left" && how != "inner" {
+                    return Err(EngineError::Spec(
+                        "join how must be left or inner".into(),
+                    ));
+                }
+            }
+        }
+        "union" => {
+            if combine.union_dataset_ids.is_empty() {
+                return Err(EngineError::Spec("union needs union_dataset_ids".into()));
+            }
+        }
+        other => return Err(EngineError::Spec(format!("unknown combine mode `{other}`"))),
+    }
+    Ok(())
 }
 
 fn validate_step(step: &Step) -> Result<(), EngineError> {
@@ -289,7 +346,7 @@ impl Engine for PolarsEngine {
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
         }
-        let df = apply(read_any(input, spec, None)?, spec)?;
+        let df = apply(load_combined(input, spec, None)?, spec)?;
         write_parquet(df, output)
     }
 }
@@ -333,7 +390,10 @@ impl PolarsEngine {
     ) -> Result<FramePreview, EngineError> {
         spec.validate()?;
         let limit = limit.max(1);
-        let df = apply(read_any(input, spec, Some(PREVIEW_READ_CAP))?, spec)?;
+        let df = apply(
+            load_combined(input, spec, Some(PREVIEW_READ_CAP))?,
+            spec,
+        )?;
         let sampled = df.height();
         let truncated = sampled >= PREVIEW_READ_CAP || sampled > limit;
         Ok(dataframe_to_preview(df, None, limit).with_truncated(truncated))
@@ -345,6 +405,85 @@ impl FramePreview {
         self.truncated = truncated || self.truncated;
         self
     }
+}
+
+fn load_combined(
+    input: &Path,
+    spec: &TransformSpec,
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    let left = read_any(input, spec, n_rows)?;
+    let Some(combine) = &spec.combine else {
+        return Ok(left);
+    };
+    match combine.mode.as_str() {
+        "union" => load_union(left, spec, n_rows),
+        "join" => load_join(left, spec, n_rows),
+        other => Err(EngineError::Spec(format!("unknown combine mode `{other}`"))),
+    }
+}
+
+fn load_union(
+    left: DataFrame,
+    spec: &TransformSpec,
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    let combine = spec.combine.as_ref().expect("union");
+    let mut dfs = vec![left];
+    for id in &combine.union_dataset_ids {
+        let path = spec.resolved_paths.get(id).ok_or_else(|| {
+            EngineError::Spec(format!("missing path for union dataset `{id}`"))
+        })?;
+        dfs.push(read_any(Path::new(path), spec, n_rows)?);
+    }
+    if dfs.len() == 1 {
+        return Ok(dfs.remove(0));
+    }
+    let lazy: Vec<LazyFrame> = dfs.into_iter().map(|df| df.lazy()).collect();
+    let out = concat(
+        &lazy,
+        UnionArgs {
+            rechunk: true,
+            to_supertypes: true,
+            diagonal: true,
+            ..Default::default()
+        },
+    )?;
+    Ok(out.collect()?)
+}
+
+fn load_join(
+    left: DataFrame,
+    spec: &TransformSpec,
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    let combine = spec.combine.as_ref().expect("join");
+    let right_id = combine
+        .right_dataset_id
+        .as_deref()
+        .ok_or_else(|| EngineError::Spec("join needs right_dataset_id".into()))?;
+    if combine.on.is_empty() {
+        return Err(EngineError::Spec("join needs on columns".into()));
+    }
+    let path = spec.resolved_paths.get(right_id).ok_or_else(|| {
+        EngineError::Spec(format!("missing path for join dataset `{right_id}`"))
+    })?;
+    let right = read_any(Path::new(path), spec, n_rows)?;
+    let join_type = match combine.how.as_deref().unwrap_or("left") {
+        "inner" => JoinType::Inner,
+        "left" => JoinType::Left,
+        other => return Err(EngineError::Spec(format!("unsupported join how `{other}`"))),
+    };
+    let on_cols: Vec<Expr> = combine.on.iter().map(|c| col(c)).collect();
+    Ok(left
+        .lazy()
+        .join(
+            right.lazy(),
+            on_cols.clone(),
+            on_cols,
+            JoinArgs::new(join_type),
+        )
+        .collect()?)
 }
 
 fn apply(df: DataFrame, spec: &TransformSpec) -> Result<DataFrame, EngineError> {
@@ -865,6 +1004,69 @@ mod tests {
         let preview = PolarsEngine.preview(&csv, &spec, 10).unwrap();
         assert_eq!(preview.rows.len(), 2);
         assert_eq!(preview.rows[0][0], "3");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn combine_join_left() {
+        let dir = tmp("join");
+        let left = dir.join("left.csv");
+        let right = dir.join("right.csv");
+        fs::write(&left, "id,name\n1,alpha\n2,beta\n").unwrap();
+        fs::write(&right, "id,score\n1,10\n3,30\n").unwrap();
+        let out = dir.join("out.parquet");
+        let mut spec = TransformSpec::parse_json(
+            r#"{
+              "version": 2,
+              "sink": "parquet",
+              "steps": [],
+              "combine": {
+                "mode": "join",
+                "right_dataset_id": "right",
+                "on": ["id"],
+                "how": "left"
+              }
+            }"#,
+        )
+        .unwrap();
+        spec.resolved_paths.insert(
+            "right".into(),
+            right.to_string_lossy().into_owned(),
+        );
+        PolarsEngine.transform(&left, &out, &spec).unwrap();
+        let back = ParquetReader::new(fs::File::open(&out).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(back.height(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn combine_union_vertical() {
+        let dir = tmp("union");
+        let a = dir.join("a.csv");
+        let b = dir.join("b.csv");
+        fs::write(&a, "id,name\n1,alpha\n").unwrap();
+        fs::write(&b, "id,name\n2,beta\n").unwrap();
+        let out = dir.join("out.parquet");
+        let mut spec = TransformSpec::parse_json(
+            r#"{
+              "version": 2,
+              "sink": "parquet",
+              "steps": [],
+              "combine": {
+                "mode": "union",
+                "union_dataset_ids": ["b"]
+              }
+            }"#,
+        )
+        .unwrap();
+        spec.resolved_paths.insert("b".into(), b.to_string_lossy().into_owned());
+        PolarsEngine.transform(&a, &out, &spec).unwrap();
+        let back = ParquetReader::new(fs::File::open(&out).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(back.height(), 2);
         let _ = fs::remove_dir_all(&dir);
     }
 }

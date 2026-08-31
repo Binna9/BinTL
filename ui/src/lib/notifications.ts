@@ -1,3 +1,5 @@
+import { HttpError } from "@/services/httpClient";
+
 export type ToastStatus = "success" | "error" | "warning" | "info" | "default";
 
 export type ToastPosition =
@@ -108,6 +110,17 @@ export function toastError(fallback: string, error?: unknown): string {
     return showToast(fallback, detail, "error");
   }
   return showToast(detail || fallback, "", "error");
+}
+
+export function toastDeleteError(
+  fallback: string,
+  blockedTitle: string,
+  error?: unknown,
+): string {
+  if (error instanceof HttpError && error.status === 409) {
+    return toastError(blockedTitle, error);
+  }
+  return toastError(fallback, error);
 }
 
 export function toastSuccess(title: string, message = ""): string {

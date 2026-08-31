@@ -105,7 +105,19 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
     }
     transition(from, JobStatus::Running).map_err(|e| RunError::State(e.to_string()))?;
 
-    let output_rel = format!("outputs/{job_id}/result.parquet");
+    let linked = store.linked_chip_run_for_job(job_id).await?;
+    let output_rel = if let Some(link) = &linked {
+        let slot_file = storage::chip_slot::slot_file_name("transform", ",");
+        storage::chip_slot::stored_rel(&link.workspace_id, &link.chip_id, &slot_file)
+            .map_err(RunError::Storage)?
+    } else {
+        format!("outputs/{job_id}/result.parquet")
+    };
+    if let Some(parent) = store.resolve(&output_rel).parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| RunError::Storage(error.into()))?;
+    }
     store.set_job_running(job_id, &output_rel).await?;
     store.append_log(job_id, "info", "job started").await?;
 

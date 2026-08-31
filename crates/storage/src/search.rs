@@ -1,7 +1,11 @@
 use serde::Serialize;
 use sqlx::FromRow;
+use uuid::Uuid;
+use chrono::{SecondsFormat, Utc};
 
 use crate::{StorageError, Store};
+
+const MAX_RECENT_SEARCHES: i64 = 8;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct SearchHit {
@@ -123,6 +127,76 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .map_err(StorageError::from)
+    }
+
+    pub async fn list_recent_searches(
+        &self,
+        user_id: &str,
+        limit: i64,
+    ) -> Result<Vec<String>, StorageError> {
+        let limit = limit.clamp(1, MAX_RECENT_SEARCHES);
+        sqlx::query_scalar::<_, String>(
+            "SELECT query
+             FROM search_recent_queries
+             WHERE user_id = ?
+             ORDER BY searched_at DESC
+             LIMIT ?",
+        )
+        .bind(user_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StorageError::from)
+    }
+
+    pub async fn record_recent_search(
+        &self,
+        user_id: &str,
+        query: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let needle = query.trim();
+        if needle.is_empty() {
+            return self.list_recent_searches(user_id, MAX_RECENT_SEARCHES).await;
+        }
+        let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+        let id = Uuid::new_v4().to_string();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM search_recent_queries
+             WHERE user_id = ? AND lower(query) = lower(?)",
+        )
+        .bind(user_id)
+        .bind(needle)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO search_recent_queries (id, user_id, query, searched_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(user_id)
+        .bind(needle)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM search_recent_queries
+             WHERE user_id = ?
+               AND id NOT IN (
+                 SELECT id
+                 FROM search_recent_queries
+                 WHERE user_id = ?
+                 ORDER BY searched_at DESC
+                 LIMIT ?
+               )",
+        )
+        .bind(user_id)
+        .bind(user_id)
+        .bind(MAX_RECENT_SEARCHES)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.list_recent_searches(user_id, MAX_RECENT_SEARCHES).await
     }
 
     pub async fn delete_search_document(
@@ -438,5 +512,35 @@ fn like_pattern(raw: &str) -> String {
 pub(crate) async fn sync_search_best_effort(_store: &Store, label: &str, sync: impl std::future::Future<Output = Result<(), StorageError>>) {
     if let Err(error) = sync.await {
         tracing::warn!(%error, target = label, "search index sync failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Store;
+
+    async fn test_store() -> (Store, String) {
+        let root = std::env::temp_dir().join(format!("bintl-search-recent-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-session-secret").await.unwrap();
+        let admin = store.ensure_bootstrap("admin", "admin").await.unwrap();
+        (store, admin.id)
+    }
+
+    #[tokio::test]
+    async fn recent_searches_dedupe_and_cap() {
+        let (store, user_id) = test_store().await;
+        for query in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota"] {
+            store.record_recent_search(&user_id, query).await.unwrap();
+        }
+        let recent = store.list_recent_searches(&user_id, 8).await.unwrap();
+        assert_eq!(recent.len(), 8);
+        assert!(!recent.iter().any(|item| item == "alpha"));
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        store.record_recent_search(&user_id, "beta").await.unwrap();
+        let recent = store.list_recent_searches(&user_id, 8).await.unwrap();
+        assert_eq!(recent[0], "beta");
+        assert_eq!(recent.iter().filter(|item| **item == "beta").count(), 1);
+        store.pool.close().await;
     }
 }

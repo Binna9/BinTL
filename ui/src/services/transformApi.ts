@@ -22,6 +22,8 @@ export const transformApi = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  delete: (id: string) =>
+    httpRequest<{ ok: boolean }>(`/api/transforms/${id}`, { method: "DELETE" }),
   run: (id: string) =>
     httpRequest<TransformRunResponse>(`/api/transforms/${id}/run`, {
       method: "POST",

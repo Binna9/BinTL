@@ -139,6 +139,7 @@ export function QueryPage() {
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [registerName, setRegisterName] = useState("");
   const [registerBusy, setRegisterBusy] = useState(false);
+  const [exportName, setExportName] = useState("");
   const [extractId, setExtractId] = useState("");
   const [extractRow, setExtractRow] = useState<ExtractRecord | null>(null);
   const [extractLog, setExtractLog] = useState("");
@@ -430,6 +431,7 @@ export function QueryPage() {
         delimiter,
         header,
         add_sequence: addSequence,
+        ...(exportName.trim() ? { filename: exportName.trim() } : {}),
       });
       setExtractId(created.id);
       setExtractRow(created);
@@ -445,6 +447,11 @@ export function QueryPage() {
     setRegisterName(selected?.qualified || messages.workspace.untitledExtract(1));
     setIsRegisterOpen(true);
   }
+
+  useEffect(() => {
+    if (!selected?.qualified) return;
+    setExportName((current) => current.trim() || selected.qualified.replace(/\./g, "_"));
+  }, [selected?.qualified]);
 
   async function onRegisterTask() {
     if (!browseId || !registerName.trim() || !sql.trim()) return;
@@ -835,6 +842,15 @@ export function QueryPage() {
                 />
                 {messages.common.addSequence}
               </label>
+              <div className="flex min-w-[10rem] flex-1 items-center gap-2 text-xs text-text-secondary">
+                <span className="shrink-0">{messages.query.exportFileName}</span>
+                <input
+                  className="field-control min-w-0 flex-1 technical"
+                  value={exportName}
+                  placeholder={messages.query.exportFileNamePlaceholder}
+                  onChange={(event) => setExportName(event.target.value)}
+                />
+              </div>
               <label className="ml-auto flex min-w-48 flex-1 items-center gap-2 whitespace-nowrap text-xs text-text-secondary sm:max-w-xs">
                 <span>{messages.query.search}</span>
                 <input

@@ -20,7 +20,7 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
 import { fmtDelimiterGlyph, fmtSqlPreview, fmtWhen } from "@/lib/format";
-import { showConfirm, toastError } from "@/lib/notifications";
+import { showConfirm, toastDeleteError, toastError } from "@/lib/notifications";
 import { extractApi } from "@/services/extractApi";
 import type { ExtractKind, ExtractRecord } from "@/types/extract";
 import type { FilePreview } from "@/types/file";
@@ -101,7 +101,7 @@ export function ExtractResultsPage() {
       setSelected([]);
       await refreshExtracts();
     } catch (err) {
-      toastError(messages.errors.deleteExtract, err);
+      toastDeleteError(messages.errors.deleteExtract, messages.errors.deleteBlocked, err);
       await refreshExtracts();
     } finally {
       setBusy(false);

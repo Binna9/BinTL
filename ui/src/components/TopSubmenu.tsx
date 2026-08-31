@@ -4,6 +4,7 @@ import { SettingsDialog } from "@/components/SettingsDialog";
 import { useTheme } from "@/hooks/useTheme";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { showConfirm } from "@/lib/notifications";
 import { authApi } from "@/services/authApi";
 import { useSession } from "@/hooks/useSession";
 import { clearStoredLayouts } from "@/dashboard/layout";
@@ -54,7 +55,13 @@ export function TopSubmenu({ prefsOnly = false }: { prefsOnly?: boolean }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const isDark = theme === "dark";
 
-  function logout() {
+  async function logout() {
+    const confirmed = await showConfirm(
+      messages.nav.logoutConfirmTitle,
+      messages.nav.logoutConfirmMessage,
+      { tone: "danger", confirmLabel: messages.nav.logout },
+    );
+    if (!confirmed) return;
     clearStoredLayouts();
     void authApi.logout().finally(() => location.assign("/login"));
   }
@@ -91,7 +98,7 @@ export function TopSubmenu({ prefsOnly = false }: { prefsOnly?: boolean }) {
             <IconButton label={messages.nav.settings} onClick={() => setSettingsOpen(true)}>
               <Settings className="size-[18px]" />
             </IconButton>
-            <IconButton danger label={messages.nav.logout} onClick={logout}>
+            <IconButton danger label={messages.nav.logout} onClick={() => void logout()}>
               <LogOut className="size-[18px]" />
             </IconButton>
           </>

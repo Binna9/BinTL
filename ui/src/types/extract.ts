@@ -28,4 +28,5 @@ export interface CreateExtractRequest {
   header?: boolean;
   add_sequence?: boolean;
   database?: string;
+  filename?: string;
 }

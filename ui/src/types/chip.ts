@@ -77,6 +77,7 @@ export interface RegisterChipRequest {
   kind: ChipKind;
   workspace_id?: string;
   place_on_workspace?: boolean;
+  run_after?: boolean;
   extract?: ChipConfig;
   transform_id?: string;
 }

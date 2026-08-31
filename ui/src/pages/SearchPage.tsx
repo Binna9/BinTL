@@ -1,7 +1,7 @@
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Clock3, ListFilter, Search } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -65,16 +65,105 @@ function SearchTypeIcon({
   );
 }
 
-function SearchSummaryIcons({ groups }: { groups: SearchGroup[] }) {
+function SearchTypeFilter({
+  groups,
+  title,
+  highlightResults,
+  hiddenTypes,
+  onToggle,
+}: {
+  groups: SearchGroup[];
+  title: string;
+  highlightResults: boolean;
+  hiddenTypes: Set<SearchEntityType>;
+  onToggle: (type: SearchEntityType) => void;
+}) {
   return (
-    <div className="search-page-summary" aria-label={groups.map((g) => `${g.label} ${g.items.length}`).join(", ")}>
-      {groups.map((group) => (
-        <span key={group.type} className={`search-page-summary-chip ${SEARCH_ENTITY_META[group.type].tone}`}>
-          <SearchTypeIcon type={group.type} size="sm" className="search-page-summary-chip-icon" />
-          <span className="search-page-summary-chip-count">{group.items.length}</span>
-        </span>
-      ))}
-    </div>
+    <aside className="search-page-filter" aria-label={title}>
+      <h2 className="search-page-filter-title">
+        <ListFilter className="search-page-filter-title-icon" aria-hidden="true" />
+        {title}
+      </h2>
+      <ul className="search-page-filter-list">
+        {groups.map((group) => {
+          const count = group.items.length;
+          const canToggle = highlightResults && count > 0;
+          const active = canToggle && !hiddenTypes.has(group.type);
+          return (
+            <li key={group.type}>
+              <button
+                type="button"
+                disabled={!canToggle}
+                onClick={() => onToggle(group.type)}
+                className={cn(
+                  "search-page-filter-item",
+                  active && "is-active",
+                  count === 0 && "is-empty",
+                  canToggle && "is-clickable",
+                )}
+              >
+                <SearchTypeIcon type={group.type} size="sm" className="search-page-filter-icon" />
+                <span className="search-page-filter-label">{group.label}</span>
+                <span className={`search-page-filter-count ${SEARCH_ENTITY_META[group.type].tone}`}>
+                  {count}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </aside>
+  );
+}
+
+function SearchRecentPanel({
+  items,
+  currentQuery,
+  title,
+  emptyMessage,
+  onPick,
+}: {
+  items: string[];
+  currentQuery: string;
+  title: string;
+  emptyMessage: string;
+  onPick: (query: string) => void;
+}) {
+  const trimmedCurrent = currentQuery.trim().toLowerCase();
+
+  return (
+    <aside className="search-page-filter search-page-recent" aria-label={title}>
+      <h2 className="search-page-filter-title">
+        <Clock3 className="search-page-filter-title-icon" aria-hidden="true" />
+        {title}
+      </h2>
+      {items.length === 0 ? (
+        <p className="search-page-recent-empty">{emptyMessage}</p>
+      ) : (
+        <ul className="search-page-filter-list">
+          {items.map((term) => {
+            const active = term.toLowerCase() === trimmedCurrent && trimmedCurrent.length > 0;
+            return (
+              <li key={term}>
+                <button
+                  type="button"
+                  onClick={() => onPick(term)}
+                  className={cn(
+                    "search-page-filter-item is-clickable",
+                    active && "is-active",
+                  )}
+                >
+                  <span className="search-page-recent-icon" aria-hidden="true">
+                    <Search />
+                  </span>
+                  <span className="search-page-filter-label">{term}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </aside>
   );
 }
 
@@ -136,9 +225,6 @@ function SearchResultCard({
         data-tone={meta.tone}
       >
         <span className="search-page-card-accent" aria-hidden="true" />
-        <span className={`search-page-card-icon ${meta.tone}`} aria-hidden="true">
-          <meta.icon className="size-[1.05rem]" />
-        </span>
         <span className="search-page-card-body">
           <span className="search-page-card-top">
             <span className="search-page-card-title">{highlightText(item.title, query)}</span>
@@ -155,13 +241,36 @@ function SearchResultCard({
 
 export function SearchPage() {
   const { messages } = useLanguage();
+  const navigate = useNavigate();
   const [params] = useSearchParams();
   const query = params.get("q") ?? "";
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [hiddenTypes, setHiddenTypes] = useState<Set<SearchEntityType>>(() => new Set());
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const browsing = !query.trim();
+  const highlightTypes = Boolean(query.trim()) && hits.length > 0;
 
+  useEffect(() => {
+    setHiddenTypes(new Set());
+  }, [query, hits]);
+
+  useEffect(() => {
+    void searchApi
+      .listRecent()
+      .then((response) => setRecentSearches(response.items))
+      .catch(() => setRecentSearches([]));
+  }, []);
+
+  useEffect(() => {
+    const needle = query.trim();
+    if (!needle) return;
+    void searchApi
+      .recordRecent(needle)
+      .then((response) => setRecentSearches(response.items))
+      .catch(() => {});
+  }, [query]);
   useEffect(() => {
     const needle = query.trim();
     if (!needle) {
@@ -199,19 +308,39 @@ export function SearchPage() {
     };
   }, [messages.search.error, query]);
 
-  const groups = useMemo<SearchGroup[]>(() => {
-    const map = new Map<SearchEntityType, SearchHit[]>();
-    for (const hit of hits) {
-      const bucket = map.get(hit.entity_type) ?? [];
-      bucket.push(hit);
-      map.set(hit.entity_type, bucket);
-    }
-    return SEARCH_GROUP_ORDER.filter((type) => map.has(type)).map((type) => ({
-      type,
-      label: messages.search.types[type],
-      items: map.get(type) ?? [],
-    }));
-  }, [hits, messages.search.types]);
+  const filterGroups = useMemo<SearchGroup[]>(
+    () =>
+      SEARCH_GROUP_ORDER.map((type) => ({
+        type,
+        label: messages.search.types[type],
+        items: hits.filter((hit) => hit.entity_type === type),
+      })),
+    [hits, messages.search.types],
+  );
+
+  const groups = useMemo<SearchGroup[]>(
+    () => filterGroups.filter((group) => group.items.length > 0),
+    [filterGroups],
+  );
+
+  const visibleGroups = useMemo(
+    () => groups.filter((group) => !hiddenTypes.has(group.type)),
+    [groups, hiddenTypes],
+  );
+
+  function toggleType(type: SearchEntityType) {
+    if (!highlightTypes) return;
+    setHiddenTypes((current) => {
+      const next = new Set(current);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  }
+
+  function pickRecentSearch(term: string) {
+    navigate(`/search?q=${encodeURIComponent(term)}`);
+  }
 
   return (
     <div className="search-page">
@@ -232,53 +361,96 @@ export function SearchPage() {
           <p className="search-page-hint">{messages.search.hint}</p>
         </motion.header>
 
-        <section
-          className={cn(
-            "scroll-pane search-page-results",
-            !loading && !error && hits.length === 0 && browsing && "search-page-results-empty",
-          )}
-          aria-live="polite"
-        >
-          {loading ? (
-            <p className="search-page-empty">{messages.common.loading}</p>
-          ) : error ? (
-            <p className="search-page-empty text-danger">{error}</p>
-          ) : hits.length === 0 ? (
-            browsing ? (
-              <SearchBrowseEmpty message={messages.search.browseEmpty} />
+        <div className="search-page-body">
+          <div className="search-page-stage">
+            {!error ? (
+              <SearchTypeFilter
+                groups={filterGroups}
+                highlightResults={highlightTypes}
+                hiddenTypes={hiddenTypes}
+                onToggle={toggleType}
+                title={messages.search.filterTitle}
+              />
+            ) : null}
+
+            <section
+            className={cn(
+              "search-page-results search-page-results-with-filter",
+              !loading && !error && hits.length === 0 && browsing && "search-page-results-empty",
+              !loading && !error && query.trim() && hits.length === 0 && "search-page-results-empty",
+              !loading && !error && hits.length > 0 && visibleGroups.length === 0 && "search-page-results-empty",
+            )}
+            aria-live="polite"
+          >
+            {loading || error || hits.length === 0 ? (
+              <div
+                className={cn(
+                  "scroll-pane search-page-results-scroll",
+                  !loading && !error && hits.length === 0 && "search-page-results-scroll-empty",
+                )}
+              >
+                {loading ? (
+                  <p className="search-page-empty">{messages.common.loading}</p>
+                ) : error ? (
+                  <p className="search-page-empty text-danger">{error}</p>
+                ) : browsing ? (
+                  <SearchBrowseEmpty message={messages.search.browseEmpty} />
+                ) : (
+                  <p className="search-page-empty">{messages.search.noResults(query.trim())}</p>
+                )}
+              </div>
             ) : (
-              <p className="search-page-empty">{messages.search.noResults(query.trim())}</p>
-            )
-          ) : (
-            <>
-              <div className="search-page-results-head">
-                <p className="search-page-results-label">{messages.search.resultsFor(query.trim())}</p>
-                <SearchSummaryIcons groups={groups} />
-              </div>
-              <div className="search-page-groups">
-                {groups.map((group) => (
-                  <section key={group.type} className="search-page-group">
-                    <SearchSectionHead type={group.type} label={group.label} count={group.items.length} />
-                    <motion.ul
-                      className="search-page-card-stack"
-                      initial="hidden"
-                      animate="visible"
-                      variants={listVariants}
-                    >
-                      {group.items.map((item) => (
-                        <SearchResultCard
-                          key={`${item.entity_type}:${item.entity_id}`}
-                          item={item}
-                          query={query}
-                        />
+              <div
+                className={cn(
+                  "scroll-pane search-page-results-scroll",
+                  visibleGroups.length === 0 && "search-page-results-scroll-empty",
+                )}
+              >
+                {visibleGroups.length === 0 ? (
+                  <p className="search-page-empty">{messages.search.filterEmpty}</p>
+                ) : (
+                  <>
+                    <div className="search-page-results-head">
+                      <p className="search-page-results-label">{messages.search.resultsFor(query.trim())}</p>
+                    </div>
+                    <div className="search-page-groups">
+                      {visibleGroups.map((group) => (
+                        <section key={group.type} className="search-page-group">
+                          <SearchSectionHead type={group.type} label={group.label} count={group.items.length} />
+                          <motion.ul
+                            className="search-page-card-stack"
+                            initial="hidden"
+                            animate="visible"
+                            variants={listVariants}
+                          >
+                            {group.items.map((item) => (
+                              <SearchResultCard
+                                key={`${item.entity_type}:${item.entity_id}`}
+                                item={item}
+                                query={query}
+                              />
+                            ))}
+                          </motion.ul>
+                        </section>
                       ))}
-                    </motion.ul>
-                  </section>
-                ))}
+                    </div>
+                  </>
+                )}
               </div>
-            </>
-          )}
-        </section>
+            )}
+          </section>
+
+            {!error ? (
+              <SearchRecentPanel
+                items={recentSearches}
+                currentQuery={query}
+                title={messages.search.recentTitle}
+                emptyMessage={messages.search.recentEmpty}
+                onPick={pickRecentSearch}
+              />
+            ) : null}
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -10,11 +10,20 @@ export type TransformStep =
 
 export type StepOp = TransformStep["op"];
 
+export interface CombineSpec {
+  mode: "join" | "union";
+  right_dataset_id?: string;
+  union_dataset_ids?: string[];
+  on?: string[];
+  how?: "left" | "inner";
+}
+
 export interface TransformSpecV2 {
   version: 2;
   read?: { delimiter?: string; has_header?: boolean };
   steps: TransformStep[];
   sink: "parquet";
+  combine?: CombineSpec;
 }
 
 export interface SavedTransform {
@@ -26,6 +35,7 @@ export interface SavedTransform {
     steps?: TransformStep[];
     sink?: string;
     read?: { delimiter?: string; has_header?: boolean };
+    combine?: CombineSpec;
   };
   created_at: string;
   updated_at: string;

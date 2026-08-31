@@ -17,7 +17,7 @@ import { useSession } from "@/hooks/useSession";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
-import { toastError, toastSuccess } from "@/lib/notifications";
+import { toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { driverCatalog } from "@/mock/driverCatalog";
 import { connectionApi } from "@/services/connectionApi";
@@ -197,7 +197,7 @@ export function ConnectionsPage() {
       }
       await refreshConnections();
     } catch (err) {
-      toastError(messages.errors.deleteConnection, err);
+      toastDeleteError(messages.errors.deleteConnection, messages.errors.deleteBlocked, err);
     }
   }
 

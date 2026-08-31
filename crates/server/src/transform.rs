@@ -30,7 +30,9 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/api/transforms/{id}",
-            get(get_transform).patch(update_transform),
+            get(get_transform)
+                .patch(update_transform)
+                .delete(delete_transform),
         )
         .route("/api/transforms/{id}/run", post(run_transform))
 }
@@ -124,6 +126,63 @@ fn merge_read(spec: TransformSpec, row: &DatasetRow) -> TransformSpec {
         .or_else(|| row.delimiter.clone());
     let has_header = spec.has_header().or_else(|| row.has_header.map(|h| h != 0));
     spec.with_read(delimiter, has_header)
+}
+
+async fn hydrate_v2_spec(
+    state: &AppState,
+    user: &CurrentUser,
+    value: &Value,
+    row: &DatasetRow,
+) -> Result<TransformSpec, AppError> {
+    let mut spec = parse_v2_spec(value, row)?;
+    let Some(combine) = value.get("combine") else {
+        return Ok(spec);
+    };
+    let mode = combine
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match mode {
+        "join" => {
+            let right_id = combine
+                .get("right_dataset_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| AppError::bad("join needs right_dataset_id"))?;
+            let right = access::require_dataset(&state.store, user, right_id).await?;
+            let path = state.store.resolve(&right.stored_path);
+            if !path.is_file() {
+                return Err(AppError::not_found("right dataset file missing"));
+            }
+            spec.resolved_paths.insert(
+                right_id.to_string(),
+                path.to_string_lossy().into_owned(),
+            );
+        }
+        "union" => {
+            let ids = combine
+                .get("union_dataset_ids")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| AppError::bad("union needs union_dataset_ids"))?;
+            for id_val in ids {
+                let id = id_val
+                    .as_str()
+                    .ok_or_else(|| AppError::bad("union dataset id must be a string"))?;
+                let extra = access::require_dataset(&state.store, user, id).await?;
+                let path = state.store.resolve(&extra.stored_path);
+                if !path.is_file() {
+                    return Err(AppError::not_found(format!(
+                        "union dataset `{id}` file missing"
+                    )));
+                }
+                spec.resolved_paths.insert(
+                    id.to_string(),
+                    path.to_string_lossy().into_owned(),
+                );
+            }
+        }
+        other => return Err(AppError::bad(format!("unknown combine mode `{other}`"))),
+    }
+    Ok(spec)
 }
 
 fn parse_v2_spec(value: &Value, row: &DatasetRow) -> Result<TransformSpec, AppError> {
@@ -289,7 +348,7 @@ async fn preview_dataset(
         return Err(AppError::not_found("dataset file missing"));
     }
     let spec = if let Some(value) = &body.spec {
-        parse_v2_spec(value, &row)?
+        hydrate_v2_spec(&state, &user, value, &row).await?
     } else {
         default_v2_spec(&row)
     };
@@ -344,6 +403,16 @@ async fn create_transform(
     Ok((StatusCode::CREATED, Json(transform_json(&row))))
 }
 
+async fn delete_transform(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let _row = access::require_transform(&state.store, &user, &id).await?;
+    state.store.delete_transform(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 async fn update_transform(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -383,10 +452,9 @@ async fn run_transform(
     if !state.store.resolve(&dataset.stored_path).is_file() {
         return Err(AppError::not_found("dataset file missing"));
     }
-    let spec = parse_v2_spec(
-        &serde_json::from_str(&transform.spec_json).unwrap_or(json!({})),
-        &dataset,
-    )?;
+    let spec_value: Value =
+        serde_json::from_str(&transform.spec_json).unwrap_or(json!({}));
+    let spec = hydrate_v2_spec(&state, &user, &spec_value, &dataset).await?;
     let job = state
         .store
         .insert_transform_job(
