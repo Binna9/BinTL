@@ -24,6 +24,9 @@ export interface Dataset {
   updated_at: string;
   workspace_id: string;
   producer_chip_run_id: string | null;
+  status?: "planned" | "materialized" | string;
+  source_chip_id?: string | null;
+  consumer_chip_id?: string | null;
   available: boolean;
   origin: DatasetOrigin | null;
 }

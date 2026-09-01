@@ -30,6 +30,7 @@ export interface SavedTransform {
   id: string;
   name: string;
   dataset_id: string;
+  input_chip_id?: string | null;
   spec: {
     version?: number;
     steps?: TransformStep[];

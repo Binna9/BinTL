@@ -93,3 +93,19 @@ export interface RunChipResponse {
   status: string;
   run: ChipRun;
 }
+
+export interface ChipInputSlotResponse {
+  mode: "unwired" | "planned" | "materialized";
+  dataset_id?: string;
+  source_chip_id?: string;
+  status?: string;
+  columns?: { name: string; dtype?: string; type?: string }[];
+  dataset?: Record<string, unknown>;
+  planned?: {
+    dataset_id: string;
+    status: string;
+    source_chip_id: string;
+    consumer_chip_id: string;
+    columns: { name: string; dtype?: string; type?: string }[];
+  };
+}

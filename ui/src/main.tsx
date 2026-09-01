@@ -5,6 +5,7 @@ import App from "./App";
 import "./styles.css";
 import { GlobalLoadingOverlay } from "@/components/GlobalLoadingOverlay";
 import { GlobalNotifications } from "@/components/GlobalNotifications";
+import { AppNavigationProvider } from "@/hooks/useAppNavigation";
 import { ViewTransitionLocationProvider } from "@/hooks/useViewTransitionLocation";
 import { LanguageProvider } from "@/i18n/LanguageProvider";
 import { applyTheme, getPreferredTheme } from "@/lib/theme";
@@ -15,9 +16,11 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <LanguageProvider>
       <BrowserRouter>
-        <ViewTransitionLocationProvider>
-          <App />
-        </ViewTransitionLocationProvider>
+        <AppNavigationProvider>
+          <ViewTransitionLocationProvider>
+            <App />
+          </ViewTransitionLocationProvider>
+        </AppNavigationProvider>
       </BrowserRouter>
       <GlobalNotifications />
       <GlobalLoadingOverlay />

@@ -1,4 +1,5 @@
 import { beginGlobalLoading, endGlobalLoading } from "@/lib/globalLoading";
+import { redirectToLogin } from "@/lib/navigation";
 
 export class HttpError extends Error {
   constructor(
@@ -30,7 +31,7 @@ export async function httpRequest<T>(path: string, init: HttpRequestInit = {}): 
     });
 
     if (response.status === 401 && !path.endsWith("/api/login")) {
-      if (location.pathname !== "/login") location.assign("/login");
+      redirectToLogin();
       throw new HttpError(401, "unauthorized");
     }
 

@@ -9,14 +9,24 @@ import type {
 export const transformApi = {
   list: () => httpRequest<TransformListResponse>("/api/transforms"),
   get: (id: string) => httpRequest<SavedTransform>(`/api/transforms/${id}`),
-  create: (body: { name: string; dataset_id: string; spec: TransformSpecV2 }) =>
+  create: (body: {
+    name: string;
+    dataset_id: string;
+    spec: TransformSpecV2;
+    input_chip_id?: string;
+  }) =>
     httpRequest<SavedTransform>("/api/transforms", {
       method: "POST",
       body: JSON.stringify(body),
     }),
   update: (
     id: string,
-    body: { name?: string; dataset_id?: string; spec?: TransformSpecV2 },
+    body: {
+      name?: string;
+      dataset_id?: string;
+      spec?: TransformSpecV2;
+      input_chip_id?: string;
+    },
   ) =>
     httpRequest<SavedTransform>(`/api/transforms/${id}`, {
       method: "PATCH",

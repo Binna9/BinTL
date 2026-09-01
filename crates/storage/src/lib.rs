@@ -99,11 +99,16 @@ pub struct DatasetRow {
     pub producer_chip_run_id: Option<String>,
     pub table_name: String,
     pub connection_name: String,
+    pub status: String,
+    pub source_chip_id: Option<String>,
+    pub consumer_chip_id: Option<String>,
+    pub source_extract_definition_id: Option<String>,
 }
 
 const DATASET_COLS: &str = "d.id, d.kind, d.extract_id, d.filename, d.stored_path, d.size_bytes,
         d.delimiter, d.has_header, d.columns_json, d.row_count, d.inspected_at,
         d.created_at, d.updated_at, d.workspace_id, d.producer_chip_run_id,
+        d.status, d.source_chip_id, d.consumer_chip_id, d.source_extract_definition_id,
         COALESCE(e.table_name, '') AS table_name,
         COALESCE(c.name, '') AS connection_name";
 
@@ -130,6 +135,7 @@ pub struct TransformRow {
     pub created_at: String,
     pub updated_at: String,
     pub workspace_id: String,
+    pub input_chip_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -1515,6 +1521,7 @@ impl Store {
             "SELECT s.dataset_id FROM chip_output_slots s
              INNER JOIN datasets d ON d.id = s.dataset_id
              WHERE s.workspace_id = ? AND s.chip_id = ?
+               AND d.status = 'materialized'
                AND d.stored_path IS NOT NULL AND TRIM(d.stored_path) != ''",
         )
         .bind(workspace_id)
@@ -1535,6 +1542,101 @@ impl Store {
         .bind(workspace_id)
         .fetch_optional(&self.pool)
         .await?)
+    }
+
+    pub async fn find_planned_input_dataset(
+        &self,
+        workspace_id: &str,
+        consumer_chip_id: &str,
+    ) -> Result<Option<DatasetRow>, StorageError> {
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM datasets
+             WHERE workspace_id = ? AND consumer_chip_id = ? AND status = 'planned'
+             LIMIT 1",
+        )
+        .bind(workspace_id)
+        .bind(consumer_chip_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match id {
+            Some(dataset_id) => self.get_dataset(&dataset_id).await,
+            None => Ok(None),
+        }
+    }
+
+    pub async fn upsert_planned_input_dataset(
+        &self,
+        workspace_id: &str,
+        consumer_chip_id: &str,
+        source_chip_id: &str,
+        source_extract_definition_id: Option<&str>,
+        filename: &str,
+        columns_json: &str,
+        delimiter: &str,
+        header: bool,
+    ) -> Result<DatasetRow, StorageError> {
+        let now = now_rfc3339();
+        if let Some(existing) = self
+            .find_planned_input_dataset(workspace_id, consumer_chip_id)
+            .await?
+        {
+            sqlx::query(
+                "UPDATE datasets SET
+                   source_chip_id = ?,
+                   source_extract_definition_id = ?,
+                   filename = ?,
+                   columns_json = ?,
+                   delimiter = ?,
+                   has_header = ?,
+                   inspected_at = ?,
+                   updated_at = ?
+                 WHERE id = ?",
+            )
+            .bind(source_chip_id)
+            .bind(source_extract_definition_id)
+            .bind(filename)
+            .bind(columns_json)
+            .bind(delimiter)
+            .bind(i64::from(header))
+            .bind(&now)
+            .bind(&now)
+            .bind(&existing.id)
+            .execute(&self.pool)
+            .await?;
+            return self
+                .get_dataset(&existing.id)
+                .await?
+                .ok_or_else(|| StorageError::NotFound("planned dataset missing".into()));
+        }
+        let id = Uuid::new_v4().to_string();
+        let stored_path = format!("__planned__/{id}");
+        sqlx::query(
+            "INSERT INTO datasets
+             (id, kind, extract_id, filename, stored_path, size_bytes, delimiter, has_header,
+              columns_json, row_count, inspected_at, created_at, updated_at, workspace_id,
+              producer_chip_run_id, status, source_chip_id, consumer_chip_id,
+              source_extract_definition_id)
+             VALUES (?, 'database', NULL, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, NULL,
+                     'planned', ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(filename)
+        .bind(&stored_path)
+        .bind(delimiter)
+        .bind(i64::from(header))
+        .bind(columns_json)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .bind(workspace_id)
+        .bind(source_chip_id)
+        .bind(consumer_chip_id)
+        .bind(source_extract_definition_id)
+        .execute(&self.pool)
+        .await?;
+        self.get_dataset(&id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("planned dataset missing".into()))
     }
 
     pub async fn linked_chip_run_for_extract(
@@ -2987,6 +3089,7 @@ impl Store {
         name: &str,
         dataset_id: &str,
         spec_json: &str,
+        input_chip_id: Option<&str>,
     ) -> Result<TransformRow, StorageError> {
         let name = name.trim();
         if name.is_empty() {
@@ -2999,8 +3102,9 @@ impl Store {
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO transforms (id, name, dataset_id, spec_json, created_at, updated_at, workspace_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO transforms
+             (id, name, dataset_id, spec_json, created_at, updated_at, workspace_id, input_chip_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(name)
@@ -3009,9 +3113,13 @@ impl Store {
         .bind(&now)
         .bind(&now)
         .bind(&dataset.workspace_id)
+        .bind(input_chip_id)
         .execute(&self.pool)
         .await?;
         search::sync_search_best_effort(self, "transform", self.sync_search_transform(&id)).await;
+        if let Some(chip_id) = input_chip_id.map(str::trim).filter(|value| !value.is_empty()) {
+            self.bind_chip_to_transform(chip_id, &id).await?;
+        }
         self.get_transform(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("transform disappeared after insert".into()))
@@ -3023,6 +3131,7 @@ impl Store {
         name: Option<&str>,
         dataset_id: Option<&str>,
         spec_json: Option<&str>,
+        input_chip_id: Option<Option<&str>>,
     ) -> Result<TransformRow, StorageError> {
         let current = self
             .get_transform(id)
@@ -3034,30 +3143,83 @@ impl Store {
             .unwrap_or(current.name.as_str());
         let dataset_id = dataset_id.unwrap_or(current.dataset_id.as_str());
         let spec_json = spec_json.unwrap_or(current.spec_json.as_str());
+        let input_chip_id = match input_chip_id {
+            Some(value) => value.map(str::to_string),
+            None => current.input_chip_id.clone(),
+        };
         let _ = self
             .get_dataset(dataset_id)
             .await?
             .ok_or_else(|| StorageError::NotFound("dataset not found".into()))?;
         let now = now_rfc3339();
         sqlx::query(
-            "UPDATE transforms SET name = ?, dataset_id = ?, spec_json = ?, updated_at = ? WHERE id = ?",
+            "UPDATE transforms SET name = ?, dataset_id = ?, spec_json = ?, updated_at = ?,
+             input_chip_id = ? WHERE id = ?",
         )
         .bind(name)
         .bind(dataset_id)
         .bind(spec_json)
         .bind(&now)
+        .bind(&input_chip_id)
         .bind(id)
         .execute(&self.pool)
         .await?;
         search::sync_search_best_effort(self, "transform", self.sync_search_transform(id)).await;
+        if let Some(chip_id) = input_chip_id.as_deref().filter(|value| !value.is_empty()) {
+            self.bind_chip_to_transform(chip_id, id).await?;
+        }
         self.get_transform(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("transform disappeared after update".into()))
     }
 
+    pub async fn bind_chip_to_transform(
+        &self,
+        chip_id: &str,
+        transform_id: &str,
+    ) -> Result<(), StorageError> {
+        let chip = self
+            .get_chip(chip_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("chip not found".into()))?;
+        if chip.kind != "transform" {
+            return Err(StorageError::Invalid(
+                "only transform chips can bind a transform definition".into(),
+            ));
+        }
+        let _ = self
+            .get_transform(transform_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("transform not found".into()))?;
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM chip_bindings WHERE chip_id = ?")
+            .bind(chip_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO chip_bindings (chip_id, ref_kind, ref_id) VALUES (?, 'transform', ?)",
+        )
+        .bind(chip_id)
+        .bind(transform_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE chips SET config_json = NULL, revision = revision + 1, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(chip_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        search::sync_search_best_effort(self, "chip", self.sync_search_chip(chip_id)).await;
+        Ok(())
+    }
+
     pub async fn get_transform(&self, id: &str) -> Result<Option<TransformRow>, StorageError> {
         let row = sqlx::query_as::<_, TransformRow>(
-            "SELECT id, name, dataset_id, spec_json, created_at, updated_at, workspace_id
+            "SELECT id, name, dataset_id, spec_json, created_at, updated_at, workspace_id, input_chip_id
              FROM transforms WHERE id = ?",
         )
         .bind(id)
@@ -3086,7 +3248,7 @@ impl Store {
             None => (String::new(), Vec::new()),
         };
         let sql = format!(
-            "SELECT id, name, dataset_id, spec_json, created_at, updated_at, workspace_id
+            "SELECT id, name, dataset_id, spec_json, created_at, updated_at, workspace_id, input_chip_id
              FROM transforms WHERE 1=1 {extra} ORDER BY updated_at DESC"
         );
         let mut query = sqlx::query_as::<_, TransformRow>(&sql);
@@ -3314,7 +3476,7 @@ impl Store {
                     let spec_json = serde_json::to_string(&spec)
                         .map_err(|error| StorageError::Invalid(error.to_string()))?;
                     let transform = self
-                        .insert_transform(&chip.name, dataset_id, &spec_json)
+                        .insert_transform(&chip.name, dataset_id, &spec_json, None)
                         .await?;
                     ("transform", transform.id)
                 }

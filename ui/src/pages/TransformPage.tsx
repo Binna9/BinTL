@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowUpDown,
   BookmarkPlus,
@@ -51,11 +51,63 @@ import { chipApi } from "@/services/chipApi";
 import { datasetApi } from "@/services/datasetApi";
 import { transformApi } from "@/services/transformApi";
 import type { Dataset, DatasetColumn, FramePreview } from "@/types/dataset";
+import type { ChipInputSlotResponse } from "@/types/chip";
 import type {
   StepOp,
   TransformSpecV2,
   TransformStep,
 } from "@/types/transform";
+
+function normalizeSlotColumns(
+  columns: { name: string; dtype?: string; type?: string }[] | undefined,
+): DatasetColumn[] {
+  if (!columns) return [];
+  return columns.map((column) => ({
+    name: column.name,
+    dtype: column.dtype ?? column.type ?? "String",
+  }));
+}
+
+function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
+  if (slot.mode === "materialized" && slot.dataset) {
+    return slot.dataset as unknown as Dataset;
+  }
+  if (slot.mode === "planned" && slot.planned) {
+    const raw = slot.dataset as Dataset | undefined;
+    if (!raw) {
+      return {
+        id: slot.planned.dataset_id,
+        kind: "database",
+        filename: "planned input",
+        stored_path: "",
+        size_bytes: null,
+        delimiter: ",",
+        has_header: true,
+        columns: normalizeSlotColumns(slot.planned.columns),
+        row_count: null,
+        inspected_at: null,
+        created_at: "",
+        updated_at: "",
+        workspace_id: "",
+        producer_chip_run_id: null,
+        status: "planned",
+        source_chip_id: slot.planned.source_chip_id,
+        consumer_chip_id: slot.planned.consumer_chip_id,
+        available: false,
+        origin: null,
+      };
+    }
+    return {
+      ...raw,
+      status: raw.status ?? "planned",
+      columns: raw.columns?.length
+        ? raw.columns
+        : normalizeSlotColumns(slot.planned.columns),
+      available: false,
+    };
+  }
+  return null;
+}
 
 const STEP_OPS: StepOp[] = [
   "select",
@@ -813,6 +865,10 @@ function PreviewGrid({
 export function TransformPage() {
   const { messages } = useLanguage();
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const workspaceId = searchParams.get("workspace") ?? undefined;
+  const inputChipId = searchParams.get("input_chip") ?? undefined;
+  const workspaceMode = Boolean(workspaceId && inputChipId);
   const navigate = useNavigate();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetId, setDatasetId] = useState<string>();
@@ -888,6 +944,33 @@ export function TransformPage() {
   }, [messages]);
 
   useEffect(() => {
+    if (!workspaceId || !inputChipId || id) return;
+    let cancelled = false;
+    void chipApi
+      .getInputSlot(workspaceId, inputChipId)
+      .then((slot) => {
+        if (cancelled) return;
+        const dataset = datasetFromSlot(slot);
+        if (!dataset) return;
+        setDatasets((current) => {
+          const exists = current.some((item) => item.id === dataset.id);
+          if (exists) {
+            return current.map((item) => (item.id === dataset.id ? { ...item, ...dataset } : item));
+          }
+          return [...current, dataset];
+        });
+        setDatasetId(dataset.id);
+        setName((current) => current || dataset.filename);
+      })
+      .catch((err) => {
+        if (!cancelled) toastError(messages.errors.workspace, err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, inputChipId, id, messages]);
+
+  useEffect(() => {
     if (!id) {
       setTransformId(undefined);
       return;
@@ -916,6 +999,21 @@ export function TransformPage() {
     if (!datasetId) {
       setSourcePreview(null);
       setSourceMissing(false);
+      return;
+    }
+    if (selected?.status === "planned") {
+      setSourceMissing(false);
+      if (selected.columns.length > 0) {
+        setSourcePreview({
+          columns: selected.columns,
+          rows: [],
+          sampled_rows: 0,
+          row_count: 0,
+          truncated: false,
+        });
+      } else {
+        setSourcePreview(null);
+      }
       return;
     }
     if (selected && !selected.available) {
@@ -972,6 +1070,18 @@ export function TransformPage() {
   useEffect(() => {
     if (!detailOpen || !datasetId) return;
     const dataset = datasets.find((item) => item.id === datasetId) ?? null;
+    if (dataset?.status === "planned") {
+      setSourcePreview({
+        columns: dataset.columns,
+        rows: [],
+        sampled_rows: 0,
+        row_count: 0,
+        truncated: false,
+      });
+      setResultPreview(null);
+      setDetailLoading(false);
+      return;
+    }
     const spec = specFrom(dataset, steps, baseColumns);
     let cancelled = false;
     setDetailLoading(true);
@@ -1064,6 +1174,42 @@ export function TransformPage() {
     navigate("/transform/clean");
   }
 
+  async function saveTransformDefinition() {
+    if (!datasetId) return;
+    setBusy(true);
+    try {
+      const title = name.trim() || selected?.filename || messages.transform.untitled;
+      if (transformId) {
+        await transformApi.update(transformId, {
+          name: title,
+          dataset_id: datasetId,
+          spec: buildSpec(),
+          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
+        });
+      } else {
+        const row = await transformApi.create({
+          name: title,
+          dataset_id: datasetId,
+          spec: buildSpec(),
+          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
+        });
+        setTransformId(row.id);
+        setName(row.name);
+        navigate(`/transform/clean/${row.id}?${searchParams.toString()}`, { replace: true });
+      }
+      if (workspaceMode && workspaceId) {
+        toastSuccess(messages.transform.saveToWorkspace);
+        navigate(`/workspace/${workspaceId}/chips/${inputChipId}`);
+        return;
+      }
+      toastSuccess(messages.query.taskRegistered);
+    } catch (err) {
+      toastError(messages.errors.saveTransform, err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onRegisterChip() {
     if (!datasetId || !registerChipName.trim()) return;
     setRegisterBusy(true);
@@ -1075,12 +1221,14 @@ export function TransformPage() {
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
+          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
         });
       } else {
         const row = await transformApi.create({
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
+          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
         });
         savedTransformId = row.id;
         setTransformId(row.id);
@@ -1102,6 +1250,10 @@ export function TransformPage() {
   }
 
   function openRegister() {
+    if (workspaceMode) {
+      void saveTransformDefinition();
+      return;
+    }
     setRegisterChipName(name.trim() || selected?.filename || messages.transform.untitled);
     setRegisterOpen(true);
   }
@@ -1112,7 +1264,7 @@ export function TransformPage() {
     const confirmed = await showConfirm(
       messages.transform.deleteSavedRecipe,
       messages.transform.deleteSavedRecipeConfirm(title),
-      { tone: "danger" },
+      { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed) return;
     setBusy(true);
@@ -1141,12 +1293,14 @@ export function TransformPage() {
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
+          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
         });
       } else {
         const row = await transformApi.create({
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
+          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
         });
         savedId = row.id;
         setTransformId(row.id);
@@ -1207,7 +1361,11 @@ export function TransformPage() {
             </Button>
             <Button type="button" className="gap-2" disabled={!datasetId || busy} onClick={openRegister}>
               <BookmarkPlus className="size-3.5" aria-hidden="true" />
-              {busy ? messages.common.saving : messages.transform.register}
+              {busy
+                ? messages.common.saving
+                : workspaceMode
+                  ? messages.transform.saveToWorkspace
+                  : messages.transform.register}
             </Button>
             <Button
               variant="primary"
@@ -1335,7 +1493,11 @@ export function TransformPage() {
                               <span className="min-w-0 flex-1">
                                 <span className="block break-all text-[13px] font-medium leading-4">
                                   {item.filename}
-                                  {!item.available ? (
+                                  {item.status === "planned" ? (
+                                    <span className="ml-1 text-[11px] font-normal text-accent">
+                                      ({messages.transform.plannedInput})
+                                    </span>
+                                  ) : !item.available ? (
                                     <span className="ml-1 text-[11px] font-normal text-warning">
                                       ({messages.transform.sourceUnavailable})
                                     </span>

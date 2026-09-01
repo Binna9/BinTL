@@ -10,6 +10,7 @@ import {
   Users,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
+import { DialogContentTransition } from "@/components/DialogContentTransition";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { SplitLayout } from "@/components/SplitLayout";
 import { Button } from "@/components/ui/button";
@@ -567,7 +568,9 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
             })}
           </nav>
         </aside>
-        {PAGE_VIEW[page]({ query, onQuery: setQuery })}
+        <DialogContentTransition contentKey={page} resetWhen={open} className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {PAGE_VIEW[page]({ query, onQuery: setQuery })}
+        </DialogContentTransition>
       </SplitLayout>
     </AppDialog>
   );

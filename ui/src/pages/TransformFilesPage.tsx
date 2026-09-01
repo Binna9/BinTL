@@ -64,7 +64,7 @@ export function TransformFilesPage() {
     const confirmed = await showConfirm(
       messages.transformFiles.deleteConfirmTitle,
       messages.transformFiles.deleteConfirmMessage(selected.length),
-      { tone: "danger" },
+      { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed) return;
     setBusy(true);

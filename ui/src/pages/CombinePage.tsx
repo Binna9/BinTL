@@ -486,7 +486,7 @@ export function CombinePage() {
     const confirmed = await showConfirm(
       t.deleteSavedRecipe,
       t.deleteSavedRecipeConfirm(title),
-      { tone: "danger" },
+      { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed) return;
     setBusy(true);

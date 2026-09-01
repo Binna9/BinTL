@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
+import { DialogContentTransition } from "@/components/DialogContentTransition";
 import { SplitLayout } from "@/components/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
@@ -138,6 +139,14 @@ function workspacesSnapshotEqual(a: Workspace[], b: Workspace[]) {
       (other.folder_id ?? null) === (workspace.folder_id ?? null)
     );
   });
+}
+
+function editorContentKey(editor: Editor | null): string {
+  if (!editor) return "tree";
+  if (editor.mode === "create-folder") return `create-folder:${editor.parentId ?? "root"}`;
+  if (editor.mode === "create-workspace") return `create-workspace:${editor.parentId ?? "root"}`;
+  if (editor.mode === "edit-folder") return `edit-folder:${editor.id}`;
+  return `edit-workspace:${editor.id}`;
 }
 
 function folderDeleteOrder(folders: WorkspaceFolder[]) {
@@ -1149,16 +1158,13 @@ export function WorkspaceManageDialog({
         </div>
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
-          <AnimatePresence initial={false} mode="wait">
+          <DialogContentTransition
+            contentKey={editorContentKey(editor)}
+            resetWhen={open}
+            className="h-full min-h-0"
+          >
             {editor ? (
-              <motion.div
-                key="manage-split"
-                className="flex h-full min-h-0 flex-col"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.18, ease: "easeInOut" }}
-              >
+              <div className="flex h-full min-h-0 flex-col">
                 <SplitLayout
                   direction="vertical"
                   className="min-h-0 flex-1"
@@ -1170,20 +1176,11 @@ export function WorkspaceManageDialog({
                   {renderTree()}
                   {renderEditorForm()}
                 </SplitLayout>
-              </motion.div>
+              </div>
             ) : (
-              <motion.div
-                key="manage-tree"
-                className="h-full min-h-0"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.18, ease: "easeInOut" }}
-              >
-                {renderTree("h-full")}
-              </motion.div>
+              renderTree("h-full")
             )}
-          </AnimatePresence>
+          </DialogContentTransition>
         </div>
 
         {error && !editor ? (

@@ -347,6 +347,7 @@ mod tests {
                 "Sales clean",
                 &upload.id,
                 r#"{"version":2,"steps":[],"sink":"parquet"}"#,
+                None,
             )
             .await
             .unwrap();

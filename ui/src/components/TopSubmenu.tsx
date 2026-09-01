@@ -1,5 +1,6 @@
 import { Languages, LogOut, Moon, Settings, Sun, User } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { useTheme } from "@/hooks/useTheme";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -51,7 +52,8 @@ function IconButton({
 export function TopSubmenu({ prefsOnly = false }: { prefsOnly?: boolean }) {
   const { theme, toggleTheme } = useTheme();
   const { messages, toggleLocale } = useLanguage();
-  const { user } = useSession();
+  const navigate = useNavigate();
+  const { user, clearSession } = useSession();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const isDark = theme === "dark";
 
@@ -63,7 +65,10 @@ export function TopSubmenu({ prefsOnly = false }: { prefsOnly?: boolean }) {
     );
     if (!confirmed) return;
     clearStoredLayouts();
-    void authApi.logout().finally(() => location.assign("/login"));
+    void authApi.logout().finally(() => {
+      clearSession();
+      navigate("/login", { replace: true });
+    });
   }
 
   return (

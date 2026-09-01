@@ -11,6 +11,7 @@ mod extract;
 mod search;
 mod state;
 mod chip;
+mod planned_input;
 mod transform;
 mod ui;
 mod users;

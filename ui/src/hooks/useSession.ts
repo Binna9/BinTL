@@ -8,6 +8,7 @@ type SessionContextValue = {
   canManageUsers: boolean;
   canWriteConnections: boolean;
   refresh: () => Promise<void>;
+  clearSession: () => void;
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -31,6 +32,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, []);
 
+  function clearSession() {
+    setUser(null);
+    setLoading(false);
+  }
+
   const value = useMemo<SessionContextValue>(
     () => ({
       user,
@@ -38,6 +44,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       canManageUsers: user?.permissions.includes("USER_MANAGE") ?? false,
       canWriteConnections: user?.permissions.includes("CONNECTION_WRITE") ?? false,
       refresh,
+      clearSession,
     }),
     [user, loading],
   );

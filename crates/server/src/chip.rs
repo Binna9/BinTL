@@ -7,6 +7,7 @@ use engine::TransformSpec;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 use storage::{ChipRow, ChipRunRow, RegisterExtractChip, RegisterTransformChip, Store};
 use tokio::sync::{mpsc, Semaphore};
 
@@ -29,6 +30,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/workspaces/{id}/runs", get(list_runs))
         .route("/api/chip-runs/{id}", get(get_run))
         .route("/api/chip-runs/{id}/logs", get(get_run_logs))
+        .route(
+            "/api/workspaces/{id}/chips/{chip_id}/input-slot",
+            get(get_input_slot),
+        )
 }
 
 pub fn spawn_worker(
@@ -374,12 +379,42 @@ async fn queue_chip_run(
     workspace_id: &str,
     requested_input: Option<String>,
 ) -> Result<ChipRunRow, AppError> {
+    match chip.kind.as_str() {
+        "extract" => queue_extract_chip_run(state, user, chip, workspace_id, requested_input).await,
+        "transform" => {
+            queue_transform_chip_run(state, user, chip, workspace_id, requested_input).await
+        }
+        _ => {
+            access::require_workspace(&state.store, user, workspace_id).await?;
+            if chip.active == 0 {
+                return Err(AppError::conflict("chip is inactive"));
+            }
+            if chip.kind == "load" {
+                return Err(AppError::bad("load chips are not supported"));
+            }
+            Err(AppError::bad("unsupported chip kind"))
+        }
+    }
+}
+
+async fn queue_extract_chip_run(
+    state: &AppState,
+    user: &CurrentUser,
+    chip: &ChipRow,
+    workspace_id: &str,
+    requested_input: Option<String>,
+) -> Result<ChipRunRow, AppError> {
     access::require_workspace(&state.store, user, workspace_id).await?;
     if chip.active == 0 {
         return Err(AppError::conflict("chip is inactive"));
     }
-    if chip.kind == "load" {
-        return Err(AppError::bad("load chips are not supported"));
+    if chip.kind != "extract" {
+        return Err(AppError::bad("expected extract chip"));
+    }
+    if requested_input.is_some() {
+        return Err(AppError::bad(
+            "extract chips do not accept input_dataset_id",
+        ));
     }
     let config_raw = state
         .store
@@ -389,61 +424,80 @@ async fn queue_chip_run(
     let config: Value = serde_json::from_str(&config_raw)
         .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
     reject_forbidden_config(&config)?;
+    let config = validate_extract_config(&state.store, config).await?;
+    if config
+        .get("connection_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        return Err(AppError::bad("configure the extract chip before running"));
+    }
+    enqueue_chip_run(state, chip, workspace_id, &config_raw, None).await
+}
 
-    let input_dataset_id = match chip.kind.as_str() {
-        "extract" => {
-            if requested_input.is_some() {
-                return Err(AppError::bad(
-                    "extract chips do not accept input_dataset_id",
-                ));
-            }
-            let config = validate_extract_config(&state.store, config).await?;
-            if config
-                .get("connection_id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                return Err(AppError::bad("configure the extract chip before running"));
-            }
-            None
-        }
-        "transform" => {
-            let config =
-                validate_transform_config(&state.store, workspace_id, config).await?;
-            let dataset_id = resolve_transform_input(
-                &state.store,
-                workspace_id,
-                &chip.id,
-                requested_input,
-                config.input_dataset_id,
-            )
-            .await?;
-            let dataset = state
-                .store
-                .get_dataset(&dataset_id)
-                .await?
-                .ok_or_else(|| AppError::not_found("input dataset not found"))?;
-            if dataset.workspace_id != workspace_id {
-                return Err(AppError::bad("input dataset belongs to another workspace"));
-            }
-            if !state.store.resolve(&dataset.stored_path).is_file() {
-                return Err(AppError::not_found("input dataset file missing"));
-            }
-            Some(dataset_id)
-        }
-        _ => return Err(AppError::bad("unsupported chip kind")),
-    };
+async fn queue_transform_chip_run(
+    state: &AppState,
+    user: &CurrentUser,
+    chip: &ChipRow,
+    workspace_id: &str,
+    requested_input: Option<String>,
+) -> Result<ChipRunRow, AppError> {
+    access::require_workspace(&state.store, user, workspace_id).await?;
+    if chip.active == 0 {
+        return Err(AppError::conflict("chip is inactive"));
+    }
+    if chip.kind != "transform" {
+        return Err(AppError::bad("expected transform chip"));
+    }
+    let config_raw = state
+        .store
+        .resolve_chip_config_json(chip)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let config: Value = serde_json::from_str(&config_raw)
+        .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
+    reject_forbidden_config(&config)?;
+    let config = validate_transform_config(&state.store, workspace_id, config).await?;
+    let dataset_id = crate::planned_input::resolve_materialized_transform_input(
+        state,
+        user,
+        workspace_id,
+        &chip.id,
+        requested_input,
+        config.input_dataset_id,
+    )
+    .await?;
+    let dataset = state
+        .store
+        .get_dataset(&dataset_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("input dataset not found"))?;
+    if dataset.workspace_id != workspace_id {
+        return Err(AppError::bad("input dataset belongs to another workspace"));
+    }
+    if !state.store.resolve(&dataset.stored_path).is_file() {
+        return Err(AppError::not_found("input dataset file missing"));
+    }
+    enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&dataset_id)).await
+}
 
+async fn enqueue_chip_run(
+    state: &AppState,
+    chip: &ChipRow,
+    workspace_id: &str,
+    config_raw: &str,
+    input_dataset_id: Option<&str>,
+) -> Result<ChipRunRow, AppError> {
     let run = state
         .store
         .create_chip_run(
             &chip.id,
             workspace_id,
             chip.revision,
-            &config_raw,
-            input_dataset_id.as_deref(),
+            config_raw,
+            input_dataset_id,
         )
         .await?;
     if state.chip_tx.try_send(run.id.clone()).is_err() {
@@ -543,36 +597,50 @@ async fn get_run_logs(
     Ok(Json(json!({ "id": id, "text": text })))
 }
 
-async fn resolve_transform_input(
-    store: &Store,
+async fn get_input_slot(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((workspace_id, chip_id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(
+        crate::planned_input::get_transform_input_slot(&state, &user, &workspace_id, &chip_id)
+            .await?,
+    ))
+}
+
+pub async fn run_extract_chip_sync(
+    state: &AppState,
+    user: &CurrentUser,
     workspace_id: &str,
     chip_id: &str,
-    requested: Option<String>,
-    config_input: Option<String>,
-) -> Result<String, AppError> {
-    if let Some(dataset_id) = requested {
-        return Ok(dataset_id);
-    }
-    let incoming = store
-        .list_chip_edges(workspace_id)
-        .await?
-        .into_iter()
-        .filter(|edge| edge.to_chip_id == chip_id && edge.kind == "data")
-        .collect::<Vec<_>>();
-    if incoming.len() > 1 {
-        return Err(AppError::bad(
-            "multiple data edges into a chip are not supported",
-        ));
-    }
-    if let Some(edge) = incoming.first() {
-        return store
-            .latest_chip_output_for_workspace(workspace_id, &edge.from_chip_id)
+) -> Result<(), AppError> {
+    let chip = access::require_chip(&state.store, user, chip_id).await?;
+    let run = queue_extract_chip_run(state, user, &chip, workspace_id, None).await?;
+    wait_for_chip_run(state, &run.id).await
+}
+
+async fn wait_for_chip_run(state: &AppState, run_id: &str) -> Result<(), AppError> {
+    for _ in 0..600 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let current = state
+            .store
+            .get_chip_run(run_id)
             .await?
-            .ok_or_else(|| {
-                AppError::bad("upstream chip has no succeeded output dataset")
-            });
+            .ok_or_else(|| AppError::not_found("chip run not found"))?;
+        match current.status.as_str() {
+            "succeeded" => return Ok(()),
+            "failed" => {
+                let message = current
+                    .error_message
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "chip run failed".into());
+                return Err(AppError::bad(message));
+            }
+            "queued" | "running" => {}
+            other => return Err(AppError::bad(format!("unexpected chip run status `{other}`"))),
+        }
     }
-    config_input.ok_or_else(|| AppError::bad("transform input_dataset_id required"))
+    Err(AppError::bad("chip run timed out"))
 }
 
 pub(crate) async fn chip_json(store: &Store, row: &ChipRow) -> Result<Value, AppError> {

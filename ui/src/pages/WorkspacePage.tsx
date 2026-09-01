@@ -1,17 +1,19 @@
-import { DragEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { AppWindow, ArrowRight, Check, ChevronDown, CircleAlert, DatabaseZap, Folder, FolderOpen, Layers, Plus, RefreshCw, RotateCcw, Save, Search, Settings2, Spline, Workflow, X, type LucideIcon } from "lucide-react";
-import { AppDialog } from "@/components/AppDialog";
+import { AppWindow, ArrowRight, ChevronDown, CircleAlert, DatabaseZap, Folder, FolderOpen, Layers, Pencil, RefreshCw, RotateCcw, Save, Settings2, Spline, Workflow, X, type LucideIcon } from "lucide-react";
+import {
+  ChipPlaceDialog,
+  type ExtractPlaceDraft,
+  type TransformPlaceDraft,
+} from "@/components/ChipPlaceDialog";
 import { SplitLayout } from "@/components/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/select";
 import { WorkspaceManageDialog } from "@/components/WorkspaceManageDialog";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
-import { fmtWhen } from "@/lib/format";
 import { layout } from "@/lib/layout";
 import { showConfirm } from "@/lib/notifications";
 import { connectionApi } from "@/services/connectionApi";
@@ -20,14 +22,9 @@ import { chipApi } from "@/services/chipApi";
 import { workspaceApi } from "@/services/workspaceApi";
 import type { DataConnection } from "@/types/connection";
 import type { Dataset } from "@/types/dataset";
-import type { Chip, ChipConfig, ChipEdge, ChipEdgeKind, ChipKind, ChipRun, RunChipRequest } from "@/types/chip";
+import type { Chip, ChipConfig, ChipEdge, ChipEdgeKind, ChipKind, ChipRun } from "@/types/chip";
 import type { Workspace, WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
 
-const EMPTY_SPEC = JSON.stringify(
-  { version: 2, sink: "parquet", steps: [] },
-  null,
-  2,
-);
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const TOOL_KIND = "application/x-bintl-tool";
 const NODE_W = 100;
@@ -49,21 +46,6 @@ function cloneCanvas(
   edges: ChipEdge[],
 ): CanvasSnapshot {
   return JSON.parse(JSON.stringify({ chips, positions, edges })) as CanvasSnapshot;
-}
-
-function textValue(config: ChipConfig, key: string, fallback = ""): string {
-  return typeof config[key] === "string" ? config[key] as string : fallback;
-}
-
-function boolValue(config: ChipConfig, key: string, fallback: boolean): boolean {
-  return typeof config[key] === "boolean" ? config[key] as boolean : fallback;
-}
-
-function objectValue(config: ChipConfig, key: string): ChipConfig {
-  const value = config[key];
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as ChipConfig
-    : {};
 }
 
 function nodesFromLayout(layout?: WorkspaceLayout): Record<string, Point> {
@@ -121,10 +103,6 @@ function chipInMarquee(point: Point, box: MarqueeBox): boolean {
 
 function roundPoint(point: Point): Point {
   return { x: Math.round(point.x), y: Math.round(point.y) };
-}
-
-function normalizeChipName(name: string) {
-  return name.trim().toLowerCase();
 }
 
 function folderPathLabel(
@@ -368,10 +346,6 @@ function defaultEdgeKind(fromKind: ChipKind, toKind: ChipKind): ChipEdgeKind {
     return "data";
   }
   return "then";
-}
-
-function incomingDataEdge(edges: ChipEdge[], chipId: string): ChipEdge | undefined {
-  return edges.find((edge) => edge.to_chip_id === chipId && edge.kind === "data");
 }
 
 function ShortcutHint({ keys, label }: { keys: string[]; label: string }) {
@@ -627,260 +601,111 @@ function LayerGroup({
 }
 
 function LayerRow({
-  active,
+  selected,
   icon: Icon,
   iconClassName,
   label,
   meta,
   onClick,
+  onEdit,
+  editTitle,
 }: {
-  active?: boolean;
+  selected?: boolean;
   icon: LucideIcon;
   iconClassName?: string;
   label: string;
   meta?: string;
-  onClick: () => void;
+  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onEdit?: () => void;
+  editTitle?: string;
 }) {
   return (
     <li>
-      <button
-        type="button"
+      <div
         className={cn(
-          "flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left outline-none transition-colors",
-          active
+          "flex items-center gap-0.5 rounded-xl pr-1 outline-none transition-colors",
+          selected
             ? "bg-accent-subtle text-accent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--theme-accent)_28%,transparent)]"
             : "hover:bg-subtle",
         )}
-        onClick={onClick}
       >
-        <span className={cn(
-          "grid size-7 shrink-0 place-items-center rounded-lg",
-          active ? "bg-surface" : "bg-subtle",
-        )}>
-          <Icon className={cn("size-3.5", iconClassName)} aria-hidden="true" />
-        </span>
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text">{label}</span>
-        {meta ? (
-          <span className="shrink-0 rounded-full bg-subtle px-1.5 py-0.5 text-[10px] text-text-tertiary">
-            {meta}
-          </span>
-        ) : null}
-      </button>
-    </li>
-  );
-}
-
-function ChipPickerDialog({
-  open,
-  kind,
-  chips,
-  canvasChipIds,
-  messages,
-  onClose,
-  onConfirm,
-}: {
-  open: boolean;
-  kind: "extract" | "transform";
-  chips: Chip[];
-  canvasChipIds: Set<string>;
-  messages: Messages;
-  onClose: () => void;
-  onConfirm: (chipIds: string[]) => void;
-}) {
-  const navigate = useNavigate();
-  const [query, setQuery] = useState("");
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const options = useMemo(
-    () => chips.filter((chip) => chip.kind === kind),
-    [chips, kind],
-  );
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return options;
-    return options.filter((chip) => chip.name.toLowerCase().includes(needle));
-  }, [options, query]);
-  const title = kind === "extract"
-    ? messages.workspace.pickExtractChip
-    : messages.workspace.pickTransformChip;
-  const emptyHint = kind === "extract"
-    ? messages.workspace.emptyCatalogExtract
-    : messages.workspace.emptyCatalogTransform;
-  const RowIcon = kind === "extract" ? DatabaseZap : Workflow;
-  const iconClassName = kind === "extract" ? "text-accent" : "text-success";
-  const registerPath = kind === "extract" ? "/query" : "/transform/clean";
-
-  useEffect(() => {
-    if (!open) return;
-    setQuery("");
-    setSelectedIds([]);
-  }, [open, kind]);
-
-  function goRegister() {
-    onClose();
-    navigate(registerPath);
-  }
-
-  function toggleSelected(chipId: string) {
-    setSelectedIds((current) =>
-      current.includes(chipId)
-        ? current.filter((id) => id !== chipId)
-        : [...current, chipId],
-    );
-  }
-
-  return (
-    <AppDialog
-      open={open}
-      title={title}
-      icon={<RowIcon className={cn("size-4", iconClassName)} aria-hidden="true" />}
-      className="w-[min(30rem,94vw)]"
-      minWidth={380}
-      minHeight={380}
-      hideHeaderClose
-      onClose={onClose}
-      headerExtra={(
-        <Button
+        <button
           type="button"
-          variant="secondary"
-          className="ml-auto h-7 gap-1 px-2 text-[11px] font-medium"
-          onClick={goRegister}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+          onClick={onClick}
         >
-          <Plus className="size-3.5" aria-hidden="true" />
-          {messages.workspace.registerNewChip}
-        </Button>
-      )}
-      footer={(
-        <div className="flex w-full items-center justify-between gap-3">
-          <span className="text-xs text-text-tertiary">
-            {options.length > 0 && selectedIds.length > 0
-              ? messages.workspace.pickChipSelected(selectedIds.length)
-              : "\u00a0"}
+          <span className={cn(
+            "grid size-7 shrink-0 place-items-center rounded-lg",
+            selected ? "bg-surface" : "bg-subtle",
+          )}>
+            <Icon className={cn("size-3.5", iconClassName)} aria-hidden="true" />
           </span>
-          <div className="flex items-center gap-1.5">
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-text">{label}</span>
+          {meta ? (
+            <span className="shrink-0 rounded-full bg-subtle px-1.5 py-0.5 text-[10px] text-text-tertiary">
+              {meta}
+            </span>
+          ) : null}
+        </button>
+        {onEdit ? (
+          <div className="flex shrink-0 items-center gap-0.5 pr-0.5">
             <button
               type="button"
-              className="grid size-9 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
-              aria-label={messages.common.cancel}
-              title={messages.common.cancel}
-              onClick={onClose}
+              className="grid size-7 place-items-center rounded-lg text-text-tertiary outline-none transition-colors hover:bg-surface hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label={editTitle}
+              title={editTitle}
+              disabled
+              onClick={(event) => {
+                event.stopPropagation();
+                onEdit();
+              }}
             >
-              <X className="size-4" aria-hidden="true" />
+              <Pencil className="size-3.5" aria-hidden="true" />
             </button>
-            {options.length > 0 ? (
-              <button
-                type="button"
-                className="grid size-9 place-items-center rounded-lg text-accent outline-none transition-colors hover:bg-accent-subtle disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/40"
-                aria-label={messages.workspace.pickChipPlace}
-                title={messages.workspace.pickChipPlace}
-                disabled={selectedIds.length === 0}
-                onClick={() => onConfirm(selectedIds)}
-              >
-                <Check className="size-4" aria-hidden="true" />
-              </button>
-            ) : null}
           </div>
-        </div>
-      )}
-    >
-      {options.length === 0 ? (
-        <div className="flex min-h-[12rem] items-center justify-center px-8 py-10">
-          <p className="text-center text-xs leading-5 text-text-tertiary">{emptyHint}</p>
-        </div>
-      ) : (
-        <div className="flex min-h-[16rem] flex-col gap-4 px-5 py-4">
-          <div className="flex flex-col gap-2">
-            <p className="text-xs text-text-secondary">{messages.workspace.pickChipHint}</p>
-            <div className="group flex h-9 items-center overflow-hidden rounded-lg border border-border bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
-              <span className="grid h-full w-9 shrink-0 place-items-center border-r border-border bg-subtle text-text-tertiary transition-colors group-focus-within:text-accent">
-                <Search className="size-3.5" aria-hidden="true" />
-              </span>
-              <input
-                type="search"
-                className="min-w-0 flex-1 bg-transparent px-3 text-xs text-text outline-none placeholder:text-text-tertiary [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
-                value={query}
-                placeholder={messages.workspace.pickChipSearch}
-                aria-label={messages.workspace.pickChipSearch}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </div>
-          </div>
-          {filtered.length === 0 ? (
-            <div className="flex flex-1 items-center justify-center py-8">
-              <p className="text-xs text-text-tertiary">{messages.workspace.pickChipSearchEmpty}</p>
-            </div>
-          ) : (
-            <ul className="scroll-pane max-h-[22rem] min-h-[10rem] flex-1 divide-y divide-border/50 overflow-y-auto rounded-xl border border-border/60">
-              {filtered.map((chip) => {
-                const selected = selectedIds.includes(chip.id);
-                return (
-                  <li key={chip.id}>
-                    <button
-                      type="button"
-                      className={cn(
-                        "flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors outline-none",
-                        selected
-                          ? "bg-accent-subtle/80 hover:bg-accent-subtle"
-                          : "hover:bg-subtle/70",
-                        "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40",
-                      )}
-                      aria-pressed={selected}
-                      onClick={() => toggleSelected(chip.id)}
-                    >
-                      <span
-                        className={cn(
-                          "grid size-4 shrink-0 place-items-center rounded border transition-colors",
-                          selected
-                            ? "border-accent bg-accent text-white"
-                            : "border-border bg-surface text-transparent",
-                        )}
-                        aria-hidden="true"
-                      >
-                        <Check className="size-3" />
-                      </span>
-                      <RowIcon className={cn("size-4 shrink-0", iconClassName)} aria-hidden="true" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-text">{chip.name}</span>
-                      {canvasChipIds.has(chip.id) ? (
-                        <span className="shrink-0 text-[11px] text-text-tertiary">
-                          {messages.workspace.chipOnCanvas}
-                        </span>
-                      ) : null}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-      )}
-    </AppDialog>
+        ) : null}
+      </div>
+    </li>
   );
 }
 
 function WorkspaceLayers({
   chips,
   edges,
-  chipId,
-  selectedEdgeId,
+  selectedChipIds,
+  selectedEdgeIds,
   messages,
   emptyHint,
   open,
   onToggle,
   onSelectChip,
   onSelectEdge,
+  onSelectAll,
+  onDeleteSelected,
+  editSoonTitle,
 }: {
   chips: Chip[];
   edges: ChipEdge[];
-  chipId?: string;
-  selectedEdgeId: string | null;
+  selectedChipIds: string[];
+  selectedEdgeIds: string[];
   messages: Messages;
   emptyHint: string;
   open: boolean;
   onToggle: () => void;
-  onSelectChip: (id: string) => void;
-  onSelectEdge: (id: string) => void;
+  onSelectChip: (id: string, event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onSelectEdge: (id: string, event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onSelectAll: (checked: boolean) => void;
+  onDeleteSelected: () => void;
+  editSoonTitle: string;
 }) {
   const extracts = chips.filter((chip) => chip.kind === "extract");
   const transforms = chips.filter((chip) => chip.kind === "transform");
+  const allChipIds = chips.map((chip) => chip.id);
+  const allEdgeIds = edges.map((edge) => edge.id);
+  const allLayersSelected = (allChipIds.length + allEdgeIds.length) > 0
+    && allChipIds.every((id) => selectedChipIds.includes(id))
+    && allEdgeIds.every((id) => selectedEdgeIds.includes(id));
+  const someLayersSelected = selectedChipIds.length > 0 || selectedEdgeIds.length > 0;
   const nameOf = (id: string) => chips.find((chip) => chip.id === id)?.name ?? id.slice(0, 8);
   const kindLabel = (kind: ChipEdgeKind) =>
     kind === "data"
@@ -893,6 +718,32 @@ function WorkspaceLayers({
     <p className="px-1 text-[12px] text-text-tertiary">{emptyHint}</p>
   ) : (
     <div className="flex flex-col gap-3">
+      {chips.length > 0 || edges.length > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+          <label className="flex min-w-0 items-center gap-2 text-xs text-text-secondary">
+            <input
+              type="checkbox"
+              className="size-3.5 shrink-0 rounded border-border accent-accent"
+              checked={allLayersSelected}
+              aria-label={messages.workspace.selectAll}
+              onChange={(event) => onSelectAll(event.target.checked)}
+            />
+            <span className="truncate">{messages.workspace.selectAll}</span>
+          </label>
+          <Button
+            type="button"
+            variant="quiet"
+            className="h-7 shrink-0 px-2 text-[11px]"
+            disabled={!someLayersSelected}
+            onClick={onDeleteSelected}
+          >
+            {messages.workspace.deleteSelected}
+          </Button>
+        </div>
+      ) : null}
+      {chips.length > 0 || edges.length > 0 ? (
+        <p className="px-1 text-[11px] leading-4 text-text-tertiary">{messages.workspace.layerSelectHint}</p>
+      ) : null}
       <LayerGroup title={messages.workspace.layerExtracts(extracts.length)}>
         {extracts.length === 0 ? (
           <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
@@ -900,11 +751,13 @@ function WorkspaceLayers({
           extracts.map((chip) => (
             <LayerRow
               key={chip.id}
-              active={chip.id === chipId}
+              selected={selectedChipIds.includes(chip.id)}
               icon={DatabaseZap}
               iconClassName="text-accent"
               label={chip.name}
-              onClick={() => onSelectChip(chip.id)}
+              onClick={(event) => onSelectChip(chip.id, event)}
+              editTitle={editSoonTitle}
+              onEdit={() => {}}
             />
           ))
         )}
@@ -916,11 +769,13 @@ function WorkspaceLayers({
           transforms.map((chip) => (
             <LayerRow
               key={chip.id}
-              active={chip.id === chipId}
+              selected={selectedChipIds.includes(chip.id)}
               icon={Workflow}
               iconClassName="text-success"
               label={chip.name}
-              onClick={() => onSelectChip(chip.id)}
+              onClick={(event) => onSelectChip(chip.id, event)}
+              editTitle={editSoonTitle}
+              onEdit={() => {}}
             />
           ))
         )}
@@ -932,7 +787,7 @@ function WorkspaceLayers({
           edges.map((edge) => (
             <LayerRow
               key={edge.id}
-              active={edge.id === selectedEdgeId}
+              selected={selectedEdgeIds.includes(edge.id)}
               icon={Spline}
               iconClassName={
                 edge.kind === "on_error"
@@ -943,7 +798,9 @@ function WorkspaceLayers({
               }
               label={`${nameOf(edge.from_chip_id)} → ${nameOf(edge.to_chip_id)}`}
               meta={kindLabel(edge.kind)}
-              onClick={() => onSelectEdge(edge.id)}
+              onClick={(event) => onSelectEdge(edge.id, event)}
+              editTitle={editSoonTitle}
+              onEdit={() => {}}
             />
           ))
         )}
@@ -1048,7 +905,6 @@ export function WorkspacePage() {
   const navigate = useNavigate();
   const { workspaceId, chipId } = useParams<{ workspaceId: string; chipId: string }>();
   const currentWorkspaceRef = useRef(workspaceId);
-  const logRequestRef = useRef(0);
   const refreshRequestRef = useRef(0);
   const canvasRef = useRef<HTMLDivElement>(null);
   const pendingViewRef = useRef<Point | null>(null);
@@ -1068,6 +924,8 @@ export function WorkspacePage() {
     startX: number;
     startY: number;
     moved: boolean;
+    additive: boolean;
+    wasSelected: boolean;
     origins: Record<string, Point>;
   } | null>(null);
   const panRef = useRef<{
@@ -1085,6 +943,7 @@ export function WorkspacePage() {
     x1: number;
     y1: number;
     moved: boolean;
+    additive: boolean;
   } | null>(null);
   currentWorkspaceRef.current = workspaceId;
 
@@ -1101,20 +960,20 @@ export function WorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [loadingLogId, setLoadingLogId] = useState<string | null>(null);
-  const [runLog, setRunLog] = useState<{ id: string; text: string } | null>(null);
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
   const [manageOpen, setManageOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [canvasView, setCanvasView] = useState({ width: 800, height: 600 });
   const [canvasScroll, setCanvasScroll] = useState({ x: 0, y: 0 });
-  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
   const [selectedChipIds, setSelectedChipIds] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<MarqueeBox | null>(null);
   const [edgeTool, setEdgeTool] = useState<ChipEdgeKind>("data");
   const selectedChipIdsRef = useRef(selectedChipIds);
   selectedChipIdsRef.current = selectedChipIds;
+  const selectedEdgeIdsRef = useRef(selectedEdgeIds);
+  selectedEdgeIdsRef.current = selectedEdgeIds;
   const [linking, setLinking] = useState<{
     fromId: string;
     kind: ChipEdgeKind;
@@ -1125,22 +984,10 @@ export function WorkspacePage() {
   const linkingRef = useRef(linking);
   linkingRef.current = linking;
 
-  const [name, setName] = useState("");
-  const [kind, setKind] = useState<ChipKind>("extract");
-  const [mode, setMode] = useState("table");
-  const [connectionId, setConnectionId] = useState("");
-  const [database, setDatabase] = useState("");
-  const [table, setTable] = useState("");
-  const [sql, setSql] = useState("");
-  const [delimiter, setDelimiter] = useState(",");
-  const [hasHeader, setHasHeader] = useState(true);
-  const [inputDatasetId, setInputDatasetId] = useState("");
-  const [spec, setSpec] = useState(EMPTY_SPEC);
   const [pendingPlace, setPendingPlace] = useState<{
     kind: "extract" | "transform";
     point: Point;
   } | null>(null);
-  const [chipNameError, setChipNameError] = useState("");
   positionsRef.current = positions;
   dirtyRef.current = dirty;
   busyRef.current = busy;
@@ -1152,28 +999,8 @@ export function WorkspacePage() {
     messages.workspace.pathRoot,
   );
   const workspaceName = selectedWorkspace?.name ?? messages.workspace.selectWorkspace;
-  const selectedChip = chips.find((item) => item.id === chipId);
-  const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const hasActiveRun = runs.some((run) => ACTIVE_STATUSES.has(run.status));
-  const selectedRuns = useMemo(
-    () => runs.filter((run) => run.chip_id === selectedChip?.id).slice(0, 5),
-    [runs, selectedChip?.id],
-  );
   const canvasWorld = useMemo(() => ({ width: CANVAS_W, height: CANVAS_H }), []);
-
-  function resetChipForm() {
-    setName("");
-    setKind("extract");
-    setMode("table");
-    setConnectionId("");
-    setDatabase("");
-    setTable("");
-    setSql("");
-    setDelimiter(",");
-    setHasHeader(true);
-    setInputDatasetId("");
-    setSpec(EMPTY_SPEC);
-  }
 
   function rememberSaved(
     nextChips: Chip[],
@@ -1225,11 +1052,29 @@ export function WorkspacePage() {
     setDirty(dirtyNow);
   }
 
-  function dropEdgeLocally(edgeId: string) {
-    const nextEdges = edges.filter((edge) => edge.id !== edgeId);
+  function dropEdgesLocally(edgeIdsToDrop: string[]) {
+    if (edgeIdsToDrop.length === 0) return;
+    const dropSet = new Set(edgeIdsToDrop);
+    const nextEdges = edges.filter((edge) => !dropSet.has(edge.id));
     setEdges(nextEdges);
-    setSelectedEdgeId((current) => (current === edgeId ? null : current));
+    setSelectedEdgeIds((current) => current.filter((id) => !dropSet.has(id)));
     markDirty(chips, positionsRef.current, nextEdges);
+  }
+
+  async function requestDeleteEdge(edgeId: string) {
+    const edge = edges.find((item) => item.id === edgeId);
+    if (!edge) return;
+    const fromName = chips.find((chip) => chip.id === edge.from_chip_id)?.name
+      ?? edge.from_chip_id.slice(0, 8);
+    const toName = chips.find((chip) => chip.id === edge.to_chip_id)?.name
+      ?? edge.to_chip_id.slice(0, 8);
+    const confirmed = await showConfirm(
+      messages.workspace.deleteEdgeTitle,
+      messages.workspace.deleteEdgeMessage(fromName, toName),
+      { tone: "danger", confirmLabel: messages.common.delete },
+    );
+    if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
+    dropEdgesLocally([edgeId]);
   }
 
   function connectChips(fromId: string, toId: string, kindValue: ChipEdgeKind) {
@@ -1258,32 +1103,16 @@ export function WorkspacePage() {
     };
     const nextEdges = [...edges, created];
     setEdges(nextEdges);
-    setSelectedEdgeId(created.id);
-    markDirty(chips, positionsRef.current, nextEdges);
-  }
-
-  function changeEdgeKind(edgeId: string, kindValue: ChipEdgeKind) {
-    const current = edges.find((edge) => edge.id === edgeId);
-    if (!current) return;
-    const from = chips.find((chip) => chip.id === current.from_chip_id);
-    const to = chips.find((chip) => chip.id === current.to_chip_id);
-    if (!from || !to) return;
-    if (kindValue === "data" && defaultEdgeKind(from.kind, to.kind) !== "data") return;
-    const nextEdges = edges.map((edge) =>
-      edge.id === edgeId ? { ...edge, kind: kindValue } : edge,
-    );
-    setEdges(nextEdges);
+    setSelectedEdgeIds([created.id]);
+    setSelectedChipIds([]);
     markDirty(chips, positionsRef.current, nextEdges);
   }
 
   useEffect(() => {
     let cancelled = false;
-    setRunLog(null);
-    setLoadingLogId(null);
     setBusy(false);
     setError("");
     setPollError("");
-    logRequestRef.current += 1;
     setLoading(true);
     Promise.all([
       workspaceApi.list(),
@@ -1319,7 +1148,7 @@ export function WorkspacePage() {
       setRuns([]);
       setPositions({});
       setSelectedChipIds([]);
-      setSelectedEdgeId(null);
+      setSelectedEdgeIds([]);
       rememberSaved([], {}, []);
       pendingViewRef.current = null;
       return;
@@ -1351,7 +1180,7 @@ export function WorkspacePage() {
         setCatalogChips(catalogResponse.chips);
         setPositions(nextPositions);
         setSelectedChipIds([]);
-        setSelectedEdgeId(null);
+        setSelectedEdgeIds([]);
         rememberSaved(chipResponse.chips, nextPositions, nextEdges);
       })
       .catch((reason: unknown) => {
@@ -1425,34 +1254,18 @@ export function WorkspacePage() {
   }, [hasActiveRun, messages, workspaceId]);
 
   useEffect(() => {
-    if (!selectedChip) {
-      if (!chipId) resetChipForm();
-      return;
-    }
-    const config = selectedChip.config;
-    setName(selectedChip.name);
-    setChipNameError("");
-    setKind(selectedChip.kind);
-    const source = objectValue(config, "source");
-    setMode(textValue(source, "type", "table"));
-    setConnectionId(textValue(config, "connection_id"));
-    setDatabase(textValue(source, "database"));
-    setTable(textValue(source, "table"));
-    setSql(textValue(source, "sql"));
-    setDelimiter(textValue(config, "delimiter", ","));
-    setHasHeader(boolValue(config, "header", true));
-    setInputDatasetId(textValue(config, "input_dataset_id"));
-    const savedSpec = config.spec;
-    setSpec(savedSpec && typeof savedSpec === "object"
-      ? JSON.stringify(savedSpec, null, 2)
-      : EMPTY_SPEC);
-  }, [selectedChip?.id, chipId]);
+    if (!chipId || !workspaceId) return;
+    setSelectedChipIds((current) => (
+      current.length === 1 && current[0] === chipId ? current : [chipId]
+    ));
+    navigate(`/workspace/${workspaceId}`, { replace: true });
+  }, [chipId, workspaceId, navigate]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setLinking(null);
-        setSelectedEdgeId(null);
+        setSelectedEdgeIds([]);
         setSelectedChipIds([]);
         setMarquee(null);
         marqueeRef.current = null;
@@ -1460,14 +1273,12 @@ export function WorkspacePage() {
       }
       if (event.key === "Delete" || event.key === "Backspace") {
         if (isEditableTarget(event.target)) return;
-        if (selectedChipIdsRef.current.length > 0) {
+        if (
+          selectedChipIdsRef.current.length > 0
+          || selectedEdgeIdsRef.current.length > 0
+        ) {
           event.preventDefault();
-          void deleteSelectedChips();
-          return;
-        }
-        if (selectedEdgeId && !busyRef.current) {
-          event.preventDefault();
-          dropEdgeLocally(selectedEdgeId);
+          void deleteSelectedLayers();
         }
         return;
       }
@@ -1489,80 +1300,7 @@ export function WorkspacePage() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedEdgeId, workspaceId, chips]);
-
-  function chipConfig(): ChipConfig {
-    if (kind === "extract") {
-      return {
-        connection_id: connectionId,
-        source: mode === "table"
-          ? { type: "table", table, ...(database.trim() ? { database } : {}) }
-          : { type: "query", sql, ...(database.trim() ? { database } : {}) },
-        delimiter,
-        header: hasHeader,
-      };
-    }
-    if (kind === "transform") {
-      const parsed = JSON.parse(spec) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error(messages.workspace.invalidSpec);
-      }
-      return { input_dataset_id: inputDatasetId, spec: parsed };
-    }
-    return {};
-  }
-
-  function isChipNameTaken(candidate: string, exceptId?: string) {
-    const key = normalizeChipName(candidate);
-    if (!key) return false;
-    return chips.some(
-      (chip) => chip.id !== exceptId && normalizeChipName(chip.name) === key,
-    );
-  }
-
-  function applyChip(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!workspaceId || !selectedChip || kind === "load") return;
-    try {
-      const config = chipConfig();
-      const nextName = name.trim();
-      if (!nextName) return;
-      if (isChipNameTaken(nextName, selectedChip.id)) {
-        setChipNameError(messages.workspace.duplicateChipName);
-        return;
-      }
-      setChipNameError("");
-      const nextChips = chips.map((chip) =>
-        chip.id === selectedChip.id ? { ...chip, name: nextName, config } : chip,
-      );
-      setChips(nextChips);
-      markDirty(nextChips, positionsRef.current, edges);
-      setError("");
-    } catch (reason) {
-      setError(`${messages.workspace.saveChipError}: ${String(reason)}`);
-    }
-  }
-
-  function onChipNameChange(next: string) {
-    setName(next);
-    if (!selectedChip) return;
-    const trimmed = next.trim();
-    if (!trimmed) {
-      setChipNameError("");
-      return;
-    }
-    if (isChipNameTaken(trimmed, selectedChip.id)) {
-      setChipNameError(messages.workspace.duplicateChipName);
-      return;
-    }
-    setChipNameError("");
-    if (trimmed === selectedChip.name) return;
-    const nextChips = chips.map((chip) =>
-      chip.id === selectedChip.id ? { ...chip, name: trimmed } : chip,
-    );
-    setChips(nextChips);
-    markDirty(nextChips, positionsRef.current, edges);
-  }
+  }, [workspaceId, chips, edges]);
 
   function placeTool(toolKind: "extract" | "transform", point: Point) {
     if (!workspaceId) return;
@@ -1589,11 +1327,9 @@ export function WorkspacePage() {
     setPositions(nextPositions);
     markDirty(nextChips, nextPositions, edges);
     setSelectedChipIds(placedIds);
-    setSelectedEdgeId(null);
+    setSelectedEdgeIds([]);
     if (!workspaceId) return;
-    if (placedIds.length === 1) {
-      navigate(`/workspace/${workspaceId}/chips/${placedIds[0]}`);
-    } else {
+    if (placedIds.length >= 1) {
       navigate(`/workspace/${workspaceId}`);
     }
   }
@@ -1609,6 +1345,85 @@ export function WorkspacePage() {
 
   function cancelPlaceChip() {
     setPendingPlace(null);
+  }
+
+  async function placeNewExtractChip(draft: ExtractPlaceDraft) {
+    if (!workspaceId || !pendingPlace) return;
+    const point = pendingPlace.point;
+    setBusy(true);
+    setError("");
+    try {
+      let config: ChipConfig;
+      if (draft.sourceMode === "database" && draft.connectionId) {
+        const useQuery = Boolean(draft.sql.trim());
+        config = {
+          connection_id: draft.connectionId,
+          source: useQuery
+            ? {
+                type: "query",
+                sql: draft.sql.trim(),
+                ...(draft.selection?.database ? { database: draft.selection.database } : {}),
+              }
+            : draft.selection
+              ? {
+                  type: "table",
+                  table: draft.selection.qualified,
+                  database: draft.selection.database,
+                }
+              : { type: "table", table: "", database: null },
+          delimiter: draft.delimiter,
+          header: draft.header,
+          ...(draft.outputName ? { output_filename: draft.outputName } : {}),
+        };
+      } else {
+        config = {
+          connection_id: "",
+          source: { type: "table", table: "", database: null },
+          delimiter: draft.delimiter,
+          header: draft.header,
+        };
+      }
+      const chip = await chipApi.create(workspaceId, {
+        name: draft.name,
+        kind: "extract",
+        config,
+      });
+      if (currentWorkspaceRef.current !== workspaceId) return;
+      placeCatalogChips([chip], point);
+      setPendingPlace(null);
+    } catch (reason) {
+      if (currentWorkspaceRef.current === workspaceId) {
+        setError(`${messages.workspace.saveChipError}: ${String(reason)}`);
+      }
+    } finally {
+      if (currentWorkspaceRef.current === workspaceId) setBusy(false);
+    }
+  }
+
+  async function placeNewTransformChip(draft: TransformPlaceDraft) {
+    if (!workspaceId || !pendingPlace) return;
+    const point = pendingPlace.point;
+    setBusy(true);
+    setError("");
+    try {
+      const chip = await chipApi.create(workspaceId, {
+        name: draft.name,
+        kind: "transform",
+        config: {
+          input_dataset_id: draft.inputDatasetId,
+          spec: { version: 2, sink: "parquet", steps: [] },
+        },
+      });
+      if (currentWorkspaceRef.current !== workspaceId) return;
+      placeCatalogChips([chip], point);
+      setPendingPlace(null);
+    } catch (reason) {
+      if (currentWorkspaceRef.current === workspaceId) {
+        setError(`${messages.workspace.saveChipError}: ${String(reason)}`);
+      }
+    } finally {
+      if (currentWorkspaceRef.current === workspaceId) setBusy(false);
+    }
   }
 
   function dropChipsLocally(chipIdsToDrop: string[]) {
@@ -1638,9 +1453,42 @@ export function WorkspacePage() {
     setRuns((current) => current.filter((run) => !dropSet.has(run.chip_id)));
     if (dragRef.current && dropSet.has(dragRef.current.id)) dragRef.current = null;
     setSelectedChipIds((current) => current.filter((id) => !dropSet.has(id)));
-    if (selectedEdgeId && nextEdges.every((edge) => edge.id !== selectedEdgeId)) {
-      setSelectedEdgeId(null);
-    }
+    setSelectedEdgeIds((current) => current.filter((id) => nextEdges.some((edge) => edge.id === id)));
+  }
+
+  function removeLayersLocally(chipIdsToDrop: string[], edgeIdsToDrop: string[]) {
+    if (chipIdsToDrop.length === 0 && edgeIdsToDrop.length === 0) return;
+    const chipDropSet = new Set(chipIdsToDrop);
+    const edgeDropSet = new Set(edgeIdsToDrop);
+    const nextChips = chips.filter((item) => !chipDropSet.has(item.id));
+    let nextPositions = positionsRef.current;
+    for (const id of chipIdsToDrop) nextPositions = omitPoint(nextPositions, id);
+    const nextEdges = edges.filter((edge) =>
+      !edgeDropSet.has(edge.id)
+      && !chipDropSet.has(edge.from_chip_id)
+      && !chipDropSet.has(edge.to_chip_id),
+    );
+    setPositions(nextPositions);
+    setEdges(nextEdges);
+    savedRef.current = {
+      chips: savedRef.current.chips.filter((item) => !chipDropSet.has(item.id)),
+      positions: chipIdsToDrop.reduce(
+        (positions, id) => omitPoint(positions, id),
+        savedRef.current.positions,
+      ),
+      edges: savedRef.current.edges.filter((edge) =>
+        !edgeDropSet.has(edge.id)
+        && !chipDropSet.has(edge.from_chip_id)
+        && !chipDropSet.has(edge.to_chip_id),
+      ),
+    };
+    for (const id of chipIdsToDrop) savedIdsRef.current.delete(id);
+    markDirty(nextChips, nextPositions, nextEdges);
+    setChips(nextChips);
+    setRuns((current) => current.filter((run) => !chipDropSet.has(run.chip_id)));
+    if (dragRef.current && chipDropSet.has(dragRef.current.id)) dragRef.current = null;
+    setSelectedChipIds((current) => current.filter((id) => !chipDropSet.has(id)));
+    setSelectedEdgeIds((current) => current.filter((id) => nextEdges.some((edge) => edge.id === id)));
   }
 
   function dropChipLocally(chipIdToDrop: string) {
@@ -1674,33 +1522,45 @@ export function WorkspacePage() {
     }
   }
 
-  async function deleteSelectedChips() {
-    const ids = selectedChipIdsRef.current.filter((id) =>
+  async function deleteSelectedLayers() {
+    const chipIds = selectedChipIdsRef.current.filter((id) =>
       chips.some((chip) => chip.id === id),
     );
-    if (ids.length === 0 || busyRef.current) return;
-    if (ids.length === 1) {
-      const chip = chips.find((item) => item.id === ids[0]);
+    const edgeIds = selectedEdgeIdsRef.current.filter((id) =>
+      edges.some((edge) => edge.id === id),
+    );
+    const total = chipIds.length + edgeIds.length;
+    if (total === 0 || busyRef.current) return;
+
+    if (chipIds.length === 1 && edgeIds.length === 0) {
+      const chip = chips.find((item) => item.id === chipIds[0]);
       if (chip) await deleteCanvasChip(chip);
       return;
     }
+    if (edgeIds.length === 1 && chipIds.length === 0) {
+      await requestDeleteEdge(edgeIds[0]);
+      return;
+    }
+
     const confirmed = await showConfirm(
-      messages.workspace.deleteChipsTitle,
-      messages.workspace.deleteChipsMessage(ids.length),
+      messages.workspace.deleteLayersTitle,
+      messages.workspace.deleteLayersMessage(chipIds.length, edgeIds.length),
       { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
     setBusy(true);
     setError("");
     try {
-      await Promise.all(
-        ids
-          .filter((id) => savedIdsRef.current.has(id))
-          .map((id) => chipApi.remove(id)),
-      );
-      if (currentWorkspaceRef.current !== workspaceId) return;
-      dropChipsLocally(ids);
-      if (chipId && ids.includes(chipId) && workspaceId) {
+      if (chipIds.length > 0) {
+        await Promise.all(
+          chipIds
+            .filter((id) => savedIdsRef.current.has(id))
+            .map((id) => chipApi.remove(id)),
+        );
+        if (currentWorkspaceRef.current !== workspaceId) return;
+      }
+      removeLayersLocally(chipIds, edgeIds);
+      if (chipId && chipIds.includes(chipId) && workspaceId) {
         navigate(`/workspace/${workspaceId}`);
       }
     } catch (reason) {
@@ -1712,27 +1572,58 @@ export function WorkspacePage() {
     }
   }
 
+  function selectLayerChip(id: string, event: ReactMouseEvent<HTMLButtonElement>) {
+    if (!workspaceId) return;
+    const additive = event.ctrlKey || event.metaKey;
+    if (additive) {
+      const current = selectedChipIdsRef.current;
+      const next = current.includes(id)
+        ? current.filter((chipIdValue) => chipIdValue !== id)
+        : [...current, id];
+      setSelectedChipIds(next);
+      if (chipId && chipId === id && !next.includes(id) && workspaceId) {
+        navigate(`/workspace/${workspaceId}`);
+      }
+      return;
+    }
+    setSelectedChipIds([id]);
+    setSelectedEdgeIds([]);
+    if (chipId && workspaceId) navigate(`/workspace/${workspaceId}`);
+  }
+
+  function selectLayerEdge(id: string, event: ReactMouseEvent<HTMLButtonElement>) {
+    if (!workspaceId) return;
+    const additive = event.ctrlKey || event.metaKey;
+    if (additive) {
+      const current = selectedEdgeIdsRef.current;
+      const next = current.includes(id)
+        ? current.filter((edgeId) => edgeId !== id)
+        : [...current, id];
+      setSelectedEdgeIds(next);
+      return;
+    }
+    setSelectedEdgeIds([id]);
+    setSelectedChipIds([]);
+    navigate(`/workspace/${workspaceId}`);
+  }
+
+  function selectAllLayers(checked: boolean) {
+    if (!checked) {
+      setSelectedChipIds([]);
+      setSelectedEdgeIds([]);
+      if (chipId && workspaceId) navigate(`/workspace/${workspaceId}`);
+      return;
+    }
+    setSelectedChipIds(chips.map((chip) => chip.id));
+    setSelectedEdgeIds(edges.map((edge) => edge.id));
+  }
+
   async function saveCanvas() {
     if (!workspaceId) return;
-    if (selectedChip && kind !== "load") {
-      const nextName = name.trim();
-      if (nextName && isChipNameTaken(nextName, selectedChip.id)) {
-        setChipNameError(messages.workspace.duplicateChipName);
-        return;
-      }
-    }
     const requestWorkspaceId = workspaceId;
     setBusy(true);
     setError("");
     try {
-      let nextChips = chips;
-      if (selectedChip && kind !== "load") {
-        const config = chipConfig();
-        nextChips = chips.map((chip) =>
-          chip.id === selectedChip.id ? { ...chip, name: name.trim(), config } : chip,
-        );
-        setChips(nextChips);
-      }
       const response = await workspaceApi.save(requestWorkspaceId, {
         layout: {
           nodes: Object.fromEntries(
@@ -1743,7 +1634,7 @@ export function WorkspacePage() {
             y: Math.round(canvasRef.current?.scrollTop ?? 0),
           },
         },
-        chips: nextChips.map((chip) => chip.id),
+        chips: chips.map((chip) => chip.id),
         edges: edges.map((edge) => {
           const fromPoint = positionsRef.current[edge.from_chip_id];
           const toPoint = positionsRef.current[edge.to_chip_id];
@@ -1826,7 +1717,8 @@ export function WorkspacePage() {
     setChips(saved.chips);
     setEdges(saved.edges);
     setPositions(saved.positions);
-    setSelectedEdgeId(null);
+    setSelectedChipIds([]);
+    setSelectedEdgeIds([]);
     setDirty(false);
     setError("");
     if (chipId && !savedIdsRef.current.has(chipId) && workspaceId) {
@@ -1890,64 +1782,6 @@ export function WorkspacePage() {
   };
   resetCanvasRef.current = resetCanvas;
 
-  async function runChip() {
-    if (!selectedChip || selectedChip.kind === "load" || !workspaceId) return;
-    const requestWorkspaceId = workspaceId;
-    setBusy(true);
-    setError("");
-    try {
-      const wired = Boolean(incomingDataEdge(edges, selectedChip.id));
-      const request: RunChipRequest = {
-        workspace_id: requestWorkspaceId,
-        ...(selectedChip.kind === "transform" && inputDatasetId && !wired
-          ? { input_dataset_id: inputDatasetId }
-          : {}),
-      };
-      await chipApi.run(selectedChip.id, request);
-      if (currentWorkspaceRef.current !== requestWorkspaceId) return;
-      const response = await chipApi.listRuns(requestWorkspaceId);
-      if (currentWorkspaceRef.current !== requestWorkspaceId) return;
-      setRuns(response.runs);
-    } catch (reason) {
-      if (currentWorkspaceRef.current === requestWorkspaceId) {
-        setError(`${messages.workspace.runChipError}: ${String(reason)}`);
-      }
-    } finally {
-      if (currentWorkspaceRef.current === requestWorkspaceId) setBusy(false);
-    }
-  }
-
-  async function showRunLog(runId: string) {
-    const requestWorkspaceId = workspaceId;
-    const requestId = ++logRequestRef.current;
-    setLoadingLogId(runId);
-    setRunLog(null);
-    setError("");
-    try {
-      const response = await chipApi.getRunLogs(runId);
-      if (
-        currentWorkspaceRef.current === requestWorkspaceId &&
-        logRequestRef.current === requestId
-      ) {
-        setRunLog(response);
-      }
-    } catch (reason) {
-      if (
-        currentWorkspaceRef.current === requestWorkspaceId &&
-        logRequestRef.current === requestId
-      ) {
-        setError(`${messages.workspace.runLogError}: ${String(reason)}`);
-      }
-    } finally {
-      if (
-        currentWorkspaceRef.current === requestWorkspaceId &&
-        logRequestRef.current === requestId
-      ) {
-        setLoadingLogId(null);
-      }
-    }
-  }
-
   function onToolDragStart(kindValue: "extract" | "transform", event: DragEvent<HTMLButtonElement>) {
     event.dataTransfer.setData(TOOL_KIND, kindValue);
     event.dataTransfer.effectAllowed = "copy";
@@ -1984,15 +1818,21 @@ export function WorkspacePage() {
     if (!canvas) return;
     const node = positionsRef.current[chip.id] ?? { x: 56, y: 48 };
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
-    const nextSelection = selectedChipIdsRef.current.includes(chip.id)
-      ? selectedChipIdsRef.current
-      : [chip.id];
-    if (nextSelection.length === 1 && nextSelection[0] === chip.id) {
+    const additive = event.ctrlKey || event.metaKey;
+    const wasSelected = selectedChipIdsRef.current.includes(chip.id);
+    if (!additive) {
       setSelectedChipIds([chip.id]);
+      setSelectedEdgeIds([]);
+    } else if (!wasSelected) {
+      setSelectedChipIds([...selectedChipIdsRef.current, chip.id]);
     }
-    setSelectedEdgeId(null);
+    const dragIds = additive && wasSelected
+      ? selectedChipIdsRef.current
+      : additive
+        ? [...new Set([...selectedChipIdsRef.current, chip.id])]
+        : [chip.id];
     const origins: Record<string, Point> = {};
-    for (const id of nextSelection) {
+    for (const id of dragIds) {
       origins[id] = positionsRef.current[id] ?? { x: 56, y: 48 };
     }
     dragRef.current = {
@@ -2002,23 +1842,38 @@ export function WorkspacePage() {
       startX: node.x,
       startY: node.y,
       moved: false,
+      additive,
+      wasSelected,
       origins,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  function finishNodeDrag(chipId: string, openInspector: boolean) {
+  function finishNodeDrag(draggedChipId: string, openInspector: boolean) {
     const drag = dragRef.current;
     dragRef.current = null;
-    if (!drag || drag.id !== chipId) return;
+    if (!drag || drag.id !== draggedChipId) return;
     if (drag.moved) {
       markDirty(chips, positionsRef.current, edges);
       return;
     }
-    if (!openInspector) return;
-    setSelectedChipIds([chipId]);
-    setSelectedEdgeId(null);
-    navigate(`/workspace/${workspaceId}/chips/${chipId}`);
+    if (drag.additive) {
+      if (drag.wasSelected) {
+        const next = selectedChipIdsRef.current.filter((id) => id !== draggedChipId);
+        setSelectedChipIds(next);
+        if (!workspaceId) return;
+        if (chipId === draggedChipId && !next.includes(draggedChipId)) {
+          navigate(`/workspace/${workspaceId}`);
+        }
+      } else if (workspaceId && chipId) {
+        navigate(`/workspace/${workspaceId}`);
+      }
+      return;
+    }
+    if (!openInspector || !workspaceId) return;
+    setSelectedChipIds([draggedChipId]);
+    setSelectedEdgeIds([]);
+    if (chipId) navigate(`/workspace/${workspaceId}`);
   }
 
   function onNodePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
@@ -2067,7 +1922,7 @@ export function WorkspacePage() {
     if (!canvas) return;
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
     const kindValue = edgeTool;
-    setSelectedEdgeId(null);
+    setSelectedEdgeIds([]);
     setLinking({ fromId: chip.id, kind: kindValue, fromSide: side, x: grab.x, y: grab.y });
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -2138,6 +1993,7 @@ export function WorkspacePage() {
       x1: grab.x,
       y1: grab.y,
       moved: false,
+      additive: event.ctrlKey || event.metaKey,
     };
     setMarquee({ x0: grab.x, y0: grab.y, x1: grab.x, y1: grab.y });
     canvas.setPointerCapture(event.pointerId);
@@ -2181,7 +2037,7 @@ export function WorkspacePage() {
     if (pan && pan.pointerId === event.pointerId) {
       panRef.current = null;
       if (!pan.moved && workspaceId) {
-        setSelectedEdgeId(null);
+        setSelectedEdgeIds([]);
         setSelectedChipIds([]);
         navigate(`/workspace/${workspaceId}`);
       }
@@ -2193,7 +2049,7 @@ export function WorkspacePage() {
     marqueeRef.current = null;
     setMarquee(null);
     if (!box.moved) {
-      setSelectedEdgeId(null);
+      setSelectedEdgeIds([]);
       setSelectedChipIds([]);
       if (workspaceId) navigate(`/workspace/${workspaceId}`);
       return;
@@ -2204,13 +2060,11 @@ export function WorkspacePage() {
         return point ? chipInMarquee(point, box) : false;
       })
       .map((chip) => chip.id);
-    setSelectedEdgeId(null);
-    setSelectedChipIds(picked);
-    if (picked.length === 1 && workspaceId) {
-      navigate(`/workspace/${workspaceId}/chips/${picked[0]}`);
-    } else if (workspaceId) {
-      navigate(`/workspace/${workspaceId}`);
-    }
+    const nextSelection = box.additive
+      ? [...new Set([...selectedChipIdsRef.current, ...picked])]
+      : picked;
+    setSelectedChipIds(nextSelection);
+    if (chipId && workspaceId) navigate(`/workspace/${workspaceId}`);
   }
 
   function onCanvasPanCancel(event: ReactPointerEvent<HTMLDivElement>) {
@@ -2226,11 +2080,10 @@ export function WorkspacePage() {
     });
   }
 
-  const wiredInput = selectedChip ? Boolean(incomingDataEdge(edges, selectedChip.id)) : false;
-  const validExtract = connectionId && (mode === "table" ? table.trim() : sql.trim());
-  const validTransform = spec.trim() && (wiredInput || inputDatasetId);
-  const canSave = Boolean(selectedChip) && name.trim() && kind !== "load" &&
-    (kind === "extract" ? Boolean(validExtract) : Boolean(validTransform));
+  const focusChip = useMemo(() => {
+    if (selectedChipIds.length !== 1) return null;
+    return chips.find((chip) => chip.id === selectedChipIds[0]) ?? null;
+  }, [chips, selectedChipIds]);
   const latestByChip = useMemo(() => {
     const map = new Map<string, ChipRun>();
     for (const run of runs) {
@@ -2309,228 +2162,18 @@ export function WorkspacePage() {
               <WorkspaceLayers
                 chips={chips}
                 edges={edges}
-                chipId={chipId}
-                selectedEdgeId={selectedEdgeId}
+                selectedChipIds={selectedChipIds}
+                selectedEdgeIds={selectedEdgeIds}
                 messages={messages}
                 emptyHint={workspaceId ? messages.workspace.emptyLayers : messages.workspace.noWorkspaces}
                 open={layersOpen}
                 onToggle={() => setLayersOpen((current) => !current)}
-                onSelectChip={(id) => {
-                  if (!workspaceId) return;
-                  setSelectedEdgeId(null);
-                  setSelectedChipIds([id]);
-                  navigate(`/workspace/${workspaceId}/chips/${id}`);
-                }}
-                onSelectEdge={(id) => {
-                  if (!workspaceId) return;
-                  setSelectedEdgeId(id);
-                  setSelectedChipIds([]);
-                  navigate(`/workspace/${workspaceId}`);
-                }}
+                onSelectChip={selectLayerChip}
+                onSelectEdge={selectLayerEdge}
+                onSelectAll={selectAllLayers}
+                onDeleteSelected={() => void deleteSelectedLayers()}
+                editSoonTitle={`${messages.common.edit} (${messages.common.comingSoon})`}
               />
-
-            {selectedEdge ? (
-              <div className="mt-4 flex flex-col gap-3 border-t border-border/70 pt-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <h2 className="text-sm font-semibold text-text">{messages.workspace.edgeInspector}</h2>
-                    <button
-                      type="button"
-                      className="grid size-8 shrink-0 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
-                      aria-label={messages.common.close}
-                      title={messages.common.close}
-                      onClick={() => setSelectedEdgeId(null)}
-                    >
-                      <X className="size-4" aria-hidden="true" />
-                    </button>
-                  </div>
-                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                    {messages.workspace.edgeKind}
-                    <Select
-                      value={selectedEdge.kind}
-                      options={[
-                        { value: "data", label: messages.workspace.edgeData },
-                        { value: "then", label: messages.workspace.edgeThen },
-                        { value: "on_error", label: messages.workspace.edgeOnError },
-                      ]}
-                      onChange={(value) => changeEdgeKind(selectedEdge.id, value as ChipEdgeKind)}
-                    />
-                  </label>
-                  <p className="text-xs text-text-secondary">{messages.workspace.edgeHint}</p>
-                  <Button
-                    type="button"
-                    variant="quiet"
-                    onClick={() => dropEdgeLocally(selectedEdge.id)}
-                  >
-                    {messages.workspace.deleteEdge}
-                  </Button>
-                </div>
-            ) : null}
-
-            {selectedChip ? (
-              <form className="mt-4 flex flex-col gap-3 border-t border-border/70 pt-4" onSubmit={applyChip}>
-                  <div className="flex items-center justify-between gap-2">
-                    <h2 className="text-sm font-semibold text-text">{messages.workspace.inspector}</h2>
-                    <button
-                      type="button"
-                      className="grid size-8 shrink-0 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
-                      aria-label={messages.common.close}
-                      title={messages.common.close}
-                      onClick={() => navigate(`/workspace/${workspaceId}`)}
-                    >
-                      <X className="size-4" aria-hidden="true" />
-                    </button>
-                  </div>
-                  <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                    {messages.workspace.chipName}
-                    <input
-                      className={cn("field-control", chipNameError && "border-danger")}
-                      value={name}
-                      required
-                      aria-invalid={Boolean(chipNameError)}
-                      onChange={(event) => onChipNameChange(event.target.value)}
-                    />
-                    {chipNameError ? (
-                      <span className="text-[11px] font-normal text-danger">{chipNameError}</span>
-                    ) : null}
-                  </label>
-
-                  {kind === "extract" ? (
-                    <>
-                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                        {messages.workspace.mode}
-                        <Select
-                          value={mode}
-                          options={[
-                            { value: "table", label: messages.workspace.tableMode },
-                            { value: "query", label: messages.workspace.queryMode },
-                          ]}
-                          onChange={setMode}
-                        />
-                      </label>
-                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                        {messages.workspace.connection}
-                        <Select
-                          value={connectionId}
-                          placeholder={messages.workspace.selectConnection}
-                          options={connections.map((connection) => ({ value: connection.id, label: connection.name }))}
-                          onChange={setConnectionId}
-                        />
-                      </label>
-                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                        {messages.workspace.database}
-                        <input
-                          className="field-control technical"
-                          value={database}
-                          placeholder={messages.workspace.databaseOptional}
-                          onChange={(event) => setDatabase(event.target.value)}
-                        />
-                      </label>
-                      {mode === "table" ? (
-                        <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                          {messages.workspace.table}
-                          <input className="field-control technical" value={table} required onChange={(event) => setTable(event.target.value)} />
-                        </label>
-                      ) : (
-                        <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                          {messages.workspace.sql}
-                          <textarea className="field-control technical min-h-24 resize-y" value={sql} required onChange={(event) => setSql(event.target.value)} />
-                        </label>
-                      )}
-                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                        {messages.common.delimiter}
-                        <input className="field-control technical" value={delimiter} required onChange={(event) => setDelimiter(event.target.value)} />
-                      </label>
-                      <label className="flex items-center gap-2 text-xs font-medium text-text-secondary">
-                        <input type="checkbox" checked={hasHeader} onChange={(event) => setHasHeader(event.target.checked)} />
-                        {messages.workspace.hasHeader}
-                      </label>
-                    </>
-                  ) : kind === "transform" ? (
-                    <>
-                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                        {messages.workspace.inputDataset}
-                        {wiredInput ? (
-                          <p className="text-xs font-normal text-text-secondary">
-                            {messages.workspace.inputFromEdge}
-                          </p>
-                        ) : (
-                          <Select
-                            value={inputDatasetId}
-                            placeholder={messages.workspace.selectDataset}
-                            options={datasets
-                              .filter((dataset) => dataset.available && dataset.workspace_id === workspaceId)
-                              .map((dataset) => ({ value: dataset.id, label: dataset.filename }))}
-                            onChange={setInputDatasetId}
-                          />
-                        )}
-                      </label>
-                      <label className="flex flex-col gap-1.5 text-xs font-medium text-text-secondary">
-                        {messages.workspace.transformSpec}
-                        <textarea
-                          className="field-control technical min-h-36 resize-y"
-                          value={spec}
-                          required
-                          spellCheck={false}
-                          onChange={(event) => setSpec(event.target.value)}
-                        />
-                      </label>
-                    </>
-                  ) : (
-                    <p className="text-sm text-warning">{messages.workspace.loadUnavailable}</p>
-                  )}
-
-                  <div className="flex gap-2">
-                    <Button type="submit" variant="primary" disabled={busy || !name.trim() || Boolean(chipNameError) || kind === "load"}>
-                      {messages.workspace.applyChip}
-                    </Button>
-                    <Button
-                      type="button"
-                      disabled={busy || !selectedChip.active || !canSave || dirty || !savedIdsRef.current.has(selectedChip.id)}
-                      title={dirty || !savedIdsRef.current.has(selectedChip.id) ? messages.workspace.saveFirst : undefined}
-                      onClick={() => void runChip()}
-                    >
-                      {messages.common.run}
-                    </Button>
-                  </div>
-
-                  {selectedRuns.length > 0 ? (
-                    <div className="border-t border-border pt-3">
-                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
-                        {messages.workspace.recentRuns}
-                      </p>
-                      <ul className="space-y-2">
-                        {selectedRuns.map((run) => (
-                          <li key={run.id} className="rounded-xl border border-border bg-raised px-2.5 py-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <StatusPill value={run.status} />
-                              <span className="technical text-[11px] text-text-tertiary">{fmtWhen(run.created_at)}</span>
-                            </div>
-                            {run.error_message ? (
-                              <p className="mt-1 truncate text-[11px] text-danger" title={run.error_message}>
-                                {run.error_message}
-                              </p>
-                            ) : null}
-                            <Button
-                              className="mt-1"
-                              type="button"
-                              variant="quiet"
-                              disabled={loadingLogId === run.id}
-                              onClick={() => void showRunLog(run.id)}
-                            >
-                              {messages.workspace.logs}
-                            </Button>
-                          </li>
-                        ))}
-                      </ul>
-                      {runLog ? (
-                        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-xl bg-subtle p-2.5 text-[11px] text-text-secondary">
-                          {runLog.text || messages.workspace.noRunLog}
-                        </pre>
-                      ) : null}
-                    </div>
-                  ) : null}
-              </form>
-            ) : null}
             </div>
           </SplitLayout>
 
@@ -2573,15 +2216,15 @@ export function WorkspacePage() {
               <span
                 className={cn(
                   "flex h-8 w-10 shrink-0 items-center border-r border-border pr-3",
-                  selectedChip
-                    ? selectedChip.kind === "extract"
+                  focusChip
+                    ? focusChip.kind === "extract"
                       ? "text-accent"
                       : "text-success"
                     : "text-text",
                 )}
               >
-                {selectedChip ? (
-                  selectedChip.kind === "transform" ? (
+                {focusChip ? (
+                  focusChip.kind === "transform" ? (
                     <Workflow className="size-[22px]" aria-hidden="true" />
                   ) : (
                     <DatabaseZap className="size-[22px]" aria-hidden="true" />
@@ -2592,14 +2235,10 @@ export function WorkspacePage() {
               </span>
               <div className="min-w-0">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-                  {selectedChip
-                    ? selectedWorkspace?.name ?? messages.workspace.title
-                    : messages.workspace.title}
+                  {messages.workspace.title}
                 </p>
                 <h1 className="mt-0.5 min-w-0 truncate text-sm font-semibold tracking-[-0.015em] text-text">
-                  {selectedChip
-                    ? name.trim() || selectedChip.name
-                    : selectedWorkspace?.name ?? messages.workspace.selectWorkspace}
+                  {focusChip?.name ?? selectedWorkspace?.name ?? messages.workspace.selectWorkspace}
                 </h1>
               </div>
             </div>
@@ -2716,11 +2355,19 @@ export function WorkspacePage() {
                 key={edge.id}
                 geo={edgeGeometry(from, to)}
                 kind={edge.kind}
-                selected={edge.id === selectedEdgeId}
+                selected={selectedEdgeIds.includes(edge.id)}
                 onClick={(event) => {
                   event.stopPropagation();
-                  setSelectedEdgeId(edge.id);
-                  setSelectedChipIds([]);
+                  const additive = event.ctrlKey || event.metaKey;
+                  if (additive) {
+                    const current = selectedEdgeIdsRef.current;
+                    setSelectedEdgeIds(current.includes(edge.id)
+                      ? current.filter((id) => id !== edge.id)
+                      : [...current, edge.id]);
+                  } else {
+                    setSelectedEdgeIds([edge.id]);
+                    setSelectedChipIds([]);
+                  }
                   if (workspaceId) navigate(`/workspace/${workspaceId}`);
                 }}
               />
@@ -2748,11 +2395,11 @@ export function WorkspacePage() {
               role="button"
               tabIndex={0}
               data-chip-id={chip.id}
-              aria-current={chip.id === chipId ? "true" : undefined}
+              aria-current={selectedChipIds.includes(chip.id) ? "true" : undefined}
               aria-label={chip.name}
               className={cn(
                 "workspace-node absolute flex h-[96px] w-[100px] cursor-grab select-none flex-col items-center gap-0.5 px-1.5 pb-1.5 pt-4 text-center active:cursor-grabbing",
-                (chip.id === chipId || selectedChipIds.includes(chip.id)) && "is-selected",
+                selectedChipIds.includes(chip.id) && "is-selected",
               )}
               style={{ left: point.x, top: point.y }}
               onPointerDown={(event) => onNodePointerDown(chip, event)}
@@ -2765,7 +2412,8 @@ export function WorkspacePage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  navigate(`/workspace/${workspaceId}/chips/${chip.id}`);
+                  setSelectedChipIds([chip.id]);
+                  setSelectedEdgeIds([]);
                 }
               }}
             >
@@ -2869,14 +2517,21 @@ export function WorkspacePage() {
       </div>
     </SplitLayout>
 
-      <ChipPickerDialog
+      <ChipPlaceDialog
         open={Boolean(pendingPlace)}
         kind={pendingPlace?.kind ?? "extract"}
-        chips={catalogChips}
+        catalogChips={catalogChips}
+        connections={connections}
+        datasets={datasets}
         canvasChipIds={new Set(chips.map((chip) => chip.id))}
+        defaultExtractIndex={chips.filter((chip) => chip.kind === "extract").length + 1}
+        defaultTransformIndex={chips.filter((chip) => chip.kind === "transform").length + 1}
         messages={messages}
+        busy={busy}
         onClose={cancelPlaceChip}
-        onConfirm={confirmCatalogChips}
+        onPlaceCatalog={confirmCatalogChips}
+        onPlaceNewExtract={(draft) => void placeNewExtractChip(draft)}
+        onPlaceNewTransform={(draft) => void placeNewTransformChip(draft)}
       />
 
       <WorkspaceManageDialog

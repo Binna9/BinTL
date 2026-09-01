@@ -174,7 +174,7 @@ export function FilesPage() {
     const confirmed = await showConfirm(
       messages.files.deleteConfirmTitle,
       messages.files.deleteConfirmMessage(storedSelected.length),
-      { tone: "danger" },
+      { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed) return;
     setBusy(true);

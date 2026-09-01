@@ -17,7 +17,7 @@ import { useSession } from "@/hooks/useSession";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
-import { toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
+import { toastDeleteError, toastError, toastSuccess, showConfirm } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { driverCatalog } from "@/mock/driverCatalog";
 import { connectionApi } from "@/services/connectionApi";
@@ -186,10 +186,16 @@ export function ConnectionsPage() {
     }
   }
 
-  async function onDelete(id: string) {
+  async function onDelete(connection: DataConnection) {
+    const confirmed = await showConfirm(
+      messages.connectionsPage.deleteConfirmTitle,
+      messages.connectionsPage.deleteConfirmMessage(connection.name),
+      { tone: "danger", confirmLabel: messages.common.delete },
+    );
+    if (!confirmed) return;
     try {
-      await connectionApi.deleteConnection(id);
-      if (browseId === id) {
+      await connectionApi.deleteConnection(connection.id);
+      if (browseId === connection.id) {
         setBrowseId("");
         setSelected(null);
         setColumns([]);
@@ -394,7 +400,7 @@ export function ConnectionsPage() {
                           className="grid size-7 place-items-center rounded-md text-text-tertiary outline-none hover:bg-danger-subtle hover:text-danger focus-visible:ring-2 focus-visible:ring-accent/40"
                           aria-label={messages.common.delete}
                           title={messages.common.delete}
-                          onClick={() => void onDelete(connection.id)}
+                          onClick={() => void onDelete(connection)}
                         >
                           <Trash2 className="size-3.5" aria-hidden="true" />
                         </button>

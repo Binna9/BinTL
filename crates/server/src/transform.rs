@@ -4,7 +4,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use engine::{FramePreview, PolarsEngine, TransformSpec};
+use engine::{FramePreview, PolarsEngine, PreviewColumn, TransformSpec};
 use connectors::sniff_delimiter;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -54,6 +54,8 @@ struct CreateTransformBody {
     name: String,
     dataset_id: String,
     spec: Option<Value>,
+    #[serde(default)]
+    input_chip_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,18 +63,49 @@ struct PatchTransformBody {
     name: Option<String>,
     dataset_id: Option<String>,
     spec: Option<Value>,
+    #[serde(default)]
+    input_chip_id: Option<String>,
 }
 
 fn clamp_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(200).clamp(1, 200)
 }
 
+fn normalize_columns(raw: &str) -> Value {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .map(|columns| {
+            json!(
+                columns
+                    .iter()
+                    .map(|column| {
+                        json!({
+                            "name": column.get("name").and_then(Value::as_str).unwrap_or(""),
+                            "dtype": column
+                                .get("dtype")
+                                .or_else(|| column.get("type"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("String"),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            )
+        })
+        .unwrap_or_else(|| json!([]))
+}
+
+pub fn dataset_json_public(store: &Store, row: &DatasetRow) -> Value {
+    dataset_json(store, row)
+}
+
 fn dataset_json(store: &Store, row: &DatasetRow) -> Value {
-    let available = store.resolve(&row.stored_path).is_file();
+    let planned = row.status == "planned";
+    let available = !planned && store.resolve(&row.stored_path).is_file();
     let columns = row
         .columns_json
         .as_deref()
-        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .map(normalize_columns)
         .unwrap_or_else(|| json!([]));
     json!({
         "id": row.id,
@@ -89,6 +122,9 @@ fn dataset_json(store: &Store, row: &DatasetRow) -> Value {
         "updated_at": row.updated_at,
         "workspace_id": row.workspace_id,
         "producer_chip_run_id": row.producer_chip_run_id,
+        "status": row.status,
+        "source_chip_id": row.source_chip_id,
+        "consumer_chip_id": row.consumer_chip_id,
         "available": available,
         "origin": if row.kind == "database" {
             json!({
@@ -108,10 +144,42 @@ fn transform_json(row: &TransformRow) -> Value {
         "id": row.id,
         "name": row.name,
         "dataset_id": row.dataset_id,
+        "input_chip_id": row.input_chip_id,
         "spec": spec,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "workspace_id": row.workspace_id,
+    })
+}
+
+fn planned_preview(row: &DatasetRow) -> Value {
+    let columns: Vec<PreviewColumn> = row
+        .columns_json
+        .as_deref()
+        .map(normalize_columns)
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|column| {
+            let name = column.get("name")?.as_str()?.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let dtype = column
+                .get("dtype")
+                .or_else(|| column.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("String")
+                .to_string();
+            Some(PreviewColumn { name, dtype })
+        })
+        .collect();
+    preview_json(FramePreview {
+        columns,
+        rows: vec![],
+        sampled_rows: 0,
+        row_count: Some(0),
+        truncated: false,
     })
 }
 
@@ -286,6 +354,13 @@ async fn inspect_dataset(
     Query(q): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let row = access::require_dataset(&state.store, &user, &id).await?;
+    if row.status == "planned" {
+        let _ = clamp_limit(q.limit);
+        return Ok(Json(json!({
+            "dataset": dataset_json(&state.store, &row),
+            "preview": planned_preview(&row),
+        })));
+    }
     let path = state.store.resolve(&row.stored_path);
     if !path.is_file() {
         return Err(AppError::not_found("dataset file missing"));
@@ -343,6 +418,14 @@ async fn preview_dataset(
     Json(body): Json<PreviewBody>,
 ) -> Result<Json<Value>, AppError> {
     let row = access::require_dataset(&state.store, &user, &id).await?;
+    if row.status == "planned" {
+        if body.spec.is_some() {
+            return Err(AppError::bad(
+                "planned input preview with transform steps requires a materialized dataset",
+            ));
+        }
+        return Ok(Json(planned_preview(&row)));
+    }
     let path = state.store.resolve(&row.stored_path);
     if !path.is_file() {
         return Err(AppError::not_found("dataset file missing"));
@@ -398,7 +481,12 @@ async fn create_transform(
     };
     let row = state
         .store
-        .insert_transform(&body.name, &body.dataset_id, &spec_to_json(&spec)?)
+        .insert_transform(
+            &body.name,
+            &body.dataset_id,
+            &spec_to_json(&spec)?,
+            body.input_chip_id.as_deref(),
+        )
         .await?;
     Ok((StatusCode::CREATED, Json(transform_json(&row))))
 }
@@ -430,6 +518,14 @@ async fn update_transform(
     } else {
         None
     };
+    let input_chip_patch = body.input_chip_id.as_ref().map(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
     let row = state
         .store
         .update_transform(
@@ -437,6 +533,7 @@ async fn update_transform(
             body.name.as_deref(),
             body.dataset_id.as_deref(),
             spec_json.as_deref(),
+            input_chip_patch,
         )
         .await?;
     Ok(Json(transform_json(&row)))
@@ -449,6 +546,11 @@ async fn run_transform(
 ) -> Result<Json<Value>, AppError> {
     let transform = access::require_transform(&state.store, &user, &id).await?;
     let dataset = access::require_dataset(&state.store, &user, &transform.dataset_id).await?;
+    if dataset.status == "planned" {
+        return Err(AppError::bad(
+            "transform run needs a materialized input dataset",
+        ));
+    }
     if !state.store.resolve(&dataset.stored_path).is_file() {
         return Err(AppError::not_found("dataset file missing"));
     }

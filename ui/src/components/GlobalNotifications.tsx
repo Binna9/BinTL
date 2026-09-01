@@ -140,6 +140,26 @@ export function GlobalNotifications() {
     setDialogs((current) => current.slice(1));
   }
 
+  useEffect(() => {
+    if (!activeDialog) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Enter" || event.shiftKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.isContentEditable) return;
+      if (
+        target instanceof HTMLTextAreaElement
+        || (target instanceof HTMLInputElement && target.type !== "button" && target.type !== "submit")
+        || target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      event.preventDefault();
+      settleDialog(true);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeDialog?.id]);
+
   return (
     <>
       <AppDialog
@@ -167,6 +187,7 @@ export function GlobalNotifications() {
               ) : null}
               <Button
                 type="button"
+                autoFocus
                 variant={activeDialog.tone === "danger" ? "danger" : "primary"}
                 onClick={() => settleDialog(true)}
               >

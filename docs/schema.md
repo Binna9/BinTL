@@ -303,7 +303,13 @@ DB/API 추출 레시피. `extracts`는 실행 이력, 이 테이블은 재사용
 | `updated_at`           | 수정 시각    |                                             |
 | `workspace_id`         | 작업 공간 ID | `workspaces.id`                             |
 | `producer_chip_run_id` | 생산 실행 ID | 이 파일을 만든 `chip_runs.id`                     |
+| `status`               | 상태       | `materialized`(실파일) | `planned`(스키마만) |
+| `source_chip_id`       | 원본 칩 ID  | planned일 때 upstream extract 칩              |
+| `consumer_chip_id`     | 소비 칩 ID  | planned일 때 이 입력을 쓰는 transform 칩         |
+| `source_extract_definition_id` | 추출 정의 ID | planned 스키마 출처 `extract_definitions.id` |
 
+
+`status=planned` 행은 `stored_path`가 `__planned__/{id}` placeholder이며 실파일이 없다. 워크스페이스 저장 시 data 엣지마다 sync되고, transform 실행 시 upstream extract를 동기 실행해 materialize한다.
 
 ---
 
@@ -375,6 +381,7 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 | `id`           | ID         | UUID                  |
 | `name`         | 이름         |                       |
 | `dataset_id`   | 입력 데이터셋 ID | `datasets.id`. combine 시 기준 파일 |
+| `input_chip_id`| 입력 칩 ID    | 워크스페이스 transform 칩과 연결 (planned 입력) |
 | `spec_json`    | 스펙         | TransformSpec v2 JSON (아래) |
 | `created_at`   | 생성 시각      |                       |
 | `updated_at`   | 수정 시각      |                       |

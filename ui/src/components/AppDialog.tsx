@@ -1,6 +1,7 @@
 import {
   PointerEvent as ReactPointerEvent,
   ReactNode,
+  RefObject,
   useEffect,
   useId,
   useRef,
@@ -8,8 +9,10 @@ import {
 } from "react";
 import { X } from "lucide-react";
 import { ResizeGrip } from "@/components/ui/resize-grip";
+import { DialogContentTransition } from "@/components/DialogContentTransition";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { withViewTransition } from "@/lib/viewTransition";
 
 const closeStack: Array<() => void> = [];
 
@@ -28,6 +31,9 @@ export function AppDialog({
   defaultOffset = { x: 0, y: 0 },
   labelledBy,
   hideHeaderClose = false,
+  hideHeader = false,
+  dragHandleRef,
+  contentKey,
   onClose,
 }: {
   open: boolean;
@@ -44,17 +50,41 @@ export function AppDialog({
   defaultOffset?: { x: number; y: number };
   labelledBy?: string;
   hideHeaderClose?: boolean;
+  hideHeader?: boolean;
+  dragHandleRef?: RefObject<HTMLDivElement | null>;
+  contentKey?: string | number | null;
   onClose: () => void;
 }) {
   const { messages } = useLanguage();
   const titleId = useId();
+  const [visible, setVisible] = useState(open);
+  const isInitial = useRef(true);
   const boxRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const resize = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const [offset, setOffset] = useState(defaultOffset);
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  const [openStamp, setOpenStamp] = useState(0);
+  const offsetRef = useRef(offset);
+  offsetRef.current = offset;
   onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!open) return;
+    setOpenStamp((stamp) => stamp + 1);
+  }, [open]);
+
+  useEffect(() => {
+    if (isInitial.current) {
+      isInitial.current = false;
+      return;
+    }
+    if (open === visible) return;
+    withViewTransition(() => {
+      setVisible(open);
+    });
+  }, [open, visible]);
 
   useEffect(() => {
     if (!open) return;
@@ -63,7 +93,7 @@ export function AppDialog({
   }, [open, defaultOffset.x, defaultOffset.y]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!visible) return;
     const close = () => onCloseRef.current();
     closeStack.push(close);
     function onKeyDown(event: KeyboardEvent) {
@@ -78,10 +108,10 @@ export function AppDialog({
       const at = closeStack.lastIndexOf(close);
       if (at >= 0) closeStack.splice(at, 1);
     };
-  }, [open]);
+  }, [visible]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!visible) return;
 
     function end() {
       drag.current = null;
@@ -119,7 +149,28 @@ export function AppDialog({
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", end);
     };
-  }, [open, minWidth, minHeight]);
+  }, [visible, minWidth, minHeight]);
+
+  useEffect(() => {
+    if (!visible || !hideHeader) return;
+    const handle = dragHandleRef?.current;
+    if (!handle) return;
+
+    function onHandleDown(event: PointerEvent) {
+      if ((event.target as HTMLElement).closest("button")) return;
+      drag.current = {
+        x: event.clientX,
+        y: event.clientY,
+        left: offsetRef.current.x,
+        top: offsetRef.current.y,
+      };
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "move";
+    }
+
+    handle.addEventListener("pointerdown", onHandleDown);
+    return () => handle.removeEventListener("pointerdown", onHandleDown);
+  }, [dragHandleRef, hideHeader, visible]);
 
   function onHeaderDown(event: ReactPointerEvent<HTMLElement>) {
     if ((event.target as HTMLElement).closest("button")) return;
@@ -149,7 +200,7 @@ export function AppDialog({
     document.body.style.cursor = "se-resize";
   }
 
-  if (!open) return null;
+  if (!visible) return null;
 
   return (
     <div
@@ -176,6 +227,7 @@ export function AppDialog({
           ...(size ? { width: size.w, height: size.h, maxWidth: "none", maxHeight: "none" } : null),
         }}
       >
+        {!hideHeader ? (
         <header
           className="flex min-h-12 shrink-0 cursor-move select-none items-center gap-3 border-b border-border px-4"
           onPointerDown={onHeaderDown}
@@ -200,7 +252,20 @@ export function AppDialog({
             </button>
           ) : null}
         </header>
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
+        ) : (
+          <h2 id={labelledBy ?? titleId} className="sr-only">
+            {title}
+          </h2>
+        )}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {contentKey !== undefined ? (
+            <DialogContentTransition contentKey={contentKey} resetWhen={openStamp}>
+              {children}
+            </DialogContentTransition>
+          ) : (
+            children
+          )}
+        </div>
         {footer ? (
           <footer className="flex shrink-0 justify-end gap-2 border-t border-border bg-raised px-4 py-3 pr-8">
             {footer}

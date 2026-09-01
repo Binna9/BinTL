@@ -1,6 +1,7 @@
 import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
 import type {
   Chip,
+  ChipInputSlotResponse,
   ChipListResponse,
   ChipRun,
   ChipRunListResponse,
@@ -44,4 +45,8 @@ export const chipApi = {
   getRun: (id: string) => httpRequest<ChipRun>(`/api/chip-runs/${id}`),
   getRunLogs: (id: string) =>
     httpRequest<ChipRunLogsResponse>(`/api/chip-runs/${id}/logs`),
+  getInputSlot: (workspaceId: string, chipId: string) =>
+    httpRequest<ChipInputSlotResponse>(
+      `/api/workspaces/${workspaceId}/chips/${chipId}/input-slot`,
+    ),
 };
