@@ -8,20 +8,20 @@ import {
   GridRow,
 } from "@/components/DataGrid";
 import { AppDialog } from "@/components/AppDialog";
-import { PageHeader, PageShell } from "@/components/PageShell";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { StatusPill } from "@/components/StatusPill";
 import { ActionAnchor, Button } from "@/components/ui/button";
 import { LiveDot } from "@/components/ui/live-dot";
 import { MetaField } from "@/components/ui/meta-field";
 import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
-import { isExtractActive, useExtracts } from "@/hooks/useExtracts";
+import { isExtractActive, useExtracts } from "@/hooks/extract/useExtracts";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
 import { fmtDelimiterGlyph, fmtSqlPreview, fmtWhen } from "@/lib/format";
 import { showConfirm, toastDeleteError, toastError } from "@/lib/notifications";
-import { extractApi } from "@/services/extractApi";
+import { extractApi } from "@/services/extract/extractApi";
 import type { ExtractKind, ExtractRecord } from "@/types/extract";
 import type { FilePreview } from "@/types/file";
 

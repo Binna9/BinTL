@@ -1,26 +1,25 @@
 import { FormEvent, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { CircleCheck, Maximize2, Pencil, PlugZap, Save, SquarePen, Trash2, X } from "lucide-react";
+import { CircleCheck, Maximize2, Pencil, PlugZap, Save, Trash2, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
-import { CatalogTree } from "@/components/CatalogTree";
+import { CatalogTree } from "@/components/connections/CatalogTree";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
-import { PageHeader, PageShell } from "@/components/PageShell";
-import { SplitLayout } from "@/components/SplitLayout";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
+import { SplitLayout } from "@/layouts/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { Select } from "@/components/ui/select";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
-import { useConnections } from "@/hooks/useConnections";
-import { useSession } from "@/hooks/useSession";
+import { useConnections } from "@/hooks/connections/useConnections";
+import { useSession } from "@/hooks/auth/useSession";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
 import { toastDeleteError, toastError, toastSuccess, showConfirm } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { driverCatalog } from "@/mock/driverCatalog";
-import { connectionApi } from "@/services/connectionApi";
+import { connectionApi } from "@/services/connections/connectionApi";
 import type { CatalogSelection, DataConnection, DatabaseColumn } from "@/types/connection";
 
 function dash(value?: string | null): string {
@@ -67,7 +66,6 @@ function ConnectionColumnsGrid({
 export function ConnectionsPage() {
   const { messages } = useLanguage();
   const { canWriteConnections } = useSession();
-  const navigate = useNavigate();
   const { connections, refreshConnections } = useConnections();
   const [saving, setSaving] = useState(false);
   const [browseId, setBrowseId] = useState("");
@@ -474,29 +472,15 @@ export function ConnectionsPage() {
                     meta={`${columns.length}`}
                     description={selected.qualified}
                     actions={
-                      <>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          title={messages.connectionsPage.expand}
-                          onClick={() => setColumnsExpanded(true)}
-                        >
-                          <Maximize2 className="size-3.5" aria-hidden="true" />
-                          {messages.connectionsPage.expand}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="primary"
-                          onClick={() =>
-                            navigate(
-                              `/db?connection=${browseId}&table=${encodeURIComponent(selected.qualified)}&database=${encodeURIComponent(selected.database)}`,
-                            )
-                          }
-                        >
-                          <SquarePen className="size-3.5" aria-hidden="true" />
-                          {messages.connectionsPage.queryExtract}
-                        </Button>
-                      </>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        title={messages.connectionsPage.expand}
+                        onClick={() => setColumnsExpanded(true)}
+                      >
+                        <Maximize2 className="size-3.5" aria-hidden="true" />
+                        {messages.connectionsPage.expand}
+                      </Button>
                     }
                   />
                   <div className="min-h-0 flex-1 overflow-hidden bg-surface">

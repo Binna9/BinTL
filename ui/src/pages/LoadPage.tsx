@@ -1,4 +1,4 @@
-import { PageHeader, PageShell } from "@/components/PageShell";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { useLanguage } from "@/i18n/LanguageProvider";
 

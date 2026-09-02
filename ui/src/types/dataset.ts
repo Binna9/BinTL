@@ -13,7 +13,7 @@ export interface Dataset {
   id: string;
   kind: "upload" | "database" | "api" | string;
   filename: string;
-  stored_path: string;
+  stored_path?: string;
   size_bytes: number | null;
   delimiter: string | null;
   has_header: boolean | null;

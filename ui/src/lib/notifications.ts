@@ -105,6 +105,9 @@ export function dismissToast(id: string): void {
 }
 
 export function toastError(fallback: string, error?: unknown): string {
+  if (error instanceof HttpError && error.silent) {
+    return "";
+  }
   const detail = errorDetail(error);
   if (detail && detail !== fallback) {
     return showToast(fallback, detail, "error");

@@ -6,7 +6,7 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { SEARCH_ENTITY_META, SEARCH_GROUP_ORDER } from "@/lib/searchEntityMeta";
-import { searchApi } from "@/services/searchApi";
+import { searchApi } from "@/services/search/searchApi";
 import type { SearchEntityType, SearchHit } from "@/types/search";
 
 const listVariants = {

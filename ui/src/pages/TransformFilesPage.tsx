@@ -8,7 +8,7 @@ import {
   GridRow,
 } from "@/components/DataGrid";
 import { AppDialog } from "@/components/AppDialog";
-import { PageHeader, PageShell } from "@/components/PageShell";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { ActionAnchor, Button } from "@/components/ui/button";
 import { MetaField } from "@/components/ui/meta-field";
 import { Panel } from "@/components/ui/panel";
@@ -16,7 +16,7 @@ import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtWhen } from "@/lib/format";
 import { showConfirm, toastDeleteError, toastError } from "@/lib/notifications";
-import { datasetApi } from "@/services/datasetApi";
+import { datasetApi } from "@/services/transform/datasetApi";
 import type { Dataset, FramePreview } from "@/types/dataset";
 
 export function TransformFilesPage() {

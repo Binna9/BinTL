@@ -1,21 +1,21 @@
 import { FormEvent, ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
-import { PageHeader, PageShell } from "@/components/PageShell";
-import { SplitLayout } from "@/components/SplitLayout";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
+import { SplitLayout } from "@/layouts/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { Panel, PanelHeader } from "@/components/ui/panel";
 import { Select } from "@/components/ui/select";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
-import { useJobWorkspace } from "@/hooks/useJobWorkspace";
+import { useJobWorkspace } from "@/hooks/jobs/useJobWorkspace";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtSqlPreview, fmtWhen } from "@/lib/format";
 import { layout } from "@/lib/layout";
 import { toastError } from "@/lib/notifications";
-import { connectionApi } from "@/services/connectionApi";
-import { jobApi } from "@/services/jobApi";
+import { connectionApi } from "@/services/connections/connectionApi";
+import { jobApi } from "@/services/jobs/jobApi";
 
 function parseRename(raw: string): Record<string, string> | undefined {
   const result: Record<string, string> = {};

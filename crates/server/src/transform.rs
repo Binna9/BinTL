@@ -111,7 +111,6 @@ fn dataset_json(store: &Store, row: &DatasetRow) -> Value {
         "id": row.id,
         "kind": row.kind,
         "filename": row.filename,
-        "stored_path": row.stored_path,
         "size_bytes": row.size_bytes,
         "delimiter": row.delimiter,
         "has_header": row.has_header.map(|h| h != 0),
@@ -296,6 +295,7 @@ async fn list_datasets(
         .await?;
     let datasets: Vec<Value> = rows
         .iter()
+        .filter(|row| row.status != "planned")
         .map(|row| dataset_json(&state.store, row))
         .collect();
     Ok(Json(json!({ "datasets": datasets })))

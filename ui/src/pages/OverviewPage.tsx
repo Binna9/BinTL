@@ -1,11 +1,11 @@
-import { PageHeader, PageShell } from "@/components/PageShell";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { ReleaseBadge } from "@/components/ReleaseBadge";
 import {
   ClosedWidgetBar,
   DashboardBoard,
   DashboardProvider,
   WidgetPalette,
-} from "@/dashboard";
+} from "@/components/overview";
 import { useLanguage } from "@/i18n/LanguageProvider";
 
 function OverviewHeader() {

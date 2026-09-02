@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowUpDown,
   BookmarkPlus,
@@ -22,6 +22,8 @@ import {
   Trash2,
   Type,
   Upload,
+  ArrowLeft,
+  Play,
   type LucideIcon,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
@@ -32,8 +34,10 @@ import {
   GridCell,
   GridRow,
 } from "@/components/DataGrid";
-import { PageHeader, PageShell } from "@/components/PageShell";
-import { SplitLayout } from "@/components/SplitLayout";
+import { CombineSetup } from "@/components/transform/CombineSetup";
+import { TransformModeNav } from "@/components/transform/TransformModeNav";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
+import { SplitLayout } from "@/layouts/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { MetaField } from "@/components/ui/meta-field";
@@ -47,9 +51,18 @@ import { layout } from "@/lib/layout";
 import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { HttpError } from "@/services/httpClient";
 import { selectableClass } from "@/lib/selectable";
-import { chipApi } from "@/services/chipApi";
-import { datasetApi } from "@/services/datasetApi";
-import { transformApi } from "@/services/transformApi";
+import {
+  canPreviewCombine,
+  combineDraftFromSpec,
+  combineDraftToSpec,
+  editorModeFromPath,
+  emptyCombineDraft,
+  transformEditorPath,
+  type CombineDraft,
+} from "@/lib/transformEditor";
+import { chipApi } from "@/services/chips/chipApi";
+import { datasetApi } from "@/services/transform/datasetApi";
+import { transformApi } from "@/services/transform/transformApi";
 import type { Dataset, DatasetColumn, FramePreview } from "@/types/dataset";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type {
@@ -78,7 +91,7 @@ function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
       return {
         id: slot.planned.dataset_id,
         kind: "database",
-        filename: "planned input",
+        filename: slot.source_chip_name || "planned input",
         stored_path: "",
         size_bytes: null,
         delimiter: ",",
@@ -865,11 +878,15 @@ function PreviewGrid({
 export function TransformPage() {
   const { messages } = useLanguage();
   const { id } = useParams<{ id: string }>();
+  const { pathname } = useLocation();
   const [searchParams] = useSearchParams();
+  const editorMode = editorModeFromPath(pathname);
+  const editorSearch = searchParams.toString();
   const workspaceId = searchParams.get("workspace") ?? undefined;
-  const inputChipId = searchParams.get("input_chip") ?? undefined;
-  const workspaceMode = Boolean(workspaceId && inputChipId);
+  const chipId = searchParams.get("chip") ?? searchParams.get("input_chip") ?? undefined;
+  const workspaceMode = Boolean(workspaceId && chipId);
   const navigate = useNavigate();
+  const t = messages.transform;
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetId, setDatasetId] = useState<string>();
   const [transformId, setTransformId] = useState<string>();
@@ -902,9 +919,45 @@ export function TransformPage() {
   const [registerBusy, setRegisterBusy] = useState(false);
   const [linkedTransformId, setLinkedTransformId] = useState<string>();
   const [sourceMissing, setSourceMissing] = useState(false);
+  const [inputSlot, setInputSlot] = useState<ChipInputSlotResponse | null>(null);
+  const [combineDraft, setCombineDraft] = useState<CombineDraft | null>(null);
+  const [rightPreview, setRightPreview] = useState<FramePreview | null>(null);
 
   const selected = datasets.find((item) => item.id === datasetId) ?? null;
   const savedTransformId = transformId ?? linkedTransformId;
+  const columns = selected?.columns ?? [];
+  const baseColumns =
+    sourcePreview && sourcePreview.columns.length > 0 ? sourcePreview.columns : columns;
+  const rightSelected =
+    combineDraft?.rightDatasetId != null
+      ? (datasets.find((item) => item.id === combineDraft.rightDatasetId) ?? null)
+      : null;
+  const rightColumns =
+    rightPreview && rightPreview.columns.length > 0
+      ? rightPreview.columns
+      : (rightSelected?.columns ?? []);
+  const commonJoinKeys = useMemo(() => {
+    const rightNames = new Set(rightColumns.map((column) => column.name));
+    return baseColumns.filter((column) => rightNames.has(column.name));
+  }, [baseColumns, rightColumns]);
+  const canPreviewRecipe =
+    canPreviewCombine(combineDraft, datasetId) || usableSteps(steps, baseColumns).length > 0;
+  const combineModeLabel =
+    combineDraft?.mode === "union" ? t.combineModeUnion : t.combineModeJoin;
+  const headerCopy =
+    editorMode === "combine"
+      ? { title: t.combineTitle, description: t.combineDescription }
+      : editorMode === "aggregate"
+        ? { title: t.aggregateTitle, description: t.aggregateDescription }
+        : { title: t.title, description: t.description };
+
+  function buildSpec(): TransformSpecV2 {
+    const spec = specFrom(selected, steps, baseColumns);
+    const combine = combineDraftToSpec(combineDraft);
+    if (combine) spec.combine = combine;
+    return spec;
+  }
+
   const kindLabel: Record<string, string> = {
     upload: messages.transform.kindUpload,
     database: messages.transform.kindDatabase,
@@ -944,13 +997,34 @@ export function TransformPage() {
   }, [messages]);
 
   useEffect(() => {
-    if (!workspaceId || !inputChipId || id) return;
+    if (!workspaceId || !chipId) {
+      setInputSlot(null);
+      return;
+    }
     let cancelled = false;
-    void chipApi
-      .getInputSlot(workspaceId, inputChipId)
-      .then((slot) => {
+    void (async () => {
+      try {
+        let slot = await chipApi.getInputSlot(workspaceId, chipId);
+        let dataset = datasetFromSlot(slot);
+        if (!dataset) {
+          const chip = await chipApi.get(chipId);
+          const datasetId =
+            typeof chip.config.input_dataset_id === "string"
+              ? chip.config.input_dataset_id.trim()
+              : "";
+          if (datasetId) {
+            const file = await datasetApi.get(datasetId);
+            slot = {
+              mode: "materialized",
+              dataset_id: file.id,
+              source_chip_name: file.filename,
+              dataset: file as unknown as Record<string, unknown>,
+            };
+            dataset = file;
+          }
+        }
         if (cancelled) return;
-        const dataset = datasetFromSlot(slot);
+        setInputSlot(slot);
         if (!dataset) return;
         setDatasets((current) => {
           const exists = current.some((item) => item.id === dataset.id);
@@ -960,15 +1034,15 @@ export function TransformPage() {
           return [...current, dataset];
         });
         setDatasetId(dataset.id);
-        setName((current) => current || dataset.filename);
-      })
-      .catch((err) => {
+        setName((current) => current || slot.source_chip_name || dataset.filename);
+      } catch (err) {
         if (!cancelled) toastError(messages.errors.workspace, err);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, inputChipId, id, messages]);
+  }, [workspaceId, chipId, messages]);
 
   useEffect(() => {
     if (!id) {
@@ -984,6 +1058,7 @@ export function TransformPage() {
         setDatasetId(row.dataset_id);
         setName(row.name);
         setSteps(Array.isArray(row.spec?.steps) ? row.spec.steps : []);
+        setCombineDraft(combineDraftFromSpec(row.spec?.combine));
       })
       .catch((err) => {
         if (!cancelled) {
@@ -1044,7 +1119,41 @@ export function TransformPage() {
     return () => {
       cancelled = true;
     };
-  }, [datasetId, selected?.available, messages]);
+  }, [datasetId, selected?.available, selected?.status, messages]);
+
+  useEffect(() => {
+    if (editorMode !== "combine" || combineDraft) return;
+    setCombineDraft(emptyCombineDraft());
+  }, [editorMode, combineDraft]);
+
+  useEffect(() => {
+    if (!combineDraft || combineDraft.mode !== "join" || !combineDraft.rightDatasetId) {
+      setRightPreview(null);
+      return;
+    }
+    let cancelled = false;
+    void datasetApi
+      .inspect(combineDraft.rightDatasetId, 100)
+      .then((inspected) => {
+        if (cancelled) return;
+        setRightPreview(inspected.preview);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setRightPreview(null);
+        toastError(messages.errors.inspect, err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [combineDraft?.rightDatasetId, combineDraft?.mode, messages]);
+
+  useEffect(() => {
+    if (!combineDraft || combineDraft.joinKeys.length > 0 || commonJoinKeys.length === 0) return;
+    setCombineDraft((current) =>
+      current ? { ...current, joinKeys: [commonJoinKeys[0]!.name] } : current,
+    );
+  }, [commonJoinKeys, combineDraft]);
 
   useEffect(() => {
     if (!datasetId || transformId) {
@@ -1082,12 +1191,16 @@ export function TransformPage() {
       setDetailLoading(false);
       return;
     }
-    const spec = specFrom(dataset, steps, baseColumns);
+    const spec = buildSpec();
+    const previewCombine = canPreviewCombine(combineDraft, datasetId);
+    const previewSteps = usableSteps(steps, baseColumns).length > 0;
     let cancelled = false;
     setDetailLoading(true);
     void Promise.allSettled([
       datasetApi.inspect(datasetId, 200),
-      datasetApi.preview(datasetId, spec, 200),
+      previewCombine || previewSteps
+        ? datasetApi.preview(datasetId, spec, 200)
+        : Promise.resolve(null),
     ])
       .then(([inspected, previewed]) => {
         if (cancelled) return;
@@ -1103,11 +1216,11 @@ export function TransformPage() {
         }
         if (previewed.status === "fulfilled") {
           setResultPreview(previewed.value);
+        } else if (previewed.status === "rejected" && (previewCombine || previewSteps)) {
+          setResultPreview(null);
+          toastError(messages.errors.previewTransform, previewed.reason);
         } else {
           setResultPreview(null);
-          if (usableSteps(steps, baseColumns).length > 0) {
-            toastError(messages.errors.previewTransform, previewed.reason);
-          }
         }
       })
       .finally(() => {
@@ -1116,7 +1229,16 @@ export function TransformPage() {
     return () => {
       cancelled = true;
     };
-  }, [detailOpen, datasetId, detailTick, messages]);
+  }, [
+    detailOpen,
+    datasetId,
+    detailTick,
+    messages,
+    steps,
+    combineDraft,
+    datasets,
+    baseColumns,
+  ]);
 
   const grouped = useMemo(() => {
     return KIND_ORDER.map((kind) => ({
@@ -1153,10 +1275,6 @@ export function TransformPage() {
     };
   }, [addStepOpen]);
 
-  function buildSpec(): TransformSpecV2 {
-    return specFrom(selected, steps, baseColumns);
-  }
-
   function openDetail(tab: "source" | "result") {
     if (!datasetId) return;
     setDetailTab(tab);
@@ -1169,9 +1287,11 @@ export function TransformPage() {
     setDatasetId(undefined);
     setName("");
     setSteps([]);
+    setCombineDraft(null);
+    setRightPreview(null);
     setSourcePreview(null);
     setResultPreview(null);
-    navigate("/transform/clean");
+    navigate(transformEditorPath("clean", undefined, editorSearch));
   }
 
   async function saveTransformDefinition() {
@@ -1184,22 +1304,22 @@ export function TransformPage() {
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
-          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
+          ...(chipId ? { input_chip_id: chipId } : {}),
         });
       } else {
         const row = await transformApi.create({
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
-          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
+          ...(chipId ? { input_chip_id: chipId } : {}),
         });
         setTransformId(row.id);
         setName(row.name);
-        navigate(`/transform/clean/${row.id}?${searchParams.toString()}`, { replace: true });
+        navigate(transformEditorPath(editorMode, row.id, editorSearch), { replace: true });
       }
       if (workspaceMode && workspaceId) {
         toastSuccess(messages.transform.saveToWorkspace);
-        navigate(`/workspace/${workspaceId}/chips/${inputChipId}`);
+        navigate(`/workspace/${workspaceId}/chips/${chipId}`);
         return;
       }
       toastSuccess(messages.query.taskRegistered);
@@ -1221,19 +1341,19 @@ export function TransformPage() {
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
-          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
+          ...(chipId ? { input_chip_id: chipId } : {}),
         });
       } else {
         const row = await transformApi.create({
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
-          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
+          ...(chipId ? { input_chip_id: chipId } : {}),
         });
         savedTransformId = row.id;
         setTransformId(row.id);
         setName(row.name);
-        navigate(`/transform/clean/${row.id}`, { replace: true });
+        navigate(transformEditorPath(editorMode, row.id, editorSearch), { replace: true });
       }
       await chipApi.register({
         name: registerChipName.trim(),
@@ -1293,18 +1413,26 @@ export function TransformPage() {
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
-          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
+          ...(chipId ? { input_chip_id: chipId } : {}),
         });
       } else {
         const row = await transformApi.create({
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
-          ...(inputChipId ? { input_chip_id: inputChipId } : {}),
+          ...(chipId ? { input_chip_id: chipId } : {}),
         });
         savedId = row.id;
         setTransformId(row.id);
-        navigate(`/transform/clean/${row.id}`, { replace: true });
+        navigate(transformEditorPath(editorMode, row.id, editorSearch), {
+          replace: true,
+        });
+      }
+      if (workspaceMode && workspaceId && chipId) {
+        await chipApi.run(chipId, { workspace_id: workspaceId });
+        toastSuccess(messages.workspace.runQueued);
+        navigate(`/workspace/${workspaceId}`);
+        return;
       }
       const run = await transformApi.run(savedId);
       navigate(`/jobs/${run.id}`);
@@ -1319,9 +1447,6 @@ export function TransformPage() {
     setSteps((current) => current.map((step, i) => (i === index ? next : step)));
   }
 
-  const columns = selected?.columns ?? [];
-  const baseColumns =
-    sourcePreview && sourcePreview.columns.length > 0 ? sourcePreview.columns : columns;
   const activePreview = detailTab === "result" ? resultPreview : sourcePreview;
   const previewHeaders = activePreview?.columns.map((column) => column.name) ?? [];
 
@@ -1330,14 +1455,27 @@ export function TransformPage() {
       <PageHeader
         iconName="jobs"
         eyebrow={messages.transform.eyebrow}
-        title={messages.transform.title}
-        description={messages.transform.description}
+        title={headerCopy.title}
+        description={headerCopy.description}
         actions={
           <>
-            <Button type="button" variant="quiet" className="gap-2" disabled={busy} onClick={onNew}>
-              <RotateCcw className="size-3.5" aria-hidden="true" />
-              {messages.transform.reset}
-            </Button>
+            {workspaceMode && workspaceId ? (
+              <Button
+                type="button"
+                variant="quiet"
+                className="gap-2"
+                disabled={busy}
+                onClick={() => navigate(`/workspace/${workspaceId}`)}
+              >
+                <ArrowLeft className="size-3.5" aria-hidden="true" />
+                {messages.workspace.backToCanvas}
+              </Button>
+            ) : (
+              <Button type="button" variant="quiet" className="gap-2" disabled={busy} onClick={onNew}>
+                <RotateCcw className="size-3.5" aria-hidden="true" />
+                {messages.transform.reset}
+              </Button>
+            )}
             {savedTransformId ? (
               <Button
                 type="button"
@@ -1354,7 +1492,7 @@ export function TransformPage() {
               type="button"
               className="gap-2"
               disabled={!datasetId || busy}
-              onClick={() => openDetail(usableSteps(steps, baseColumns).length > 0 ? "result" : "source")}
+              onClick={() => openDetail(canPreviewRecipe ? "result" : "source")}
             >
               <Eye className="size-3.5" aria-hidden="true" />
               {messages.transform.previewSteps}
@@ -1374,19 +1512,72 @@ export function TransformPage() {
               disabled={!datasetId || busy}
               onClick={() => void onRun()}
             >
-              <FileDown className="size-3.5" aria-hidden="true" />
-              {busy ? messages.transform.exporting : messages.transform.resultFile}
+              {workspaceMode ? (
+                <Play className="size-3.5" aria-hidden="true" />
+              ) : (
+                <FileDown className="size-3.5" aria-hidden="true" />
+              )}
+              {busy
+                ? workspaceMode
+                  ? messages.common.running
+                  : messages.transform.exporting
+                : workspaceMode
+                  ? messages.transform.runChip
+                  : messages.transform.resultFile}
             </Button>
           </>
         }
       />
 
       <Panel tall>
+        <TransformModeNav
+          mode={editorMode}
+          transformId={savedTransformId}
+          search={editorSearch}
+          messages={messages}
+        />
         <SplitLayout
           className="min-h-0 flex-1"
           defaultSizes={[layout.split.catalog]}
         >
           <aside className="flex min-h-0 flex-col overflow-hidden">
+            {workspaceMode ? (
+              <>
+                <PaneHeader
+                  title={messages.workspace.inspector}
+                  meta={inputSlot?.source_chip_name ?? messages.transform.pickFile}
+                />
+                <div className="scroll-pane min-h-0 flex-1 overflow-auto bg-surface p-3">
+                  {inputSlot?.mode === "unwired" ? (
+                    <p className="text-sm leading-6 text-text-secondary">
+                      {messages.transform.unwiredHint}
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-sm font-semibold text-text">
+                        {messages.transform.inputFromChip(
+                          inputSlot?.source_chip_name
+                            || selected?.filename
+                            || messages.transform.untitled,
+                        )}
+                      </p>
+                      {inputSlot?.mode === "planned" ? (
+                        <p className="text-xs leading-5 text-text-secondary">
+                          {messages.transform.schemaOnlyHint}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-text-tertiary">
+                          {selected?.row_count != null
+                            ? messages.common.rows(selected.row_count)
+                            : selected?.filename}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
             <PaneHeader
               title={messages.transform.catalog}
               meta={messages.common.count(datasets.length)}
@@ -1518,13 +1709,22 @@ export function TransformPage() {
                   })}
                 </div>
             </div>
+              </>
+            )}
           </aside>
 
           <section className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
             <PaneHeader
-              title={messages.transform.setup}
-              meta={messages.common.count(steps.length)}
+              title={editorMode === "combine" ? t.combineSetup : messages.transform.setup}
+              meta={
+                editorMode === "combine"
+                  ? combineModeLabel
+                  : editorMode === "aggregate"
+                    ? messages.transform.soonPending
+                    : messages.common.count(steps.length)
+              }
               afterMeta={
+                editorMode === "clean" ? (
                 <div className="relative" ref={addStepRef}>
                   <Button
                     type="button"
@@ -1595,6 +1795,7 @@ export function TransformPage() {
                       )
                     : null}
                 </div>
+                ) : null
               }
             />
             {!selected ? (
@@ -1633,6 +1834,21 @@ export function TransformPage() {
                     {messages.transform.sourceFileMissing}
                   </p>
                 ) : null}
+                {editorMode === "aggregate" ? (
+                  <div className="scroll-pane min-h-0 flex-1 overflow-auto p-4">
+                    <p className="text-sm leading-6 text-text-secondary">{t.aggregateHint}</p>
+                  </div>
+                ) : editorMode === "combine" && combineDraft ? (
+                  <CombineSetup
+                    messages={messages}
+                    draft={combineDraft}
+                    datasetId={datasetId}
+                    datasets={datasets}
+                    leftColumns={baseColumns}
+                    commonJoinKeys={commonJoinKeys}
+                    onChange={setCombineDraft}
+                  />
+                ) : (
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="scroll-pane min-h-0 flex-1 overflow-auto">
                     {steps.length === 0 ? (
@@ -1705,6 +1921,7 @@ export function TransformPage() {
                     {messages.transform.registerHint}
                   </p>
                 </div>
+                )}
               </>
             )}
           </section>
@@ -1785,7 +2002,9 @@ export function TransformPage() {
                 preview={activePreview}
                 empty={
                   detailTab === "result"
-                    ? messages.transform.previewHint
+                    ? editorMode === "combine" && !canPreviewCombine(combineDraft, datasetId)
+                      ? t.combinePreviewHint
+                      : messages.transform.previewHint
                     : messages.empty.preview
                 }
               />

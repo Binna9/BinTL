@@ -277,7 +277,7 @@ async fn list_chips(
         .await?;
     let mut out = Vec::with_capacity(chips.len());
     for chip in &chips {
-        out.push(chip_json(&state.store, chip).await?);
+        out.push(chip_json_for_workspace(&state.store, chip, &workspace_id).await?);
     }
     Ok(Json(json!({ "chips": out })))
 }
@@ -669,6 +669,53 @@ pub(crate) async fn chip_json(store: &Store, row: &ChipRow) -> Result<Value, App
     }))
 }
 
+async fn chip_json_for_workspace(
+    store: &Store,
+    row: &ChipRow,
+    workspace_id: &str,
+) -> Result<Value, AppError> {
+    let mut value = chip_json(store, row).await?;
+    value["output"] = chip_output_json(store, row, workspace_id).await?;
+    Ok(value)
+}
+
+async fn chip_output_json(
+    store: &Store,
+    row: &ChipRow,
+    workspace_id: &str,
+) -> Result<Value, AppError> {
+    let config_raw = store
+        .resolve_chip_config_json(row)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let config: Value = serde_json::from_str(&config_raw).unwrap_or(json!({}));
+    let delimiter = config
+        .get("delimiter")
+        .and_then(Value::as_str)
+        .unwrap_or(",");
+    let filename = storage::chip_slot::display_filename(&row.name, &row.kind, delimiter);
+    if let Some(dataset_id) = store
+        .latest_chip_output_for_workspace(workspace_id, &row.id)
+        .await?
+    {
+        let dataset = store
+            .get_dataset(&dataset_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("dataset not found"))?;
+        let available = store.resolve(&dataset.stored_path).is_file();
+        return Ok(json!({
+            "filename": dataset.filename,
+            "available": available,
+            "dataset_id": dataset.id,
+        }));
+    }
+    Ok(json!({
+        "filename": filename,
+        "available": false,
+        "dataset_id": Value::Null,
+    }))
+}
+
 fn chip_run_json(row: &ChipRunRow) -> Result<Value, AppError> {
     let config_snapshot = serde_json::from_str::<Value>(&row.config_snapshot_json)
         .map_err(|error| AppError::bad(format!("stored chip snapshot is invalid: {error}")))?;
@@ -768,7 +815,13 @@ async fn validate_transform_config(
     if spec.version != 2 {
         return Err(AppError::bad("transform spec must be version 2"));
     }
-    if let Some(dataset_id) = config.input_dataset_id.as_deref() {
+    let input_dataset_id = config
+        .input_dataset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if let Some(dataset_id) = input_dataset_id.as_deref() {
         let dataset = store
             .get_dataset(dataset_id)
             .await?
@@ -778,7 +831,7 @@ async fn validate_transform_config(
         }
     }
     Ok(TransformConfig {
-        input_dataset_id: config.input_dataset_id,
+        input_dataset_id,
         spec: serde_json::to_value(spec).map_err(|error| AppError::bad(error.to_string()))?,
     })
 }

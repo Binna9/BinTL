@@ -1,10 +1,10 @@
 import { Link } from "react-router-dom";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
-import { PageHeader, PageShell } from "@/components/PageShell";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { StatusPill } from "@/components/StatusPill";
 import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
-import { useJobWorkspace } from "@/hooks/useJobWorkspace";
+import { useJobWorkspace } from "@/hooks/jobs/useJobWorkspace";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
 

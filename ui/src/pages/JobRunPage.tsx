@@ -1,14 +1,14 @@
 import { useParams } from "react-router-dom";
-import { PageHeader, PageShell } from "@/components/PageShell";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { StatusPill } from "@/components/StatusPill";
 import { ActionAnchor, ActionLink, Button } from "@/components/ui/button";
 import { MetaField } from "@/components/ui/meta-field";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
-import { useJobRun } from "@/hooks/useJobRun";
+import { useJobRun } from "@/hooks/jobs/useJobRun";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
 import { toastError } from "@/lib/notifications";
-import { jobApi } from "@/services/jobApi";
+import { jobApi } from "@/services/jobs/jobApi";
 
 export function JobRunPage() {
   const { messages } = useLanguage();

@@ -2,11 +2,15 @@ import { beginGlobalLoading, endGlobalLoading } from "@/lib/globalLoading";
 import { redirectToLogin } from "@/lib/navigation";
 
 export class HttpError extends Error {
+  readonly silent: boolean;
+
   constructor(
     public readonly status: number,
     message: string,
+    options?: { silent?: boolean },
   ) {
     super(message);
+    this.silent = options?.silent ?? false;
   }
 }
 
@@ -32,7 +36,7 @@ export async function httpRequest<T>(path: string, init: HttpRequestInit = {}): 
 
     if (response.status === 401 && !path.endsWith("/api/login")) {
       redirectToLogin();
-      throw new HttpError(401, "unauthorized");
+      throw new HttpError(401, "unauthorized", { silent: true });
     }
 
     const text = await response.text();

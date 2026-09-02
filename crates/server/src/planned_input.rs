@@ -119,7 +119,7 @@ pub async fn get_transform_input_slot(
     transform_chip_id: &str,
 ) -> Result<Value, AppError> {
     crate::access::require_workspace(&state.store, user, workspace_id).await?;
-    let _chip = crate::access::require_chip(&state.store, user, transform_chip_id).await?;
+    let chip = crate::access::require_chip(&state.store, user, transform_chip_id).await?;
     let incoming = state
         .store
         .list_chip_edges(workspace_id)
@@ -127,15 +127,24 @@ pub async fn get_transform_input_slot(
         .into_iter()
         .find(|edge| edge.to_chip_id == transform_chip_id && edge.kind == "data");
     let Some(edge) = incoming else {
+        if let Some(fixed) = slot_from_fixed_dataset(state, user, &chip).await? {
+            return Ok(fixed);
+        }
         if let Some(planned) = state
             .store
             .find_planned_input_dataset(workspace_id, transform_chip_id)
             .await?
         {
-            return Ok(planned_input_json(&state.store, &planned));
+            return Ok(slot_with_names(state, planned_input_json(&state.store, &planned)).await?);
         }
         return Ok(json!({ "mode": "unwired" }));
     };
+    let source_name = state
+        .store
+        .get_chip(&edge.from_chip_id)
+        .await?
+        .map(|chip| chip.name)
+        .unwrap_or_default();
     if let Some(materialized) = state
         .store
         .latest_chip_output_for_workspace(workspace_id, &edge.from_chip_id)
@@ -150,6 +159,7 @@ pub async fn get_transform_input_slot(
             "mode": "materialized",
             "dataset_id": dataset.id,
             "source_chip_id": edge.from_chip_id,
+            "source_chip_name": source_name,
             "dataset": crate::transform::dataset_json_public(&state.store, &dataset),
         }));
     }
@@ -163,8 +173,48 @@ pub async fn get_transform_input_slot(
     Ok(json!({
         "mode": "planned",
         "source_chip_id": edge.from_chip_id,
+        "source_chip_name": source_name,
         "planned": planned,
     }))
+}
+
+async fn slot_from_fixed_dataset(
+    state: &AppState,
+    user: &CurrentUser,
+    chip: &storage::ChipRow,
+) -> Result<Option<Value>, AppError> {
+    let config_raw = match state.store.resolve_chip_config_json(chip).await {
+        Ok(raw) => raw,
+        Err(_) => return Ok(None),
+    };
+    let config: Value = serde_json::from_str(&config_raw).unwrap_or(json!({}));
+    let dataset_id = config
+        .get("input_dataset_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(dataset_id) = dataset_id else {
+        return Ok(None);
+    };
+    let dataset = match crate::access::require_dataset(&state.store, user, dataset_id).await {
+        Ok(row) => row,
+        Err(_) => return Ok(None),
+    };
+    Ok(Some(json!({
+        "mode": "materialized",
+        "dataset_id": dataset.id,
+        "source_chip_name": dataset.filename,
+        "dataset": crate::transform::dataset_json_public(&state.store, &dataset),
+    })))
+}
+
+async fn slot_with_names(state: &AppState, mut body: Value) -> Result<Value, AppError> {
+    if let Some(id) = body.get("source_chip_id").and_then(Value::as_str) {
+        if let Some(chip) = state.store.get_chip(id).await? {
+            body["source_chip_name"] = json!(chip.name);
+        }
+    }
+    Ok(body)
 }
 
 pub fn planned_input_json(store: &Store, row: &storage::DatasetRow) -> Value {

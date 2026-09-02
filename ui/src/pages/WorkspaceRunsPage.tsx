@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { History, RefreshCw, ScrollText } from "lucide-react";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { LogDialog } from "@/components/LogDialog";
-import { PageHeader, PageShell } from "@/components/PageShell";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/panel";
@@ -11,8 +11,8 @@ import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
 import { toastError } from "@/lib/notifications";
-import { chipApi } from "@/services/chipApi";
-import { workspaceApi } from "@/services/workspaceApi";
+import { chipApi } from "@/services/chips/chipApi";
+import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { ChipRun } from "@/types/chip";
 
 type RunRow = ChipRun & {

@@ -7,19 +7,19 @@ import {
   GridCell,
   GridRow,
 } from "@/components/DataGrid";
-import { ExcelSheetDialog } from "@/components/ExcelSheetDialog";
-import { FileDropzone } from "@/components/FileDropzone";
+import { ExcelSheetDialog } from "@/components/files/ExcelSheetDialog";
+import { FileDropzone } from "@/components/files/FileDropzone";
 import { AppDialog } from "@/components/AppDialog";
-import { PageHeader, PageShell } from "@/components/PageShell";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { MetaField } from "@/components/ui/meta-field";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
-import { useFiles } from "@/hooks/useFiles";
+import { useFiles } from "@/hooks/files/useFiles";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtDelimiterGlyph } from "@/lib/format";
 import { showConfirm, toastDeleteError, toastError } from "@/lib/notifications";
-import { fileApi } from "@/services/fileApi";
+import { fileApi } from "@/services/files/fileApi";
 import type {
   FilePreview,
   StagedWorkbook,

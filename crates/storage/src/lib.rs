@@ -1285,15 +1285,6 @@ impl Store {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
-        sqlx::query(
-            "INSERT INTO workspace_chips (workspace_id, chip_id, created_at)
-             VALUES (?, ?, ?)",
-        )
-        .bind(workspace_id)
-        .bind(&id)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
         tx.commit().await?;
         search::sync_search_best_effort(self, "chip", self.sync_search_chip(&id)).await;
         self.get_chip(&id)
@@ -1698,7 +1689,18 @@ impl Store {
         .bind(chip_id)
         .fetch_optional(&mut **tx)
         .await?;
-        let dataset_id = existing.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let had_slot = existing.is_some();
+        let mut dataset_id = existing.unwrap_or_else(|| Uuid::new_v4().to_string());
+        if !had_slot {
+            if let Some(path_owner) = sqlx::query_scalar(
+                "SELECT id FROM datasets WHERE stored_path = ?",
+            )
+            .bind(stored_path)
+            .fetch_optional(&mut **tx)
+            .await? {
+                dataset_id = path_owner;
+            }
+        }
         let now = now_rfc3339();
         let has_header_i64 = has_header.map(i64::from);
         sqlx::query(
@@ -2784,6 +2786,11 @@ impl Store {
                 "dataset kind must be upload, database, api, or transform".into(),
             ));
         }
+        if let Some(existing) = self.get_dataset_by_stored_path(&row.stored_path).await? {
+            if existing.id != row.id {
+                return self.merge_dataset_metadata(&existing.id, row).await;
+            }
+        }
         let now = now_rfc3339();
         let has_header = row.has_header.map(i64::from);
         sqlx::query(
@@ -3066,6 +3073,59 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row)
+    }
+
+    async fn get_dataset_by_stored_path(
+        &self,
+        stored_path: &str,
+    ) -> Result<Option<DatasetRow>, StorageError> {
+        let path = stored_path.trim();
+        if path.is_empty() {
+            return Ok(None);
+        }
+        let sql = format!("{} WHERE d.stored_path = ?", Self::dataset_select());
+        let row = sqlx::query_as::<_, DatasetRow>(&sql)
+            .bind(path)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row)
+    }
+
+    async fn merge_dataset_metadata(
+        &self,
+        id: &str,
+        row: &DatasetUpsert,
+    ) -> Result<DatasetRow, StorageError> {
+        let now = now_rfc3339();
+        let has_header = row.has_header.map(i64::from);
+        sqlx::query(
+            "UPDATE datasets SET
+               kind = ?,
+               extract_id = COALESCE(?, extract_id),
+               filename = ?,
+               size_bytes = COALESCE(?, size_bytes),
+               delimiter = COALESCE(?, delimiter),
+               has_header = COALESCE(?, has_header),
+               row_count = COALESCE(?, row_count),
+               workspace_id = COALESCE(?, workspace_id),
+               updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(&row.kind)
+        .bind(&row.extract_id)
+        .bind(&row.filename)
+        .bind(row.size_bytes)
+        .bind(&row.delimiter)
+        .bind(has_header)
+        .bind(row.row_count)
+        .bind(row.workspace_id.as_deref().unwrap_or(DEFAULT_WORKSPACE_ID))
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        self.get_dataset(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("dataset disappeared after merge".into()))
     }
 
     pub async fn list_datasets(&self, scope: Option<&DataScope>) -> Result<Vec<DatasetRow>, StorageError> {
@@ -4108,6 +4168,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upsert_dataset_reuses_existing_stored_path() {
+        let (root, store, admin) = test_store().await;
+        let home = store
+            .list_visible_workspaces(Some(&DataScope::for_user(&admin)))
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .id;
+        let path = "chip_outputs/test-workspace/test-chip/current.csv";
+        let canonical = store
+            .upsert_dataset(&DatasetUpsert {
+                id: "canonical-dataset".into(),
+                kind: "transform".into(),
+                extract_id: None,
+                filename: "current.csv".into(),
+                stored_path: path.into(),
+                size_bytes: Some(12),
+                delimiter: None,
+                has_header: None,
+                row_count: Some(1),
+                workspace_id: Some(home.clone()),
+            })
+            .await
+            .unwrap();
+        let merged = store
+            .upsert_dataset(&DatasetUpsert {
+                id: "legacy-extract-id".into(),
+                kind: "database".into(),
+                extract_id: Some("legacy-extract-id".into()),
+                filename: "current.csv".into(),
+                stored_path: path.into(),
+                size_bytes: Some(12),
+                delimiter: Some(",".into()),
+                has_header: Some(true),
+                row_count: Some(1),
+                workspace_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(merged.id, canonical.id);
+        assert!(store.get_dataset("legacy-extract-id").await.unwrap().is_none());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM datasets WHERE stored_path = ?")
+            .bind(path)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn deletes_upload_directory_and_dataset() {
         let (root, store, admin) = test_store().await;
         let home = store
@@ -4153,6 +4267,10 @@ mod tests {
                 "extract",
                 r#"{"connection_id":"c","source":{"type":"table","table":"users"}}"#,
             )
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&workspace.id, &task.id)
             .await
             .unwrap();
         let config_raw = store.resolve_chip_config_json(&task).await.unwrap();

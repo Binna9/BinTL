@@ -8,8 +8,8 @@ import {
 } from "react";
 import { BookmarkPlus, FileDown, ScrollText, Play, RefreshCw, Table2 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import { CatalogTree } from "@/components/CatalogTree";
-import { ConnectionInfoPanel } from "@/components/ConnectionInfoPanel";
+import { CatalogTree } from "@/components/connections/CatalogTree";
+import { ConnectionInfoPanel } from "@/components/query/ConnectionInfoPanel";
 import {
   columnWidthsForContent,
   DataGrid,
@@ -18,29 +18,29 @@ import {
   GridRow,
 } from "@/components/DataGrid";
 import { AppDialog } from "@/components/AppDialog";
-import { LiveTicker } from "@/components/LiveTicker";
+import { LiveTicker } from "@/components/query/LiveTicker";
 import { LogDialog } from "@/components/LogDialog";
-import { PageHeader, PageShell } from "@/components/PageShell";
-import { SplitLayout } from "@/components/SplitLayout";
-import { SqlEditor, type SqlEditorHandle } from "@/components/SqlEditor";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
+import { SplitLayout } from "@/layouts/SplitLayout";
+import { SqlEditor, type SqlEditorHandle } from "@/components/query/SqlEditor";
 import { Button, ActionAnchor } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { ResizeGrip } from "@/components/ui/resize-grip";
 import { Select } from "@/components/ui/select";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
-import { useConnectionColumns } from "@/hooks/useConnectionColumns";
-import { useConnections } from "@/hooks/useConnections";
-import { isExtractActive } from "@/hooks/useExtracts";
+import { useConnectionColumns } from "@/hooks/connections/useConnectionColumns";
+import { useConnections } from "@/hooks/connections/useConnections";
+import { isExtractActive } from "@/hooks/extract/useExtracts";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { DELIMITER_VALUES } from "@/lib/delimiter";
 import { layout } from "@/lib/layout";
 import { toastError, toastSuccess } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
-import { extractApi } from "@/services/extractApi";
-import { queryApi } from "@/services/queryApi";
-import { chipApi } from "@/services/chipApi";
+import { extractApi } from "@/services/extract/extractApi";
+import { queryApi } from "@/services/query/queryApi";
+import { chipApi } from "@/services/chips/chipApi";
 import type { CatalogSelection } from "@/types/connection";
 import type { ExtractRecord } from "@/types/extract";
 import type { QueryResult } from "@/types/query";
@@ -472,7 +472,7 @@ export function QueryPage() {
         },
       });
       setIsRegisterOpen(false);
-      toastSuccess(messages.query.taskRegistered);
+      toastSuccess(messages.query.taskRegisteredNamed(registerName.trim()));
     } catch (err) {
       toastError(messages.workspace.saveChipError, err);
     } finally {

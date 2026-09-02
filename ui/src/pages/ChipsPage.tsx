@@ -3,8 +3,8 @@ import { Pencil, Puzzle, RefreshCw, Trash2 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { AppDialog } from "@/components/AppDialog";
-import { ChipDetailView } from "@/components/ChipDetailView";
-import { PageHeader, PageShell } from "@/components/PageShell";
+import { ChipDetailView } from "@/components/chips/ChipDetailView";
+import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
@@ -12,7 +12,7 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { fmtWhen } from "@/lib/format";
 import { showConfirm, toastError } from "@/lib/notifications";
-import { chipApi } from "@/services/chipApi";
+import { chipApi } from "@/services/chips/chipApi";
 import type { Chip, ChipKind } from "@/types/chip";
 
 function kindLabel(kind: ChipKind, messages: ReturnType<typeof useLanguage>["messages"]) {

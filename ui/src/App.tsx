@@ -1,9 +1,9 @@
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
 import { BrandMark } from "@/components/BrandMark";
-import { ConsoleRail } from "@/components/ConsoleRail";
-import { HeaderSearch } from "@/components/HeaderSearch";
-import { SplitLayout } from "@/components/SplitLayout";
+import { ConsoleRail } from "@/layouts/ConsoleRail";
+import { HeaderSearch } from "@/components/search/HeaderSearch";
+import { SplitLayout } from "@/layouts/SplitLayout";
 import { TopSubmenu } from "@/components/TopSubmenu";
 import { ConnectionsPage } from "@/pages/ConnectionsPage";
 import { ExtractResultsPage } from "@/pages/ExtractResultsPage";
@@ -16,14 +16,13 @@ import { QueryPage } from "@/pages/QueryPage";
 import { SchedulePage } from "@/pages/SchedulePage";
 import { SessionGatePage } from "@/pages/SessionGatePage";
 import { TransformFilesPage } from "@/pages/TransformFilesPage";
-import { CombinePage } from "@/pages/CombinePage";
 import { TransformPage } from "@/pages/TransformPage";
 import { TransformSoonPage } from "@/pages/TransformSoonPage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
 import { ChipsPage } from "@/pages/ChipsPage";
 import { SearchPage } from "@/pages/SearchPage";
 import { WorkspaceRunsPage } from "@/pages/WorkspaceRunsPage";
-import { SessionProvider } from "@/hooks/useSession";
+import { SessionProvider } from "@/hooks/auth/useSession";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
 
@@ -80,9 +79,10 @@ function ConsoleShell() {
             <Route path="/transform" element={<Navigate to="/transform/clean" replace />} />
             <Route path="/transform/clean" element={<TransformPage />} />
             <Route path="/transform/clean/:id" element={<TransformPage />} />
-            <Route path="/transform/combine" element={<CombinePage />} />
-            <Route path="/transform/combine/:id" element={<CombinePage />} />
-            <Route path="/transform/aggregate" element={<TransformSoonPage kind="aggregate" />} />
+            <Route path="/transform/combine" element={<TransformPage />} />
+            <Route path="/transform/combine/:id" element={<TransformPage />} />
+            <Route path="/transform/aggregate" element={<TransformPage />} />
+            <Route path="/transform/aggregate/:id" element={<TransformPage />} />
             <Route path="/transform/reshape" element={<TransformSoonPage kind="reshape" />} />
             <Route path="/transform/:id" element={<LegacyTransformRedirect />} />
             <Route path="/load" element={<LoadPage />} />

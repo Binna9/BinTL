@@ -1,14 +1,14 @@
 import { Languages, LogOut, Moon, Settings, Sun, User } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { SettingsDialog } from "@/components/SettingsDialog";
-import { useTheme } from "@/hooks/useTheme";
+import { SettingsDialog } from "@/components/auth/SettingsDialog";
+import { useTheme } from "@/hooks/theme/useTheme";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { showConfirm } from "@/lib/notifications";
-import { authApi } from "@/services/authApi";
-import { useSession } from "@/hooks/useSession";
-import { clearStoredLayouts } from "@/dashboard/layout";
+import { authApi } from "@/services/auth/authApi";
+import { useSession } from "@/hooks/auth/useSession";
+import { clearStoredLayouts } from "@/components/overview/layout";
 
 function IconButton({
   label,

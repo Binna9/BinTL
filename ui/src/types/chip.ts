@@ -2,9 +2,22 @@ export type ChipKind = "extract" | "transform" | "load";
 export type ChipEdgeKind = "data" | "then" | "on_error";
 export type ChipConfig = Record<string, unknown>;
 
+/** Client-only workspace draft; never sent to the server until canvas save. */
+export const DRAFT_CHIP_ID_PREFIX = "draft:";
+
+export function isDraftChipId(id: string): boolean {
+  return id.startsWith(DRAFT_CHIP_ID_PREFIX);
+}
+
 export interface ChipBinding {
   ref_kind: "extract_definition" | "transform";
   ref_id: string;
+}
+
+export interface ChipOutput {
+  filename: string;
+  available: boolean;
+  dataset_id?: string | null;
 }
 
 export interface Chip {
@@ -14,6 +27,7 @@ export interface Chip {
   kind: ChipKind;
   config: ChipConfig;
   binding?: ChipBinding | null;
+  output?: ChipOutput | null;
   revision: number;
   active: boolean;
   created_at: string;
@@ -98,6 +112,7 @@ export interface ChipInputSlotResponse {
   mode: "unwired" | "planned" | "materialized";
   dataset_id?: string;
   source_chip_id?: string;
+  source_chip_name?: string;
   status?: string;
   columns?: { name: string; dtype?: string; type?: string }[];
   dataset?: Record<string, unknown>;

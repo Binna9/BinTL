@@ -9,9 +9,9 @@ import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { toastError, toastSuccess } from "@/lib/notifications";
-import { authApi } from "@/services/authApi";
-import { useSession } from "@/hooks/useSession";
-import { clearStoredLayouts } from "@/dashboard/layout";
+import { authApi } from "@/services/auth/authApi";
+import { useSession } from "@/hooks/auth/useSession";
+import { clearStoredLayouts } from "@/components/overview/layout";
 
 function GoogleMark() {
   return (
