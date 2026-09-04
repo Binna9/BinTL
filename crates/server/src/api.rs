@@ -31,6 +31,12 @@ use crate::auth;
 use crate::error::AppError;
 use crate::state::AppState;
 
+#[derive(Deserialize)]
+struct ListQuery {
+    limit: Option<i64>,
+    workspace_id: Option<String>,
+}
+
 pub fn public_routes() -> Router<AppState> {
     Router::new()
         .route("/api/health", get(health))

@@ -9,7 +9,7 @@ pub(super) fn compact_sql(sql: &str) -> String {
 }
 
 #[derive(Deserialize)]
-struct CreateExtractBody {
+pub(super) struct CreateExtractBody {
     #[serde(default)]
     kind: Option<String>,
     connection_id: String,
@@ -36,7 +36,7 @@ struct CreateExtractBody {
 }
 
 #[derive(Deserialize)]
-struct HttpPreviewBody {
+pub(super) struct HttpPreviewBody {
     connection_id: String,
     #[serde(default)]
     request_type: String,

@@ -430,9 +430,9 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     let cancelled = false;
     setDetailLoading(true);
     void Promise.allSettled([
-      datasetApi.inspect(datasetId, 200),
+      datasetApi.inspect(datasetId, 200, true),
       previewCombine || previewSteps
-        ? datasetApi.preview(datasetId, spec, 200)
+        ? datasetApi.preview(datasetId, spec, 200, true)
         : Promise.resolve(null),
     ])
       .then(([inspected, previewed]) => {
@@ -469,8 +469,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     messages,
     steps,
     combineDraft,
-    datasets,
-    baseColumns,
+    selected?.status,
   ]);
 
   const grouped = useMemo(() => {

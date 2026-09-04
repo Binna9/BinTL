@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Deserialize)]
-struct CreateJobBody {
+pub(super) struct CreateJobBody {
     file_id: Option<String>,
     extract_id: Option<String>,
     source_path: Option<String>,
@@ -127,12 +127,6 @@ pub(super) async fn create_job(
         StatusCode::CREATED,
         Json(serde_json::to_value(job).unwrap()),
     ))
-}
-
-#[derive(Deserialize)]
-struct ListQuery {
-    limit: Option<i64>,
-    workspace_id: Option<String>,
 }
 
 pub(super) async fn list_jobs(

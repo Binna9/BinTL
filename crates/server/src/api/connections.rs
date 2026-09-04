@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Deserialize)]
-struct CreateConnectionBody {
+pub(super) struct CreateConnectionBody {
     name: String,
     driver: String,
     host: String,
@@ -141,7 +141,7 @@ pub(super) async fn connection_databases(
 }
 
 #[derive(Deserialize)]
-struct CatalogQuery {
+pub(super) struct CatalogQuery {
     database: String,
     schema: Option<String>,
 }
@@ -176,7 +176,7 @@ pub(super) async fn connection_relations(
 }
 
 #[derive(Deserialize)]
-struct TableQuery {
+pub(super) struct TableQuery {
     table: String,
     limit: Option<u32>,
     database: Option<String>,
@@ -219,7 +219,7 @@ pub(super) async fn connection_preview(
 }
 
 #[derive(Deserialize)]
-struct RunQueryBody {
+pub(super) struct RunQueryBody {
     sql: String,
     #[serde(default)]
     limit: Option<u32>,

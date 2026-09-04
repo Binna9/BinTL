@@ -133,7 +133,8 @@ pub(super) struct CommitSheet {
     pub(super) filename: String,
 }
 
-struct CommitSpreadsheetBody {
+#[derive(Deserialize)]
+pub(super) struct CommitSpreadsheetBody {
     staging_id: String,
     sheets: Vec<CommitSheet>,
     #[serde(default)]
@@ -379,11 +380,11 @@ pub(super) async fn preview_file(
     })))
 }
 
-struct UploadPreview {
-    columns: Vec<String>,
-    rows: Vec<Vec<String>>,
-    row_count: u64,
-    truncated: bool,
+pub(super) struct UploadPreview {
+    pub(super) columns: Vec<String>,
+    pub(super) rows: Vec<Vec<String>>,
+    pub(super) row_count: u64,
+    pub(super) truncated: bool,
 }
 
 pub(super) fn read_upload_preview(
