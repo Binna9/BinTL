@@ -1,5 +1,5 @@
 export type ChipKind = "extract" | "transform" | "load";
-export type ChipEdgeKind = "data" | "then" | "on_error";
+export type ChipEdgeKind = "data" | "on_success" | "on_error" | "always";
 export type ChipConfig = Record<string, unknown>;
 
 /** Client-only workspace draft; never sent to the server until canvas save. */

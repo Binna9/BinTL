@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
-import { showConfirm } from "@/lib/notifications";
+import { isNotificationDialogOpen, showConfirm } from "@/lib/notifications";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { Workspace, WorkspaceFolder } from "@/types/workspace";
 
@@ -182,7 +182,12 @@ function resolveFolderRef(
   idMap: Map<string, string>,
 ): string | null {
   if (!id) return null;
-  return idMap.get(id) ?? id;
+  const mapped = idMap.get(id);
+  if (mapped) return mapped;
+  if (isDraftId(id)) {
+    throw new Error("draft folder was not created before use");
+  }
+  return id;
 }
 
 export function WorkspaceManageDialog({
@@ -221,9 +226,11 @@ export function WorkspaceManageDialog({
   const [dragging, setDragging] = useState<DragPayload | null>(null);
   const [dropTarget, setDropTarget] = useState<string | "root" | null>(null);
   const confirmingSaveRef = useRef(false);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
     if (!open) {
+      wasOpenRef.current = false;
       setEditor(null);
       setError("");
       setBusy(false);
@@ -231,6 +238,9 @@ export function WorkspaceManageDialog({
       setDropTarget(null);
       return;
     }
+    // Seed drafts only when the dialog opens so prop refreshes don't wipe unsaved edits.
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
     originalFoldersRef.current = folders;
     originalWorkspacesRef.current = workspaces;
     setDraftFolders(folders);
@@ -566,13 +576,9 @@ export function WorkspaceManageDialog({
       let nextFolders = [...draftFolders];
       let nextWorkspaces = [...draftWorkspaces];
 
-      const draftFolderIds = new Set(draftFolders.map((folder) => folder.id));
-      const foldersToDelete = originalFolders.filter((folder) => !draftFolderIds.has(folder.id));
-      for (const folder of folderDeleteOrder(foldersToDelete)) {
-        if (isDraftId(folder.id)) continue;
-        await workspaceApi.deleteFolder(folder.id);
-      }
-
+      // Create → reparent/update → then delete.
+      // Deleting first cascades away children that were only moved in the draft, which
+      // then fails later updates with SQLite FOREIGN KEY (787).
       const foldersToCreate = draftFolders.filter((folder) => isDraftId(folder.id));
       for (const folder of folderCreateOrder(foldersToCreate)) {
         const created = await workspaceApi.createFolder({
@@ -589,8 +595,8 @@ export function WorkspaceManageDialog({
         const parentIdResolved = resolveFolderRef(folder.parent_id, folderIdMap);
         if (
           !original ||
-          original.name === folder.name &&
-            (original.parent_id ?? null) === (parentIdResolved ?? null)
+          (original.name === folder.name &&
+            (original.parent_id ?? null) === (parentIdResolved ?? null))
         ) {
           continue;
         }
@@ -599,26 +605,6 @@ export function WorkspaceManageDialog({
           parent_id: parentIdResolved,
         });
         nextFolders = nextFolders.map((item) => (item.id === updated.id ? updated : item));
-      }
-
-      const draftWorkspaceIds = new Set(draftWorkspaces.map((workspace) => workspace.id));
-      const workspacesToDelete = originalWorkspaces.filter(
-        (workspace) => !draftWorkspaceIds.has(workspace.id),
-      );
-      for (const workspace of workspacesToDelete) {
-        if (isDraftId(workspace.id)) continue;
-        await workspaceApi.delete(workspace.id);
-      }
-
-      for (const workspace of draftWorkspaces.filter((item) => isDraftId(item.id))) {
-        const created = await workspaceApi.create({
-          name: workspace.name,
-          description: workspace.description?.trim() || undefined,
-          folder_id: resolveFolderRef(workspace.folder_id ?? null, folderIdMap),
-        });
-        nextWorkspaces = nextWorkspaces.map((item) =>
-          item.id === workspace.id ? created : item,
-        );
       }
 
       for (const workspace of nextWorkspaces) {
@@ -641,6 +627,37 @@ export function WorkspaceManageDialog({
         nextWorkspaces = nextWorkspaces.map((item) =>
           item.id === updated.id ? updated : item,
         );
+      }
+
+      for (const workspace of draftWorkspaces.filter((item) => isDraftId(item.id))) {
+        const created = await workspaceApi.create({
+          name: workspace.name,
+          description: workspace.description?.trim() || undefined,
+          folder_id: resolveFolderRef(workspace.folder_id ?? null, folderIdMap),
+        });
+        nextWorkspaces = nextWorkspaces.map((item) =>
+          item.id === workspace.id ? created : item,
+        );
+      }
+
+      const keptWorkspaceIds = new Set(
+        draftWorkspaces.filter((workspace) => !isDraftId(workspace.id)).map((w) => w.id),
+      );
+      const workspacesToDelete = originalWorkspaces.filter(
+        (workspace) => !keptWorkspaceIds.has(workspace.id),
+      );
+      for (const workspace of workspacesToDelete) {
+        await workspaceApi.delete(workspace.id);
+      }
+
+      const keptFolderIds = new Set(
+        draftFolders.filter((folder) => !isDraftId(folder.id)).map((folder) => folder.id),
+      );
+      const foldersToDelete = originalFolders.filter(
+        (folder) => !keptFolderIds.has(folder.id),
+      );
+      for (const folder of folderDeleteOrder(foldersToDelete)) {
+        await workspaceApi.deleteFolder(folder.id);
       }
 
       onFoldersChange(nextFolders);
@@ -697,6 +714,8 @@ export function WorkspaceManageDialog({
   useEffect(() => {
     if (!open) return;
     function onKeyDown(event: KeyboardEvent) {
+      // Confirm/alert dialogs sit above this popup — let them own Enter/Ctrl+S.
+      if (isNotificationDialogOpen()) return;
       const mod = event.ctrlKey || event.metaKey;
       if (mod && event.key.toLowerCase() === "s") {
         event.preventDefault();

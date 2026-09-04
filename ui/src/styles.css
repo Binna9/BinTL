@@ -1655,7 +1655,13 @@ a {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  padding: 0.75rem;
+  padding: 0.75rem 0.75rem 0.75rem 0;
+}
+
+.chip-place-body > .chip-place-main {
+  flex: 0 0 26rem;
+  width: 26rem;
+  min-width: 26rem;
 }
 
 .chip-place-side {
@@ -1665,14 +1671,11 @@ a {
   flex: 0 0 14rem;
   width: 14rem;
   min-height: 0;
+  align-self: stretch;
   border: 1px solid var(--theme-border);
   border-radius: 0.75rem;
   background: var(--theme-subtle);
   padding: 0.75rem 0.65rem;
-}
-
-.chip-place-body > .chip-place-side:last-child {
-  border-left: 1px solid var(--theme-border);
 }
 
 .chip-place-side-title {
@@ -1735,13 +1738,11 @@ a {
 
 .chip-place-main {
   display: flex;
-  flex: 0 0 28rem;
-  width: 28rem;
+  flex: 1 1 auto;
   flex-direction: column;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
-  border: 1px solid var(--theme-border);
-  border-radius: 0.75rem;
-  background: var(--theme-surface);
   overflow: hidden;
 }
 
@@ -2440,8 +2441,13 @@ a {
   color: var(--color-accent);
 }
 
-.chip-link.is-then:hover,
-.chip-link.is-then:focus-visible {
+.chip-link.is-on_success:hover,
+.chip-link.is-on_success:focus-visible {
+  color: var(--color-success);
+}
+
+.chip-link.is-always:hover,
+.chip-link.is-always:focus-visible {
   color: var(--color-text-secondary);
 }
 
@@ -2495,7 +2501,12 @@ a {
   --wire-flow: color-mix(in srgb, white 78%, var(--wire));
 }
 
-.chip-wire.is-then {
+.chip-wire.is-success {
+  --wire: var(--color-success);
+  --wire-flow: color-mix(in srgb, white 70%, var(--wire));
+}
+
+.chip-wire.is-always {
   --wire: var(--color-text-secondary);
   --wire-flow: color-mix(in srgb, white 55%, var(--wire));
 }
@@ -2541,13 +2552,17 @@ a {
   pointer-events: none;
 }
 
-.chip-wire.is-then .chip-wire-core {
+.chip-wire.is-always .chip-wire-core {
   stroke-dasharray: 7 5;
 }
 
-.chip-wire.is-then .chip-wire-flow {
+.chip-wire.is-always .chip-wire-flow {
   animation-duration: 1.55s;
   opacity: 0.62;
+}
+
+.chip-wire.is-success .chip-wire-flow {
+  animation-duration: 1.1s;
 }
 
 .chip-wire.is-error .chip-wire-flow {
@@ -2602,7 +2617,11 @@ a {
   --wire: var(--color-accent);
 }
 
-.chip-wire-arrow.is-then {
+.chip-wire-arrow.is-success {
+  --wire: var(--color-success);
+}
+
+.chip-wire-arrow.is-always {
   --wire: var(--color-text-secondary);
 }
 

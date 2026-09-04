@@ -584,6 +584,26 @@ impl Store {
         if found.is_none() {
             return Err(StorageError::NotFound("workspace not found".into()));
         }
+        // Catalog extract defs may still point at this workspace (no ON DELETE).
+        sqlx::query("UPDATE extract_definitions SET workspace_id = NULL WHERE workspace_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE transforms SET workspace_id = ? WHERE workspace_id = ?")
+            .bind(DEFAULT_WORKSPACE_ID)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE extracts SET workspace_id = ? WHERE workspace_id = ?")
+            .bind(DEFAULT_WORKSPACE_ID)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE jobs SET workspace_id = ? WHERE workspace_id = ?")
+            .bind(DEFAULT_WORKSPACE_ID)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "UPDATE datasets SET producer_chip_run_id = NULL
              WHERE producer_chip_run_id IN (SELECT id FROM chip_runs WHERE workspace_id = ?)",
@@ -615,7 +635,8 @@ impl Store {
         let result = sqlx::query("DELETE FROM workspaces WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(delete_guard::map_delete_sql)?;
         if result.rows_affected() == 0 {
             return Err(StorageError::NotFound("workspace not found".into()));
         }
@@ -3964,9 +3985,9 @@ fn validate_edge_kind(kind: &str, from_kind: &str, to_kind: &str) -> Result<(), 
             }
             Ok(())
         }
-        "then" | "on_error" => Ok(()),
+        "on_success" | "on_error" | "always" => Ok(()),
         _ => Err(StorageError::Invalid(
-            "chip edge kind must be data, then, or on_error".into(),
+            "chip edge kind must be data, on_success, on_error, or always".into(),
         )),
     }
 }
@@ -4374,7 +4395,7 @@ mod tests {
                         id: String::new(),
                         from_chip_id: transform.id.clone(),
                         to_chip_id: extract.id.clone(),
-                        kind: "then".into(),
+                        kind: "always".into(),
                         from_port: String::new(),
                         to_port: String::new(),
                     },
@@ -4484,6 +4505,58 @@ mod tests {
             .update_user(&admin.id, None, None, Some(demote.as_slice()), None)
             .await
             .is_err());
+
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_clears_extract_definition_fk() {
+        let (root, store, admin) = test_store().await;
+        let ws = store
+            .insert_workspace("delete-me", None, &admin.id, None)
+            .await
+            .unwrap();
+        let conn = store
+            .insert_connection(NewConnection {
+                name: "fk-test".into(),
+                driver: "sqlite".into(),
+                host: String::new(),
+                port: 0,
+                database: ":memory:".into(),
+                username: String::new(),
+                password: String::new(),
+                ssl: false,
+            })
+            .await
+            .unwrap();
+        let extract_id = Uuid::new_v4().to_string();
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO extract_definitions
+             (id, name, kind, connection_id, source_json, delimiter, header, add_sequence,
+              workspace_id, created_at, updated_at)
+             VALUES (?, 'def', 'database', ?, '{}', ',', 1, 0, ?, ?, ?)",
+        )
+        .bind(&extract_id)
+        .bind(&conn.id)
+        .bind(&ws.id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        store.delete_workspace(&ws.id).await.unwrap();
+        let left: Option<String> = sqlx::query_scalar(
+            "SELECT workspace_id FROM extract_definitions WHERE id = ?",
+        )
+        .bind(&extract_id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(left.is_none());
+        assert!(store.get_workspace(&ws.id).await.unwrap().is_none());
 
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);

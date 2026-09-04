@@ -7,14 +7,12 @@ import {
   DatabaseZap,
   FileStack,
   Layers3,
-  Plus,
   Search,
   Workflow,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { DialogContentTransition } from "@/components/DialogContentTransition";
 import { Button } from "@/components/ui/button";
-import { FormField } from "@/components/ui/form-field";
 import type { Messages } from "@/i18n/ko";
 import { showToast } from "@/lib/notifications";
 import { cn } from "@/lib/cn";
@@ -28,71 +26,6 @@ export type TransformPlaceDraft = {
   name: string;
   inputDatasetId: string;
 };
-
-type PlaceMode = "new" | "catalog";
-
-function ModeTabs({
-  mode,
-  onChange,
-  messages,
-}: {
-  mode: PlaceMode;
-  onChange: (mode: PlaceMode) => void;
-  messages: Messages;
-}) {
-  const tabs: { id: PlaceMode; label: string; icon: typeof Layers3 }[] = [
-    { id: "new", label: messages.workspace.placeModeNew, icon: Layers3 },
-    { id: "catalog", label: messages.workspace.placeModeCatalog, icon: DatabaseZap },
-  ];
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {tabs.map((tab) => {
-        const Icon = tab.icon;
-        const active = mode === tab.id;
-        return (
-          <Button
-            key={tab.id}
-            type="button"
-            variant="secondary"
-            aria-pressed={active}
-            className={cn(
-              "h-7 gap-1 px-2 text-[11px]",
-              active && "border-accent bg-accent-subtle text-accent",
-            )}
-            onClick={() => onChange(tab.id)}
-          >
-            <Icon className="size-3.5" aria-hidden="true" />
-            {tab.label}
-          </Button>
-        );
-      })}
-    </div>
-  );
-}
-
-function PlaceModeBar({
-  mode,
-  onModeChange,
-  messages,
-  pageRegister,
-}: {
-  mode: PlaceMode;
-  onModeChange: (mode: PlaceMode) => void;
-  messages: Messages;
-  pageRegister?: () => void;
-}) {
-  return (
-    <div className="chip-place-mode-bar">
-      <ModeTabs mode={mode} onChange={onModeChange} messages={messages} />
-      {mode === "catalog" && pageRegister ? (
-        <Button type="button" variant="secondary" className="ml-auto h-7 gap-1 px-2 text-[11px]" onClick={pageRegister}>
-          <Plus className="size-3.5" aria-hidden="true" />
-          {messages.workspace.pageRegisterNew}
-        </Button>
-      ) : null}
-    </div>
-  );
-}
 
 function CatalogChipPanel({
   kind,
@@ -411,36 +344,33 @@ function ExtractNewPanel({
 function TransformNewPanel({
   datasets,
   defaultName,
-  mode,
-  onModeChange,
   messages,
   busy,
   onClose,
-  onSubmit,
+  onPlaceEmpty,
+  onPlaceDataset,
   onPlaceCatalog,
-  onPageRegister,
   catalogChips,
   canvasChipIds,
   dragHandleRef,
 }: {
   datasets: Dataset[];
   defaultName: string;
-  mode: PlaceMode;
-  onModeChange: (mode: PlaceMode) => void;
   messages: Messages;
   busy?: boolean;
   onClose: () => void;
-  onSubmit: (draft: TransformPlaceDraft) => void;
+  onPlaceEmpty: (name: string) => void;
+  onPlaceDataset: (draft: TransformPlaceDraft) => void;
   onPlaceCatalog: (chipIds: string[]) => void;
-  onPageRegister: () => void;
   catalogChips: Chip[];
   canvasChipIds: Set<string>;
   dragHandleRef?: React.RefObject<HTMLDivElement | null>;
 }) {
-  const [name, setName] = useState(defaultName);
+  const [pickingDataset, setPickingDataset] = useState(false);
+  const [namingEmpty, setNamingEmpty] = useState(false);
+  const [emptyName, setEmptyName] = useState(defaultName);
   const [inputDatasetId, setInputDatasetId] = useState("");
   const [datasetQuery, setDatasetQuery] = useState("");
-  const [fromExtract, setFromExtract] = useState(true);
   const [catalogSelectedIds, setCatalogSelectedIds] = useState<string[]>([]);
 
   const inputDatasets = useMemo(
@@ -449,120 +379,194 @@ function TransformNewPanel({
   );
 
   useEffect(() => {
-    setName(defaultName);
+    setPickingDataset(false);
+    setNamingEmpty(false);
+    setEmptyName(defaultName);
     setInputDatasetId("");
     setDatasetQuery("");
-    setFromExtract(true);
     setCatalogSelectedIds([]);
   }, [defaultName]);
 
-  useEffect(() => {
-    setCatalogSelectedIds([]);
-  }, [mode]);
-
-  const canSubmit = Boolean(name.trim() && (fromExtract || inputDatasetId));
   const catalogCanSubmit = catalogSelectedIds.length > 0;
-  const showDatasetPanel = mode === "new" && !fromExtract;
+  const datasetCanSubmit = Boolean(inputDatasetId);
 
-  return (
-    <DialogContentTransition contentKey={mode} className="chip-place-body">
-      <div className="chip-place-main">
-        <PlacePanelHeader
-          icon={<Workflow className="size-4" aria-hidden="true" />}
-          iconClassName="bg-success-subtle text-success"
-          title={messages.workspace.placeTransformTitle}
-          hint={messages.workspace.placeTransformHint}
-          dragHandleRef={dragHandleRef}
-        />
+  function exitDatasetPick() {
+    setPickingDataset(false);
+    setInputDatasetId("");
+    setDatasetQuery("");
+  }
 
-        <div className="chip-place-main-body">
-          <PlaceModeBar
-            mode={mode}
-            onModeChange={onModeChange}
-            messages={messages}
-            pageRegister={onPageRegister}
-          />
-          <div className="chip-place-main-content scroll-pane">
-            {mode === "catalog" ? (
-              <CatalogChipPanel
-                kind="transform"
-                chips={catalogChips}
-                canvasChipIds={canvasChipIds}
-                messages={messages}
-                selectedIds={catalogSelectedIds}
-                onSelectedIdsChange={setCatalogSelectedIds}
-              />
-            ) : (
-              <div className="flex flex-col gap-4">
-                <FormField label={messages.workspace.chipName}>
-                  <input className="field-control text-sm" value={name} onChange={(e) => setName(e.target.value)} />
-                </FormField>
-                <div className="grid grid-cols-2 gap-1 rounded-xl border border-border bg-subtle p-1">
-                  <button
-                    type="button"
-                    className={cn(
-                      "rounded-lg px-2 py-1.5 text-[12px] font-semibold",
-                      fromExtract ? "bg-surface text-text shadow-sm" : "text-text-secondary",
-                    )}
-                    onClick={() => {
-                      setFromExtract(true);
-                      setInputDatasetId("");
-                    }}
-                  >
-                    {messages.workspace.placeTransformFromExtract}
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(
-                      "rounded-lg px-2 py-1.5 text-[12px] font-semibold",
-                      !fromExtract ? "bg-surface text-text shadow-sm" : "text-text-secondary",
-                    )}
-                    onClick={() => setFromExtract(false)}
-                  >
-                    {messages.workspace.placeTransformFromFile}
-                  </button>
-                </div>
-                {fromExtract ? (
-                  <p className="text-[11px] text-text-tertiary">{messages.workspace.placeNewTransformSteps}</p>
-                ) : (
-                  <p className="text-[11px] text-text-tertiary">{messages.workspace.placeTransformPickDataset}</p>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
+  const main = (
+    <div className="chip-place-main flex min-h-0 flex-1 flex-col">
+      <PlacePanelHeader
+        icon={<Workflow className="size-4" aria-hidden="true" />}
+        iconClassName="bg-success-subtle text-success"
+        title={messages.workspace.placeTransformTitle}
+        hint={messages.workspace.placeTransformSimpleHint}
+        dragHandleRef={dragHandleRef}
+      />
 
-        <PlaceDialogFooter
-          cancelLabel={messages.common.cancel}
-          submitLabel={mode === "catalog" ? messages.workspace.pickChipPlace : messages.workspace.placeExtractRegister}
-          canSubmit={mode === "catalog" ? catalogCanSubmit : canSubmit}
-          busy={busy}
-          onCancel={onClose}
-          onSubmit={() => {
-            if (mode === "catalog") {
-              if (!catalogCanSubmit) return;
-              onPlaceCatalog(catalogSelectedIds);
+      <div className="grid shrink-0 grid-cols-2 gap-2 px-4 pt-4">
+        <Button
+          type="button"
+          variant="secondary"
+          className="h-10 gap-1.5 text-[12px]"
+          disabled={busy || pickingDataset}
+          onClick={() => {
+            setEmptyName(defaultName);
+            setNamingEmpty(true);
+          }}
+        >
+          <Layers3 className="size-3.5" aria-hidden="true" />
+          {messages.workspace.placeTransformEmptyChip}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          aria-pressed={pickingDataset}
+          className={cn(
+            "h-10 gap-1.5 text-[12px]",
+            pickingDataset && "border-accent bg-accent-subtle text-accent",
+          )}
+          disabled={busy}
+          onClick={() => {
+            if (pickingDataset) {
+              exitDatasetPick();
               return;
             }
-            onSubmit({ name: name.trim(), inputDatasetId });
+            setPickingDataset(true);
+            setCatalogSelectedIds([]);
           }}
-        />
+        >
+          <FileStack className="size-3.5" aria-hidden="true" />
+          {messages.workspace.placeTransformFromDataset}
+        </Button>
       </div>
 
-      {showDatasetPanel ? (
-        <DatasetPickerPanel
-          title={messages.workspace.placeTransformInputDataset}
-          datasets={inputDatasets}
-          query={datasetQuery}
-          selectedId={inputDatasetId}
-          emptyLabel={messages.workspace.placeExtractFileEmpty}
-          searchPlaceholder={messages.workspace.placeExtractFileSearch}
-          messages={messages}
-          onQueryChange={setDatasetQuery}
-          onPick={(dataset) => setInputDatasetId(dataset.id)}
-        />
-      ) : null}
-    </DialogContentTransition>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-2 pt-4">
+        {pickingDataset ? (
+          <p className="shrink-0 text-[11px] text-text-tertiary">
+            {messages.workspace.placeTransformDatasetHint}
+          </p>
+        ) : (
+          <>
+            <p className="shrink-0 text-[11px] text-text-tertiary">
+              {messages.workspace.placeTransformCatalogHint}
+            </p>
+            <CatalogChipPanel
+              kind="transform"
+              chips={catalogChips}
+              canvasChipIds={canvasChipIds}
+              messages={messages}
+              selectedIds={catalogSelectedIds}
+              onSelectedIdsChange={setCatalogSelectedIds}
+            />
+          </>
+        )}
+      </div>
+
+      <PlaceDialogFooter
+        cancelLabel={messages.common.cancel}
+        submitLabel={
+          pickingDataset
+            ? messages.workspace.placeTransformContinueClean
+            : messages.workspace.pickChipPlace
+        }
+        canSubmit={pickingDataset ? datasetCanSubmit : catalogCanSubmit}
+        busy={busy}
+        onCancel={() => {
+          if (pickingDataset) {
+            exitDatasetPick();
+            return;
+          }
+          onClose();
+        }}
+        onSubmit={() => {
+          if (pickingDataset) {
+            if (!datasetCanSubmit) return;
+            onPlaceDataset({ name: defaultName, inputDatasetId });
+            return;
+          }
+          if (!catalogCanSubmit) return;
+          onPlaceCatalog(catalogSelectedIds);
+        }}
+      />
+    </div>
+  );
+
+  return (
+    <>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {pickingDataset ? (
+          <DialogContentTransition contentKey="dataset" className="chip-place-body min-h-0 flex-1">
+            {main}
+            <DatasetPickerPanel
+              title={messages.workspace.placeTransformInputDataset}
+              datasets={inputDatasets}
+              query={datasetQuery}
+              selectedId={inputDatasetId}
+              emptyLabel={messages.workspace.placeExtractFileEmpty}
+              searchPlaceholder={messages.workspace.placeExtractFileSearch}
+              messages={messages}
+              onQueryChange={setDatasetQuery}
+              onPick={(dataset) => setInputDatasetId(dataset.id)}
+            />
+          </DialogContentTransition>
+        ) : (
+          main
+        )}
+      </div>
+
+      <AppDialog
+        open={namingEmpty}
+        title={messages.workspace.nameChipTitle}
+        zIndex={110}
+        className="w-[min(24rem,92vw)]"
+        onClose={() => setNamingEmpty(false)}
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setNamingEmpty(false)}>
+              {messages.common.cancel}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={busy || !emptyName.trim()}
+              onClick={() => {
+                const trimmed = emptyName.trim();
+                if (!trimmed) return;
+                setNamingEmpty(false);
+                onPlaceEmpty(trimmed);
+              }}
+            >
+              {messages.workspace.nameChipConfirm}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3 p-4">
+          <p className="text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
+          <label className="flex min-w-0 flex-col gap-1.5">
+            <span className="text-xs font-medium text-text-secondary">{messages.workspace.chipName}</span>
+            <input
+              className="field-control text-sm"
+              value={emptyName}
+              autoFocus
+              disabled={busy}
+              onChange={(event) => setEmptyName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                const trimmed = emptyName.trim();
+                if (!trimmed || busy) return;
+                setNamingEmpty(false);
+                onPlaceEmpty(trimmed);
+              }}
+            />
+          </label>
+        </div>
+      </AppDialog>
+    </>
   );
 }
 
@@ -593,15 +597,9 @@ export function ChipPlaceDialog({
 }) {
   const navigate = useNavigate();
   const dragHandleRef = useRef<HTMLDivElement>(null);
-  const [mode, setMode] = useState<PlaceMode>("new");
   const dialogTitle = kind === "extract"
     ? messages.workspace.placeExtractTitle
     : messages.workspace.placeTransformTitle;
-
-  useEffect(() => {
-    if (!open) return;
-    setMode("new");
-  }, [open, kind]);
 
   function goDbRegister() {
     onClose();
@@ -623,10 +621,10 @@ export function ChipPlaceDialog({
         "chip-place-dialog flex max-h-[88vh] max-w-[96vw]",
         kind === "extract"
           ? "h-[min(40rem,88vh)] w-[26rem]"
-          : "h-[min(36rem,88vh)] w-auto",
+          : "h-[min(40rem,88vh)] w-auto min-w-[26rem]",
       )}
-      minWidth={kind === "extract" ? 416 : 448}
-      minHeight={kind === "extract" ? 480 : 420}
+      minWidth={416}
+      minHeight={480}
       onClose={onClose}
     >
       {kind === "extract" ? (
@@ -645,17 +643,12 @@ export function ChipPlaceDialog({
         <TransformNewPanel
           datasets={datasets}
           defaultName={messages.workspace.defaultTransformChipName(defaultTransformIndex)}
-          mode={mode}
-          onModeChange={setMode}
           messages={messages}
           busy={busy}
           onClose={onClose}
-          onSubmit={onPlaceNewTransform}
+          onPlaceEmpty={(name) => onPlaceNewTransform({ name, inputDatasetId: "" })}
+          onPlaceDataset={onPlaceNewTransform}
           onPlaceCatalog={onPlaceCatalog}
-          onPageRegister={() => {
-            onClose();
-            navigate("/transform/clean");
-          }}
           catalogChips={catalogChips}
           canvasChipIds={canvasChipIds}
           dragHandleRef={dragHandleRef}

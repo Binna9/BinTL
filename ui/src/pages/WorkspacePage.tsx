@@ -1,7 +1,8 @@
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { AppWindow, ArrowRight, ChevronDown, CircleAlert, DatabaseZap, Folder, FolderOpen, Layers, Pencil, Play, RefreshCw, Save, Settings2, Spline, Workflow, X, type LucideIcon } from "lucide-react";
+import { AppWindow, ArrowRight, CheckCircle2, ChevronDown, CircleAlert, DatabaseZap, Folder, FolderOpen, Layers, Pencil, Play, RefreshCw, Save, Settings2, Spline, Workflow, X, type LucideIcon } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -105,6 +106,13 @@ function canvasPoint(canvas: HTMLElement, clientX: number, clientY: number): Poi
   };
 }
 
+function clampMarqueePoint(point: Point): Point {
+  return {
+    x: Math.max(0, Math.min(point.x, CANVAS_W)),
+    y: Math.max(0, Math.min(point.y, CANVAS_H)),
+  };
+}
+
 function pointerOutsideCanvas(canvas: HTMLElement, clientX: number, clientY: number) {
   const rect = canvas.getBoundingClientRect();
   return clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom;
@@ -133,6 +141,55 @@ function chipInMarquee(point: Point, box: MarqueeBox): boolean {
     point.y < area.y + area.h &&
     point.y + NODE_H > area.y
   );
+}
+
+function pointInMarqueeArea(
+  point: Point,
+  area: { x: number; y: number; w: number; h: number },
+) {
+  return (
+    point.x >= area.x
+    && point.x <= area.x + area.w
+    && point.y >= area.y
+    && point.y <= area.y + area.h
+  );
+}
+
+function cubicPoint(t: number, p0: Point, p1: Point, p2: Point, p3: Point): Point {
+  const u = 1 - t;
+  const uu = u * u;
+  const tt = t * t;
+  return {
+    x: uu * u * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + tt * t * p3.x,
+    y: uu * u * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + tt * t * p3.y,
+  };
+}
+
+/** True when the wire path intersects (or sits inside) the marquee rectangle. */
+function edgeInMarquee(from: Point, to: Point, box: MarqueeBox): boolean {
+  const geo = edgeGeometry(from, to);
+  const area = normalizeMarquee(box);
+  const xs = [geo.start.x, geo.end.x, geo.c1.x, geo.c2.x];
+  const ys = [geo.start.y, geo.end.y, geo.c1.y, geo.c2.y];
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  if (
+    maxX < area.x
+    || minX > area.x + area.w
+    || maxY < area.y
+    || minY > area.y + area.h
+  ) {
+    return false;
+  }
+  const samples = 24;
+  for (let i = 0; i <= samples; i += 1) {
+    if (pointInMarqueeArea(cubicPoint(i / samples, geo.start, geo.c1, geo.c2, geo.end), area)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function roundPoint(point: Point): Point {
@@ -221,10 +278,11 @@ function scrollCanvasFromPointer(canvas: HTMLElement, clientX: number, clientY: 
   const rect = canvas.getBoundingClientRect();
   let dx = 0;
   let dy = 0;
-  if (clientX > rect.right - CANVAS_EDGE) dx = CANVAS_SCROLL_STEP;
-  else if (clientX < rect.left + CANVAS_EDGE) dx = -CANVAS_SCROLL_STEP;
-  if (clientY > rect.bottom - CANVAS_EDGE) dy = CANVAS_SCROLL_STEP;
-  else if (clientY < rect.top + CANVAS_EDGE) dy = -CANVAS_SCROLL_STEP;
+  // Keep scrolling while the pointer is past the viewport edge (marquee/pan outside).
+  if (clientX >= rect.right - CANVAS_EDGE) dx = CANVAS_SCROLL_STEP;
+  else if (clientX <= rect.left + CANVAS_EDGE) dx = -CANVAS_SCROLL_STEP;
+  if (clientY >= rect.bottom - CANVAS_EDGE) dy = CANVAS_SCROLL_STEP;
+  else if (clientY <= rect.top + CANVAS_EDGE) dy = -CANVAS_SCROLL_STEP;
   if (dx !== 0) canvas.scrollLeft += dx;
   if (dy !== 0) canvas.scrollTop += dy;
 }
@@ -366,20 +424,19 @@ function flowMarks(geo: EdgeGeometry): Array<Point & { angle: number }> {
   });
 }
 
-function wireTone(kind: ChipEdgeKind): "is-data" | "is-then" | "is-error" {
+function wireTone(kind: ChipEdgeKind): "is-data" | "is-success" | "is-error" | "is-always" {
   if (kind === "on_error") return "is-error";
-  if (kind === "then") return "is-then";
+  if (kind === "on_success") return "is-success";
+  if (kind === "always") return "is-always";
   return "is-data";
 }
 
-function defaultEdgeKind(fromKind: ChipKind, toKind: ChipKind): ChipEdgeKind {
-  if (
+/** Data wires carry a dataset: extract/transform → transform/load only. */
+function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
+  return (
     (fromKind === "extract" || fromKind === "transform")
     && (toKind === "transform" || toKind === "load")
-  ) {
-    return "data";
-  }
-  return "then";
+  );
 }
 
 function chipFixedInputId(chip: Chip): string {
@@ -745,12 +802,12 @@ function WorkspaceLayers({
     && allEdgeIds.every((id) => selectedEdgeIds.includes(id));
   const someLayersSelected = selectedChipIds.length > 0 || selectedEdgeIds.length > 0;
   const nameOf = (id: string) => chips.find((chip) => chip.id === id)?.name ?? id.slice(0, 8);
-  const kindLabel = (kind: ChipEdgeKind) =>
-    kind === "data"
-      ? messages.workspace.edgeData
-      : kind === "then"
-        ? messages.workspace.edgeThen
-        : messages.workspace.edgeOnError;
+  const kindLabel = (kind: ChipEdgeKind) => {
+    if (kind === "data") return messages.workspace.edgeData;
+    if (kind === "on_success") return messages.workspace.edgeOnSuccess;
+    if (kind === "on_error") return messages.workspace.edgeOnError;
+    return messages.workspace.edgeAlways;
+  };
 
   const body = chips.length === 0 && edges.length === 0 ? (
     <p className="px-1 text-[12px] text-text-tertiary">{emptyHint}</p>
@@ -830,9 +887,11 @@ function WorkspaceLayers({
               iconClassName={
                 edge.kind === "on_error"
                   ? "text-danger"
-                  : edge.kind === "then"
-                    ? "text-text-secondary"
-                    : "text-accent"
+                  : edge.kind === "on_success"
+                    ? "text-success"
+                    : edge.kind === "always"
+                      ? "text-text-secondary"
+                      : "text-accent"
               }
               label={`${nameOf(edge.from_chip_id)} → ${nameOf(edge.to_chip_id)}`}
               meta={kindLabel(edge.kind)}
@@ -987,6 +1046,8 @@ export function WorkspacePage() {
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [layersOpen, setLayersOpen] = useState(true);
   const [chips, setChips] = useState<Chip[]>([]);
+  const chipsRef = useRef(chips);
+  chipsRef.current = chips;
   const [catalogChips, setCatalogChips] = useState<Chip[]>([]);
   const [edges, setEdges] = useState<ChipEdge[]>([]);
   const [runs, setRuns] = useState<ChipRun[]>([]);
@@ -1115,21 +1176,34 @@ export function WorkspacePage() {
     dropEdgesLocally([edgeId]);
   }
 
-  function connectChips(fromId: string, toId: string, kindValue: ChipEdgeKind) {
+  async function connectChips(fromId: string, toId: string, kindValue: ChipEdgeKind) {
     if (fromId === toId) return;
     const from = chips.find((chip) => chip.id === fromId);
     const to = chips.find((chip) => chip.id === toId);
     if (!from || !to || !workspaceId) return;
-    const kind = kindValue === "data" ? defaultEdgeKind(from.kind, to.kind) === "data" ? "data" : "then" : kindValue;
-    if (kind === "data" && defaultEdgeKind(from.kind, to.kind) !== "data") return;
+    const kind = kindValue;
+    if (kind === "data" && !canHaveDataEdge(from.kind, to.kind)) {
+      toastError(messages.workspace.dataEdgeInvalidPair);
+      return;
+    }
     if (kind === "data" && to.kind === "transform" && chipFixedInputId(to)) {
       toastError(messages.workspace.dataEdgeNeedsPipelineTransform);
       return;
     }
-    if (edges.some((edge) =>
-      edge.from_chip_id === fromId && edge.to_chip_id === toId && edge.kind === kind
-    )) {
+    const existing = edges.filter(
+      (edge) => edge.from_chip_id === fromId && edge.to_chip_id === toId,
+    );
+    if (existing.some((edge) => edge.kind === kind) && existing.length === 1) {
+      toastError(messages.workspace.edgeAlreadySame);
       return;
+    }
+    if (existing.length > 0) {
+      const confirmed = await showConfirm(
+        messages.workspace.replaceEdgeTitle,
+        messages.workspace.replaceEdgeMessage(from.name, to.name),
+        { confirmLabel: messages.workspace.replaceEdgeConfirm },
+      );
+      if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
     }
     const fromPoint = positionsRef.current[fromId] ?? fallbackPoint(0);
     const toPoint = positionsRef.current[toId] ?? fallbackPoint(0);
@@ -1143,7 +1217,11 @@ export function WorkspacePage() {
       from_port: route.fromSide,
       to_port: route.toSide,
     };
-    const nextEdges = [...edges, created];
+    const dropIds = new Set(existing.map((edge) => edge.id));
+    const nextEdges = [
+      ...edges.filter((edge) => !dropIds.has(edge.id)),
+      created,
+    ];
     setEdges(nextEdges);
     setSelectedEdgeIds([created.id]);
     setSelectedChipIds([]);
@@ -1537,25 +1615,78 @@ export function WorkspacePage() {
   function placeNewTransformChip(draft: TransformPlaceDraft) {
     if (!workspaceId || !pendingPlace) return;
     const inputDatasetId = draft.inputDatasetId.trim();
+    const openClean = Boolean(inputDatasetId);
+    const point = pendingPlace.point;
     const now = new Date().toISOString();
-    const chip: Chip = {
-      id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
-      owner_user_id: "",
-      name: draft.name.trim() || messages.workspace.defaultTransformChipName(
-        chips.filter((item) => item.kind === "transform").length + 1,
-      ),
-      kind: "transform",
-      config: {
-        spec: { version: 2, sink: "parquet", steps: [] },
-        ...(inputDatasetId ? { input_dataset_id: inputDatasetId } : {}),
-      },
-      revision: 0,
-      active: true,
-      created_at: now,
-      updated_at: now,
-    };
-    placeCatalogChips([chip], pendingPlace.point);
-    setPendingPlace(null);
+    const name = draft.name.trim() || messages.workspace.defaultTransformChipName(
+      chips.filter((item) => item.kind === "transform").length + 1,
+    );
+
+    if (!openClean) {
+      const chip: Chip = {
+        id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+        owner_user_id: "",
+        name,
+        kind: "transform",
+        config: {
+          spec: { version: 2, sink: "parquet", steps: [] },
+        },
+        revision: 0,
+        active: true,
+        created_at: now,
+        updated_at: now,
+      };
+      placeCatalogChips([chip], point);
+      setPendingPlace(null);
+      return;
+    }
+
+    void (async () => {
+      try {
+        if (dirtyRef.current) {
+          const saved = await saveCanvas();
+          if (!saved) return;
+        }
+        if (currentWorkspaceRef.current !== workspaceId) return;
+        setBusy(true);
+        let created: Chip;
+        try {
+          created = await chipApi.create(workspaceId, {
+            name,
+            kind: "transform",
+            config: {
+              spec: { version: 2, sink: "parquet", steps: [] },
+              input_dataset_id: inputDatasetId,
+            },
+          });
+          if (currentWorkspaceRef.current !== workspaceId) return;
+          flushSync(() => {
+            const nextPoint = clampPoint(point);
+            const nextPositions = { ...positionsRef.current, [created.id]: nextPoint };
+            const nextChips = chipsRef.current.some((chip) => chip.id === created.id)
+              ? chipsRef.current
+              : [created, ...chipsRef.current];
+            positionsRef.current = nextPositions;
+            chipsRef.current = nextChips;
+            setChips(nextChips);
+            setPositions(nextPositions);
+            markDirty(nextChips, nextPositions, edges);
+            setSelectedChipIds([created.id]);
+            setSelectedEdgeIds([]);
+            setPendingPlace(null);
+          });
+        } finally {
+          if (currentWorkspaceRef.current === workspaceId) setBusy(false);
+        }
+        const saved = await saveCanvas();
+        if (!saved || currentWorkspaceRef.current !== workspaceId) return;
+        navigate(transformEditorPath(created));
+      } catch (reason) {
+        if (currentWorkspaceRef.current === workspaceId) {
+          toastError(messages.workspace.saveChipError, reason);
+        }
+      }
+    })();
   }
 
   function dropChipsLocally(chipIdsToDrop: string[]) {
@@ -1569,17 +1700,6 @@ export function WorkspacePage() {
     );
     setPositions(nextPositions);
     setEdges(nextEdges);
-    savedRef.current = {
-      chips: savedRef.current.chips.filter((item) => !dropSet.has(item.id)),
-      positions: chipIdsToDrop.reduce(
-        (positions, id) => omitPoint(positions, id),
-        savedRef.current.positions,
-      ),
-      edges: savedRef.current.edges.filter((edge) =>
-        !dropSet.has(edge.from_chip_id) && !dropSet.has(edge.to_chip_id),
-      ),
-    };
-    for (const id of chipIdsToDrop) savedIdsRef.current.delete(id);
     markDirty(nextChips, nextPositions, nextEdges);
     setChips(nextChips);
     setRuns((current) => current.filter((run) => !dropSet.has(run.chip_id)));
@@ -1602,19 +1722,6 @@ export function WorkspacePage() {
     );
     setPositions(nextPositions);
     setEdges(nextEdges);
-    savedRef.current = {
-      chips: savedRef.current.chips.filter((item) => !chipDropSet.has(item.id)),
-      positions: chipIdsToDrop.reduce(
-        (positions, id) => omitPoint(positions, id),
-        savedRef.current.positions,
-      ),
-      edges: savedRef.current.edges.filter((edge) =>
-        !edgeDropSet.has(edge.id)
-        && !chipDropSet.has(edge.from_chip_id)
-        && !chipDropSet.has(edge.to_chip_id),
-      ),
-    };
-    for (const id of chipIdsToDrop) savedIdsRef.current.delete(id);
     markDirty(nextChips, nextPositions, nextEdges);
     setChips(nextChips);
     setRuns((current) => current.filter((run) => !chipDropSet.has(run.chip_id)));
@@ -1634,22 +1741,10 @@ export function WorkspacePage() {
       { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
-    setBusy(true);
-    try {
-      if (savedIdsRef.current.has(chip.id)) {
-        await chipApi.remove(chip.id);
-      }
-      if (currentWorkspaceRef.current !== workspaceId) return;
-      dropChipLocally(chip.id);
-      if (chipId === chip.id && workspaceId) {
-        navigate(`/workspace/${workspaceId}`);
-      }
-    } catch (reason) {
-      if (currentWorkspaceRef.current === workspaceId) {
-        toastError(messages.workspace.deleteChipError, reason);
-      }
-    } finally {
-      if (currentWorkspaceRef.current === workspaceId) setBusy(false);
+    // Local draft only — workspace save unlinks chips; discard/reset restores them.
+    dropChipLocally(chip.id);
+    if (chipId === chip.id && workspaceId) {
+      navigate(`/workspace/${workspaceId}`);
     }
   }
 
@@ -1679,26 +1774,9 @@ export function WorkspacePage() {
       { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
-    setBusy(true);
-    try {
-      if (chipIds.length > 0) {
-        await Promise.all(
-          chipIds
-            .filter((id) => savedIdsRef.current.has(id))
-            .map((id) => chipApi.remove(id)),
-        );
-        if (currentWorkspaceRef.current !== workspaceId) return;
-      }
-      removeLayersLocally(chipIds, edgeIds);
-      if (chipId && chipIds.includes(chipId) && workspaceId) {
-        navigate(`/workspace/${workspaceId}`);
-      }
-    } catch (reason) {
-      if (currentWorkspaceRef.current === workspaceId) {
-        toastError(messages.workspace.deleteChipError, reason);
-      }
-    } finally {
-      if (currentWorkspaceRef.current === workspaceId) setBusy(false);
+    removeLayersLocally(chipIds, edgeIds);
+    if (chipId && chipIds.includes(chipId) && workspaceId) {
+      navigate(`/workspace/${workspaceId}`);
     }
   }
 
@@ -1753,9 +1831,10 @@ export function WorkspacePage() {
     const requestWorkspaceId = workspaceId;
     setBusy(true);
     try {
-      const draftChips = chips.filter((chip) => isDraftChipId(chip.id));
+      const currentChips = chipsRef.current;
+      const draftChips = currentChips.filter((chip) => isDraftChipId(chip.id));
       const idMap = new Map<string, string>();
-      let chipsToSave = [...chips];
+      let chipsToSave = [...currentChips];
       let positionsToSave = { ...positionsRef.current };
       let edgesToSave = [...edges];
 
@@ -1778,6 +1857,7 @@ export function WorkspacePage() {
           from_chip_id: idMap.get(edge.from_chip_id) ?? edge.from_chip_id,
           to_chip_id: idMap.get(edge.to_chip_id) ?? edge.to_chip_id,
         }));
+        chipsRef.current = chipsToSave;
         setChips(chipsToSave);
         setEdges(edgesToSave);
         setPositions(positionsToSave);
@@ -1829,6 +1909,7 @@ export function WorkspacePage() {
         ),
       );
       setChips(response.chips);
+      chipsRef.current = response.chips;
       setEdges(nextEdges);
       setPositions(nextPositions);
       rememberSaved(response.chips, nextPositions, nextEdges);
@@ -2111,7 +2192,7 @@ export function WorkspacePage() {
     const target = document.elementFromPoint(event.clientX, event.clientY);
     const host = target instanceof Element ? target.closest("[data-chip-id]") : null;
     const toId = host instanceof HTMLElement ? host.dataset.chipId : undefined;
-    if (toId) connectChips(link.fromId, toId, link.kind);
+    if (toId) void connectChips(link.fromId, toId, link.kind);
   }
 
   function onPortPointerCancel(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -2125,6 +2206,44 @@ export function WorkspacePage() {
     panRef.current = null;
     marqueeRef.current = null;
     setMarquee(null);
+  }
+
+  function finishMarqueeSelection() {
+    const box = marqueeRef.current;
+    marqueeRef.current = null;
+    setMarquee(null);
+    if (!box) return;
+    if (!box.moved) {
+      setSelectedEdgeIds([]);
+      setSelectedChipIds([]);
+      if (chipId && workspaceId) navigate(`/workspace/${workspaceId}`, { replace: true });
+      return;
+    }
+    const positions = positionsRef.current;
+    const pickedChips = chips
+      .filter((chip) => {
+        const point = positions[chip.id];
+        return point ? chipInMarquee(point, box) : false;
+      })
+      .map((chip) => chip.id);
+    const pickedEdges = edges
+      .filter((edge) => {
+        const from = positions[edge.from_chip_id];
+        const to = positions[edge.to_chip_id];
+        return from && to ? edgeInMarquee(from, to, box) : false;
+      })
+      .map((edge) => edge.id);
+    setSelectedChipIds(
+      box.additive
+        ? [...new Set([...selectedChipIdsRef.current, ...pickedChips])]
+        : pickedChips,
+    );
+    setSelectedEdgeIds(
+      box.additive
+        ? [...new Set([...selectedEdgeIdsRef.current, ...pickedEdges])]
+        : pickedEdges,
+    );
+    if (chipId && workspaceId) navigate(`/workspace/${workspaceId}`);
   }
 
   function onCanvasPanDown(event: ReactPointerEvent<HTMLDivElement>) {
@@ -2148,7 +2267,7 @@ export function WorkspacePage() {
       return;
     }
 
-    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const grab = clampMarqueePoint(canvasPoint(canvas, event.clientX, event.clientY));
     marqueeRef.current = {
       pointerId: event.pointerId,
       x0: grab.x,
@@ -2169,13 +2288,6 @@ export function WorkspacePage() {
 
     const pan = panRef.current;
     const box = marqueeRef.current;
-    const active =
-      (pan && pan.pointerId === event.pointerId) ||
-      (box && box.pointerId === event.pointerId);
-    if (active && pointerOutsideCanvas(canvas, event.clientX, event.clientY)) {
-      cancelCanvasGesture(event.pointerId);
-      return;
-    }
 
     if (pan && pan.pointerId === event.pointerId) {
       const dx = event.clientX - pan.startX;
@@ -2187,8 +2299,10 @@ export function WorkspacePage() {
     }
 
     if (!box || box.pointerId !== event.pointerId) return;
+    // Keep the marquee alive outside the viewport: clamp to the canvas world
+    // and auto-scroll so the selection can reach the far edge.
     scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
-    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const grab = clampMarqueePoint(canvasPoint(canvas, event.clientX, event.clientY));
     if (Math.abs(grab.x - box.x0) > 3 || Math.abs(grab.y - box.y0) > 3) box.moved = true;
     box.x1 = grab.x;
     box.y1 = grab.y;
@@ -2202,32 +2316,13 @@ export function WorkspacePage() {
       if (!pan.moved && workspaceId) {
         setSelectedEdgeIds([]);
         setSelectedChipIds([]);
-        navigate(`/workspace/${workspaceId}`);
+        if (chipId) navigate(`/workspace/${workspaceId}`, { replace: true });
       }
       return;
     }
 
-    const box = marqueeRef.current;
-    if (!box || box.pointerId !== event.pointerId) return;
-    marqueeRef.current = null;
-    setMarquee(null);
-    if (!box.moved) {
-      setSelectedEdgeIds([]);
-      setSelectedChipIds([]);
-      if (workspaceId) navigate(`/workspace/${workspaceId}`);
-      return;
-    }
-    const picked = chips
-      .filter((chip) => {
-        const point = positionsRef.current[chip.id];
-        return point ? chipInMarquee(point, box) : false;
-      })
-      .map((chip) => chip.id);
-    const nextSelection = box.additive
-      ? [...new Set([...selectedChipIdsRef.current, ...picked])]
-      : picked;
-    setSelectedChipIds(nextSelection);
-    if (chipId && workspaceId) navigate(`/workspace/${workspaceId}`);
+    if (!marqueeRef.current || marqueeRef.current.pointerId !== event.pointerId) return;
+    finishMarqueeSelection();
   }
 
   function onCanvasPanCancel(event: ReactPointerEvent<HTMLDivElement>) {
@@ -2277,16 +2372,22 @@ export function WorkspacePage() {
       icon: Spline,
     },
     {
-      kind: "then" as const,
-      label: messages.workspace.edgeThen,
-      hint: messages.workspace.edgeThenHint,
-      icon: ArrowRight,
+      kind: "on_success" as const,
+      label: messages.workspace.edgeOnSuccess,
+      hint: messages.workspace.edgeOnSuccessHint,
+      icon: CheckCircle2,
     },
     {
       kind: "on_error" as const,
       label: messages.workspace.edgeOnError,
       hint: messages.workspace.edgeOnErrorHint,
       icon: CircleAlert,
+    },
+    {
+      kind: "always" as const,
+      label: messages.workspace.edgeAlways,
+      hint: messages.workspace.edgeAlwaysHint,
+      icon: ArrowRight,
     },
   ];
 
@@ -2469,11 +2570,14 @@ export function WorkspacePage() {
           onPointerUp={onCanvasPanUp}
           onPointerCancel={onCanvasPanCancel}
           onLostPointerCapture={(event) => {
-            if (
-              panRef.current?.pointerId === event.pointerId ||
-              marqueeRef.current?.pointerId === event.pointerId
-            ) {
-              cancelCanvasGesture(event.pointerId);
+            if (panRef.current?.pointerId === event.pointerId) {
+              panRef.current = null;
+              return;
+            }
+            // Capture can drop without a reliable pointerup (browser/OS). Finish
+            // the marquee so a partial drag still selects instead of vanishing.
+            if (marqueeRef.current?.pointerId === event.pointerId) {
+              finishMarqueeSelection();
             }
           }}
         >
@@ -2492,7 +2596,7 @@ export function WorkspacePage() {
           height={canvasWorld.height}
         >
           <defs>
-            {(["data", "then", "on_error"] as const).map((kindValue) => (
+            {(["data", "on_success", "on_error", "always"] as const).map((kindValue) => (
               <marker
                 key={kindValue}
                 id={`chip-wire-arrow-${kindValue}`}

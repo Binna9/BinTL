@@ -143,7 +143,7 @@ export function GlobalNotifications() {
   useEffect(() => {
     if (!activeDialog) return;
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Enter" || event.shiftKey) return;
+      if (event.key !== "Enter" || event.shiftKey || event.repeat) return;
       const target = event.target;
       if (target instanceof HTMLElement && target.isContentEditable) return;
       if (
@@ -154,10 +154,12 @@ export function GlobalNotifications() {
         return;
       }
       event.preventDefault();
+      event.stopPropagation();
       settleDialog(true);
     }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    // Capture so parent popups (e.g. workspace manage) don't swallow Enter first.
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [activeDialog?.id]);
 
   return (

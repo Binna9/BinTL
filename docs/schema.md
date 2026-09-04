@@ -227,7 +227,7 @@ DB/API 추출 레시피. `extracts`는 실행 이력, 이 테이블은 재사용
 | `workspace_id` | 작업 공간 ID | `workspaces.id`                                           |
 | `from_chip_id` | 출발 칩     | `chips.id`                                                |
 | `to_chip_id`   | 도착 칩     | `chips.id`                                                |
-| `kind`         | 종류       | `data` (산출 dataset 전달) | `then` (순서만) | `on_error` (실패 시) |
+| `kind`         | 종류       | `data` (산출 전달) \| `on_success` (성공 시) \| `on_error` (실패 시) \| `always` (무조건) |
 | `from_port`    | 출발 포트    | 기본 `out`                                                  |
 | `to_port`      | 도착 포트    | 기본 `in`                                                   |
 | `created_at`   | 생성 시각    |                                                           |

@@ -71,6 +71,13 @@ import type {
   TransformStep,
 } from "@/types/transform";
 
+function defaultTransformName(sourceName: string): string {
+  const trimmed = sourceName.trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.toLocaleLowerCase().startsWith("transform-")) return trimmed;
+  return `transform-${trimmed}`;
+}
+
 function normalizeSlotColumns(
   columns: { name: string; dtype?: string; type?: string }[] | undefined,
 ): DatasetColumn[] {
@@ -1034,7 +1041,9 @@ export function TransformPage() {
           return [...current, dataset];
         });
         setDatasetId(dataset.id);
-        setName((current) => current || slot.source_chip_name || dataset.filename);
+        setName((current) =>
+          current || defaultTransformName(slot.source_chip_name || dataset.filename),
+        );
       } catch (err) {
         if (!cancelled) toastError(messages.errors.workspace, err);
       }
@@ -1544,34 +1553,54 @@ export function TransformPage() {
             {workspaceMode ? (
               <>
                 <PaneHeader
-                  title={messages.workspace.inspector}
-                  meta={inputSlot?.source_chip_name ?? messages.transform.pickFile}
+                  title={messages.transform.catalog}
+                  meta={messages.common.count(
+                    inputSlot?.mode === "unwired" ? 0 : 1,
+                  )}
                 />
-                <div className="scroll-pane min-h-0 flex-1 overflow-auto bg-surface p-3">
+                <div className="scroll-pane min-h-0 flex-1 overflow-auto bg-surface">
                   {inputSlot?.mode === "unwired" ? (
-                    <p className="text-sm leading-6 text-text-secondary">
+                    <p className="p-3 text-sm leading-6 text-text-secondary">
                       {messages.transform.unwiredHint}
                     </p>
                   ) : (
-                    <div className="space-y-2">
-                      <p className="text-sm font-semibold text-text">
-                        {messages.transform.inputFromChip(
-                          inputSlot?.source_chip_name
-                            || selected?.filename
-                            || messages.transform.untitled,
-                        )}
-                      </p>
-                      {inputSlot?.mode === "planned" ? (
-                        <p className="text-xs leading-5 text-text-secondary">
-                          {messages.transform.schemaOnlyHint}
-                        </p>
-                      ) : (
-                        <p className="text-xs text-text-tertiary">
-                          {selected?.row_count != null
-                            ? messages.common.rows(selected.row_count)
-                            : selected?.filename}
-                        </p>
+                    <div
+                      className={cn(
+                        "flex w-full min-w-0 items-start gap-2 border-b border-border px-3 py-2.5 text-left",
+                        selectableClass(true),
                       )}
+                    >
+                      <FileSpreadsheet
+                        className="mt-0.5 size-3.5 shrink-0 text-text-tertiary"
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block break-all text-[13px] font-medium leading-4">
+                          {inputSlot?.source_chip_name
+                            || selected?.filename
+                            || messages.transform.untitled}
+                          {inputSlot?.mode === "planned" || selected?.status === "planned" ? (
+                            <span className="ml-1 text-[11px] font-normal text-accent">
+                              ({messages.transform.plannedInput})
+                            </span>
+                          ) : selected && !selected.available ? (
+                            <span className="ml-1 text-[11px] font-normal text-warning">
+                              ({messages.transform.sourceUnavailable})
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="mt-0.5 block text-[11px] leading-4 text-text-tertiary">
+                          {inputSlot?.mode === "planned"
+                            ? messages.transform.schemaOnlyHint
+                            : selected?.row_count != null
+                              ? messages.common.rows(selected.row_count)
+                              : selected?.origin?.connection_name
+                                ? `${selected.origin.connection_name} · ${selected.origin.table_name}`
+                                : selected?.size_bytes != null
+                                  ? fmtBytes(selected.size_bytes)
+                                  : messages.transform.pickFile}
+                        </span>
+                      </span>
                     </div>
                   )}
                 </div>
@@ -1676,7 +1705,9 @@ export function TransformPage() {
                                 const selecting = datasetId !== item.id;
                                 setDatasetId(selecting ? item.id : undefined);
                                 if (selecting && !transformId) {
-                                  setName((current) => current || item.filename);
+                                  setName((current) =>
+                                    current || defaultTransformName(item.filename),
+                                  );
                                 }
                               }}
                             >

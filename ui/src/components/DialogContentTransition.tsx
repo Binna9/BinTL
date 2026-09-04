@@ -1,11 +1,9 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { withViewTransition } from "@/lib/viewTransition";
 
-type Snapshot = { key: unknown; node: ReactNode };
-
 /**
- * Defers child updates through the same root cross-fade used for theme/locale/route changes.
- * Pass a stable `contentKey` when switching tabs, panels, or wizard steps inside a dialog.
+ * Cross-fades when `contentKey` changes (tabs / wizard steps).
+ * Same-key child updates render live so controlled inputs (IME) stay in sync.
  */
 export function DialogContentTransition({
   contentKey,
@@ -18,13 +16,19 @@ export function DialogContentTransition({
   className?: string;
   children: ReactNode;
 }) {
-  const [rendered, setRendered] = useState<Snapshot>(() => ({
-    key: contentKey,
-    node: children,
-  }));
+  const [activeKey, setActiveKey] = useState(contentKey);
+  const exitNodeRef = useRef<ReactNode>(children);
   const isInitial = useRef(true);
   const skipTransition = useRef(false);
   const prevResetWhen = useRef(resetWhen);
+  const childrenRef = useRef(children);
+  childrenRef.current = children;
+
+  // Keep the exit snapshot current only while the panel identity is stable.
+  // Do not drive live paint through state — that lag breaks Korean/Japanese IME.
+  if (contentKey === activeKey) {
+    exitNodeRef.current = children;
+  }
 
   useEffect(() => {
     if (resetWhen !== prevResetWhen.current) {
@@ -39,33 +43,31 @@ export function DialogContentTransition({
 
     if (isInitial.current) {
       isInitial.current = false;
-      setRendered({ key: contentKey, node: children });
+      setActiveKey(contentKey);
+      exitNodeRef.current = childrenRef.current;
       return;
     }
 
-    if (contentKey === rendered.key) {
-      setRendered((prev) =>
-        prev.key === contentKey ? { key: contentKey, node: children } : prev,
-      );
-      return;
-    }
+    if (contentKey === activeKey) return;
 
-    const nextNode = children;
+    const apply = () => {
+      setActiveKey(contentKey);
+      exitNodeRef.current = childrenRef.current;
+    };
+
     if (skipTransition.current) {
       skipTransition.current = false;
-      setRendered({ key: contentKey, node: nextNode });
+      apply();
       return;
     }
 
-    withViewTransition(() => {
-      setRendered({ key: contentKey, node: nextNode });
-    });
-  }, [contentKey, children, rendered.key]);
+    withViewTransition(apply);
+  }, [contentKey, activeKey]);
 
   if (contentKey === undefined) {
     return className ? <div className={className}>{children}</div> : children;
   }
 
-  const body = rendered.node;
+  const body = contentKey === activeKey ? children : exitNodeRef.current;
   return className ? <div className={className}>{body}</div> : body;
 }

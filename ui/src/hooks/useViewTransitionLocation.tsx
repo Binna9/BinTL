@@ -11,6 +11,13 @@ import { withViewTransition } from "@/lib/viewTransition";
 
 const RenderLocationContext = createContext<Location | null>(null);
 
+/** Same workspace canvas: `/workspace/:id` ↔ `/workspace/:id/chips/:chipId`. */
+function workspaceCanvasId(pathname: string): string | null {
+  if (pathname.startsWith("/workspace/runs")) return null;
+  const match = pathname.match(/^\/workspace\/([^/]+)(?:\/chips\/[^/]+)?$/);
+  return match?.[1] ?? null;
+}
+
 export function ViewTransitionLocationProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const [renderLocation, setRenderLocation] = useState(location);
@@ -22,10 +29,17 @@ export function ViewTransitionLocationProvider({ children }: { children: ReactNo
       return;
     }
     if (location.key === renderLocation.key) return;
+    const fromId = workspaceCanvasId(renderLocation.pathname);
+    const toId = workspaceCanvasId(location.pathname);
+    // Empty-canvas clicks / chip-detail close stay on the same canvas — skip the global flash.
+    if (fromId && toId && fromId === toId) {
+      setRenderLocation(location);
+      return;
+    }
     withViewTransition(() => {
       setRenderLocation(location);
     });
-  }, [location, renderLocation.key]);
+  }, [location, renderLocation.key, renderLocation.pathname]);
 
   return (
     <RenderLocationContext.Provider value={renderLocation}>{children}</RenderLocationContext.Provider>

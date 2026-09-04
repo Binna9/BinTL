@@ -49,11 +49,25 @@ type NotificationListener = (event: NotificationEvent) => void;
 
 const listeners = new Set<NotificationListener>();
 const pendingEvents: NotificationEvent[] = [];
+let openDialogCount = 0;
 
 function notificationId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+/** True while an alert/confirm from showAlert/showConfirm is on screen. */
+export function isNotificationDialogOpen(): boolean {
+  return openDialogCount > 0;
+}
+
+function trackDialogResolve(resolve: (confirmed: boolean) => void): (confirmed: boolean) => void {
+  openDialogCount += 1;
+  return (confirmed) => {
+    openDialogCount = Math.max(0, openDialogCount - 1);
+    resolve(confirmed);
+  };
 }
 
 function publish(event: NotificationEvent): void {
@@ -145,7 +159,7 @@ export function showAlert(
         message,
         confirmLabel: options.confirmLabel,
         tone: "default",
-        resolve: () => resolve(),
+        resolve: trackDialogResolve(() => resolve()),
       },
     });
   });
@@ -167,7 +181,7 @@ export function showConfirm(
         confirmLabel: options.confirmLabel,
         cancelLabel: options.cancelLabel,
         tone: options.tone ?? "default",
-        resolve,
+        resolve: trackDialogResolve(resolve),
       },
     });
   });
