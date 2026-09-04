@@ -58,38 +58,40 @@ function ConsoleShell() {
             onSearchPage ? "overflow-hidden" : studio ? "overflow-hidden" : "overflow-y-auto p-4",
           )}
         >
-          <Routes location={loc}>
-            <Route path="/search" element={<SearchPage />} />
-            <Route path="/" element={<OverviewPage />} />
-            <Route path="/files" element={<FilesPage />} />
-            <Route path="/connections" element={<ConnectionsPage />} />
-            <Route path="/schedule" element={<SchedulePage />} />
-            <Route path="/workspace/runs" element={<WorkspaceRunsPage />} />
-            <Route path="/workspace" element={<WorkspacePage />} />
-            <Route path="/workspace/:workspaceId" element={<WorkspacePage />} />
-            <Route path="/workspace/:workspaceId/chips/:chipId" element={<WorkspacePage />} />
-            <Route path="/chips" element={<ChipsPage />} />
-            <Route path="/workspace/:workspaceId/tasks/:taskId" element={<Navigate to={loc.pathname.replace("/tasks/", "/chips/")} replace />} />
-            <Route path="/db" element={<QueryPage />} />
-            <Route path="/query" element={<QueryPage />} />
-            <Route path="/extract/api" element={<ApiExtractPage />} />
-            <Route path="/extracts" element={<ExtractResultsPage />} />
-            <Route path="/transforms" element={<TransformFilesPage />} />
-            <Route path="/transform" element={<Navigate to="/transform/clean" replace />} />
-            <Route path="/transform/reshape" element={<TransformSoonPage kind="reshape" />} />
-            <Route path="/transform/clean" element={<TransformPage section="clean" />} />
-            <Route path="/transform/clean/:id" element={<TransformPage section="clean" />} />
-            <Route path="/transform/combine" element={<TransformPage section="combine" />} />
-            <Route path="/transform/combine/:id" element={<TransformPage section="combine" />} />
-            <Route path="/transform/aggregate" element={<TransformPage section="aggregate" />} />
-            <Route path="/transform/aggregate/:id" element={<TransformPage section="aggregate" />} />
-            <Route path="/transform/:id" element={<TransformPage />} />
-            <Route path="/load" element={<LoadPage />} />
-            <Route path="/history" element={<HistoryPage />} />
-            <Route path="/jobs" element={<Navigate to="/history" replace />} />
-            <Route path="/jobs/:id" element={<JobRunPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          <Suspense fallback={null}>
+            <Routes location={loc}>
+              <Route path="/search" element={<SearchPage />} />
+              <Route path="/" element={<OverviewPage />} />
+              <Route path="/files" element={<FilesPage />} />
+              <Route path="/connections" element={<ConnectionsPage />} />
+              <Route path="/schedule" element={<SchedulePage />} />
+              <Route path="/workspace/runs" element={<WorkspaceRunsPage />} />
+              <Route path="/workspace" element={<WorkspacePage />} />
+              <Route path="/workspace/:workspaceId" element={<WorkspacePage />} />
+              <Route path="/workspace/:workspaceId/chips/:chipId" element={<WorkspacePage />} />
+              <Route path="/chips" element={<ChipsPage />} />
+              <Route path="/workspace/:workspaceId/tasks/:taskId" element={<Navigate to={loc.pathname.replace("/tasks/", "/chips/")} replace />} />
+              <Route path="/db" element={<QueryPage />} />
+              <Route path="/query" element={<QueryPage />} />
+              <Route path="/extract/api" element={<ApiExtractPage />} />
+              <Route path="/extracts" element={<ExtractResultsPage />} />
+              <Route path="/transforms" element={<TransformFilesPage />} />
+              <Route path="/transform" element={<Navigate to="/transform/clean" replace />} />
+              <Route path="/transform/reshape" element={<TransformSoonPage kind="reshape" />} />
+              <Route path="/transform/clean" element={<TransformPage section="clean" />} />
+              <Route path="/transform/clean/:id" element={<TransformPage section="clean" />} />
+              <Route path="/transform/combine" element={<TransformPage section="combine" />} />
+              <Route path="/transform/combine/:id" element={<TransformPage section="combine" />} />
+              <Route path="/transform/aggregate" element={<TransformPage section="aggregate" />} />
+              <Route path="/transform/aggregate/:id" element={<TransformPage section="aggregate" />} />
+              <Route path="/transform/:id" element={<TransformPage />} />
+              <Route path="/load" element={<LoadPage />} />
+              <Route path="/history" element={<HistoryPage />} />
+              <Route path="/jobs" element={<Navigate to="/history" replace />} />
+              <Route path="/jobs/:id" element={<JobRunPage />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
         </main>
       </SplitLayout>
     </div>
@@ -100,9 +102,13 @@ export default function App() {
   const loc = useRenderLocation();
   return (
     <SessionProvider>
-      <Suspense fallback={<div className="h-screen bg-surface" aria-busy="true" />}>
-        {loc.pathname === "/login" ? <SessionGatePage /> : <ConsoleShell />}
-      </Suspense>
+      {loc.pathname === "/login" ? (
+        <Suspense fallback={null}>
+          <SessionGatePage />
+        </Suspense>
+      ) : (
+        <ConsoleShell />
+      )}
     </SessionProvider>
   );
 }
