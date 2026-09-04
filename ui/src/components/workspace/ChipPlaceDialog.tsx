@@ -1,22 +1,25 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  Braces,
   Check,
+  ChevronRight,
   Cloud,
   Database,
   DatabaseZap,
+  FileSpreadsheet,
   FileStack,
   Layers3,
   Search,
+  Upload,
   Workflow,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
-import { DialogContentTransition } from "@/components/DialogContentTransition";
 import { Button } from "@/components/ui/button";
 import type { Messages } from "@/i18n/ko";
-import { showToast } from "@/lib/notifications";
 import { cn } from "@/lib/cn";
-import { fmtWhen } from "@/lib/format";
+import { fmtBytes } from "@/lib/format";
+import { selectableClass } from "@/lib/selectable";
 import type { Chip } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
@@ -26,6 +29,27 @@ export type TransformPlaceDraft = {
   name: string;
   inputDatasetId: string;
 };
+
+const DATASET_KIND_ORDER = ["upload", "database", "api"] as const;
+type DatasetKind = (typeof DATASET_KIND_ORDER)[number];
+
+const DATASET_KIND_APPEARANCE = {
+  upload: {
+    icon: Upload,
+    header: "border-accent/20 bg-accent-subtle text-accent",
+    count: "bg-accent/10 text-accent",
+  },
+  database: {
+    icon: Database,
+    header: "border-success/20 bg-success-subtle text-success",
+    count: "bg-success/10 text-success",
+  },
+  api: {
+    icon: Braces,
+    header: "border-warning/20 bg-warning-subtle text-warning",
+    count: "bg-warning/10 text-warning",
+  },
+} as const;
 
 function CatalogChipPanel({
   kind,
@@ -151,81 +175,192 @@ function PlaceDialogFooter({
 function DatasetPickerPanel({
   title,
   datasets,
-  query,
   selectedId,
   emptyLabel,
-  searchPlaceholder,
   messages,
-  onQueryChange,
   onPick,
+  className,
 }: {
   title: string;
   datasets: Dataset[];
-  query: string;
   selectedId: string;
   emptyLabel: string;
-  searchPlaceholder: string;
   messages: Messages;
-  onQueryChange: (value: string) => void;
   onPick: (dataset: Dataset) => void;
+  className?: string;
 }) {
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return datasets;
-    return datasets.filter(
-      (dataset) =>
-        dataset.filename.toLowerCase().includes(needle)
-        || dataset.kind.toLowerCase().includes(needle),
-    );
-  }, [datasets, query]);
+  const [expandedKinds, setExpandedKinds] = useState<Set<DatasetKind>>(() => new Set());
+  const [kindSearch, setKindSearch] = useState<Record<DatasetKind, string>>({
+    upload: "",
+    database: "",
+    api: "",
+  });
+
+  const kindLabel: Record<DatasetKind, string> = {
+    upload: messages.transform.kindUpload,
+    database: messages.transform.kindDatabase,
+    api: messages.transform.kindApi,
+  };
+
+  const grouped = useMemo(() => {
+    const buckets: Record<DatasetKind, Dataset[]> = {
+      upload: [],
+      database: [],
+      api: [],
+    };
+    for (const dataset of datasets) {
+      if (dataset.kind === "upload" || dataset.kind === "database" || dataset.kind === "api") {
+        buckets[dataset.kind].push(dataset);
+      }
+    }
+    return DATASET_KIND_ORDER
+      .map((kind) => ({ kind, items: buckets[kind] }))
+      .filter((group) => group.items.length > 0);
+  }, [datasets]);
 
   return (
-    <aside className="chip-place-side" aria-label={title}>
-      <h3 className="chip-place-side-title">
-        <FileStack className="size-3.5" aria-hidden="true" />
-        {title}
-      </h3>
-      <div className="chip-place-side-search">
-        <Search className="size-3 shrink-0 text-text-tertiary" aria-hidden="true" />
-        <input
-          type="search"
-          value={query}
-          placeholder={searchPlaceholder}
-          onChange={(event) => onQueryChange(event.target.value)}
-        />
+    <div className={cn("flex min-h-0 flex-1 flex-col gap-2", className)} aria-label={title}>
+      <div className="flex shrink-0 items-center gap-2">
+        <FileStack className="size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-[0.06em] text-text">
+          {title}
+        </span>
+        <span className="shrink-0 rounded-full border border-border bg-surface px-1.5 py-0.5 text-[10px] tabular-nums text-text-tertiary">
+          {messages.common.count(datasets.length)}
+        </span>
       </div>
       <div className="scroll-pane min-h-0 flex-1 overflow-y-auto">
-        {filtered.length === 0 ? (
+        {grouped.length === 0 ? (
           <p className="px-1 py-4 text-[12px] text-text-tertiary">{emptyLabel}</p>
         ) : (
-          <ul className="chip-place-side-list">
-            {filtered.map((dataset) => (
-              <li key={dataset.id}>
-                <button
-                  type="button"
-                  className={cn("chip-place-side-item text-left", dataset.id === selectedId && "is-active")}
-                  onClick={() => onPick(dataset)}
+          <div className="space-y-2 p-0.5">
+            {grouped.map((group) => {
+              const appearance = DATASET_KIND_APPEARANCE[group.kind];
+              const KindIcon = appearance.icon;
+              const expanded = expandedKinds.has(group.kind);
+              const query = kindSearch[group.kind].trim().toLocaleLowerCase();
+              const visibleItems = query
+                ? group.items.filter((item) =>
+                    item.filename.toLocaleLowerCase().includes(query),
+                  )
+                : group.items;
+              return (
+                <section
+                  key={group.kind}
+                  className="overflow-hidden rounded-lg border border-border bg-surface"
                 >
-                  <span className="block truncate text-[12px] font-medium text-text">{dataset.filename}</span>
-                  <span className="mt-0.5 flex items-center gap-2 text-[10px] text-text-tertiary">
-                    <span>{dataset.kind}</span>
-                    {dataset.status === "planned" ? (
-                      <span className="text-accent">{messages.transform.plannedInput}</span>
-                    ) : null}
-                    <span className="ml-auto tabular-nums">{fmtWhen(dataset.updated_at)}</span>
-                  </span>
-                  {dataset.row_count != null ? (
-                    <span className="mt-0.5 block text-[10px] text-text-tertiary">
-                      {messages.workspace.placeExtractFileRows(dataset.row_count)}
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    className={cn(
+                      "flex w-full items-center gap-2 px-2.5 py-2 text-left transition-[filter] hover:brightness-95",
+                      expanded && "border-b",
+                      appearance.header,
+                    )}
+                    onClick={() =>
+                      setExpandedKinds((current) => {
+                        const next = new Set(current);
+                        if (expanded) next.delete(group.kind);
+                        else next.add(group.kind);
+                        return next;
+                      })
+                    }
+                  >
+                    <KindIcon className="size-3.5 shrink-0" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 text-[12px] font-bold">
+                      {kindLabel[group.kind]}
                     </span>
+                    <span
+                      className={cn(
+                        "rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums",
+                        appearance.count,
+                      )}
+                    >
+                      {group.items.length}
+                    </span>
+                    <ChevronRight
+                      className={cn(
+                        "size-3.5 shrink-0 transition-transform",
+                        expanded && "rotate-90",
+                      )}
+                      aria-hidden="true"
+                    />
+                  </button>
+                  {expanded ? (
+                    <div className="border-b border-border bg-raised p-2">
+                      <div className="group flex h-8 items-center overflow-hidden rounded-lg border border-border bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+                        <span className="grid h-full w-8 shrink-0 place-items-center border-r border-border bg-subtle text-text-tertiary transition-colors group-focus-within:text-accent">
+                          <Search className="size-3.5" aria-hidden="true" />
+                        </span>
+                        <input
+                          type="search"
+                          className="min-w-0 flex-1 bg-transparent px-2 text-[12px] text-text outline-none placeholder:text-text-tertiary"
+                          value={kindSearch[group.kind]}
+                          placeholder={messages.transform.searchFiles}
+                          aria-label={`${kindLabel[group.kind]} ${messages.transform.searchFiles}`}
+                          onChange={(event) =>
+                            setKindSearch((current) => ({
+                              ...current,
+                              [group.kind]: event.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
                   ) : null}
-                </button>
-              </li>
-            ))}
-          </ul>
+                  {expanded && visibleItems.length === 0 ? (
+                    <p className="px-2 py-3 text-center text-[11px] text-text-tertiary">
+                      {messages.transform.noMatchingFiles}
+                    </p>
+                  ) : null}
+                  {expanded
+                    ? visibleItems.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={cn(
+                            "flex w-full min-w-0 items-start gap-2 border-b border-border px-2.5 py-2 text-left last:border-b-0",
+                            selectableClass(item.id === selectedId),
+                          )}
+                          onClick={() => onPick(item)}
+                        >
+                          <FileSpreadsheet
+                            className="mt-0.5 size-3.5 shrink-0 text-text-tertiary"
+                            aria-hidden="true"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block break-all text-[12px] font-medium leading-4">
+                              {item.filename}
+                              {item.status === "planned" ? (
+                                <span className="ml-1 text-[10px] font-normal text-accent">
+                                  ({messages.transform.plannedInput})
+                                </span>
+                              ) : !item.available ? (
+                                <span className="ml-1 text-[10px] font-normal text-warning">
+                                  ({messages.transform.sourceUnavailable})
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="mt-0.5 block truncate text-[10px] text-text-tertiary">
+                              {item.origin?.connection_name
+                                ? `${item.origin.connection_name} · ${item.origin.table_name}`
+                                : item.size_bytes != null
+                                  ? fmtBytes(item.size_bytes)
+                                  : item.row_count != null
+                                    ? messages.common.rows(item.row_count)
+                                    : item.id.slice(0, 8)}
+                            </span>
+                          </span>
+                        </button>
+                      ))
+                    : null}
+                </section>
+              );
+            })}
+          </div>
         )}
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -370,7 +505,6 @@ function TransformNewPanel({
   const [namingEmpty, setNamingEmpty] = useState(false);
   const [emptyName, setEmptyName] = useState(defaultName);
   const [inputDatasetId, setInputDatasetId] = useState("");
-  const [datasetQuery, setDatasetQuery] = useState("");
   const [catalogSelectedIds, setCatalogSelectedIds] = useState<string[]>([]);
 
   const inputDatasets = useMemo(
@@ -383,7 +517,6 @@ function TransformNewPanel({
     setNamingEmpty(false);
     setEmptyName(defaultName);
     setInputDatasetId("");
-    setDatasetQuery("");
     setCatalogSelectedIds([]);
   }, [defaultName]);
 
@@ -393,11 +526,10 @@ function TransformNewPanel({
   function exitDatasetPick() {
     setPickingDataset(false);
     setInputDatasetId("");
-    setDatasetQuery("");
   }
 
   const main = (
-    <div className="chip-place-main flex min-h-0 flex-1 flex-col">
+    <div className="chip-place-main">
       <PlacePanelHeader
         icon={<Workflow className="size-4" aria-hidden="true" />}
         iconClassName="bg-success-subtle text-success"
@@ -410,9 +542,14 @@ function TransformNewPanel({
         <Button
           type="button"
           variant="secondary"
-          className="h-10 gap-1.5 text-[12px]"
-          disabled={busy || pickingDataset}
+          aria-pressed={namingEmpty}
+          className={cn(
+            "h-10 gap-1.5 text-[12px]",
+            namingEmpty && "border-accent bg-accent-subtle text-accent",
+          )}
+          disabled={busy}
           onClick={() => {
+            if (pickingDataset) exitDatasetPick();
             setEmptyName(defaultName);
             setNamingEmpty(true);
           }}
@@ -430,6 +567,7 @@ function TransformNewPanel({
           )}
           disabled={busy}
           onClick={() => {
+            setNamingEmpty(false);
             if (pickingDataset) {
               exitDatasetPick();
               return;
@@ -445,9 +583,19 @@ function TransformNewPanel({
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-2 pt-4">
         {pickingDataset ? (
-          <p className="shrink-0 text-[11px] text-text-tertiary">
-            {messages.workspace.placeTransformDatasetHint}
-          </p>
+          <>
+            <p className="shrink-0 text-[11px] text-text-tertiary">
+              {messages.workspace.placeTransformDatasetHint}
+            </p>
+            <DatasetPickerPanel
+              title={messages.workspace.placeTransformInputDataset}
+              datasets={inputDatasets}
+              selectedId={inputDatasetId}
+              emptyLabel={messages.workspace.placeExtractFileEmpty}
+              messages={messages}
+              onPick={(dataset) => setInputDatasetId(dataset.id)}
+            />
+          </>
         ) : (
           <>
             <p className="shrink-0 text-[11px] text-text-tertiary">
@@ -496,26 +644,7 @@ function TransformNewPanel({
 
   return (
     <>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {pickingDataset ? (
-          <DialogContentTransition contentKey="dataset" className="chip-place-body min-h-0 flex-1">
-            {main}
-            <DatasetPickerPanel
-              title={messages.workspace.placeTransformInputDataset}
-              datasets={inputDatasets}
-              query={datasetQuery}
-              selectedId={inputDatasetId}
-              emptyLabel={messages.workspace.placeExtractFileEmpty}
-              searchPlaceholder={messages.workspace.placeExtractFileSearch}
-              messages={messages}
-              onQueryChange={setDatasetQuery}
-              onPick={(dataset) => setInputDatasetId(dataset.id)}
-            />
-          </DialogContentTransition>
-        ) : (
-          main
-        )}
-      </div>
+      {main}
 
       <AppDialog
         open={namingEmpty}
@@ -608,7 +737,7 @@ export function ChipPlaceDialog({
 
   function goApiRegister() {
     onClose();
-    showToast(messages.workspace.placeExtractApiTitle, messages.workspace.placeExtractApiHint, "info");
+    navigate("/extract/api");
   }
 
   return (
@@ -619,9 +748,7 @@ export function ChipPlaceDialog({
       dragHandleRef={dragHandleRef}
       className={cn(
         "chip-place-dialog flex max-h-[88vh] max-w-[96vw]",
-        kind === "extract"
-          ? "h-[min(40rem,88vh)] w-[26rem]"
-          : "h-[min(40rem,88vh)] w-auto min-w-[26rem]",
+        "h-[min(40rem,88vh)] w-[26rem]",
       )}
       minWidth={416}
       minHeight={480}

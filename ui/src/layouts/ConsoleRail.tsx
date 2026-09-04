@@ -1,11 +1,8 @@
 import {
   AppWindow,
-  Boxes,
   Braces,
   Cable,
   CalendarClock,
-  Columns2,
-  Combine,
   Database,
   DatabaseZap,
   FileText,
@@ -67,7 +64,6 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
           to: "/extract/api",
           label: "API",
           icon: <Braces className={iconClassName} />,
-          disabled: true,
         },
         {
           to: "/db",
@@ -90,22 +86,10 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       to: "/transform",
       label: messages.nav.transform,
       icon: <Workflow className={iconClassName} />,
+      isActive: (pathname) =>
+        pathname === "/transform" ||
+        (/^\/transform\/[^/]+$/.test(pathname) && pathname !== "/transform/reshape"),
       children: [
-        {
-          to: "/transform/clean",
-          label: messages.nav.transformClean,
-          icon: <Columns2 className={iconClassName} />,
-        },
-        {
-          to: "/transform/combine",
-          label: messages.nav.transformCombine,
-          icon: <Combine className={iconClassName} />,
-        },
-        {
-          to: "/transform/aggregate",
-          label: messages.nav.transformAggregate,
-          icon: <Boxes className={iconClassName} />,
-        },
         {
           to: "/transform/reshape",
           label: messages.nav.transformReshape,

@@ -1376,9 +1376,7 @@ export function WorkspacePage() {
     if (!workspaceId) return "/workspace";
     const qs = new URLSearchParams({ workspace: workspaceId, chip: chip.id });
     const bound = chip.binding?.ref_kind === "transform" ? chip.binding.ref_id : undefined;
-    return bound
-      ? `/transform/clean/${bound}?${qs}`
-      : `/transform/clean?${qs}`;
+    return bound ? `/transform/${bound}?${qs}` : `/transform?${qs}`;
   }
 
   function openTransformEditor(chip: Chip) {

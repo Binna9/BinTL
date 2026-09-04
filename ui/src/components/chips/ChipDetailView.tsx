@@ -110,14 +110,26 @@ export function ChipDetailView({ chip }: { chip: Chip }) {
             {connectionName || extract.connectionId || unset}
           </DetailRow>
           <DetailRow label={messages.workspace.mode}>
-            {extract.mode === "query" ? messages.workspace.queryMode : messages.workspace.tableMode}
+            {extract.mode === "http"
+              ? "HTTP"
+              : extract.mode === "query"
+                ? messages.workspace.queryMode
+                : messages.workspace.tableMode}
           </DetailRow>
           <DetailRow label={messages.common.delimiter}>{extract.delimiter || ","}</DetailRow>
           <DetailRow label={messages.workspace.hasHeader}>
             {extract.header ? messages.common.yes : messages.common.no}
           </DetailRow>
         </div>
-        {extract.mode === "table" ? (
+        {extract.mode === "http" ? (
+          <div className="grid grid-cols-2 gap-3">
+            <DetailRow label={messages.apiExtract.method}>{extract.method || "GET"}</DetailRow>
+            <DetailRow label={messages.apiExtract.path}>{extract.path || unset}</DetailRow>
+            <DetailRow label={messages.apiExtract.recordsPath}>
+              {extract.recordsPath || "—"}
+            </DetailRow>
+          </div>
+        ) : extract.mode === "table" ? (
           <div className="grid grid-cols-2 gap-3">
             <DetailRow label={messages.workspace.table}>{extract.table || unset}</DetailRow>
             <DetailRow label={messages.workspace.database}>{extract.database || "—"}</DetailRow>

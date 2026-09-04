@@ -1,22 +1,58 @@
 import type { CombineSpec } from "@/types/transform";
 
-export type TransformEditorMode = "clean" | "combine" | "aggregate" | "reshape";
+/** In-editor recipe sections (one transform = one recipe). */
+export type TransformEditorSection = "combine" | "clean" | "aggregate";
 
-export function editorModeFromPath(pathname: string): TransformEditorMode {
-  if (pathname.includes("/transform/combine")) return "combine";
-  if (pathname.includes("/transform/aggregate")) return "aggregate";
-  if (pathname.includes("/transform/reshape")) return "reshape";
+export const TRANSFORM_SECTIONS: TransformEditorSection[] = [
+  "combine",
+  "clean",
+  "aggregate",
+];
+
+export function parseTransformSection(
+  value: string | null | undefined,
+): TransformEditorSection {
+  if (value === "combine" || value === "aggregate" || value === "clean") return value;
   return "clean";
 }
 
+/** Canonical editor URL: `/transform` or `/transform/:id`, optional `?section=`. */
 export function transformEditorPath(
-  mode: TransformEditorMode,
   transformId?: string,
-  search = "",
+  searchOrParams?: string | URLSearchParams,
+  section?: TransformEditorSection,
 ): string {
-  const segment = mode === "clean" ? "clean" : mode;
-  const base = transformId ? `/transform/${segment}/${transformId}` : `/transform/${segment}`;
-  return search ? `${base}?${search}` : base;
+  const base = transformId ? `/transform/${transformId}` : "/transform";
+  const params =
+    typeof searchOrParams === "string"
+      ? new URLSearchParams(searchOrParams)
+      : searchOrParams
+        ? new URLSearchParams(searchOrParams)
+        : new URLSearchParams();
+  if (section && section !== "clean") {
+    params.set("section", section);
+  } else if (section === "clean") {
+    params.delete("section");
+  }
+  const qs = params.toString();
+  return qs ? `${base}?${qs}` : base;
+}
+
+/**
+ * Redirect helper for legacy `/transform/{clean|combine|aggregate}(/:id)` URLs.
+ * Returns the canonical path including query (merges existing search).
+ */
+export function legacyTransformRedirectTarget(
+  pathname: string,
+  search: string,
+): string | null {
+  const match = pathname.match(
+    /^\/transform\/(clean|combine|aggregate)(?:\/([^/]+))?\/?$/,
+  );
+  if (!match) return null;
+  const mode = match[1] as TransformEditorSection;
+  const id = match[2];
+  return transformEditorPath(id, search, mode);
 }
 
 export type CombineDraft = {

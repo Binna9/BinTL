@@ -2332,7 +2332,7 @@ impl Store {
         let driver = new.driver.to_ascii_lowercase();
         if !supported_driver(&driver) {
             return Err(StorageError::Invalid(
-                "driver must be postgres, redshift, cockroach, mysql, mariadb, mssql, or sqlite"
+                "driver must be postgres, redshift, cockroach, mysql, mariadb, mssql, sqlite, or http"
                     .into(),
             ));
         }
@@ -2344,6 +2344,10 @@ impl Store {
                 return Err(StorageError::Invalid(
                     "sqlite needs a file path in database".into(),
                 ));
+            }
+        } else if driver == "http" {
+            if new.host.trim().is_empty() {
+                return Err(StorageError::Invalid("http base URL required in host".into()));
             }
         } else if new.host.trim().is_empty() || new.database.trim().is_empty() {
             return Err(StorageError::Invalid("host and database required".into()));
@@ -2385,7 +2389,7 @@ impl Store {
         let driver = new.driver.to_ascii_lowercase();
         if !supported_driver(&driver) {
             return Err(StorageError::Invalid(
-                "driver must be postgres, redshift, cockroach, mysql, mariadb, mssql, or sqlite"
+                "driver must be postgres, redshift, cockroach, mysql, mariadb, mssql, sqlite, or http"
                     .into(),
             ));
         }
@@ -2397,6 +2401,10 @@ impl Store {
                 return Err(StorageError::Invalid(
                     "sqlite needs a file path in database".into(),
                 ));
+            }
+        } else if driver == "http" {
+            if new.host.trim().is_empty() {
+                return Err(StorageError::Invalid("http base URL required in host".into()));
             }
         } else if new.host.trim().is_empty() || new.database.trim().is_empty() {
             return Err(StorageError::Invalid("host and database required".into()));
@@ -4059,7 +4067,14 @@ fn reject_sensitive_config(value: &serde_json::Value) -> Result<(), StorageError
 fn supported_driver(driver: &str) -> bool {
     matches!(
         driver,
-        "postgres" | "redshift" | "cockroach" | "mysql" | "mariadb" | "mssql" | "sqlite"
+        "postgres"
+            | "redshift"
+            | "cockroach"
+            | "mysql"
+            | "mariadb"
+            | "mssql"
+            | "sqlite"
+            | "http"
     )
 }
 

@@ -1,5 +1,10 @@
 import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
-import type { CreateExtractRequest, ExtractRecord } from "@/types/extract";
+import type {
+  CreateExtractRequest,
+  ExtractRecord,
+  HttpPreviewRequest,
+  HttpPreviewResponse,
+} from "@/types/extract";
 import type { FilePreview } from "@/types/file";
 
 interface ExtractListResponse {
@@ -13,6 +18,11 @@ export const extractApi = {
     httpRequest<ExtractRecord>(`/api/extracts/${extractId}`),
   createExtract: (request: CreateExtractRequest) =>
     httpRequest<ExtractRecord>("/api/extracts", {
+      method: "POST",
+      body: JSON.stringify(request),
+    }),
+  previewHttp: (request: HttpPreviewRequest) =>
+    httpRequest<HttpPreviewResponse>("/api/http/preview", {
       method: "POST",
       body: JSON.stringify(request),
     }),

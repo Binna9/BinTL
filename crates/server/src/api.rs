@@ -7,8 +7,9 @@ use axum::{Json, Router};
 use connectors::{
     catalog_layout, db_source_path, export_sheet_to_csv, list_columns, list_databases,
     list_relations, list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter,
-    parse_ident, parse_table, preview_table, run_sql, sniff_delimiter, spreadsheet_format, sql_kind,
-    test_connection, with_database, SqlKind,
+    parse_http_spec, parse_ident, parse_table, preview_http, preview_table, run_sql,
+    sniff_delimiter, spreadsheet_format, sql_kind, test_connection, with_database, HttpKv,
+    HttpRequestSpec, SqlKind,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -58,6 +59,7 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
         .route("/api/extracts/{id}/logs", get(extract_logs))
         .route("/api/extracts/{id}/file", get(extract_file))
         .route("/api/extracts/{id}/preview", get(preview_extract))
+        .route("/api/http/preview", post(http_preview))
         .route(
             "/api/extracts/{id}",
             get(get_extract).delete(delete_extract),
@@ -545,7 +547,9 @@ struct CreateConnectionBody {
     host: String,
     #[serde(default)]
     port: Option<u16>,
+    #[serde(default)]
     database: String,
+    #[serde(default)]
     username: String,
     #[serde(default)]
     password: String,
@@ -557,7 +561,7 @@ fn default_port(driver: &str, port: Option<u16>) -> u16 {
     port.unwrap_or(match driver {
         "mysql" | "mariadb" => 3306,
         "mssql" => 1433,
-        "sqlite" => 0,
+        "sqlite" | "http" => 0,
         _ => 5432,
     })
 }
@@ -847,11 +851,15 @@ fn compact_sql(sql: &str) -> String {
 
 #[derive(Deserialize)]
 struct CreateExtractBody {
+    #[serde(default)]
+    kind: Option<String>,
     connection_id: String,
     #[serde(default)]
     table: Option<String>,
     #[serde(default)]
     sql: Option<String>,
+    #[serde(default)]
+    source: Option<Value>,
     #[serde(default)]
     delimiter: Option<String>,
     #[serde(default)]
@@ -868,10 +876,128 @@ struct CreateExtractBody {
     name: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct HttpPreviewBody {
+    connection_id: String,
+    #[serde(default = "default_http_method")]
+    method: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    query: Vec<HttpKv>,
+    #[serde(default)]
+    headers: Vec<HttpKv>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    records_path: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+fn default_http_method() -> String {
+    "GET".into()
+}
+
 async fn create_extract(
     State(state): State<AppState>,
     user: CurrentUser,
     Json(body): Json<CreateExtractBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let kind = body
+        .kind
+        .as_deref()
+        .unwrap_or("database")
+        .trim()
+        .to_ascii_lowercase();
+    match kind.as_str() {
+        "api" => create_api_extract(state, user, body).await,
+        "database" => create_database_extract(state, user, body).await,
+        other => Err(AppError::bad(format!("unsupported extract kind: {other}"))),
+    }
+}
+
+async fn create_api_extract(
+    state: AppState,
+    user: CurrentUser,
+    body: CreateExtractBody,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let connection = state
+        .store
+        .get_connection(&body.connection_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("connection not found"))?;
+    if connection.driver != "http" {
+        return Err(AppError::bad("api extract needs an http connection"));
+    }
+    let raw = if let Some(source) = body.source {
+        serde_json::to_string(&source).map_err(|error| AppError::bad(error.to_string()))?
+    } else {
+        body.sql
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| AppError::bad("source or sql required for api extract"))?
+            .to_string()
+    };
+    let spec = parse_http_spec(&raw).map_err(|error| AppError::bad(error.to_string()))?;
+    let source = json!({
+        "type": "http",
+        "method": spec.method,
+        "path": spec.path,
+        "query": spec.query,
+        "headers": spec.headers,
+        "body": spec.body,
+        "records_path": spec.records_path,
+    });
+    let sql = serde_json::to_string(&source).map_err(|error| AppError::bad(error.to_string()))?;
+    let table = match body
+        .table
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(table) => table.to_string(),
+        None if !spec.path.trim().is_empty() => {
+            spec.path.trim().trim_matches('/').replace('/', "_")
+        }
+        None => "http".into(),
+    };
+    let delimiter = body.delimiter.unwrap_or_else(|| ",".into());
+    parse_delimiter(&delimiter).map_err(|e| AppError::bad(e.to_string()))?;
+    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
+    let output_filename = body
+        .filename
+        .as_deref()
+        .or(body.name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let row = state
+        .store
+        .insert_extract(
+            "api",
+            &body.connection_id,
+            &table,
+            &delimiter,
+            body.header.unwrap_or(true),
+            body.add_sequence.unwrap_or(false),
+            Some(&sql),
+            None,
+            &workspace_id,
+            output_filename,
+        )
+        .await?;
+    crate::extract::spawn(state.store.clone(), row.id.clone());
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(row).unwrap()),
+    ))
+}
+
+async fn create_database_extract(
+    state: AppState,
+    user: CurrentUser,
+    body: CreateExtractBody,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let sql = match body.sql.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => {
@@ -939,6 +1065,50 @@ async fn create_extract(
         StatusCode::CREATED,
         Json(serde_json::to_value(row).unwrap()),
     ))
+}
+
+async fn http_preview(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+    Json(body): Json<HttpPreviewBody>,
+) -> Result<Json<Value>, AppError> {
+    let live = state.store.live_connection(&body.connection_id).await?;
+    if live.driver != "http" {
+        return Err(AppError::bad("http preview needs an http connection"));
+    }
+    let spec = HttpRequestSpec {
+        method: body.method,
+        path: body.path,
+        query: body.query,
+        headers: body.headers,
+        body: body.body,
+        records_path: body.records_path,
+    };
+    let raw = serde_json::to_string(&spec).map_err(|error| AppError::bad(error.to_string()))?;
+    let spec = parse_http_spec(&raw).map_err(|error| AppError::bad(error.to_string()))?;
+    let limit = body.limit.unwrap_or(50).clamp(1, 500);
+    let preview = preview_http(&live, &spec, limit)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let rows = preview
+        .rows
+        .into_iter()
+        .map(|row| {
+            preview
+                .columns
+                .iter()
+                .map(|column| row.get(column).cloned().unwrap_or_default())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "status": preview.status,
+        "columns": preview.columns,
+        "rows": rows,
+        "row_count": preview.row_count,
+        "truncated": preview.row_count > rows.len(),
+        "limit": limit,
+    })))
 }
 
 async fn list_extracts(

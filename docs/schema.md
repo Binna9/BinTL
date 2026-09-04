@@ -1,10 +1,10 @@
 # SQLite 스키마 (`data/etl.db`)
 
-작성: 2026-08-31 (0016 → 0021 반영)
+작성: 2026-09-04 (실DB `_sqlx_migrations` = **1…22** / 코드에 **0023** 있음·미적용)
 
 SQLite는 `COMMENT ON`을 지원하지 않는다. 테이블·컬럼 의미는 이 문서가 기준이다.
 
-마이그레이션은 `crates/storage/migrations/`에 있다. 아래는 **현재(0021까지 적용된)** 구조다. 시각 컬럼은 RFC3339 문자열이다. 불리언은 INTEGER `0`/`1`이다.
+마이그레이션은 `crates/storage/migrations/`에 있다. 시각 컬럼은 RFC3339 문자열이다. 불리언은 INTEGER `0`/`1`이다.
 
 한 설치(SQLite 하나)는 회사 하나다. 커넥션은 조직 공유 자산이고, 일(파일·추출·변환·칩)은 작업 공간에 속한다. 사용자는 작업 공간을 여러 개 소유한다. 폴더는 디렉터리처럼 그룹만 잡는다.
 
@@ -20,12 +20,31 @@ users
         └─ datasets / extracts / jobs / transforms
 connections          (전역. 쓰기 권한 CONNECTION_WRITE)
 search_documents     (통합검색 인덱스. 엔티티별 upsert)
-extract_definitions  (칩 카탈로그용 추출 정의. workspace_id 선택)
+extract_definitions  (칩·추출 화면 카탈로그용 레시피. workspace_id 선택)
 ```
 
 접근은 역할 문자열이 아니라 `permissions.code`로 판단한다.
 `USER_MANAGE`는 사용자 관리, `WORKSPACE_ALL`은 모든 작업 공간, `CONNECTION_WRITE`는 커넥션 쓰기.
 작업 공간 멤버 공유(`workspace_members`)는 이후 범위다.
+
+### 추출·변환: 정의 vs 실행 (헷갈리기 쉬운 쌍)
+
+| 역할 | 추출 | 변환 |
+| --- | --- | --- |
+| **재사용 레시피 (화면 목록 ≈ 이 행 수)** | `extract_definitions` | `transforms` (+ `chip_bindings`) |
+| **한 번 실행·파일 산출** | `extracts` → `datasets` | `jobs` → `datasets` |
+| **캔버스 칩 실행** | `chip_runs` (`legacy_extract_id` → `extracts`) | `chip_runs` (`legacy_job_id` → `jobs`) |
+
+- UI 추출 카탈로그에 5개가 보이면 **`extract_definitions`가 5행**인 것이 정상이다.
+- `extracts`는 “DB에서 파일로 뽑은 **실행 이력**”이다. 한 번만보내기/실행했다면 **1행**이 맞다. 정의 5개 ≠ 실행 5개.
+- 칩 경로도 결국 실행 시 `extracts`(+`datasets`)를 만들고 `chip_runs.legacy_extract_id`로 묶는다. 정의 테이블에 row가 늘지 않는다.
+
+```
+extract_definitions ──chip_bindings──► chips ──workspace_chips──► canvas
+        │                                    │
+        │ (실행)                             ▼
+        └──────────────► extracts ──► datasets ◄── chip_runs / chip_output_slots
+```
 
 ---
 
@@ -194,7 +213,8 @@ ETL 설정, 실행, 파일을 묶는 프로젝트. 사용자는 여러 개를 �
 
 ## extract_definitions — 추출 정의
 
-DB/API 추출 레시피. `extracts`는 실행 이력, 이 테이블은 재사용 정의.
+DB/API 추출 **레시피**(카탈로그·칩 바인딩 대상). 화면 “추출” 목록 개수는 여기 행 수에 대응한다.
+실행·파일 산출은 `extracts` / `datasets`이고, 이 테이블에는 실행 상태가 없다.
 
 
 | 컬럼              | 한글명      | 설명                          |
@@ -227,13 +247,19 @@ DB/API 추출 레시피. `extracts`는 실행 이력, 이 테이블은 재사용
 | `workspace_id` | 작업 공간 ID | `workspaces.id`                                           |
 | `from_chip_id` | 출발 칩     | `chips.id`                                                |
 | `to_chip_id`   | 도착 칩     | `chips.id`                                                |
-| `kind`         | 종류       | `data` (산출 전달) \| `on_success` (성공 시) \| `on_error` (실패 시) \| `always` (무조건) |
+| `kind`         | 종류       | 아래 마이그레이션 상태 참고                                              |
 | `from_port`    | 출발 포트    | 기본 `out`                                                  |
 | `to_port`      | 도착 포트    | 기본 `in`                                                   |
 | `created_at`   | 생성 시각    |                                                           |
 
+**`kind` (마이그레이션 상태)**
 
-같은 워크스페이스에서 `(from_chip_id, to_chip_id, kind)`는 유일하다. 사이클은 저장 시 거부한다. `data` 선은 추출·변환에서 시작해 변환·적재로만 갈 수 있다.
+| 상태 | 허용 값 |
+| --- | --- |
+| 실DB ≤0022 (현재) | `data` \| `then` \| `on_error` |
+| 코드 0023 적용 후 | `data` \| `on_success` \| `on_error` \| `always` (`then` → `always`로 이전) |
+
+같은 워크스페이스에서 `(from_chip_id, to_chip_id, kind)`는 유일하다. 사이클은 저장 시 거부한다. `data` 선은 추출·변환에서 시작해 변환·적재로만 갈 수 있다. UI/서버는 이미 `on_success`/`always`를 쓰도록 맞춰 두었을 수 있으므로, **0023을 반드시 적용**해야 CHECK와 코드가 맞는다.
 
 ## chip_output_slots — 칩 산출 슬롯
 
@@ -340,19 +366,21 @@ DB/API 추출 레시피. `extracts`는 실행 이력, 이 테이블은 재사용
 
 ## extracts — 추출 실행 (호환)
 
-커넥션에서 서버 파일로 뽑은 추출 이력. 종류는 `database`(DB)와 `api`(HTTP)다.
-디스크 경로는 `extracts/{databases|api}/{id}/…` 이고, 성공 시 `datasets.kind`에도 같은 값이 들어간다.
+커넥션에서 서버 파일로 뽑은 **실행 이력**(레시피 아님). UI 추출 목록의 N개와 행 수가 같을 필요 없다 — 그건 `extract_definitions`다.
+종류는 `database`(DB)와 `api`(HTTP)다. 디스크 경로는 `extracts/{databases|api}/{id}/…` 이고, 성공 시 같은 id로 `datasets` 행이 생기거나 연결된다.
 API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
+칩 실행도 내부적으로 이 테이블에 한 행을 남기고 `chip_runs.legacy_extract_id`로 가리킨다.
 
 
 | 컬럼                 | 한글명      | 설명                                            |
 | ------------------ | -------- | --------------------------------------------- |
-| `id`               | ID       | UUID                                          |
+| `id`               | ID       | UUID. 성공 시 `datasets.id`와 같게 쓰는 경로가 있음          |
 | `kind`             | 추출 종류    | `database` \| `api`                           |
 | `connection_id`    | 커넥션 ID   | 소스 커넥션. DB는 `connections.id`, API는 이후 확장       |
 | `table_name`       | 추출 대상    | DB: `schema.table` 또는 `query`. API: 리소스/표시명   |
 | `delimiter`        | 구분자      | 출력 구분자. 쉼표, tab 등                             |
 | `header`           | 헤더 여부    | `0`/`1`                                       |
+| `add_sequence`     | 순번 추가    | `0`/`1` (0010)                                |
 | `status`           | 상태       | `queued` \| `running` \| `succeeded` \| `failed` |
 | `stored_path`      | 저장 경로    | 파일 상대 경로                                      |
 | `filename`         | 파일명      |                                               |
@@ -363,7 +391,7 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 | `finished_at`      | 종료 시각    |                                               |
 | `sql_text`         | SQL      | DB 쿼리 추출 시 실행한 SQL. 테이블/API면 비울 수 있음          |
 | `catalog_database` | 카탈로그 DB  | 카탈로그에서 고른 데이터베이스                              |
-| `output_filename`  | 출력 파일명   | DB 내보내기 시 사용자가 지정한 이름 (0021). 칩 실행과 무관      |
+| `output_filename`  | 출력 파일명   | DB 내보내기 시 사용자가 지정한 이름. 칩 실행과 무관할 수 있음         |
 | `workspace_id`     | 작업 공간 ID | `workspaces.id`. 목록·접근은 소유 범위                 |
 
 
@@ -510,4 +538,37 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 | `user_id`     | 사용자  | `users.id`. CASCADE 삭제 |
 | `query`       | 검색어  | 대소문자 무시 유일 (user_id와 쌍) |
 | `searched_at` | 검색 시각 | RFC3339 |
+
+
+---
+
+
+
+## 설계 메모 · 고쳐야 할 점
+
+실DB 스냅샷(2026-09-04): `extract_definitions` 5, `extracts` 1, `chips` 3, `chip_bindings` 2, `chip_runs` 0, `datasets` 13(그중 `planned` 1), 마이그레이션 **22까지**, **0023 미적용**.
+
+1. **정의/실행 이중 구조가 이름만으로 안 드러남**  
+   `extracts` ↔ `extract_definitions`, `jobs` ↔ `transforms`, 그리고 또 `chip_runs`가 실행을 감싼다. 신규 개발자가 extracts를 “추출 목록”으로 오해하기 쉽다. 장기적으로는 실행을 `chip_runs`(또는 run 테이블)로 단일화하고 `extracts`/`jobs`는 폐기·뷰화하는 편이 낫다.
+
+2. **`legacy_*`가 아직 본경로**  
+   칩 실행이 `legacy_extract_id` / `legacy_job_id`에 의존한다. “호환”이 아니라 현재 구현의 중심축이다. 이름을 `extract_id`/`job_id`로 바꾸거나, 산출은 `output_dataset_id`만으로 추적하도록 정리할 여지가 있다.
+
+3. **`extract_definitions.workspace_id`가 사실상 항상 NULL**  
+   0018로 카탈로그 전역화가 됐는데, 컬럼 의미가 “소속 WS / 생성 당시 WS / 미사용”인지 코드·UI가 애매하다. 전역 카탈로그면 컬럼 제거 또는 `owner_user_id`로 소유만 두는 쪽이 명확하다.
+
+4. **빈 변환 칩 = `chip_bindings` 없음**  
+   캔버스에 올린 초안 transform은 binding 없이 `config_json`/별도 생성 흐름을 탄다. extract는 정의 없이 칩만 두기 어렵다. 종류별 불일치.
+
+5. **`datasets`에 planned 가상 행**  
+   실파일 카탈로그와 설계용 placeholder가 한 테이블에 섞인다(`stored_path = __planned__/…`). 조회·검색·삭제 시 실수로 planned를 노출하기 쉽다. 별도 `planned_inputs` 또는 명확한 필터 규약이 필요하다.
+
+6. **extract id = dataset id 관례**  
+   성공 추출에서 두 PK를 같게 쓰는 경로가 있어 `datasets.extract_id`가 자기 자신을 가리키는 형태가 된다. 편하긴 하나 FK 의미·삭제 순서가 헷갈린다.
+
+7. **마이그레이션 드리프트**  
+   코드/문서의 엣지 kind(`on_success`/`always`)와 실DB CHECK(`then`)가 어긋나 있다. 서버 기동 시 0023 적용이 선행돼야 한다.
+
+8. **검색 엔티티 `extract`**  
+   `search_documents.entity_type`에 `extract`가 있는데 UI 카탈로그의 축은 `extract_definitions`다. 인덱스가 실행 이력만 잡으면 카탈로그 검색과 어긋난다.
 

@@ -1,7 +1,10 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use connectors::{extract_query, extract_table, parse_delimiter, with_database, ExtractOptions};
+use connectors::{
+    extract_http, extract_query, extract_table, parse_delimiter, parse_http_spec, with_database,
+    ExtractOptions,
+};
 use storage::{chip_slot, ProcessLog, Store, LOG_EXTRACTS};
 
 pub fn spawn(store: Store, id: String) {
@@ -27,12 +30,19 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let log = ProcessLog::create(&store.data_dir, LOG_EXTRACTS, id).ok();
     if let Some(log) = &log {
-        let source = row
-            .sql_text
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .map(|sql| format!("sql={}", truncate(sql, 240)))
-            .unwrap_or_else(|| format!("table={}", row.table_name));
+        let source = if row.kind == "api" {
+            row.sql_text
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|sql| format!("http={}", truncate(sql, 240)))
+                .unwrap_or_else(|| format!("http={}", row.table_name))
+        } else {
+            row.sql_text
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|sql| format!("sql={}", truncate(sql, 240)))
+                .unwrap_or_else(|| format!("table={}", row.table_name))
+        };
         log.write(
             "info",
             "started",
@@ -59,12 +69,115 @@ async fn extract_now(
     row: &storage::ExtractRow,
     log: Option<&ProcessLog>,
 ) -> Result<(), String> {
-    if row.kind == "api" {
-        return Err("api extract is not implemented yet".into());
+    match row.kind.as_str() {
+        "api" => extract_api_now(store, row, log).await,
+        "database" => extract_database_now(store, row, log).await,
+        other => Err(format!("unsupported extract kind: {other}")),
     }
-    if row.kind != "database" {
-        return Err(format!("unsupported extract kind: {}", row.kind));
+}
+
+async fn resolve_extract_dest(
+    store: &Store,
+    row: &storage::ExtractRow,
+) -> Result<(String, String), String> {
+    let linked = store
+        .linked_chip_run_for_extract(&row.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(link) = &linked {
+        let chip = store
+            .get_chip(&link.chip_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("chip {} missing", link.chip_id))?;
+        let slot_file = chip_slot::slot_file_name("extract", &row.delimiter);
+        let rel = chip_slot::stored_rel(&link.workspace_id, &link.chip_id, &slot_file)
+            .map_err(|e| e.to_string())?;
+        let filename = chip_slot::display_filename(&chip.name, "extract", &row.delimiter);
+        return Ok((filename, rel));
     }
+    if let Some(requested) = row
+        .output_filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let filename =
+            chip_slot::standalone_export_filename(Some(requested), &row.table_name, &row.delimiter);
+        let rel = Store::extract_named_rel(&row.kind, &row.id, &filename)
+            .map_err(|e| e.to_string())?;
+        return Ok((filename, rel));
+    }
+    Store::extract_file_rel(&row.kind, &row.id, &row.table_name, &row.delimiter)
+        .map_err(|e| e.to_string())
+}
+
+async fn extract_api_now(
+    store: &Store,
+    row: &storage::ExtractRow,
+    log: Option<&ProcessLog>,
+) -> Result<(), String> {
+    let live = store
+        .live_connection(&row.connection_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if live.driver != "http" {
+        return Err(format!(
+            "api extract needs an http connection, got {}",
+            live.driver
+        ));
+    }
+    let raw = row
+        .sql_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "api extract needs http source json".to_string())?;
+    let spec = parse_http_spec(raw).map_err(|e| e.to_string())?;
+    if let Some(log) = log {
+        log.write(
+            "info",
+            "connected",
+            &format!(
+                "driver={} base={} name={} method={} path={}",
+                live.driver, live.host, live.name, spec.method, spec.path
+            ),
+        );
+    }
+    let delimiter = parse_delimiter(&row.delimiter).map_err(|e| e.to_string())?;
+    let opts = ExtractOptions {
+        delimiter,
+        header: row.header != 0,
+        quote: b'"',
+        add_sequence: row.add_sequence != 0,
+    };
+    let (filename, rel) = resolve_extract_dest(store, row).await?;
+    let dest = store.resolve(&rel);
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let progress = ExtractProgress::new(store.clone(), row.id.clone(), log.cloned());
+    let on_progress = |n: u64| progress.report(n);
+    let n = extract_http(&live, &spec, &dest, &opts, Some(&on_progress))
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(log) = log {
+        log.write("info", "succeeded", &format!("rows={n} file={rel}"));
+    }
+    store
+        .set_extract_succeeded(&row.id, &rel, &filename, n as i64)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn extract_database_now(
+    store: &Store,
+    row: &storage::ExtractRow,
+    log: Option<&ProcessLog>,
+) -> Result<(), String> {
     let live = store
         .live_connection(&row.connection_id)
         .await
@@ -87,36 +200,7 @@ async fn extract_now(
         quote: b'"',
         add_sequence: row.add_sequence != 0,
     };
-    let linked = store
-        .linked_chip_run_for_extract(&row.id)
-        .await
-        .map_err(|e| e.to_string())?;
-    let (filename, rel) = if let Some(link) = &linked {
-        let chip = store
-            .get_chip(&link.chip_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("chip {} missing", link.chip_id))?;
-        let slot_file = chip_slot::slot_file_name("extract", &row.delimiter);
-        let rel = chip_slot::stored_rel(&link.workspace_id, &link.chip_id, &slot_file)
-            .map_err(|e| e.to_string())?;
-        let filename = chip_slot::display_filename(&chip.name, "extract", &row.delimiter);
-        (filename, rel)
-    } else if let Some(requested) = row
-        .output_filename
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let filename =
-            chip_slot::standalone_export_filename(Some(requested), &row.table_name, &row.delimiter);
-        let rel = Store::extract_named_rel(&row.kind, &row.id, &filename)
-            .map_err(|e| e.to_string())?;
-        (filename, rel)
-    } else {
-        Store::extract_file_rel(&row.kind, &row.id, &row.table_name, &row.delimiter)
-            .map_err(|e| e.to_string())?
-    };
+    let (filename, rel) = resolve_extract_dest(store, row).await?;
     let dest = store.resolve(&rel);
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent)

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowUpDown,
   BookmarkPlus,
@@ -35,7 +35,6 @@ import {
   GridRow,
 } from "@/components/DataGrid";
 import { CombineSetup } from "@/components/transform/CombineSetup";
-import { TransformModeNav } from "@/components/transform/TransformModeNav";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { Button } from "@/components/ui/button";
@@ -55,10 +54,12 @@ import {
   canPreviewCombine,
   combineDraftFromSpec,
   combineDraftToSpec,
-  editorModeFromPath,
   emptyCombineDraft,
+  parseTransformSection,
+  TRANSFORM_SECTIONS,
   transformEditorPath,
   type CombineDraft,
+  type TransformEditorSection,
 } from "@/lib/transformEditor";
 import { chipApi } from "@/services/chips/chipApi";
 import { datasetApi } from "@/services/transform/datasetApi";
@@ -885,15 +886,15 @@ function PreviewGrid({
 export function TransformPage() {
   const { messages } = useLanguage();
   const { id } = useParams<{ id: string }>();
-  const { pathname } = useLocation();
-  const [searchParams] = useSearchParams();
-  const editorMode = editorModeFromPath(pathname);
-  const editorSearch = searchParams.toString();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const t = messages.transform;
+  const [editorSection, setEditorSection] = useState<TransformEditorSection>(() =>
+    parseTransformSection(searchParams.get("section")),
+  );
   const workspaceId = searchParams.get("workspace") ?? undefined;
   const chipId = searchParams.get("chip") ?? searchParams.get("input_chip") ?? undefined;
   const workspaceMode = Boolean(workspaceId && chipId);
-  const navigate = useNavigate();
-  const t = messages.transform;
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetId, setDatasetId] = useState<string>();
   const [transformId, setTransformId] = useState<string>();
@@ -951,12 +952,20 @@ export function TransformPage() {
     canPreviewCombine(combineDraft, datasetId) || usableSteps(steps, baseColumns).length > 0;
   const combineModeLabel =
     combineDraft?.mode === "union" ? t.combineModeUnion : t.combineModeJoin;
-  const headerCopy =
-    editorMode === "combine"
-      ? { title: t.combineTitle, description: t.combineDescription }
-      : editorMode === "aggregate"
-        ? { title: t.aggregateTitle, description: t.aggregateDescription }
-        : { title: t.title, description: t.description };
+
+  useEffect(() => {
+    setEditorSection(parseTransformSection(searchParams.get("section")));
+  }, [searchParams]);
+
+  function changeSection(section: TransformEditorSection) {
+    setEditorSection(section);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (section === "clean") next.delete("section");
+      else next.set("section", section);
+      return next;
+    });
+  }
 
   function buildSpec(): TransformSpecV2 {
     const spec = specFrom(selected, steps, baseColumns);
@@ -1131,9 +1140,9 @@ export function TransformPage() {
   }, [datasetId, selected?.available, selected?.status, messages]);
 
   useEffect(() => {
-    if (editorMode !== "combine" || combineDraft) return;
+    if (editorSection !== "combine" || combineDraft) return;
     setCombineDraft(emptyCombineDraft());
-  }, [editorMode, combineDraft]);
+  }, [editorSection, combineDraft]);
 
   useEffect(() => {
     if (!combineDraft || combineDraft.mode !== "join" || !combineDraft.rightDatasetId) {
@@ -1300,7 +1309,7 @@ export function TransformPage() {
     setRightPreview(null);
     setSourcePreview(null);
     setResultPreview(null);
-    navigate(transformEditorPath("clean", undefined, editorSearch));
+    navigate(transformEditorPath(undefined, searchParams, editorSection));
   }
 
   async function saveTransformDefinition() {
@@ -1324,7 +1333,7 @@ export function TransformPage() {
         });
         setTransformId(row.id);
         setName(row.name);
-        navigate(transformEditorPath(editorMode, row.id, editorSearch), { replace: true });
+        navigate(transformEditorPath(row.id, searchParams, editorSection), { replace: true });
       }
       if (workspaceMode && workspaceId) {
         toastSuccess(messages.transform.saveToWorkspace);
@@ -1362,7 +1371,7 @@ export function TransformPage() {
         savedTransformId = row.id;
         setTransformId(row.id);
         setName(row.name);
-        navigate(transformEditorPath(editorMode, row.id, editorSearch), { replace: true });
+        navigate(transformEditorPath(row.id, searchParams, editorSection), { replace: true });
       }
       await chipApi.register({
         name: registerChipName.trim(),
@@ -1433,7 +1442,7 @@ export function TransformPage() {
         });
         savedId = row.id;
         setTransformId(row.id);
-        navigate(transformEditorPath(editorMode, row.id, editorSearch), {
+        navigate(transformEditorPath(row.id, searchParams, editorSection), {
           replace: true,
         });
       }
@@ -1464,8 +1473,8 @@ export function TransformPage() {
       <PageHeader
         iconName="jobs"
         eyebrow={messages.transform.eyebrow}
-        title={headerCopy.title}
-        description={headerCopy.description}
+        title={t.title}
+        description={t.description}
         actions={
           <>
             {workspaceMode && workspaceId ? (
@@ -1539,12 +1548,6 @@ export function TransformPage() {
       />
 
       <Panel tall>
-        <TransformModeNav
-          mode={editorMode}
-          transformId={savedTransformId}
-          search={editorSearch}
-          messages={messages}
-        />
         <SplitLayout
           className="min-h-0 flex-1"
           defaultSizes={[layout.split.catalog]}
@@ -1746,16 +1749,16 @@ export function TransformPage() {
 
           <section className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
             <PaneHeader
-              title={editorMode === "combine" ? t.combineSetup : messages.transform.setup}
+              title={editorSection === "combine" ? t.combineSetup : messages.transform.setup}
               meta={
-                editorMode === "combine"
+                editorSection === "combine"
                   ? combineModeLabel
-                  : editorMode === "aggregate"
+                  : editorSection === "aggregate"
                     ? messages.transform.soonPending
                     : messages.common.count(steps.length)
               }
               afterMeta={
-                editorMode === "clean" ? (
+                editorSection === "clean" ? (
                 <div className="relative" ref={addStepRef}>
                   <Button
                     type="button"
@@ -1860,16 +1863,45 @@ export function TransformPage() {
                     </div>
                   </FormField>
                 </div>
+                <div className="border-b border-border px-4 py-3">
+                  <div className="flex max-w-xl rounded-lg border border-border bg-raised p-1" role="tablist" aria-label={t.sectionNav}>
+                    {TRANSFORM_SECTIONS.map((section) => {
+                      const label =
+                        section === "combine"
+                          ? t.sectionCombine
+                          : section === "aggregate"
+                            ? t.sectionAggregate
+                            : t.sectionClean;
+                      return (
+                        <button
+                          key={section}
+                          type="button"
+                          role="tab"
+                          aria-selected={editorSection === section}
+                          className={cn(
+                            "flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
+                            editorSection === section
+                              ? "bg-surface text-text shadow-sm"
+                              : "text-text-tertiary hover:text-text-secondary",
+                          )}
+                          onClick={() => changeSection(section)}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 {sourceMissing ? (
                   <p className="border-b border-border px-4 py-2.5 text-[11px] leading-5 text-warning">
                     {messages.transform.sourceFileMissing}
                   </p>
                 ) : null}
-                {editorMode === "aggregate" ? (
+                {editorSection === "aggregate" ? (
                   <div className="scroll-pane min-h-0 flex-1 overflow-auto p-4">
                     <p className="text-sm leading-6 text-text-secondary">{t.aggregateHint}</p>
                   </div>
-                ) : editorMode === "combine" && combineDraft ? (
+                ) : editorSection === "combine" && combineDraft ? (
                   <CombineSetup
                     messages={messages}
                     draft={combineDraft}
@@ -2033,7 +2065,7 @@ export function TransformPage() {
                 preview={activePreview}
                 empty={
                   detailTab === "result"
-                    ? editorMode === "combine" && !canPreviewCombine(combineDraft, datasetId)
+                    ? editorSection === "combine" && !canPreviewCombine(combineDraft, datasetId)
                       ? t.combinePreviewHint
                       : messages.transform.previewHint
                     : messages.empty.preview
@@ -2087,6 +2119,16 @@ export function TransformPage() {
             <div className="flex gap-2">
               <dt className="w-14 shrink-0">{messages.transform.steps}</dt>
               <dd className="text-text-secondary">{messages.transform.registerSummarySteps(steps.length)}</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0">{messages.transform.sectionCombine}</dt>
+              <dd className="text-text-secondary">
+                {messages.transform.registerSummaryCombine(Boolean(combineDraftToSpec(combineDraft)))}
+              </dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0">{messages.transform.sectionAggregate}</dt>
+              <dd className="text-text-secondary">{messages.transform.registerSummaryAggregate}</dd>
             </div>
           </dl>
         </div>

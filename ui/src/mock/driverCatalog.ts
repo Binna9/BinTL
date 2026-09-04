@@ -6,4 +6,5 @@ export const driverCatalog = [
   { value: "mariadb", label: "MariaDB" },
   { value: "mssql", label: "SQL Server" },
   { value: "sqlite", label: "SQLite" },
+  { value: "http", label: "HTTP / API" },
 ] as const;

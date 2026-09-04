@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useParams } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
 import { BrandMark } from "@/components/BrandMark";
 import { ConsoleRail } from "@/layouts/ConsoleRail";
@@ -7,6 +7,7 @@ import { SplitLayout } from "@/layouts/SplitLayout";
 import { TopSubmenu } from "@/components/TopSubmenu";
 import { ConnectionsPage } from "@/pages/ConnectionsPage";
 import { ExtractResultsPage } from "@/pages/ExtractResultsPage";
+import { ApiExtractPage } from "@/pages/ApiExtractPage";
 import { FilesPage } from "@/pages/FilesPage";
 import { HistoryPage } from "@/pages/HistoryPage";
 import { JobRunPage } from "@/pages/JobRunPage";
@@ -25,10 +26,12 @@ import { WorkspaceRunsPage } from "@/pages/WorkspaceRunsPage";
 import { SessionProvider } from "@/hooks/auth/useSession";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
+import { legacyTransformRedirectTarget } from "@/lib/transformEditor";
 
-function LegacyTransformRedirect() {
-  const { id } = useParams();
-  return <Navigate to={id ? `/transform/clean/${id}` : "/transform/clean"} replace />;
+function LegacyModeTransformRedirect() {
+  const { pathname, search } = useLocation();
+  const target = legacyTransformRedirectTarget(pathname, search.startsWith("?") ? search.slice(1) : search);
+  return <Navigate to={target ?? "/transform"} replace />;
 }
 
 function ConsoleShell() {
@@ -74,17 +77,18 @@ function ConsoleShell() {
             <Route path="/workspace/:workspaceId/tasks/:taskId" element={<Navigate to={loc.pathname.replace("/tasks/", "/chips/")} replace />} />
             <Route path="/db" element={<QueryPage />} />
             <Route path="/query" element={<QueryPage />} />
+            <Route path="/extract/api" element={<ApiExtractPage />} />
             <Route path="/extracts" element={<ExtractResultsPage />} />
             <Route path="/transforms" element={<TransformFilesPage />} />
-            <Route path="/transform" element={<Navigate to="/transform/clean" replace />} />
-            <Route path="/transform/clean" element={<TransformPage />} />
-            <Route path="/transform/clean/:id" element={<TransformPage />} />
-            <Route path="/transform/combine" element={<TransformPage />} />
-            <Route path="/transform/combine/:id" element={<TransformPage />} />
-            <Route path="/transform/aggregate" element={<TransformPage />} />
-            <Route path="/transform/aggregate/:id" element={<TransformPage />} />
+            <Route path="/transform" element={<TransformPage />} />
             <Route path="/transform/reshape" element={<TransformSoonPage kind="reshape" />} />
-            <Route path="/transform/:id" element={<LegacyTransformRedirect />} />
+            <Route path="/transform/clean" element={<LegacyModeTransformRedirect />} />
+            <Route path="/transform/clean/:id" element={<LegacyModeTransformRedirect />} />
+            <Route path="/transform/combine" element={<LegacyModeTransformRedirect />} />
+            <Route path="/transform/combine/:id" element={<LegacyModeTransformRedirect />} />
+            <Route path="/transform/aggregate" element={<LegacyModeTransformRedirect />} />
+            <Route path="/transform/aggregate/:id" element={<LegacyModeTransformRedirect />} />
+            <Route path="/transform/:id" element={<TransformPage />} />
             <Route path="/load" element={<LoadPage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/jobs" element={<Navigate to="/history" replace />} />

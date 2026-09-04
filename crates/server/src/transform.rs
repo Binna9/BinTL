@@ -125,14 +125,13 @@ fn dataset_json(store: &Store, row: &DatasetRow) -> Value {
         "source_chip_id": row.source_chip_id,
         "consumer_chip_id": row.consumer_chip_id,
         "available": available,
-        "origin": if row.kind == "database" {
-            json!({
+        "origin": match row.kind.as_str() {
+            "database" | "api" => json!({
                 "extract_id": row.extract_id,
                 "table_name": row.table_name,
                 "connection_name": row.connection_name,
-            })
-        } else {
-            Value::Null
+            }),
+            _ => Value::Null,
         },
     })
 }

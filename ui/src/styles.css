@@ -69,9 +69,9 @@
   --search-page-ink-b: radial-gradient(circle, rgba(42, 98, 140, 0.22) 0%, transparent 70%);
   --search-page-ink-c: radial-gradient(circle, rgba(30, 30, 36, 0.14) 0%, transparent 72%);
   --search-page-ink-opacity: 0.9;
-  --global-loading-color: #0b7f72;
-  --global-loading-glow: rgba(11, 127, 114, 0.35);
-  --global-loading-backdrop: rgba(248, 246, 242, 0.62);
+  --global-loading-color: #8ed8f8;
+  --global-loading-glow: rgba(142, 216, 248, 0.42);
+  --global-loading-backdrop: rgba(244, 251, 255, 0.68);
   --global-loading-vignette: 0.1;
   --search-empty-face: #f2d98b;
   --search-empty-feature: #8a6a3f;
@@ -116,8 +116,8 @@
   --search-page-ink-b: radial-gradient(circle, rgba(18, 42, 72, 0.48) 0%, transparent 70%);
   --search-page-ink-c: radial-gradient(circle, rgba(4, 4, 8, 0.72) 0%, transparent 74%);
   --search-page-ink-opacity: 1;
-  --global-loading-color: #3ee0c5;
-  --global-loading-glow: rgba(62, 224, 197, 0.42);
+  --global-loading-color: #b9efff;
+  --global-loading-glow: rgba(185, 239, 255, 0.48);
   --global-loading-backdrop: rgba(6, 7, 10, 0.72);
   --global-loading-vignette: 0.5;
   --search-empty-face: #c9a84a;
@@ -1647,95 +1647,6 @@ a {
   overflow: hidden;
 }
 
-.chip-place-body {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: stretch;
-  gap: 0.75rem;
-  min-height: 0;
-  min-width: 0;
-  overflow: hidden;
-  padding: 0.75rem 0.75rem 0.75rem 0;
-}
-
-.chip-place-body > .chip-place-main {
-  flex: 0 0 26rem;
-  width: 26rem;
-  min-width: 26rem;
-}
-
-.chip-place-side {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  flex: 0 0 14rem;
-  width: 14rem;
-  min-height: 0;
-  align-self: stretch;
-  border: 1px solid var(--theme-border);
-  border-radius: 0.75rem;
-  background: var(--theme-subtle);
-  padding: 0.75rem 0.65rem;
-}
-
-.chip-place-side-title {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin: 0;
-  font-size: 0.66rem;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--theme-text-tertiary);
-}
-
-.chip-place-side-search {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--theme-border);
-  background: var(--theme-surface);
-  padding: 0 0.5rem;
-}
-
-.chip-place-side-search input {
-  min-width: 0;
-  flex: 1;
-  border: none;
-  background: transparent;
-  padding: 0.4rem 0;
-  font-size: 0.68rem;
-  outline: none;
-}
-
-.chip-place-side-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.chip-place-side-item {
-  display: block;
-  width: 100%;
-  border-radius: 0.55rem;
-  border: 1px solid transparent;
-  background: transparent;
-  padding: 0.45rem 0.5rem;
-  text-align: left;
-  transition: background 0.15s ease;
-}
-
-.chip-place-side-item:hover {
-  background: color-mix(in srgb, var(--theme-text) 4%, var(--theme-surface));
-}
-
-.chip-place-side-item.is-active {
-  border-color: color-mix(in srgb, var(--theme-accent) 28%, transparent);
-  background: var(--theme-accent-subtle);
-}
-
 .chip-place-main {
   display: flex;
   flex: 1 1 auto;
@@ -2508,7 +2419,8 @@ a {
 
 .chip-wire.is-always {
   --wire: var(--color-text-secondary);
-  --wire-flow: color-mix(in srgb, white 55%, var(--wire));
+  /* gray-on-gray needs a brighter dash than tinted white@55% */
+  --wire-flow: color-mix(in srgb, white 88%, var(--color-text));
 }
 
 .chip-wire.is-error {
@@ -2557,8 +2469,14 @@ a {
 }
 
 .chip-wire.is-always .chip-wire-flow {
-  animation-duration: 1.55s;
-  opacity: 0.62;
+  stroke-width: 1.45;
+  stroke-dasharray: 5 14;
+  animation-duration: 1.05s;
+  opacity: 0.95;
+}
+
+.chip-wire.is-always .chip-wire-glow {
+  opacity: 0.16;
 }
 
 .chip-wire.is-success .chip-wire-flow {
@@ -2902,4 +2820,3 @@ a {
 :root.dark .dash-canvas {
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
 }
-

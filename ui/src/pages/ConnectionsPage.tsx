@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { CircleCheck, Maximize2, Pencil, PlugZap, Save, Trash2, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { CatalogTree } from "@/components/connections/CatalogTree";
@@ -64,6 +65,7 @@ function ConnectionColumnsGrid({
 }
 
 export function ConnectionsPage() {
+  const navigate = useNavigate();
   const { messages } = useLanguage();
   const { canWriteConnections } = useSession();
   const { connections, refreshConnections } = useConnections();
@@ -293,7 +295,6 @@ export function ConnectionsPage() {
                     <input
                       className="field-control"
                       name="database"
-                      required
                       autoComplete="off"
                       placeholder={messages.connectionsPage.databasePlaceholder}
                     />
@@ -313,7 +314,6 @@ export function ConnectionsPage() {
                     <input
                       className="field-control"
                       name="username"
-                      required
                       autoComplete="off"
                       placeholder={messages.connectionsPage.usernamePlaceholder}
                     />
@@ -412,7 +412,9 @@ export function ConnectionsPage() {
                       >
                         <span className="block truncate text-[13px] text-text">{connection.name}</span>
                         <span className="mt-1 block truncate text-[11px] text-text-tertiary">
-                          {connection.driver} · {connection.host}:{connection.port}
+                          {connection.driver === "http"
+                            ? `${connection.driver} · ${connection.host}`
+                            : `${connection.driver} · ${connection.host}:${connection.port}`}
                         </span>
                       </button>
                       <div className="mt-2 flex items-center gap-2">
@@ -447,6 +449,15 @@ export function ConnectionsPage() {
           {!activeConnection ? (
             <div className="grid h-full place-items-center text-[13px] text-text-tertiary">
               {messages.connectionsPage.selectConnectionHint}
+            </div>
+          ) : activeConnection.driver === "http" ? (
+            <div className="grid h-full place-items-center px-6 text-center text-[13px] text-text-tertiary">
+              <div className="max-w-sm space-y-3">
+                <p>{messages.apiExtract.newConnectionHint}</p>
+                <Button type="button" onClick={() => navigate("/extract/api")}>
+                  {messages.apiExtract.title}
+                </Button>
+              </div>
             </div>
           ) : (
             <SplitLayout className="h-full min-w-0" defaultSizes={[layout.split.catalog]}>

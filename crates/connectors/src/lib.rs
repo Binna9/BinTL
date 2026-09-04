@@ -9,12 +9,16 @@ use storage::LiveConnection;
 
 mod catalog;
 mod extract;
+mod http_extract;
 mod inspect;
 mod query;
 mod spreadsheet;
 
 pub use catalog::{catalog_layout, list_databases, list_relations, list_schemas, CatalogItem};
 pub use extract::{extract_table, parse_delimiter, sniff_delimiter, ExtractOptions};
+pub use http_extract::{
+    extract_http, parse_http_spec, ping_http, preview_http, HttpKv, HttpPreview, HttpRequestSpec,
+};
 pub use inspect::{list_columns, preview_table, ColumnInfo, Preview};
 pub use query::{extract_query, normalize_sql, run_sql, sql_kind, QueryOutcome, SqlKind};
 pub use spreadsheet::{export_sheet_to_csv, list_sheets, spreadsheet_format, SheetInfo};
@@ -36,6 +40,8 @@ pub enum ConnectError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Csv(#[from] csv::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
     #[error("spreadsheet error: {0}")]
     Spreadsheet(String),
 }
@@ -47,6 +53,7 @@ pub fn driver_family(driver: &str) -> Result<&'static str, ConnectError> {
         "mysql" | "mariadb" => Ok("mysql"),
         "mssql" | "sqlserver" => Ok("mssql"),
         "sqlite" => Ok("sqlite"),
+        "http" => Ok("http"),
         other => Err(ConnectError::Invalid(format!("unsupported driver {other}"))),
     }
 }
@@ -216,6 +223,7 @@ pub(crate) async fn mssql_client(
 
 pub async fn test_connection(c: &LiveConnection) -> Result<(), ConnectError> {
     match driver_family(&c.driver)? {
+        "http" => ping_http(c).await?,
         "postgres" => {
             let pool = pg_pool(c).await?;
             sqlx::query("SELECT 1").execute(&pool).await?;

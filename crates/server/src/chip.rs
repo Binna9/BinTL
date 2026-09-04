@@ -2,7 +2,10 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use connectors::{normalize_sql, parse_delimiter, parse_ident, parse_table, sql_kind, SqlKind};
+use connectors::{
+    normalize_sql, parse_delimiter, parse_http_spec, parse_ident, parse_table, sql_kind, HttpKv,
+    HttpRequestSpec, SqlKind,
+};
 use engine::TransformSpec;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -127,6 +130,24 @@ enum ExtractSource {
         #[serde(default)]
         database: Option<String>,
     },
+    Http {
+        #[serde(default = "default_http_method")]
+        method: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        query: Vec<HttpKv>,
+        #[serde(default)]
+        headers: Vec<HttpKv>,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        records_path: String,
+    },
+}
+
+fn default_http_method() -> String {
+    "GET".into()
 }
 
 impl Default for ExtractSource {
@@ -205,13 +226,17 @@ async fn register_chip(
                 .unwrap_or(true);
             let source_json = serde_json::to_string(&source)
                 .map_err(|error| AppError::bad(error.to_string()))?;
+            let extract_kind = match source.get("type").and_then(Value::as_str) {
+                Some("http") => "api",
+                _ => "database",
+            };
             state
                 .store
                 .register_extract_chip(&RegisterExtractChip {
                     name: name.to_string(),
                     owner_user_id: user.id().to_string(),
                     workspace_id: body.workspace_id.clone(),
-                    kind: "database".into(),
+                    kind: extract_kind.into(),
                     connection_id,
                     source_json,
                     delimiter,
@@ -773,17 +798,23 @@ async fn validate_extract_config(store: &Store, config: Value) -> Result<Value, 
     if config.connection_id.trim().is_empty() {
         return Err(AppError::bad("connection_id required"));
     }
-    let _ = store
+    let connection = store
         .get_connection(&config.connection_id)
         .await?
         .ok_or_else(|| AppError::not_found("connection not found"))?;
     let source = match config.source {
         ExtractSource::Table { table, database } => {
+            if connection.driver == "http" {
+                return Err(AppError::bad("http connection cannot use table source"));
+            }
             parse_table(&table).map_err(|error| AppError::bad(error.to_string()))?;
             validate_database(database.as_deref())?;
             json!({ "type": "table", "table": table.trim(), "database": database })
         }
         ExtractSource::Query { sql, database } => {
+            if connection.driver == "http" {
+                return Err(AppError::bad("http connection cannot use query source"));
+            }
             let sql = normalize_sql(&sql).map_err(|error| AppError::bad(error.to_string()))?;
             if sql_kind(&sql) != SqlKind::Rows {
                 return Err(AppError::bad(
@@ -792,6 +823,38 @@ async fn validate_extract_config(store: &Store, config: Value) -> Result<Value, 
             }
             validate_database(database.as_deref())?;
             json!({ "type": "query", "sql": sql, "database": database })
+        }
+        ExtractSource::Http {
+            method,
+            path,
+            query,
+            headers,
+            body,
+            records_path,
+        } => {
+            if connection.driver != "http" {
+                return Err(AppError::bad("http source needs an http connection"));
+            }
+            let spec = HttpRequestSpec {
+                method,
+                path,
+                query,
+                headers,
+                body,
+                records_path,
+            };
+            let raw = serde_json::to_string(&spec)
+                .map_err(|error| AppError::bad(error.to_string()))?;
+            let spec = parse_http_spec(&raw).map_err(|error| AppError::bad(error.to_string()))?;
+            json!({
+                "type": "http",
+                "method": spec.method,
+                "path": spec.path,
+                "query": spec.query,
+                "headers": spec.headers,
+                "body": spec.body,
+                "records_path": spec.records_path,
+            })
         }
     };
     Ok(json!({
@@ -848,6 +911,7 @@ fn extract_is_draft(config: &ExtractConfig) -> bool {
         && match &config.source {
             ExtractSource::Table { table, .. } => table.trim().is_empty(),
             ExtractSource::Query { sql, .. } => sql.trim().is_empty(),
+            ExtractSource::Http { path, .. } => path.trim().is_empty(),
         }
 }
 
@@ -914,13 +978,48 @@ async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         .map_err(|error| format!("invalid extract config snapshot: {error}"))?;
     let delimiter = config.delimiter.unwrap_or_else(|| ",".into());
     let header = config.header.unwrap_or(true);
-    let (table, sql, database) = match config.source {
-        ExtractSource::Table { table, database } => (table, None, database),
-        ExtractSource::Query { sql, database } => ("query".into(), Some(sql), database),
+    let (kind, table, sql, database) = match config.source {
+        ExtractSource::Table { table, database } => ("database", table, None, database),
+        ExtractSource::Query { sql, database } => {
+            ("database", "query".into(), Some(sql), database)
+        }
+        ExtractSource::Http {
+            method,
+            path,
+            query,
+            headers,
+            body,
+            records_path,
+        } => {
+            let spec = HttpRequestSpec {
+                method,
+                path: path.clone(),
+                query,
+                headers,
+                body,
+                records_path,
+            };
+            let raw = serde_json::to_string(&json!({
+                "type": "http",
+                "method": spec.method,
+                "path": spec.path,
+                "query": spec.query,
+                "headers": spec.headers,
+                "body": spec.body,
+                "records_path": spec.records_path,
+            }))
+            .map_err(|error| error.to_string())?;
+            let table = if path.trim().is_empty() {
+                "http".into()
+            } else {
+                path.trim().trim_matches('/').replace('/', "_")
+            };
+            ("api", table, Some(raw), None)
+        }
     };
     let extract = store
         .insert_extract(
-            "database",
+            kind,
             &config.connection_id,
             &table,
             &delimiter,

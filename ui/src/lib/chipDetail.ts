@@ -3,10 +3,13 @@ import type { TransformStep } from "@/types/transform";
 
 export type ExtractConfigView = {
   connectionId: string;
-  mode: "table" | "query";
+  mode: "table" | "query" | "http";
   database: string;
   table: string;
   sql: string;
+  method: string;
+  path: string;
+  recordsPath: string;
   delimiter: string;
   header: boolean;
 };
@@ -38,13 +41,16 @@ function isTransformStep(value: unknown): value is TransformStep {
 export function parseExtractConfig(config: ChipConfig): ExtractConfigView | null {
   const source = objectValue(config, "source");
   const sourceType = textValue(source, "type");
-  const mode = sourceType === "query" ? "query" : "table";
+  const mode = sourceType === "http" ? "http" : sourceType === "query" ? "query" : "table";
   return {
     connectionId: textValue(config, "connection_id"),
     mode,
     database: textValue(source, "database"),
     table: textValue(source, "table"),
     sql: textValue(source, "sql"),
+    method: textValue(source, "method", "GET"),
+    path: textValue(source, "path"),
+    recordsPath: textValue(source, "records_path"),
     delimiter: textValue(config, "delimiter", ","),
     header: boolValue(config, "header", true),
   };

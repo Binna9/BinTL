@@ -567,10 +567,12 @@ export function QueryPage() {
               <div className="flex h-full min-h-0 flex-col overflow-hidden">
                 <PaneHeader title={messages.common.connections} meta={messages.common.count(connections.length)} />
                 <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
-                  {connections.length === 0 ? (
+                  {connections.filter((connection) => connection.driver !== "http").length === 0 ? (
                     <p className="p-3 text-xs text-text-tertiary">{messages.empty.connections}</p>
                   ) : (
-                    connections.map((connection) => (
+                    connections
+                      .filter((connection) => connection.driver !== "http")
+                      .map((connection) => (
                       <button
                         key={connection.id}
                         type="button"

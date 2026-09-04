@@ -151,12 +151,18 @@ export function AppDialog({
     };
   }, [visible, minWidth, minHeight]);
 
+  // Delegate from the dialog box so remounted custom headers (ref.current swap)
+  // keep working — binding only to the node at effect time breaks after transitions.
   useEffect(() => {
-    if (!visible || !hideHeader) return;
-    const handle = dragHandleRef?.current;
-    if (!handle) return;
+    if (!visible || !hideHeader || !dragHandleRef) return;
+    const handleRef = dragHandleRef;
+    const box = boxRef.current;
+    if (!box) return;
 
     function onHandleDown(event: PointerEvent) {
+      const handle = handleRef.current;
+      const target = event.target as Node | null;
+      if (!handle || !target || !handle.contains(target)) return;
       if ((event.target as HTMLElement).closest("button")) return;
       drag.current = {
         x: event.clientX,
@@ -168,8 +174,8 @@ export function AppDialog({
       document.body.style.cursor = "move";
     }
 
-    handle.addEventListener("pointerdown", onHandleDown);
-    return () => handle.removeEventListener("pointerdown", onHandleDown);
+    box.addEventListener("pointerdown", onHandleDown);
+    return () => box.removeEventListener("pointerdown", onHandleDown);
   }, [dragHandleRef, hideHeader, visible]);
 
   function onHeaderDown(event: ReactPointerEvent<HTMLElement>) {
