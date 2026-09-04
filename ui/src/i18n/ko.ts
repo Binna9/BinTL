@@ -389,6 +389,7 @@ export const ko = {
     connections: "HTTP 커넥션",
     detailTitle: "상세 설정",
     apiInfo: "API 정보",
+    reset: "초기화",
     requestType: "요청 유형",
     newConnection: "추가",
     newConnectionTitle: "HTTP 커넥션",

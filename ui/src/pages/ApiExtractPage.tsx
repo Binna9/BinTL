@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { BookmarkPlus, Eye, FileDown, Plus, Trash2 } from "lucide-react";
+import { BookmarkPlus, Eye, FileDown, Plus, RotateCcw, Trash2 } from "lucide-react";
 import {
   columnWidthsForContent,
   DataGrid,
@@ -293,6 +293,34 @@ export function ApiExtractPage() {
     }
   }
 
+  function resetRequest() {
+    setMethod("GET");
+    setRequestType("rest");
+    setPath("");
+    setQuery([emptyKv()]);
+    setHeaders([emptyKv()]);
+    setBody("");
+    setBodyMode("json");
+    setForm([emptyKv()]);
+    setTimeoutMs(60_000);
+    setGraphqlQuery("");
+    setGraphqlVariables("{}");
+    setGraphqlOperationName("");
+    setRecordsPath("");
+    setLimit(50);
+    setDelimiter(",");
+    setHeader(true);
+    setAddSequence(false);
+    setExportName("");
+    setPreview(null);
+    setPreviewOpen(false);
+    setInfo("");
+    setExtractId(null);
+    setExtractRow(null);
+    setIsRegisterOpen(false);
+    setRegisterName("");
+  }
+
   const extractBusy = extracting || (extractRow ? isExtractActive(extractRow.status) : false);
   const canRun = Boolean(browseId);
   const canExtract = canRun && Boolean(preview) && !extractBusy;
@@ -311,6 +339,16 @@ export function ApiExtractPage() {
         description={messages.apiExtract.description}
         actions={
           <>
+            <Button
+              type="button"
+              variant="secondary"
+              className="gap-1.5"
+              disabled={running || extractBusy}
+              onClick={resetRequest}
+            >
+              <RotateCcw className="size-3.5" aria-hidden="true" />
+              {messages.apiExtract.reset}
+            </Button>
             <Button
               type="button"
               className="gap-1.5"

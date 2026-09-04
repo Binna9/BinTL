@@ -547,7 +547,7 @@ function TransformNewPanel({
             "h-10 gap-1.5 text-[12px]",
             namingEmpty && "border-accent bg-accent-subtle text-accent",
           )}
-          disabled={busy}
+          disabled={busy || pickingDataset}
           onClick={() => {
             if (pickingDataset) exitDatasetPick();
             setEmptyName(defaultName);
@@ -559,11 +559,12 @@ function TransformNewPanel({
         </Button>
         <Button
           type="button"
-          variant="secondary"
+          variant={pickingDataset ? "primary" : "secondary"}
           aria-pressed={pickingDataset}
+          data-state={pickingDataset ? "active" : "inactive"}
           className={cn(
             "h-10 gap-1.5 text-[12px]",
-            pickingDataset && "border-accent bg-accent-subtle text-accent",
+            pickingDataset && "ring-2 ring-accent/25",
           )}
           disabled={busy}
           onClick={() => {

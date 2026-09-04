@@ -382,6 +382,7 @@ export const en = {
     connections: "HTTP connections",
     detailTitle: "Details",
     apiInfo: "API information",
+    reset: "Reset",
     requestType: "Request type",
     newConnection: "Add",
     newConnectionTitle: "HTTP connection",
