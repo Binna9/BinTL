@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { BookmarkPlus, Eye, FileDown, Plus, Trash2 } from "lucide-react";
 import {
   columnWidthsForContent,
@@ -27,7 +27,7 @@ import { extractApi } from "@/services/extract/extractApi";
 import { chipApi } from "@/services/chips/chipApi";
 import type { ExtractRecord, HttpKv, HttpPreviewResponse, HttpSource } from "@/types/extract";
 
-const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
 const PREVIEW_LIMITS = [10, 20, 50, 100] as const;
 
 function emptyKv(): HttpKv {
@@ -90,6 +90,25 @@ function KvEditor({
         {addLabel}
       </Button>
     </div>
+  );
+}
+
+function RequestSection({
+  title,
+  children,
+  className,
+}: {
+  title: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={cn("overflow-hidden rounded-xl border border-border bg-subtle/40", className)}>
+      <div className="border-b border-border bg-raised px-4 py-3">
+        <h2 className="text-sm font-bold text-text">{title}</h2>
+      </div>
+      <div className="p-4">{children}</div>
+    </section>
   );
 }
 
@@ -166,7 +185,7 @@ export function ApiExtractPage() {
       try {
         variables = JSON.parse(graphqlVariables) as Record<string, unknown>;
       } catch {
-        throw new Error("GraphQL variables must be valid JSON.");
+        throw new Error(messages.apiExtract.graphqlVariablesInvalid);
       }
     }
     return {
@@ -176,7 +195,7 @@ export function ApiExtractPage() {
       path: path.trim(),
       query: compactKv(query),
       headers: compactKv(headers),
-      body: method === "GET" || method === "DELETE" ? null : body,
+      body: method === "GET" || method === "HEAD" ? null : body,
       body_mode: bodyMode,
       form: compactKv(form),
       timeout_ms: timeoutMs,
@@ -365,13 +384,9 @@ export function ApiExtractPage() {
             />
             <div className="scroll-pane min-h-0 flex-1 overflow-y-auto p-4">
               <div className="mx-auto flex max-w-5xl flex-col gap-4">
-                <section className="overflow-hidden rounded-xl border border-border bg-subtle/40">
-                  <div className="border-b border-border bg-raised px-4 py-3">
-                    <h2 className="text-sm font-bold text-text">{messages.apiExtract.apiInfo}</h2>
-                  </div>
-                  <div className="p-4">
+                <RequestSection title={messages.apiExtract.apiInfo}>
                   <div className="grid gap-3 md:grid-cols-[7rem_7rem_minmax(0,1fr)]">
-                    <FormField label="Type">
+                    <FormField label={messages.apiExtract.requestType}>
                       <Select
                         value={requestType}
                         options={[{ value: "rest", label: "REST" }, { value: "graphql", label: "GraphQL" }]}
@@ -412,14 +427,10 @@ export function ApiExtractPage() {
                       />
                     </FormField>
                   </div>
-                  </div>
-                </section>
+                </RequestSection>
 
                 <section className="grid gap-4 lg:grid-cols-2">
-                  <div className="rounded-xl border border-border bg-subtle/40 p-4">
-                    <h3 className="mb-3 text-xs font-bold tracking-[0.02em] text-text">
-                      {messages.apiExtract.queryParams}
-                    </h3>
+                  <RequestSection title={messages.apiExtract.queryParams}>
                     <KvEditor
                       rows={query}
                       onChange={setQuery}
@@ -427,11 +438,8 @@ export function ApiExtractPage() {
                       valueLabel={messages.apiExtract.paramValue}
                       addLabel={messages.apiExtract.addParam}
                     />
-                  </div>
-                  <div className="rounded-xl border border-border bg-subtle/40 p-4">
-                    <h3 className="mb-3 text-xs font-bold tracking-[0.02em] text-text">
-                      {messages.apiExtract.headers}
-                    </h3>
+                  </RequestSection>
+                  <RequestSection title={messages.apiExtract.headers}>
                     <KvEditor
                       rows={headers}
                       onChange={setHeaders}
@@ -439,44 +447,46 @@ export function ApiExtractPage() {
                       valueLabel={messages.apiExtract.headerValue}
                       addLabel={messages.apiExtract.addHeader}
                     />
-                  </div>
+                  </RequestSection>
                 </section>
 
-                <section className="rounded-xl border border-border bg-subtle/40 p-4">
-                  <FormField label="Timeout (ms)">
+                <RequestSection title={messages.apiExtract.requestOptions}>
+                  <FormField label={messages.apiExtract.timeout}>
                     <input className="field-control technical max-w-48" type="number" min="1000" max="300000" value={timeoutMs} onChange={(event) => setTimeoutMs(Number(event.target.value) || 60_000)} />
                   </FormField>
-                </section>
+                </RequestSection>
                 {requestType === "graphql" ? (
-                  <section className="grid gap-4 rounded-xl border border-border bg-subtle/40 p-4 lg:grid-cols-2">
-                    <FormField label="GraphQL query">
-                      <textarea className="field-control technical min-h-[12rem] font-mono text-[12px]" value={graphqlQuery} placeholder="query Users($first: Int!) { users(first: $first) { nodes { id name } } }" onChange={(event) => setGraphqlQuery(event.target.value)} />
-                    </FormField>
-                    <div className="flex flex-col gap-4">
-                      <FormField label="Variables (JSON)">
-                        <textarea className="field-control technical min-h-[8rem] font-mono text-[12px]" value={graphqlVariables} onChange={(event) => setGraphqlVariables(event.target.value)} />
+                  <RequestSection title={messages.apiExtract.graphql}>
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <FormField label={messages.apiExtract.graphqlQuery}>
+                        <textarea className="field-control technical min-h-[12rem] font-mono text-[12px]" value={graphqlQuery} placeholder="query Users($first: Int!) { users(first: $first) { nodes { id name } } }" onChange={(event) => setGraphqlQuery(event.target.value)} />
                       </FormField>
-                      <FormField label="Operation name">
-                        <input className="field-control technical" value={graphqlOperationName} onChange={(event) => setGraphqlOperationName(event.target.value)} />
-                      </FormField>
+                      <div className="flex flex-col gap-4">
+                        <FormField label={messages.apiExtract.graphqlVariables}>
+                          <textarea className="field-control technical min-h-[8rem] font-mono text-[12px]" value={graphqlVariables} onChange={(event) => setGraphqlVariables(event.target.value)} />
+                        </FormField>
+                        <FormField label={messages.apiExtract.graphqlOperationName}>
+                          <input className="field-control technical" value={graphqlOperationName} onChange={(event) => setGraphqlOperationName(event.target.value)} />
+                        </FormField>
+                      </div>
                     </div>
-                  </section>
-                ) : method === "GET" || method === "DELETE" ? null : (
-                  <section className="rounded-xl border border-border bg-subtle/40 p-4">
-                    <FormField label="Body type">
-                      <Select value={bodyMode} options={[{ value: "json", label: "JSON" }, { value: "raw", label: "Raw text" }, { value: "urlencoded", label: "x-www-form-urlencoded" }, { value: "multipart", label: "multipart/form-data" }]} onChange={(value) => setBodyMode(value as typeof bodyMode)} />
+                  </RequestSection>
+                ) : method === "GET" || method === "HEAD" ? null : (
+                  <RequestSection title={messages.apiExtract.requestBody}>
+                    <FormField label={messages.apiExtract.bodyType}>
+                      <Select value={bodyMode} options={[{ value: "json", label: "JSON" }, { value: "raw", label: messages.apiExtract.rawText }, { value: "urlencoded", label: "x-www-form-urlencoded" }, { value: "multipart", label: "multipart/form-data" }]} onChange={(value) => setBodyMode(value as typeof bodyMode)} />
                     </FormField>
                     {bodyMode === "urlencoded" || bodyMode === "multipart" ? (
-                      <div className="mt-3"><KvEditor rows={form} onChange={setForm} nameLabel="Field" valueLabel="Value" addLabel="Add field" /></div>
-                    ) : <FormField label={messages.apiExtract.body}>
+                      <div className="mt-3"><KvEditor rows={form} onChange={setForm} nameLabel={messages.apiExtract.fieldName} valueLabel={messages.apiExtract.fieldValue} addLabel={messages.apiExtract.addField} /></div>
+                    ) : <div className="mt-3"><FormField label={messages.apiExtract.body}>
                       <textarea
                         className="field-control technical min-h-[8rem] font-mono text-[12px]"
                         value={body}
                         placeholder='{"page":1}'
                         onChange={(event) => setBody(event.target.value)}
                       />
-                    </FormField>}
-                  </section>
+                    </FormField></div>}
+                  </RequestSection>
                 )}
 
               </div>

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
 import { BrandMark } from "@/components/BrandMark";
@@ -5,27 +6,29 @@ import { ConsoleRail } from "@/layouts/ConsoleRail";
 import { HeaderSearch } from "@/components/search/HeaderSearch";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { TopSubmenu } from "@/components/TopSubmenu";
-import { ConnectionsPage } from "@/pages/ConnectionsPage";
-import { ExtractResultsPage } from "@/pages/ExtractResultsPage";
-import { ApiExtractPage } from "@/pages/ApiExtractPage";
-import { FilesPage } from "@/pages/FilesPage";
-import { HistoryPage } from "@/pages/HistoryPage";
-import { JobRunPage } from "@/pages/JobRunPage";
-import { LoadPage } from "@/pages/LoadPage";
-import { OverviewPage } from "@/pages/OverviewPage";
-import { QueryPage } from "@/pages/QueryPage";
-import { SchedulePage } from "@/pages/SchedulePage";
-import { SessionGatePage } from "@/pages/SessionGatePage";
-import { TransformFilesPage } from "@/pages/TransformFilesPage";
-import { TransformPage } from "@/pages/TransformPage";
-import { TransformSoonPage } from "@/pages/TransformSoonPage";
-import { WorkspacePage } from "@/pages/WorkspacePage";
-import { ChipsPage } from "@/pages/ChipsPage";
-import { SearchPage } from "@/pages/SearchPage";
-import { WorkspaceRunsPage } from "@/pages/WorkspaceRunsPage";
 import { SessionProvider } from "@/hooks/auth/useSession";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
+
+const ConnectionsPage = lazy(() => import("@/pages/ConnectionsPage").then((module) => ({ default: module.ConnectionsPage })));
+const ExtractResultsPage = lazy(() => import("@/pages/ExtractResultsPage").then((module) => ({ default: module.ExtractResultsPage })));
+const ApiExtractPage = lazy(() => import("@/pages/ApiExtractPage").then((module) => ({ default: module.ApiExtractPage })));
+const FilesPage = lazy(() => import("@/pages/FilesPage").then((module) => ({ default: module.FilesPage })));
+const HistoryPage = lazy(() => import("@/pages/HistoryPage").then((module) => ({ default: module.HistoryPage })));
+const JobRunPage = lazy(() => import("@/pages/JobRunPage").then((module) => ({ default: module.JobRunPage })));
+const LoadPage = lazy(() => import("@/pages/LoadPage").then((module) => ({ default: module.LoadPage })));
+const OverviewPage = lazy(() => import("@/pages/OverviewPage").then((module) => ({ default: module.OverviewPage })));
+const QueryPage = lazy(() => import("@/pages/QueryPage").then((module) => ({ default: module.QueryPage })));
+const SchedulePage = lazy(() => import("@/pages/SchedulePage").then((module) => ({ default: module.SchedulePage })));
+const SessionGatePage = lazy(() => import("@/pages/SessionGatePage").then((module) => ({ default: module.SessionGatePage })));
+const TransformFilesPage = lazy(() => import("@/pages/TransformFilesPage").then((module) => ({ default: module.TransformFilesPage })));
+const TransformPage = lazy(() => import("@/pages/TransformPage").then((module) => ({ default: module.TransformPage })));
+const TransformSoonPage = lazy(() => import("@/pages/TransformSoonPage").then((module) => ({ default: module.TransformSoonPage })));
+const WorkspacePage = lazy(() => import("@/pages/WorkspacePage").then((module) => ({ default: module.WorkspacePage })));
+const ChipsPage = lazy(() => import("@/pages/ChipsPage").then((module) => ({ default: module.ChipsPage })));
+const SearchPage = lazy(() => import("@/pages/SearchPage").then((module) => ({ default: module.SearchPage })));
+const WorkspaceRunsPage = lazy(() => import("@/pages/WorkspaceRunsPage").then((module) => ({ default: module.WorkspaceRunsPage })));
+
 function ConsoleShell() {
   const loc = useRenderLocation();
   const onSearchPage = loc.pathname === "/search";
@@ -97,7 +100,9 @@ export default function App() {
   const loc = useRenderLocation();
   return (
     <SessionProvider>
-      {loc.pathname === "/login" ? <SessionGatePage /> : <ConsoleShell />}
+      <Suspense fallback={<div className="h-screen bg-surface" aria-busy="true" />}>
+        {loc.pathname === "/login" ? <SessionGatePage /> : <ConsoleShell />}
+      </Suspense>
     </SessionProvider>
   );
 }

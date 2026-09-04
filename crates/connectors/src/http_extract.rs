@@ -75,7 +75,7 @@ pub fn parse_http_spec(raw: &str) -> Result<HttpRequestSpec, ConnectError> {
     }
     if !matches!(
         spec.method.as_str(),
-        "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
     ) {
         return Err(ConnectError::Invalid(format!(
             "unsupported http method {}",
@@ -191,6 +191,8 @@ async fn execute_http(
         "PUT" => client.put(&url),
         "PATCH" => client.patch(&url),
         "DELETE" => client.delete(&url),
+        "HEAD" => client.head(&url),
+        "OPTIONS" => client.request(reqwest::Method::OPTIONS, &url),
         _ => client.get(&url),
     };
     request = apply_connection_auth(request, connection);
@@ -210,7 +212,10 @@ async fn execute_http(
             payload["operationName"] = Value::String(spec.graphql_operation_name.clone());
         }
         request = request.json(&payload);
-    } else if matches!(spec.method.as_str(), "POST" | "PUT" | "PATCH") {
+    } else if matches!(
+        spec.method.as_str(),
+        "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
+    ) {
         let body = spec.body.clone().unwrap_or_default();
         match spec.body_mode.as_str() {
             "urlencoded" => {

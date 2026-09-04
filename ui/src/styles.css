@@ -71,8 +71,8 @@
   --search-page-ink-opacity: 0.9;
   --global-loading-color: #8ed8f8;
   --global-loading-glow: rgba(142, 216, 248, 0.42);
-  --global-loading-backdrop: rgba(244, 251, 255, 0.68);
-  --global-loading-vignette: 0.1;
+  --global-loading-backdrop: rgba(244, 251, 255, 0.36);
+  --global-loading-vignette: 0.05;
   --search-empty-face: #f2d98b;
   --search-empty-feature: #8a6a3f;
   --search-empty-tear: #5eb8e8;
@@ -118,8 +118,8 @@
   --search-page-ink-opacity: 1;
   --global-loading-color: #b9efff;
   --global-loading-glow: rgba(185, 239, 255, 0.48);
-  --global-loading-backdrop: rgba(6, 7, 10, 0.72);
-  --global-loading-vignette: 0.5;
+  --global-loading-backdrop: rgba(6, 7, 10, 0.42);
+  --global-loading-vignette: 0.24;
   --search-empty-face: #c9a84a;
   --search-empty-feature: #4a3820;
   --search-empty-tear: #6ec8f0;
@@ -834,8 +834,8 @@ a {
       color-mix(in srgb, var(--global-loading-color) 8%, transparent) 100%
     ),
     var(--global-loading-backdrop);
-  backdrop-filter: blur(5px);
-  box-shadow: inset 0 0 140px rgba(0, 0, 0, var(--global-loading-vignette));
+  backdrop-filter: blur(2px);
+  box-shadow: inset 0 0 92px rgba(0, 0, 0, var(--global-loading-vignette));
 }
 
 .global-loading-stage {
@@ -844,14 +844,14 @@ a {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1.15rem;
+  gap: 0.75rem;
 }
 
 .global-loading-orbit {
   position: relative;
-  width: 104px;
-  height: 104px;
-  filter: drop-shadow(0 0 18px var(--global-loading-glow));
+  width: 70px;
+  height: 70px;
+  filter: drop-shadow(0 0 12px var(--global-loading-glow));
   animation: global-loading-orbit-spin 5s infinite linear;
 }
 
@@ -866,18 +866,18 @@ a {
   width: 100%;
   height: 100%;
   border-radius: 50%;
-  border: 5px solid color-mix(in srgb, var(--global-loading-color) 42%, transparent);
+  border: 3px solid color-mix(in srgb, var(--global-loading-color) 42%, transparent);
   border-right: none;
   border-top: none;
-  box-shadow: inset 0 0 16px color-mix(in srgb, var(--global-loading-color) 22%, transparent);
+  box-shadow: inset 0 0 10px color-mix(in srgb, var(--global-loading-color) 22%, transparent);
   animation: global-loading-circle-spin 2s infinite linear;
 }
 
 .global-loading-label {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: 0.64rem;
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--global-loading-color);
 }
