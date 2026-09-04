@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
 import { BrandMark } from "@/components/BrandMark";
 import { ConsoleRail } from "@/layouts/ConsoleRail";
@@ -26,14 +26,6 @@ import { WorkspaceRunsPage } from "@/pages/WorkspaceRunsPage";
 import { SessionProvider } from "@/hooks/auth/useSession";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
-import { legacyTransformRedirectTarget } from "@/lib/transformEditor";
-
-function LegacyModeTransformRedirect() {
-  const { pathname, search } = useLocation();
-  const target = legacyTransformRedirectTarget(pathname, search.startsWith("?") ? search.slice(1) : search);
-  return <Navigate to={target ?? "/transform"} replace />;
-}
-
 function ConsoleShell() {
   const loc = useRenderLocation();
   const onSearchPage = loc.pathname === "/search";
@@ -80,14 +72,14 @@ function ConsoleShell() {
             <Route path="/extract/api" element={<ApiExtractPage />} />
             <Route path="/extracts" element={<ExtractResultsPage />} />
             <Route path="/transforms" element={<TransformFilesPage />} />
-            <Route path="/transform" element={<TransformPage />} />
+            <Route path="/transform" element={<Navigate to="/transform/clean" replace />} />
             <Route path="/transform/reshape" element={<TransformSoonPage kind="reshape" />} />
-            <Route path="/transform/clean" element={<LegacyModeTransformRedirect />} />
-            <Route path="/transform/clean/:id" element={<LegacyModeTransformRedirect />} />
-            <Route path="/transform/combine" element={<LegacyModeTransformRedirect />} />
-            <Route path="/transform/combine/:id" element={<LegacyModeTransformRedirect />} />
-            <Route path="/transform/aggregate" element={<LegacyModeTransformRedirect />} />
-            <Route path="/transform/aggregate/:id" element={<LegacyModeTransformRedirect />} />
+            <Route path="/transform/clean" element={<TransformPage section="clean" />} />
+            <Route path="/transform/clean/:id" element={<TransformPage section="clean" />} />
+            <Route path="/transform/combine" element={<TransformPage section="combine" />} />
+            <Route path="/transform/combine/:id" element={<TransformPage section="combine" />} />
+            <Route path="/transform/aggregate" element={<TransformPage section="aggregate" />} />
+            <Route path="/transform/aggregate/:id" element={<TransformPage section="aggregate" />} />
             <Route path="/transform/:id" element={<TransformPage />} />
             <Route path="/load" element={<LoadPage />} />
             <Route path="/history" element={<HistoryPage />} />

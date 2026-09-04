@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { BookmarkPlus, FileDown, Play, Plus, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { BookmarkPlus, Eye, FileDown, Plus, Trash2 } from "lucide-react";
 import {
   columnWidthsForContent,
   DataGrid,
@@ -10,7 +10,7 @@ import {
 import { AppDialog } from "@/components/AppDialog";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { SplitLayout } from "@/layouts/SplitLayout";
-import { Button, ActionAnchor } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
@@ -25,7 +25,6 @@ import { toastError, toastSuccess } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extract/extractApi";
 import { chipApi } from "@/services/chips/chipApi";
-import { connectionApi } from "@/services/connections/connectionApi";
 import type { ExtractRecord, HttpKv, HttpPreviewResponse, HttpSource } from "@/types/extract";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -96,7 +95,7 @@ function KvEditor({
 
 export function ApiExtractPage() {
   const { messages } = useLanguage();
-  const { connections, refreshConnections } = useConnections();
+  const { connections } = useConnections();
   const httpConnections = useMemo(
     () => connections.filter((connection) => connection.driver === "http"),
     [connections],
@@ -104,10 +103,17 @@ export function ApiExtractPage() {
 
   const [browseId, setBrowseId] = useState("");
   const [method, setMethod] = useState<string>("GET");
-  const [path, setPath] = useState("/v1/items");
+  const [requestType, setRequestType] = useState<"rest" | "graphql">("rest");
+  const [path, setPath] = useState("");
   const [query, setQuery] = useState<HttpKv[]>([emptyKv()]);
   const [headers, setHeaders] = useState<HttpKv[]>([emptyKv()]);
   const [body, setBody] = useState("");
+  const [bodyMode, setBodyMode] = useState<"json" | "raw" | "urlencoded" | "multipart">("json");
+  const [form, setForm] = useState<HttpKv[]>([emptyKv()]);
+  const [timeoutMs, setTimeoutMs] = useState(60_000);
+  const [graphqlQuery, setGraphqlQuery] = useState("");
+  const [graphqlVariables, setGraphqlVariables] = useState("{}");
+  const [graphqlOperationName, setGraphqlOperationName] = useState("");
   const [recordsPath, setRecordsPath] = useState("");
   const [limit, setLimit] = useState<(typeof PREVIEW_LIMITS)[number]>(50);
   const [delimiter, setDelimiter] = useState(",");
@@ -115,6 +121,7 @@ export function ApiExtractPage() {
   const [addSequence, setAddSequence] = useState(false);
   const [exportName, setExportName] = useState("");
   const [preview, setPreview] = useState<HttpPreviewResponse | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [info, setInfo] = useState("");
   const [running, setRunning] = useState(false);
   const [extracting, setExtracting] = useState(false);
@@ -123,16 +130,13 @@ export function ApiExtractPage() {
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [registerName, setRegisterName] = useState("");
   const [registerBusy, setRegisterBusy] = useState(false);
-  const [newConnOpen, setNewConnOpen] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newBaseUrl, setNewBaseUrl] = useState("https://");
-  const [newUsername, setNewUsername] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [newSaving, setNewSaving] = useState(false);
+  const browseInitialized = useRef(false);
 
   useEffect(() => {
-    if (!browseId && httpConnections[0]) setBrowseId(httpConnections[0].id);
-  }, [browseId, httpConnections]);
+    if (browseInitialized.current || !httpConnections[0]) return;
+    setBrowseId(httpConnections[0].id);
+    browseInitialized.current = true;
+  }, [httpConnections]);
 
   useEffect(() => {
     if (!extractId) return;
@@ -157,13 +161,28 @@ export function ApiExtractPage() {
   }, [extractId]);
 
   function buildSource(): HttpSource {
+    let variables: Record<string, unknown> = {};
+    if (requestType === "graphql" && graphqlVariables.trim()) {
+      try {
+        variables = JSON.parse(graphqlVariables) as Record<string, unknown>;
+      } catch {
+        throw new Error("GraphQL variables must be valid JSON.");
+      }
+    }
     return {
       type: "http",
+      request_type: requestType,
       method,
       path: path.trim(),
       query: compactKv(query),
       headers: compactKv(headers),
       body: method === "GET" || method === "DELETE" ? null : body,
+      body_mode: bodyMode,
+      form: compactKv(form),
+      timeout_ms: timeoutMs,
+      graphql_query: requestType === "graphql" ? graphqlQuery : "",
+      graphql_variables: variables,
+      graphql_operation_name: requestType === "graphql" ? graphqlOperationName : "",
       records_path: recordsPath.trim(),
     };
   }
@@ -181,6 +200,13 @@ export function ApiExtractPage() {
         query: source.query,
         headers: source.headers,
         body: source.body,
+        body_mode: source.body_mode,
+        form: source.form,
+        timeout_ms: source.timeout_ms,
+        request_type: source.request_type,
+        graphql_query: source.graphql_query,
+        graphql_variables: source.graphql_variables,
+        graphql_operation_name: source.graphql_operation_name,
         records_path: source.records_path,
         limit,
       });
@@ -192,6 +218,7 @@ export function ApiExtractPage() {
           next.status,
         ),
       );
+      setPreviewOpen(true);
     } catch (err) {
       setPreview(null);
       toastError(messages.errors.query, err);
@@ -247,36 +274,8 @@ export function ApiExtractPage() {
     }
   }
 
-  async function onCreateConnection() {
-    if (!newName.trim() || !newBaseUrl.trim()) return;
-    setNewSaving(true);
-    try {
-      const created = await connectionApi.createConnection({
-        name: newName.trim(),
-        driver: "http",
-        host: newBaseUrl.trim(),
-        database: "",
-        username: newUsername.trim(),
-        password: newPassword,
-        ssl: newBaseUrl.trim().startsWith("https"),
-      });
-      await refreshConnections();
-      setBrowseId(created.id);
-      setNewConnOpen(false);
-      setNewName("");
-      setNewBaseUrl("https://");
-      setNewUsername("");
-      setNewPassword("");
-      toastSuccess(messages.connectionsPage.saved);
-    } catch (err) {
-      toastError(messages.errors.saveConnection, err);
-    } finally {
-      setNewSaving(false);
-    }
-  }
-
   const extractBusy = extracting || (extractRow ? isExtractActive(extractRow.status) : false);
-  const canRun = Boolean(browseId && path.trim());
+  const canRun = Boolean(browseId);
   const canExtract = canRun && Boolean(preview) && !extractBusy;
   const delimiterOptions = DELIMITER_VALUES.map((value) => ({ value, label: value === "tab" ? "tab" : value }));
   const resultWidths = useMemo(() => {
@@ -291,6 +290,41 @@ export function ApiExtractPage() {
         eyebrow={messages.apiExtract.eyebrow}
         title={messages.apiExtract.title}
         description={messages.apiExtract.description}
+        actions={
+          <>
+            <Button
+              type="button"
+              className="gap-1.5"
+              disabled={!canRun || running}
+              onClick={() => void runPreview()}
+            >
+              <Eye className="size-3.5" />
+              {running ? messages.apiExtract.calling : messages.apiExtract.previewTitle}
+            </Button>
+            <Button
+              type="button"
+              className="gap-1.5"
+              disabled={!canRun}
+              onClick={() => {
+                setRegisterName(path.trim().replace(/^\//, "").replace(/\//g, "_") || messages.workspace.untitledExtract(1));
+                setIsRegisterOpen(true);
+              }}
+            >
+              <BookmarkPlus className="size-3.5" />
+              {messages.query.registerTask}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              className="gap-1.5"
+              disabled={!canExtract}
+              onClick={() => void onExtract()}
+            >
+              <FileDown className="size-3.5" />
+              {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
+            </Button>
+          </>
+        }
       />
 
       <Panel tall className="overflow-hidden">
@@ -299,12 +333,6 @@ export function ApiExtractPage() {
             <PaneHeader
               title={messages.apiExtract.connections}
               meta={messages.common.count(httpConnections.length)}
-              actions={
-                <Button type="button" variant="secondary" className="gap-1.5" onClick={() => setNewConnOpen(true)}>
-                  <Plus className="size-3.5" />
-                  {messages.apiExtract.newConnection}
-                </Button>
-              }
             />
             <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
               {httpConnections.length === 0 ? (
@@ -318,7 +346,7 @@ export function ApiExtractPage() {
                       "block w-full min-w-0 overflow-hidden border-b border-border px-3 py-2 text-left last:border-b-0",
                       selectableClass(connection.id === browseId),
                     )}
-                    onClick={() => setBrowseId(connection.id)}
+                    onClick={() => setBrowseId((current) => (current === connection.id ? "" : connection.id))}
                   >
                     <span className="block truncate text-[13px] text-text">{connection.name}</span>
                     <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
@@ -331,13 +359,28 @@ export function ApiExtractPage() {
           </aside>
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <PaneHeader
+              title={messages.apiExtract.detailTitle}
+              meta={browseId ? httpConnections.find((connection) => connection.id === browseId)?.name : undefined}
+            />
             <div className="scroll-pane min-h-0 flex-1 overflow-y-auto p-4">
               <div className="mx-auto flex max-w-5xl flex-col gap-4">
-                <section className="rounded-xl border border-border bg-subtle/40 p-4">
-                  <div className="grid gap-3 md:grid-cols-[7rem_minmax(0,1fr)]">
+                <section className="overflow-hidden rounded-xl border border-border bg-subtle/40">
+                  <div className="border-b border-border bg-raised px-4 py-3">
+                    <h2 className="text-sm font-bold text-text">{messages.apiExtract.apiInfo}</h2>
+                  </div>
+                  <div className="p-4">
+                  <div className="grid gap-3 md:grid-cols-[7rem_7rem_minmax(0,1fr)]">
+                    <FormField label="Type">
+                      <Select
+                        value={requestType}
+                        options={[{ value: "rest", label: "REST" }, { value: "graphql", label: "GraphQL" }]}
+                        onChange={(value) => setRequestType(value as "rest" | "graphql")}
+                      />
+                    </FormField>
                     <FormField label={messages.apiExtract.method}>
                       <Select
-                        value={method}
+                        value={requestType === "graphql" ? "POST" : method}
                         options={METHODS.map((value) => ({ value, label: value }))}
                         onChange={setMethod}
                       />
@@ -346,7 +389,7 @@ export function ApiExtractPage() {
                       <input
                         className="field-control technical"
                         value={path}
-                        placeholder="/v1/items"
+                        placeholder="/connect/test"
                         onChange={(event) => setPath(event.target.value)}
                       />
                     </FormField>
@@ -369,11 +412,12 @@ export function ApiExtractPage() {
                       />
                     </FormField>
                   </div>
+                  </div>
                 </section>
 
                 <section className="grid gap-4 lg:grid-cols-2">
                   <div className="rounded-xl border border-border bg-subtle/40 p-4">
-                    <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
+                    <h3 className="mb-3 text-xs font-bold tracking-[0.02em] text-text">
                       {messages.apiExtract.queryParams}
                     </h3>
                     <KvEditor
@@ -385,7 +429,7 @@ export function ApiExtractPage() {
                     />
                   </div>
                   <div className="rounded-xl border border-border bg-subtle/40 p-4">
-                    <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
+                    <h3 className="mb-3 text-xs font-bold tracking-[0.02em] text-text">
                       {messages.apiExtract.headers}
                     </h3>
                     <KvEditor
@@ -398,138 +442,43 @@ export function ApiExtractPage() {
                   </div>
                 </section>
 
-                {method === "GET" || method === "DELETE" ? null : (
+                <section className="rounded-xl border border-border bg-subtle/40 p-4">
+                  <FormField label="Timeout (ms)">
+                    <input className="field-control technical max-w-48" type="number" min="1000" max="300000" value={timeoutMs} onChange={(event) => setTimeoutMs(Number(event.target.value) || 60_000)} />
+                  </FormField>
+                </section>
+                {requestType === "graphql" ? (
+                  <section className="grid gap-4 rounded-xl border border-border bg-subtle/40 p-4 lg:grid-cols-2">
+                    <FormField label="GraphQL query">
+                      <textarea className="field-control technical min-h-[12rem] font-mono text-[12px]" value={graphqlQuery} placeholder="query Users($first: Int!) { users(first: $first) { nodes { id name } } }" onChange={(event) => setGraphqlQuery(event.target.value)} />
+                    </FormField>
+                    <div className="flex flex-col gap-4">
+                      <FormField label="Variables (JSON)">
+                        <textarea className="field-control technical min-h-[8rem] font-mono text-[12px]" value={graphqlVariables} onChange={(event) => setGraphqlVariables(event.target.value)} />
+                      </FormField>
+                      <FormField label="Operation name">
+                        <input className="field-control technical" value={graphqlOperationName} onChange={(event) => setGraphqlOperationName(event.target.value)} />
+                      </FormField>
+                    </div>
+                  </section>
+                ) : method === "GET" || method === "DELETE" ? null : (
                   <section className="rounded-xl border border-border bg-subtle/40 p-4">
-                    <FormField label={messages.apiExtract.body}>
+                    <FormField label="Body type">
+                      <Select value={bodyMode} options={[{ value: "json", label: "JSON" }, { value: "raw", label: "Raw text" }, { value: "urlencoded", label: "x-www-form-urlencoded" }, { value: "multipart", label: "multipart/form-data" }]} onChange={(value) => setBodyMode(value as typeof bodyMode)} />
+                    </FormField>
+                    {bodyMode === "urlencoded" || bodyMode === "multipart" ? (
+                      <div className="mt-3"><KvEditor rows={form} onChange={setForm} nameLabel="Field" valueLabel="Value" addLabel="Add field" /></div>
+                    ) : <FormField label={messages.apiExtract.body}>
                       <textarea
                         className="field-control technical min-h-[8rem] font-mono text-[12px]"
                         value={body}
                         placeholder='{"page":1}'
                         onChange={(event) => setBody(event.target.value)}
                       />
-                    </FormField>
+                    </FormField>}
                   </section>
                 )}
 
-                <section className="rounded-xl border border-border bg-surface overflow-hidden">
-                  <PaneHeader
-                    title={messages.apiExtract.previewTitle}
-                    meta={info || undefined}
-                    actions={
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Select
-                          className="!w-[4.75rem] technical"
-                          value={String(limit)}
-                          options={PREVIEW_LIMITS.map((value) => ({
-                            value: String(value),
-                            label: String(value),
-                          }))}
-                          onChange={(next) => setLimit(Number(next) as (typeof PREVIEW_LIMITS)[number])}
-                        />
-                        <Select
-                          editable
-                          className="!w-[6.5rem] technical"
-                          value={delimiter}
-                          options={delimiterOptions}
-                          onChange={setDelimiter}
-                        />
-                        <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                          <input
-                            className="field-control"
-                            type="checkbox"
-                            checked={header}
-                            onChange={(event) => setHeader(event.target.checked)}
-                          />
-                          {messages.common.header}
-                        </label>
-                        <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-                          <input
-                            className="field-control"
-                            type="checkbox"
-                            checked={addSequence}
-                            onChange={(event) => setAddSequence(event.target.checked)}
-                          />
-                          {messages.common.addSequence}
-                        </label>
-                        <Button
-                          type="button"
-                          className="gap-1.5"
-                          disabled={!canRun || running}
-                          onClick={() => void runPreview()}
-                        >
-                          <Play className="size-3.5" />
-                          {running ? messages.apiExtract.calling : messages.apiExtract.call}
-                        </Button>
-                      </div>
-                    }
-                  />
-                  <div className="h-[min(28rem,50vh)] min-h-[16rem]">
-                    {!preview ? (
-                      <p className="px-4 py-12 text-center text-[13px] text-text-tertiary">
-                        {messages.apiExtract.previewHint}
-                      </p>
-                    ) : (
-                      <DataGrid
-                        className="h-full min-h-0"
-                        headers={preview.columns}
-                        columnWidths={resultWidths}
-                      >
-                        {preview.rows.length === 0 ? (
-                          <EmptyGridRow cols={preview.columns.length} text={messages.apiExtract.emptyRows} />
-                        ) : (
-                          preview.rows.map((row, rowIndex) => (
-                            <GridRow key={rowIndex}>
-                              {row.map((cell, cellIndex) => (
-                                <GridCell key={cellIndex} mono>
-                                  {cell}
-                                </GridCell>
-                              ))}
-                            </GridRow>
-                          ))
-                        )}
-                      </DataGrid>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3">
-                    {extractRow?.status === "succeeded" ? (
-                      <ActionAnchor variant="secondary" href={extractApi.getDownloadUrl(extractRow.id)}>
-                        {messages.common.download}
-                      </ActionAnchor>
-                    ) : null}
-                    {extractRow?.status === "failed" && extractRow.error_message ? (
-                      <span className="mr-auto text-xs text-danger">{extractRow.error_message}</span>
-                    ) : null}
-                    {extractBusy ? (
-                      <span className="mr-auto text-xs text-text-secondary">
-                        {extractRow?.status === "running" && extractRow.row_count != null
-                          ? messages.extracts.writing(extractRow.row_count)
-                          : messages.query.extractQueued}
-                      </span>
-                    ) : null}
-                    <Button
-                      type="button"
-                      variant="primary"
-                      className="gap-1.5"
-                      disabled={!canExtract}
-                      onClick={() => void onExtract()}
-                    >
-                      <FileDown className="size-3.5" />
-                      {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
-                    </Button>
-                    <Button
-                      type="button"
-                      className="gap-1.5"
-                      disabled={!canRun}
-                      onClick={() => {
-                        setRegisterName(path.trim().replace(/^\//, "").replace(/\//g, "_") || messages.workspace.untitledExtract(1));
-                        setIsRegisterOpen(true);
-                      }}
-                    >
-                      <BookmarkPlus className="size-3.5" />
-                      {messages.query.registerTask}
-                    </Button>
-                  </div>
-                </section>
               </div>
             </div>
           </div>
@@ -537,21 +486,93 @@ export function ApiExtractPage() {
       </Panel>
 
       <AppDialog
+        open={previewOpen}
+        title={messages.apiExtract.previewTitle}
+        icon={<Eye className="size-4 text-accent" aria-hidden="true" />}
+        className="h-[min(42rem,88vh)] w-[min(72rem,94vw)]"
+        minWidth={520}
+        minHeight={360}
+        onClose={() => setPreviewOpen(false)}
+        headerExtra={
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              className="!w-[4.75rem] technical"
+              value={String(limit)}
+              options={PREVIEW_LIMITS.map((value) => ({ value: String(value), label: String(value) }))}
+              onChange={(next) => setLimit(Number(next) as (typeof PREVIEW_LIMITS)[number])}
+            />
+            <Select
+              editable
+              className="!w-[6.5rem] technical"
+              value={delimiter}
+              options={delimiterOptions}
+              onChange={setDelimiter}
+            />
+            <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+              <input
+                className="field-control"
+                type="checkbox"
+                checked={header}
+                onChange={(event) => setHeader(event.target.checked)}
+              />
+              {messages.common.header}
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-text-secondary">
+              <input
+                className="field-control"
+                type="checkbox"
+                checked={addSequence}
+                onChange={(event) => setAddSequence(event.target.checked)}
+              />
+              {messages.common.addSequence}
+            </label>
+          </div>
+        }
+        footer={
+          <Button type="button" variant="secondary" onClick={() => setPreviewOpen(false)}>
+            {messages.common.close}
+          </Button>
+        }
+      >
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {info ? <p className="border-b border-border px-4 py-2 text-xs text-text-secondary">{info}</p> : null}
+          <div className="min-h-0 flex-1 overflow-hidden p-4">
+            {!preview ? (
+              <p className="px-4 py-12 text-center text-[13px] text-text-tertiary">
+                {messages.apiExtract.previewHint}
+              </p>
+            ) : (
+              <DataGrid className="h-full min-h-64" headers={preview.columns} columnWidths={resultWidths}>
+                {preview.rows.length === 0 ? (
+                  <EmptyGridRow cols={preview.columns.length} text={messages.apiExtract.emptyRows} />
+                ) : (
+                  preview.rows.map((row, rowIndex) => (
+                    <GridRow key={rowIndex}>
+                      {row.map((cell, cellIndex) => (
+                        <GridCell key={cellIndex} mono>
+                          {cell}
+                        </GridCell>
+                      ))}
+                    </GridRow>
+                  ))
+                )}
+              </DataGrid>
+            )}
+          </div>
+        </div>
+      </AppDialog>
+
+      <AppDialog
         open={isRegisterOpen}
         title={messages.query.registerTaskTitle}
+        icon={<BookmarkPlus className="size-4 text-accent" aria-hidden="true" />}
         onClose={() => setIsRegisterOpen(false)}
-        className="w-[24rem]"
-      >
-        <div className="space-y-4 p-4">
-          <p className="text-sm text-text-secondary">{messages.query.registerTaskHint}</p>
-          <FormField label={messages.query.namePlaceholder}>
-            <input
-              className="field-control"
-              value={registerName}
-              onChange={(event) => setRegisterName(event.target.value)}
-            />
-          </FormField>
-          <div className="flex justify-end gap-2">
+        className="w-[min(22rem,92vw)]"
+        minWidth={320}
+        minHeight={240}
+        zIndex={120}
+        footer={
+          <>
             <Button type="button" variant="secondary" onClick={() => setIsRegisterOpen(false)}>
               {messages.common.cancel}
             </Button>
@@ -561,63 +582,37 @@ export function ApiExtractPage() {
               disabled={registerBusy || !registerName.trim()}
               onClick={() => void onRegister()}
             >
-              {messages.query.registerTask}
+              {registerBusy ? messages.common.saving : messages.common.save}
             </Button>
-          </div>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3 p-4">
+          <p className="text-[11px] leading-5 text-text-tertiary">{messages.query.registerTaskHint}</p>
+          <FormField label={messages.workspace.chipName}>
+            <input
+              className="field-control"
+              value={registerName}
+              autoFocus
+              placeholder={messages.query.namePlaceholder}
+              onChange={(event) => setRegisterName(event.target.value)}
+            />
+          </FormField>
+          <dl className="space-y-2 border-t border-border/60 pt-3 text-[11px] text-text-tertiary">
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0">{messages.workspace.connection}</dt>
+              <dd className="min-w-0 truncate text-text-secondary">
+                {httpConnections.find((connection) => connection.id === browseId)?.name ?? "—"}
+              </dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0">{messages.apiExtract.path}</dt>
+              <dd className="min-w-0 truncate font-mono text-text-secondary">{path || "—"}</dd>
+            </div>
+          </dl>
         </div>
       </AppDialog>
 
-      <AppDialog
-        open={newConnOpen}
-        title={messages.apiExtract.newConnectionTitle}
-        onClose={() => setNewConnOpen(false)}
-        className="w-[26rem]"
-      >
-        <div className="space-y-3 p-4">
-          <p className="text-sm text-text-secondary">{messages.apiExtract.newConnectionHint}</p>
-          <FormField label={messages.connectionsPage.name}>
-            <input className="field-control" value={newName} onChange={(event) => setNewName(event.target.value)} />
-          </FormField>
-          <FormField label={messages.apiExtract.baseUrl}>
-            <input
-              className="field-control technical"
-              value={newBaseUrl}
-              onChange={(event) => setNewBaseUrl(event.target.value)}
-              placeholder="https://api.example.com"
-            />
-          </FormField>
-          <FormField label={messages.apiExtract.token} example={messages.apiExtract.tokenHint}>
-            <input
-              className="field-control"
-              type="password"
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              autoComplete="new-password"
-            />
-          </FormField>
-          <FormField label={messages.apiExtract.basicUser} example={messages.apiExtract.basicUserHint}>
-            <input
-              className="field-control"
-              value={newUsername}
-              onChange={(event) => setNewUsername(event.target.value)}
-              autoComplete="off"
-            />
-          </FormField>
-          <div className="flex justify-end gap-2 pt-1">
-            <Button type="button" variant="secondary" onClick={() => setNewConnOpen(false)}>
-              {messages.common.cancel}
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              disabled={newSaving || !newName.trim() || !newBaseUrl.trim()}
-              onClick={() => void onCreateConnection()}
-            >
-              {messages.common.save}
-            </Button>
-          </div>
-        </div>
-      </AppDialog>
     </PageShell>
   );
 }

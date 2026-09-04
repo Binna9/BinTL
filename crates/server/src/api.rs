@@ -523,7 +523,9 @@ fn read_upload_preview(
         let record = record.map_err(|error| AppError::bad(format!("invalid csv: {error}")))?;
         row_count += 1;
         if columns.is_empty() {
-            columns = (0..record.len()).map(|index| format!("{}", index + 1)).collect();
+            columns = (0..record.len())
+                .map(|index| format!("{}", index + 1))
+                .collect();
         }
         if rows.len() < limit {
             rows.push(record.iter().map(str::to_string).collect());
@@ -879,6 +881,8 @@ struct CreateExtractBody {
 #[derive(Deserialize)]
 struct HttpPreviewBody {
     connection_id: String,
+    #[serde(default)]
+    request_type: String,
     #[serde(default = "default_http_method")]
     method: String,
     #[serde(default)]
@@ -889,6 +893,18 @@ struct HttpPreviewBody {
     headers: Vec<HttpKv>,
     #[serde(default)]
     body: Option<String>,
+    #[serde(default)]
+    body_mode: String,
+    #[serde(default)]
+    form: Vec<HttpKv>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    graphql_query: String,
+    #[serde(default)]
+    graphql_variables: Value,
+    #[serde(default)]
+    graphql_operation_name: String,
     #[serde(default)]
     records_path: String,
     #[serde(default)]
@@ -943,11 +959,18 @@ async fn create_api_extract(
     let spec = parse_http_spec(&raw).map_err(|error| AppError::bad(error.to_string()))?;
     let source = json!({
         "type": "http",
+        "request_type": spec.request_type,
         "method": spec.method,
         "path": spec.path,
         "query": spec.query,
         "headers": spec.headers,
         "body": spec.body,
+        "body_mode": spec.body_mode,
+        "form": spec.form,
+        "timeout_ms": spec.timeout_ms,
+        "graphql_query": spec.graphql_query,
+        "graphql_variables": spec.graphql_variables,
+        "graphql_operation_name": spec.graphql_operation_name,
         "records_path": spec.records_path,
     });
     let sql = serde_json::to_string(&source).map_err(|error| AppError::bad(error.to_string()))?;
@@ -1077,11 +1100,18 @@ async fn http_preview(
         return Err(AppError::bad("http preview needs an http connection"));
     }
     let spec = HttpRequestSpec {
+        request_type: body.request_type,
         method: body.method,
         path: body.path,
         query: body.query,
         headers: body.headers,
         body: body.body,
+        body_mode: body.body_mode,
+        form: body.form,
+        timeout_ms: body.timeout_ms,
+        graphql_query: body.graphql_query,
+        graphql_variables: body.graphql_variables,
+        graphql_operation_name: body.graphql_operation_name,
         records_path: body.records_path,
     };
     let raw = serde_json::to_string(&spec).map_err(|error| AppError::bad(error.to_string()))?;
@@ -1176,10 +1206,7 @@ async fn preview_extract(
             format!("extract preview failed: {error}"),
         )
     })??;
-    let filename = row
-        .filename
-        .clone()
-        .unwrap_or_else(|| "extract.txt".into());
+    let filename = row.filename.clone().unwrap_or_else(|| "extract.txt".into());
     Ok(Json(json!({
         "id": row.id,
         "filename": filename,

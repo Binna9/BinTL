@@ -1,6 +1,5 @@
-import { FormEvent, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { CircleCheck, Maximize2, Pencil, PlugZap, Save, Trash2, X } from "lucide-react";
+import { FormEvent, useMemo, useState } from "react";
+import { Braces, CircleCheck, Database, Maximize2, Pencil, PlugZap, Save, Trash2, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { CatalogTree } from "@/components/connections/CatalogTree";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
@@ -65,11 +64,11 @@ function ConnectionColumnsGrid({
 }
 
 export function ConnectionsPage() {
-  const navigate = useNavigate();
   const { messages } = useLanguage();
   const { canWriteConnections } = useSession();
   const { connections, refreshConnections } = useConnections();
   const [saving, setSaving] = useState(false);
+  const [newDriver, setNewDriver] = useState("postgres");
   const [browseId, setBrowseId] = useState("");
   const [selected, setSelected] = useState<CatalogSelection | null>(null);
   const [columns, setColumns] = useState<DatabaseColumn[]>([]);
@@ -84,7 +83,10 @@ export function ConnectionsPage() {
     const form = event.currentTarget;
     const field = (name: string) =>
       form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
-    const port = field("port").value;
+    const driver = field("driver").value;
+    const value = (name: string) =>
+      (form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null)?.value ?? "";
+    const port = value("port");
 
     setSaving(true);
     try {
@@ -92,11 +94,14 @@ export function ConnectionsPage() {
         name: field("name").value,
         driver: field("driver").value,
         host: field("host").value,
-        port: port ? Number(port) : undefined,
-        database: field("database").value,
-        username: field("username").value,
-        password: field("password").value,
-        ssl: (field("ssl") as HTMLInputElement).checked,
+        port: driver === "http" ? undefined : port ? Number(port) : undefined,
+        database: driver === "http" ? "" : value("database"),
+        username: value("username"),
+        password: value("password"),
+        ssl:
+          driver === "http"
+            ? field("host").value.trim().startsWith("https")
+            : (field("ssl") as HTMLInputElement).checked,
       });
       form.reset();
       await refreshConnections();
@@ -127,7 +132,10 @@ export function ConnectionsPage() {
     const form = event.currentTarget;
     const field = (name: string) =>
       form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
-    const port = field("port").value;
+    const driver = field("driver").value;
+    const value = (name: string) =>
+      (form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null)?.value ?? "";
+    const port = driver === "http" ? "" : value("port");
 
     setEditSaving(true);
     try {
@@ -136,10 +144,13 @@ export function ConnectionsPage() {
         driver: field("driver").value,
         host: field("host").value,
         port: port ? Number(port) : undefined,
-        database: field("database").value,
-        username: field("username").value,
-        password: field("password").value,
-        ssl: (field("ssl") as HTMLInputElement).checked,
+        database: driver === "http" ? "" : value("database"),
+        username: value("username"),
+        password: value("password"),
+        ssl:
+          driver === "http"
+            ? field("host").value.trim().startsWith("https")
+            : (field("ssl") as HTMLInputElement).checked,
       });
       setEditing(null);
       await refreshConnections();
@@ -208,6 +219,27 @@ export function ConnectionsPage() {
   }
 
   const activeConnection = connections.find((connection) => connection.id === browseId);
+  const driverFamily = newDriver === "http" ? "api" : "database";
+  const driverOptions = driverCatalog
+    .filter((driver) => (driverFamily === "api" ? driver.value === "http" : driver.value !== "http"))
+    .map((driver) => ({ value: driver.value, label: driver.label }));
+  const connectionGroups = useMemo(
+    () => [
+      {
+        key: "database",
+        label: messages.connectionsPage.databaseConnections,
+        icon: Database,
+        items: connections.filter((connection) => connection.driver !== "http"),
+      },
+      {
+        key: "api",
+        label: messages.connectionsPage.apiConnections,
+        icon: Braces,
+        items: connections.filter((connection) => connection.driver === "http"),
+      },
+    ],
+    [connections, messages.connectionsPage.apiConnections, messages.connectionsPage.databaseConnections],
+  );
   const example = (sample: string) =>
     `${messages.connectionsPage.examplePrefix} ${sample}`;
 
@@ -226,7 +258,32 @@ export function ConnectionsPage() {
 
       {canWriteConnections ? (
       <Panel className="shrink-0">
-        <PanelHeader title={messages.connectionsPage.new} description={messages.connectionsPage.newDescription} />
+        <PanelHeader
+          title={messages.connectionsPage.new}
+          description={messages.connectionsPage.newDescription}
+          actions={
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                variant={driverFamily === "database" ? "secondary" : "quiet"}
+                className="gap-1.5"
+                onClick={() => setNewDriver("postgres")}
+              >
+                <Database className="size-3.5" aria-hidden="true" />
+                DB
+              </Button>
+              <Button
+                type="button"
+                variant={driverFamily === "api" ? "secondary" : "quiet"}
+                className="gap-1.5"
+                onClick={() => setNewDriver("http")}
+              >
+                <Braces className="size-3.5" aria-hidden="true" />
+                API
+              </Button>
+            </div>
+          }
+        />
         <PanelBody className="py-4">
           <form className="flex flex-col gap-4" autoComplete="off" onSubmit={(event) => void onSave(event)}>
             <div className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.85fr)]">
@@ -258,14 +315,13 @@ export function ConnectionsPage() {
                   >
                     <Select
                       name="driver"
-                      options={driverCatalog.map((driver) => ({
-                        value: driver.value,
-                        label: driver.label,
-                      }))}
+                      value={newDriver}
+                      options={driverOptions}
+                      onChange={setNewDriver}
                     />
                   </FormField>
                   <FormField
-                    label={messages.connectionsPage.host}
+                    label={newDriver === "http" ? messages.apiExtract.baseUrl : messages.connectionsPage.host}
                     example={example(messages.connectionsPage.hostPlaceholder)}
                   >
                     <input
@@ -273,32 +329,36 @@ export function ConnectionsPage() {
                       name="host"
                       required
                       autoComplete="off"
-                      placeholder={messages.connectionsPage.hostPlaceholder}
+                      placeholder={newDriver === "http" ? "https://api.example.com" : messages.connectionsPage.hostPlaceholder}
                     />
                   </FormField>
-                  <FormField
-                    label={messages.connectionsPage.port}
-                    example={example(messages.connectionsPage.portPlaceholder)}
-                  >
-                    <input
-                      className="field-control technical"
-                      name="port"
-                      inputMode="numeric"
-                      placeholder={messages.connectionsPage.portPlaceholder}
-                    />
-                  </FormField>
-                  <FormField
-                    label={messages.connectionsPage.database}
-                    example={example(messages.connectionsPage.databasePlaceholder)}
-                    wide
-                  >
-                    <input
-                      className="field-control"
-                      name="database"
-                      autoComplete="off"
-                      placeholder={messages.connectionsPage.databasePlaceholder}
-                    />
-                  </FormField>
+                  {newDriver === "http" ? null : (
+                    <>
+                      <FormField
+                        label={messages.connectionsPage.port}
+                        example={example(messages.connectionsPage.portPlaceholder)}
+                      >
+                        <input
+                          className="field-control technical"
+                          name="port"
+                          inputMode="numeric"
+                          placeholder={messages.connectionsPage.portPlaceholder}
+                        />
+                      </FormField>
+                      <FormField
+                        label={messages.connectionsPage.database}
+                        example={example(messages.connectionsPage.databasePlaceholder)}
+                        wide
+                      >
+                        <input
+                          className="field-control"
+                          name="database"
+                          autoComplete="off"
+                          placeholder={messages.connectionsPage.databasePlaceholder}
+                        />
+                      </FormField>
+                    </>
+                  )}
                 </div>
               </section>
 
@@ -308,8 +368,8 @@ export function ConnectionsPage() {
                 </h3>
                 <div className="grid grid-cols-1 gap-3">
                   <FormField
-                    label={messages.connectionsPage.username}
-                    example={example(messages.connectionsPage.usernamePlaceholder)}
+                    label={newDriver === "http" ? messages.apiExtract.basicUser : messages.connectionsPage.username}
+                    example={example(newDriver === "http" ? messages.apiExtract.basicUserHint : messages.connectionsPage.usernamePlaceholder)}
                   >
                     <input
                       className="field-control"
@@ -319,8 +379,8 @@ export function ConnectionsPage() {
                     />
                   </FormField>
                   <FormField
-                    label={messages.connectionsPage.password}
-                    example={messages.connectionsPage.passwordHint}
+                    label={newDriver === "http" ? messages.apiExtract.token : messages.connectionsPage.password}
+                    example={newDriver === "http" ? messages.apiExtract.tokenHint : messages.connectionsPage.passwordHint}
                   >
                     <input
                       className="field-control"
@@ -330,17 +390,19 @@ export function ConnectionsPage() {
                       placeholder={messages.connectionsPage.passwordPlaceholder}
                     />
                   </FormField>
-                  <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
-                    <input className="field-control mt-0.5" name="ssl" type="checkbox" />
-                    <span className="min-w-0">
-                      <span className="block text-xs font-medium text-text">
-                        {messages.connectionsPage.useSsl}
+                  {newDriver === "http" ? null : (
+                    <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
+                      <input className="field-control mt-0.5" name="ssl" type="checkbox" />
+                      <span className="min-w-0">
+                        <span className="block text-xs font-medium text-text">
+                          {messages.connectionsPage.useSsl}
+                        </span>
+                        <span className="mt-0.5 block text-[11px] leading-4 text-text-tertiary">
+                          {messages.connectionsPage.sslHint}
+                        </span>
                       </span>
-                      <span className="mt-0.5 block text-[11px] leading-4 text-text-tertiary">
-                        {messages.connectionsPage.sslHint}
-                      </span>
-                    </span>
-                  </label>
+                    </label>
+                  )}
                 </div>
                 <div className="mt-auto flex justify-end pt-4">
                   <Button variant="primary" type="submit" disabled={saving}>
@@ -372,8 +434,21 @@ export function ConnectionsPage() {
               {connections.length === 0 ? (
                 <p className="p-4 text-xs text-text-tertiary">{messages.empty.connections}</p>
               ) : (
-                <ul className="m-0 list-none p-0">
-                  {connections.map((connection) => (
+                <div className="space-y-2 p-2">
+                  {connectionGroups.map((group) => {
+                    const GroupIcon = group.icon;
+                    return (
+                    <section key={group.key} className="overflow-hidden rounded-lg border border-border bg-surface">
+                      <div className="flex items-center gap-2 border-b border-border bg-raised px-3 py-2.5">
+                        <GroupIcon className="size-4 text-accent" aria-hidden="true" />
+                        <span className="text-xs font-bold text-text">{group.label}</span>
+                        <span className="ml-auto text-[11px] font-semibold tabular-nums text-text-tertiary">
+                          {group.items.length}
+                        </span>
+                      </div>
+                      {group.items.length === 0 ? (
+                        <p className="px-3 py-3 text-[11px] text-text-tertiary">{messages.empty.connections}</p>
+                      ) : group.items.map((connection) => (
                     <li
                       key={connection.id}
                       className={cn(
@@ -440,8 +515,11 @@ export function ConnectionsPage() {
                         ) : null}
                       </div>
                     </li>
-                  ))}
-                </ul>
+                      ))}
+                    </section>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </aside>
@@ -451,12 +529,43 @@ export function ConnectionsPage() {
               {messages.connectionsPage.selectConnectionHint}
             </div>
           ) : activeConnection.driver === "http" ? (
-            <div className="grid h-full place-items-center px-6 text-center text-[13px] text-text-tertiary">
-              <div className="max-w-sm space-y-3">
-                <p>{messages.apiExtract.newConnectionHint}</p>
-                <Button type="button" onClick={() => navigate("/extract/api")}>
-                  {messages.apiExtract.title}
-                </Button>
+            <div className="flex h-full min-w-0 flex-col overflow-hidden">
+              <PaneHeader
+                title={messages.apiExtract.detailTitle}
+                actions={
+                  <Button type="button" variant="secondary" onClick={() => setEditing(activeConnection)}>
+                    <Pencil className="size-3.5" aria-hidden="true" />
+                    {messages.common.edit}
+                  </Button>
+                }
+              />
+              <div className="scroll-pane min-h-0 flex-1 overflow-y-auto p-4">
+                <div className="mx-auto grid max-w-3xl gap-3 sm:grid-cols-2">
+                  <section className="rounded-xl border border-border bg-subtle/40 p-4 sm:col-span-2">
+                    <h3 className="mb-3 text-xs font-bold text-text">{messages.apiExtract.apiInfo}</h3>
+                    <dl className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <dt className="text-[11px] font-semibold text-text-tertiary">{messages.connectionsPage.name}</dt>
+                        <dd className="mt-1 truncate text-sm text-text">{activeConnection.name}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] font-semibold text-text-tertiary">{messages.apiExtract.baseUrl}</dt>
+                        <dd className="mt-1 break-all font-mono text-sm text-text">{activeConnection.host}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] font-semibold text-text-tertiary">{messages.apiExtract.basicUser}</dt>
+                        <dd className="mt-1 text-sm text-text">{dash(activeConnection.username)}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] font-semibold text-text-tertiary">{messages.apiExtract.token}</dt>
+                        <dd className="mt-1 text-sm text-text">••••••••</dd>
+                      </div>
+                    </dl>
+                  </section>
+                  <p className="text-xs leading-5 text-text-tertiary sm:col-span-2">
+                    {messages.apiExtract.newConnectionHint}
+                  </p>
+                </div>
               </div>
             </div>
           ) : (
@@ -573,29 +682,33 @@ export function ConnectionsPage() {
                 }))}
               />
             </FormField>
-            <FormField label={messages.connectionsPage.host}>
+            <FormField label={editing.driver === "http" ? messages.apiExtract.baseUrl : messages.connectionsPage.host}>
               <input className="field-control" name="host" defaultValue={editing.host} required />
             </FormField>
-            <FormField label={messages.connectionsPage.port}>
-              <input
-                className="field-control technical"
-                name="port"
-                defaultValue={editing.port || ""}
-                placeholder="5432"
-              />
+            {editing.driver === "http" ? null : (
+              <>
+                <FormField label={messages.connectionsPage.port}>
+                  <input
+                    className="field-control technical"
+                    name="port"
+                    defaultValue={editing.port || ""}
+                    placeholder="5432"
+                  />
+                </FormField>
+                <FormField label={messages.connectionsPage.database} wide>
+                  <input
+                    className="field-control"
+                    name="database"
+                    defaultValue={editing.database_name}
+                    required
+                  />
+                </FormField>
+              </>
+            )}
+            <FormField label={editing.driver === "http" ? messages.apiExtract.basicUser : messages.connectionsPage.username}>
+              <input className="field-control" name="username" defaultValue={editing.username} />
             </FormField>
-            <FormField label={messages.connectionsPage.database} wide>
-              <input
-                className="field-control"
-                name="database"
-                defaultValue={editing.database_name}
-                required
-              />
-            </FormField>
-            <FormField label={messages.connectionsPage.username}>
-              <input className="field-control" name="username" defaultValue={editing.username} required />
-            </FormField>
-            <FormField label={messages.connectionsPage.password}>
+            <FormField label={editing.driver === "http" ? messages.apiExtract.token : messages.connectionsPage.password}>
               <input
                 className="field-control"
                 name="password"
@@ -603,15 +716,17 @@ export function ConnectionsPage() {
                 placeholder={messages.connectionsPage.passwordKeep}
               />
             </FormField>
-            <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
-              <input
-                className="field-control"
-                name="ssl"
-                type="checkbox"
-                defaultChecked={editing.ssl !== 0}
-              />
-              {messages.connectionsPage.useSsl}
-            </label>
+            {editing.driver === "http" ? null : (
+              <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
+                <input
+                  className="field-control"
+                  name="ssl"
+                  type="checkbox"
+                  defaultChecked={editing.ssl !== 0}
+                />
+                {messages.connectionsPage.useSsl}
+              </label>
+            )}
           </form>
         ) : null}
       </AppDialog>

@@ -68,6 +68,7 @@ export function CombineSetup({
   leftColumns,
   commonJoinKeys,
   onChange,
+  onDisable,
 }: {
   messages: Messages;
   draft: CombineDraft;
@@ -76,6 +77,7 @@ export function CombineSetup({
   leftColumns: DatasetColumn[];
   commonJoinKeys: DatasetColumn[];
   onChange: (draft: CombineDraft) => void;
+  onDisable?: () => void;
 }) {
   const t = messages.transform;
 
@@ -89,7 +91,7 @@ export function CombineSetup({
   return (
     <div className="scroll-pane min-h-0 flex-1 overflow-auto p-4">
       <div className="flex flex-col gap-5">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             type="button"
             variant={draft.mode === "join" ? "primary" : "quiet"}
@@ -108,6 +110,11 @@ export function CombineSetup({
             <Layers className="size-3.5" aria-hidden="true" />
             {t.combineModeUnion}
           </Button>
+          {onDisable ? (
+            <Button type="button" variant="quiet" onClick={onDisable}>
+              {t.combineDisable}
+            </Button>
+          ) : null}
         </div>
 
         {draft.mode === "join" ? (

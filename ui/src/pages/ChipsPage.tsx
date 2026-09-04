@@ -210,7 +210,12 @@ export function ChipsPage() {
       <AppDialog
         open={Boolean(detail)}
         title={detail?.name ?? ""}
-        icon={<Puzzle className="size-4 text-accent" aria-hidden="true" />}
+        icon={
+          <Puzzle
+            className={cn("size-4", detail?.kind === "transform" ? "text-success" : "text-accent")}
+            aria-hidden="true"
+          />
+        }
         className="w-[min(40rem,94vw)]"
         minWidth={380}
         minHeight={320}

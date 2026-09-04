@@ -6,6 +6,7 @@ import {
   Database,
   DatabaseZap,
   FileText,
+  Filter,
   GitBranch,
   History,
   LayoutDashboard,
@@ -90,6 +91,21 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
         pathname === "/transform" ||
         (/^\/transform\/[^/]+$/.test(pathname) && pathname !== "/transform/reshape"),
       children: [
+        {
+          to: "/transform/clean",
+          label: messages.nav.transformClean,
+          icon: <Filter className={iconClassName} />,
+        },
+        {
+          to: "/transform/combine",
+          label: messages.nav.transformCombine,
+          icon: <Workflow className={iconClassName} />,
+        },
+        {
+          to: "/transform/aggregate",
+          label: messages.nav.transformAggregate,
+          icon: <ListChecks className={iconClassName} />,
+        },
         {
           to: "/transform/reshape",
           label: messages.nav.transformReshape,

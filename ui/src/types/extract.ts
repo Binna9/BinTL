@@ -27,11 +27,18 @@ export interface HttpKv {
 
 export interface HttpSource {
   type: "http";
+  request_type?: "rest" | "graphql";
   method: string;
   path: string;
   query: HttpKv[];
   headers: HttpKv[];
   body?: string | null;
+  body_mode?: "json" | "raw" | "urlencoded" | "multipart";
+  form?: HttpKv[];
+  timeout_ms?: number;
+  graphql_query?: string;
+  graphql_variables?: Record<string, unknown>;
+  graphql_operation_name?: string;
   records_path: string;
 }
 
@@ -55,6 +62,13 @@ export interface HttpPreviewRequest {
   query?: HttpKv[];
   headers?: HttpKv[];
   body?: string | null;
+  body_mode?: "json" | "raw" | "urlencoded" | "multipart";
+  form?: HttpKv[];
+  timeout_ms?: number;
+  request_type?: "rest" | "graphql";
+  graphql_query?: string;
+  graphql_variables?: Record<string, unknown>;
+  graphql_operation_name?: string;
   records_path?: string;
   limit?: number;
 }

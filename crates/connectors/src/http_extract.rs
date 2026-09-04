@@ -18,6 +18,8 @@ pub struct HttpKv {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpRequestSpec {
+    #[serde(default = "default_request_type")]
+    pub request_type: String,
     #[serde(default = "default_method")]
     pub method: String,
     #[serde(default)]
@@ -28,12 +30,32 @@ pub struct HttpRequestSpec {
     pub headers: Vec<HttpKv>,
     #[serde(default)]
     pub body: Option<String>,
+    #[serde(default = "default_body_mode")]
+    pub body_mode: String,
+    #[serde(default)]
+    pub form: Vec<HttpKv>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub graphql_query: String,
+    #[serde(default)]
+    pub graphql_variables: Value,
+    #[serde(default)]
+    pub graphql_operation_name: String,
     #[serde(default)]
     pub records_path: String,
 }
 
 fn default_method() -> String {
     "GET".into()
+}
+
+fn default_request_type() -> String {
+    "rest".into()
+}
+
+fn default_body_mode() -> String {
+    "json".into()
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +80,32 @@ pub fn parse_http_spec(raw: &str) -> Result<HttpRequestSpec, ConnectError> {
         return Err(ConnectError::Invalid(format!(
             "unsupported http method {}",
             spec.method
+        )));
+    }
+    spec.request_type = spec.request_type.trim().to_ascii_lowercase();
+    if spec.request_type.is_empty() {
+        spec.request_type = "rest".into();
+    }
+    if !matches!(spec.request_type.as_str(), "rest" | "graphql") {
+        return Err(ConnectError::Invalid(format!(
+            "unsupported request type {}",
+            spec.request_type
+        )));
+    }
+    if spec.request_type == "graphql" && spec.graphql_query.trim().is_empty() {
+        return Err(ConnectError::Invalid("graphql query required".into()));
+    }
+    spec.body_mode = spec.body_mode.trim().to_ascii_lowercase();
+    if spec.body_mode.is_empty() {
+        spec.body_mode = "json".into();
+    }
+    if !matches!(
+        spec.body_mode.as_str(),
+        "json" | "raw" | "urlencoded" | "multipart"
+    ) {
+        return Err(ConnectError::Invalid(format!(
+            "unsupported body mode {}",
+            spec.body_mode
         )));
     }
     Ok(spec)
@@ -134,7 +182,11 @@ async fn execute_http(
 ) -> Result<(u16, Value), ConnectError> {
     let url = build_url(&connection.host, &spec.path, &spec.query)?;
     let client = http_client()?;
-    let mut request = match spec.method.as_str() {
+    let mut request = match if spec.request_type == "graphql" {
+        "POST"
+    } else {
+        spec.method.as_str()
+    } {
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
         "PATCH" => client.patch(&url),
@@ -149,16 +201,55 @@ async fn execute_http(
         }
         request = request.header(name, header.value.as_str());
     }
-    if matches!(spec.method.as_str(), "POST" | "PUT" | "PATCH") {
+    if spec.request_type == "graphql" {
+        let mut payload = serde_json::json!({
+            "query": spec.graphql_query,
+            "variables": spec.graphql_variables,
+        });
+        if !spec.graphql_operation_name.trim().is_empty() {
+            payload["operationName"] = Value::String(spec.graphql_operation_name.clone());
+        }
+        request = request.json(&payload);
+    } else if matches!(spec.method.as_str(), "POST" | "PUT" | "PATCH") {
         let body = spec.body.clone().unwrap_or_default();
-        if !body.trim().is_empty() {
-            request = request
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body);
+        match spec.body_mode.as_str() {
+            "urlencoded" => {
+                let fields = spec
+                    .form
+                    .iter()
+                    .filter(|item| !item.name.trim().is_empty())
+                    .map(|item| (item.name.as_str(), item.value.as_str()))
+                    .collect::<Vec<_>>();
+                request = request.form(&fields);
+            }
+            "multipart" => {
+                let form = spec
+                    .form
+                    .iter()
+                    .filter(|item| !item.name.trim().is_empty())
+                    .fold(reqwest::multipart::Form::new(), |form, item| {
+                        form.text(item.name.clone(), item.value.clone())
+                    });
+                request = request.multipart(form);
+            }
+            "raw" => {
+                if !body.trim().is_empty() {
+                    request = request.body(body);
+                }
+            }
+            _ => {
+                if !body.trim().is_empty() {
+                    request = request
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(body);
+                }
+            }
         }
     }
+    let timeout =
+        std::time::Duration::from_millis(spec.timeout_ms.unwrap_or(60_000).clamp(1_000, 300_000));
     let response = request
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(timeout)
         .send()
         .await
         .map_err(|error| ConnectError::Invalid(format!("http request failed: {error}")))?;
@@ -243,15 +334,18 @@ fn build_url(base: &str, path: &str, query: &[HttpKv]) -> Result<String, Connect
 }
 
 fn select_records<'a>(value: &'a Value, records_path: &str) -> Result<&'a Value, ConnectError> {
-    let path = records_path.trim().trim_start_matches('$').trim_start_matches('.');
+    let path = records_path
+        .trim()
+        .trim_start_matches('$')
+        .trim_start_matches('.');
     if path.is_empty() {
         return Ok(value);
     }
     let mut cursor = value;
     for part in path.split('.').filter(|part| !part.is_empty()) {
-        cursor = cursor
-            .get(part)
-            .ok_or_else(|| ConnectError::Invalid(format!("records_path not found: {records_path}")))?;
+        cursor = cursor.get(part).ok_or_else(|| {
+            ConnectError::Invalid(format!("records_path not found: {records_path}"))
+        })?;
     }
     Ok(cursor)
 }

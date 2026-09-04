@@ -131,6 +131,8 @@ enum ExtractSource {
         database: Option<String>,
     },
     Http {
+        #[serde(default)]
+        request_type: String,
         #[serde(default = "default_http_method")]
         method: String,
         #[serde(default)]
@@ -141,6 +143,18 @@ enum ExtractSource {
         headers: Vec<HttpKv>,
         #[serde(default)]
         body: Option<String>,
+        #[serde(default)]
+        body_mode: String,
+        #[serde(default)]
+        form: Vec<HttpKv>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+        #[serde(default)]
+        graphql_query: String,
+        #[serde(default)]
+        graphql_variables: Value,
+        #[serde(default)]
+        graphql_operation_name: String,
         #[serde(default)]
         records_path: String,
     },
@@ -224,8 +238,8 @@ async fn register_chip(
                 .get("header")
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
-            let source_json = serde_json::to_string(&source)
-                .map_err(|error| AppError::bad(error.to_string()))?;
+            let source_json =
+                serde_json::to_string(&source).map_err(|error| AppError::bad(error.to_string()))?;
             let extract_kind = match source.get("type").and_then(Value::as_str) {
                 Some("http") => "api",
                 _ => "database",
@@ -276,9 +290,7 @@ async fn register_chip(
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            if let Err(error) =
-                queue_chip_run(&state, &user, &chip, workspace_id, None).await
-            {
+            if let Err(error) = queue_chip_run(&state, &user, &chip, workspace_id, None).await {
                 tracing::warn!(
                     chip_id = %chip.id,
                     ?error,
@@ -296,10 +308,7 @@ async fn list_chips(
     Path(workspace_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     access::require_workspace(&state.store, &user, &workspace_id).await?;
-    let chips = state
-        .store
-        .list_chips(&workspace_id)
-        .await?;
+    let chips = state.store.list_chips(&workspace_id).await?;
     let mut out = Vec::with_capacity(chips.len());
     for chip in &chips {
         out.push(chip_json_for_workspace(&state.store, chip, &workspace_id).await?);
@@ -319,9 +328,18 @@ async fn create_chip(
         serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?;
     let chip = state
         .store
-        .insert_chip(user.id(), &workspace_id, &body.name, &body.kind, &config_json)
+        .insert_chip(
+            user.id(),
+            &workspace_id,
+            &body.name,
+            &body.kind,
+            &config_json,
+        )
         .await?;
-    Ok((StatusCode::CREATED, Json(chip_json(&state.store, &chip).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(chip_json(&state.store, &chip).await?),
+    ))
 }
 
 async fn get_chip(
@@ -354,9 +372,11 @@ async fn update_chip(
         let raw_config = match body.config.as_ref() {
             Some(config) => config.clone(),
             None => {
-                let raw = state.store.resolve_chip_config_json(&current).await.map_err(|error| {
-                    AppError::bad(error.to_string())
-                })?;
+                let raw = state
+                    .store
+                    .resolve_chip_config_json(&current)
+                    .await
+                    .map_err(|error| AppError::bad(error.to_string()))?;
                 serde_json::from_str(&raw).map_err(|error| {
                     AppError::bad(format!("stored chip config is invalid: {error}"))
                 })?
@@ -368,8 +388,7 @@ async fn update_chip(
             .await
             .map_err(|error| AppError::bad(error.to_string()))?
             .ok_or_else(|| AppError::bad("chip is not placed on a workspace"))?;
-        let config =
-            validate_config(&state.store, &workspace_id, kind, raw_config).await?;
+        let config = validate_config(&state.store, &workspace_id, kind, raw_config).await?;
         Some(serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?)
     } else {
         None
@@ -662,19 +681,25 @@ async fn wait_for_chip_run(state: &AppState, run_id: &str) -> Result<(), AppErro
                 return Err(AppError::bad(message));
             }
             "queued" | "running" => {}
-            other => return Err(AppError::bad(format!("unexpected chip run status `{other}`"))),
+            other => {
+                return Err(AppError::bad(format!(
+                    "unexpected chip run status `{other}`"
+                )))
+            }
         }
     }
     Err(AppError::bad("chip run timed out"))
 }
 
 pub(crate) async fn chip_json(store: &Store, row: &ChipRow) -> Result<Value, AppError> {
-    let binding = store.get_chip_binding(&row.id).await.map_err(|error| {
-        AppError::bad(error.to_string())
-    })?;
-    let config_raw = store.resolve_chip_config_json(row).await.map_err(|error| {
-        AppError::bad(error.to_string())
-    })?;
+    let binding = store
+        .get_chip_binding(&row.id)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let config_raw = store
+        .resolve_chip_config_json(row)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
     let config = serde_json::from_str::<Value>(&config_raw)
         .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
     Ok(json!({
@@ -825,34 +850,55 @@ async fn validate_extract_config(store: &Store, config: Value) -> Result<Value, 
             json!({ "type": "query", "sql": sql, "database": database })
         }
         ExtractSource::Http {
+            request_type,
             method,
             path,
             query,
             headers,
             body,
+            body_mode,
+            form,
+            timeout_ms,
+            graphql_query,
+            graphql_variables,
+            graphql_operation_name,
             records_path,
         } => {
             if connection.driver != "http" {
                 return Err(AppError::bad("http source needs an http connection"));
             }
             let spec = HttpRequestSpec {
+                request_type,
                 method,
                 path,
                 query,
                 headers,
                 body,
+                body_mode,
+                form,
+                timeout_ms,
+                graphql_query,
+                graphql_variables,
+                graphql_operation_name,
                 records_path,
             };
-            let raw = serde_json::to_string(&spec)
-                .map_err(|error| AppError::bad(error.to_string()))?;
+            let raw =
+                serde_json::to_string(&spec).map_err(|error| AppError::bad(error.to_string()))?;
             let spec = parse_http_spec(&raw).map_err(|error| AppError::bad(error.to_string()))?;
             json!({
                 "type": "http",
+                "request_type": spec.request_type,
                 "method": spec.method,
                 "path": spec.path,
                 "query": spec.query,
                 "headers": spec.headers,
                 "body": spec.body,
+                "body_mode": spec.body_mode,
+                "form": spec.form,
+                "timeout_ms": spec.timeout_ms,
+                "graphql_query": spec.graphql_query,
+                "graphql_variables": spec.graphql_variables,
+                "graphql_operation_name": spec.graphql_operation_name,
                 "records_path": spec.records_path,
             })
         }
@@ -980,32 +1026,51 @@ async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     let header = config.header.unwrap_or(true);
     let (kind, table, sql, database) = match config.source {
         ExtractSource::Table { table, database } => ("database", table, None, database),
-        ExtractSource::Query { sql, database } => {
-            ("database", "query".into(), Some(sql), database)
-        }
+        ExtractSource::Query { sql, database } => ("database", "query".into(), Some(sql), database),
         ExtractSource::Http {
+            request_type,
             method,
             path,
             query,
             headers,
             body,
+            body_mode,
+            form,
+            timeout_ms,
+            graphql_query,
+            graphql_variables,
+            graphql_operation_name,
             records_path,
         } => {
             let spec = HttpRequestSpec {
+                request_type,
                 method,
                 path: path.clone(),
                 query,
                 headers,
                 body,
+                body_mode,
+                form,
+                timeout_ms,
+                graphql_query,
+                graphql_variables,
+                graphql_operation_name,
                 records_path,
             };
             let raw = serde_json::to_string(&json!({
                 "type": "http",
+                "request_type": spec.request_type,
                 "method": spec.method,
                 "path": spec.path,
                 "query": spec.query,
                 "headers": spec.headers,
                 "body": spec.body,
+                "body_mode": spec.body_mode,
+                "form": spec.form,
+                "timeout_ms": spec.timeout_ms,
+                "graphql_query": spec.graphql_query,
+                "graphql_variables": spec.graphql_variables,
+                "graphql_operation_name": spec.graphql_operation_name,
                 "records_path": spec.records_path,
             }))
             .map_err(|error| error.to_string())?;

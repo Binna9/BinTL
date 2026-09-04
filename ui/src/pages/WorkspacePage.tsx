@@ -2,7 +2,7 @@ import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerE
 import { flushSync } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { AppWindow, ArrowRight, CheckCircle2, ChevronDown, CircleAlert, DatabaseZap, Folder, FolderOpen, Layers, Pencil, Play, RefreshCw, Save, Settings2, Spline, Workflow, X, type LucideIcon } from "lucide-react";
+import { AppWindow, ArrowRight, CheckCircle2, ChevronDown, CircleAlert, DatabaseZap, Folder, FolderOpen, Layers, Pencil, Play, Puzzle, RefreshCw, Save, Settings2, Spline, Workflow, X, type LucideIcon } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -33,6 +33,12 @@ import type { Workspace, WorkspaceFolder, WorkspaceLayout } from "@/types/worksp
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 const TOOL_KIND = "application/x-bintl-tool";
+
+function chipKindLabel(kind: ChipKind, messages: Messages) {
+  if (kind === "extract") return messages.workspace.extract;
+  if (kind === "transform") return messages.workspace.transform;
+  return messages.workspace.load;
+}
 
 function chipRunOrder(chips: Chip[], edges: ChipEdge[]): Chip[] | null {
   const incoming = new Map<string, number>();
@@ -2682,6 +2688,14 @@ export function WorkspacePage() {
                   setSelectedEdgeIds([]);
                 }
               }}
+              onDoubleClick={(event) => {
+                if ((event.target as HTMLElement).closest(".chip-link, button")) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setSelectedChipIds([chip.id]);
+                setSelectedEdgeIds([]);
+                setInfoChip(chip);
+              }}
               onContextMenu={(event) => openChipContextMenu(chip, event)}
             >
               <ChipLinkHandle
@@ -2820,25 +2834,45 @@ export function WorkspacePage() {
 
       <AppDialog
         open={Boolean(infoChip)}
-        title={messages.workspace.chipInfoTitle}
+        title={infoChip?.name ?? ""}
+        icon={
+          <Puzzle
+            className={cn("size-4", infoChip?.kind === "transform" ? "text-success" : "text-accent")}
+            aria-hidden="true"
+          />
+        }
         onClose={() => setInfoChip(null)}
-        className="w-[min(32rem,92vw)]"
-        footer={
-          <Button type="button" onClick={() => setInfoChip(null)}>
-            {messages.common.close}
-          </Button>
+        className="w-[min(40rem,94vw)]"
+        minWidth={380}
+        minHeight={320}
+        headerExtra={
+          <div className="flex flex-1 justify-end">
+            <button
+              type="button"
+              className="grid size-8 shrink-0 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label={messages.common.edit}
+              title={`${messages.common.edit} (${messages.common.comingSoon})`}
+              disabled
+            >
+              <Pencil className="size-4" aria-hidden="true" />
+            </button>
+          </div>
         }
       >
         {infoChip ? (
-          <div className="space-y-4 p-1">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
-                {infoChip.kind === "extract"
-                  ? messages.workspace.extract
-                  : messages.workspace.transform}
-              </p>
-              <h2 className="mt-1 text-base font-semibold text-text">{infoChip.name}</h2>
-            </div>
+          <div className="flex flex-col gap-4 p-4">
+            <dl className="grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <dt className="text-text-tertiary">{messages.workspace.chipName}</dt>
+                <dd className="mt-1 font-medium text-text">{infoChip.name}</dd>
+              </div>
+              <div>
+                <dt className="text-text-tertiary">{messages.chips.headers[2]}</dt>
+                <dd className="mt-1 font-medium text-text">
+                  {chipKindLabel(infoChip.kind, messages)}
+                </dd>
+              </div>
+            </dl>
             <ChipDetailView chip={infoChip} />
           </div>
         ) : null}

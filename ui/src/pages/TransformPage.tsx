@@ -883,14 +883,14 @@ function PreviewGrid({
   );
 }
 
-export function TransformPage() {
+export function TransformPage({ section: fixedSection }: { section?: TransformEditorSection }) {
   const { messages } = useLanguage();
   const { id } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const t = messages.transform;
   const [editorSection, setEditorSection] = useState<TransformEditorSection>(() =>
-    parseTransformSection(searchParams.get("section")),
+    fixedSection ?? parseTransformSection(searchParams.get("section")),
   );
   const workspaceId = searchParams.get("workspace") ?? undefined;
   const chipId = searchParams.get("chip") ?? searchParams.get("input_chip") ?? undefined;
@@ -907,7 +907,10 @@ export function TransformPage() {
   const [detailTick, setDetailTick] = useState(0);
   const [detailLoading, setDetailLoading] = useState(false);
   const [expandedKinds, setExpandedKinds] = useState<Set<(typeof KIND_ORDER)[number]>>(
-    new Set(),
+    // Keep the available source files visible when the editor opens. The
+    // groups remain collapsible, but the catalog must not look empty by
+    // default.
+    new Set(KIND_ORDER),
   );
   const [kindSearch, setKindSearch] = useState<
     Record<(typeof KIND_ORDER)[number], string>
@@ -954,10 +957,11 @@ export function TransformPage() {
     combineDraft?.mode === "union" ? t.combineModeUnion : t.combineModeJoin;
 
   useEffect(() => {
-    setEditorSection(parseTransformSection(searchParams.get("section")));
-  }, [searchParams]);
+    setEditorSection(fixedSection ?? parseTransformSection(searchParams.get("section")));
+  }, [fixedSection, searchParams]);
 
   function changeSection(section: TransformEditorSection) {
+    if (fixedSection) return;
     setEditorSection(section);
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
@@ -965,6 +969,19 @@ export function TransformPage() {
       else next.set("section", section);
       return next;
     });
+  }
+
+  function editorPath(nextTransformId?: string) {
+    if (!fixedSection) {
+      return transformEditorPath(nextTransformId, searchParams, editorSection);
+    }
+    const params = new URLSearchParams(searchParams);
+    params.delete("section");
+    const base = nextTransformId
+      ? `/transform/${fixedSection}/${nextTransformId}`
+      : `/transform/${fixedSection}`;
+    const query = params.toString();
+    return query ? `${base}?${query}` : base;
   }
 
   function buildSpec(): TransformSpecV2 {
@@ -1065,9 +1082,27 @@ export function TransformPage() {
   useEffect(() => {
     if (!id) {
       setTransformId(undefined);
+      setSteps([]);
+      setCombineDraft(null);
+      setRightPreview(null);
+      setResultPreview(null);
+      if (!workspaceMode) {
+        setDatasetId(undefined);
+        setName("");
+        setSourcePreview(null);
+      }
       return;
     }
     let cancelled = false;
+    // Routes reuse this page component. Clear the previous recipe while the
+    // requested one loads so /transform/:id never renders stale inputs.
+    setTransformId(undefined);
+    setDatasetId(undefined);
+    setName("");
+    setSteps([]);
+    setCombineDraft(null);
+    setRightPreview(null);
+    setResultPreview(null);
     void transformApi
       .get(id)
       .then((row) => {
@@ -1086,7 +1121,7 @@ export function TransformPage() {
     return () => {
       cancelled = true;
     };
-  }, [id, messages]);
+  }, [id, messages, workspaceMode]);
 
   useEffect(() => {
     if (!datasetId) {
@@ -1138,11 +1173,6 @@ export function TransformPage() {
       cancelled = true;
     };
   }, [datasetId, selected?.available, selected?.status, messages]);
-
-  useEffect(() => {
-    if (editorSection !== "combine" || combineDraft) return;
-    setCombineDraft(emptyCombineDraft());
-  }, [editorSection, combineDraft]);
 
   useEffect(() => {
     if (!combineDraft || combineDraft.mode !== "join" || !combineDraft.rightDatasetId) {
@@ -1309,7 +1339,7 @@ export function TransformPage() {
     setRightPreview(null);
     setSourcePreview(null);
     setResultPreview(null);
-    navigate(transformEditorPath(undefined, searchParams, editorSection));
+    navigate(editorPath());
   }
 
   async function saveTransformDefinition() {
@@ -1333,7 +1363,7 @@ export function TransformPage() {
         });
         setTransformId(row.id);
         setName(row.name);
-        navigate(transformEditorPath(row.id, searchParams, editorSection), { replace: true });
+        navigate(editorPath(row.id), { replace: true });
       }
       if (workspaceMode && workspaceId) {
         toastSuccess(messages.transform.saveToWorkspace);
@@ -1371,7 +1401,7 @@ export function TransformPage() {
         savedTransformId = row.id;
         setTransformId(row.id);
         setName(row.name);
-        navigate(transformEditorPath(row.id, searchParams, editorSection), { replace: true });
+        navigate(editorPath(row.id), { replace: true });
       }
       await chipApi.register({
         name: registerChipName.trim(),
@@ -1442,7 +1472,7 @@ export function TransformPage() {
         });
         savedId = row.id;
         setTransformId(row.id);
-        navigate(transformEditorPath(row.id, searchParams, editorSection), {
+        navigate(editorPath(row.id), {
           replace: true,
         });
       }
@@ -1752,7 +1782,9 @@ export function TransformPage() {
               title={editorSection === "combine" ? t.combineSetup : messages.transform.setup}
               meta={
                 editorSection === "combine"
-                  ? combineModeLabel
+                  ? combineDraft
+                    ? combineModeLabel
+                    : t.combineInactive
                   : editorSection === "aggregate"
                     ? messages.transform.soonPending
                     : messages.common.count(steps.length)
@@ -1832,6 +1864,37 @@ export function TransformPage() {
                 ) : null
               }
             />
+            {!fixedSection ? (
+            <div className="border-b border-border px-4 py-3">
+              <div className="flex max-w-xl rounded-lg border border-border bg-raised p-1" role="tablist" aria-label={t.sectionNav}>
+                {TRANSFORM_SECTIONS.map((section) => {
+                  const label =
+                    section === "combine"
+                      ? t.sectionCombine
+                      : section === "aggregate"
+                        ? t.sectionAggregate
+                        : t.sectionClean;
+                  return (
+                    <button
+                      key={section}
+                      type="button"
+                      role="tab"
+                      aria-selected={editorSection === section}
+                      className={cn(
+                        "flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
+                        editorSection === section
+                          ? "bg-surface text-text shadow-sm"
+                          : "text-text-tertiary hover:text-text-secondary",
+                      )}
+                      onClick={() => changeSection(section)}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            ) : null}
             {!selected ? (
               <div className="flex min-h-0 flex-1 items-center justify-center px-4">
                 <p className="text-sm text-text-tertiary">{messages.transform.pickFile}</p>
@@ -1863,35 +1926,6 @@ export function TransformPage() {
                     </div>
                   </FormField>
                 </div>
-                <div className="border-b border-border px-4 py-3">
-                  <div className="flex max-w-xl rounded-lg border border-border bg-raised p-1" role="tablist" aria-label={t.sectionNav}>
-                    {TRANSFORM_SECTIONS.map((section) => {
-                      const label =
-                        section === "combine"
-                          ? t.sectionCombine
-                          : section === "aggregate"
-                            ? t.sectionAggregate
-                            : t.sectionClean;
-                      return (
-                        <button
-                          key={section}
-                          type="button"
-                          role="tab"
-                          aria-selected={editorSection === section}
-                          className={cn(
-                            "flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
-                            editorSection === section
-                              ? "bg-surface text-text shadow-sm"
-                              : "text-text-tertiary hover:text-text-secondary",
-                          )}
-                          onClick={() => changeSection(section)}
-                        >
-                          {label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
                 {sourceMissing ? (
                   <p className="border-b border-border px-4 py-2.5 text-[11px] leading-5 text-warning">
                     {messages.transform.sourceFileMissing}
@@ -1900,6 +1934,21 @@ export function TransformPage() {
                 {editorSection === "aggregate" ? (
                   <div className="scroll-pane min-h-0 flex-1 overflow-auto p-4">
                     <p className="text-sm leading-6 text-text-secondary">{t.aggregateHint}</p>
+                  </div>
+                ) : editorSection === "combine" && !combineDraft ? (
+                  <div className="scroll-pane min-h-0 flex-1 overflow-auto p-4">
+                    <div className="max-w-xl rounded-lg border border-border bg-raised p-4">
+                      <p className="text-sm font-medium text-text">{t.combineInactive}</p>
+                      <p className="mt-1 text-sm leading-6 text-text-secondary">{t.combineIdleHint}</p>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="mt-3"
+                        onClick={() => setCombineDraft(emptyCombineDraft())}
+                      >
+                        {t.combineEnable}
+                      </Button>
+                    </div>
                   </div>
                 ) : editorSection === "combine" && combineDraft ? (
                   <CombineSetup
@@ -1910,6 +1959,7 @@ export function TransformPage() {
                     leftColumns={baseColumns}
                     commonJoinKeys={commonJoinKeys}
                     onChange={setCombineDraft}
+                    onDisable={() => setCombineDraft(null)}
                   />
                 ) : (
                 <div className="flex min-h-0 flex-1 flex-col">
