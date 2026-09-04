@@ -5,14 +5,11 @@ import {
   BookmarkPlus,
   ChevronRight,
   Eye,
-  FileDown,
   FileSpreadsheet,
   Plus,
   RotateCcw,
   Search,
   Trash2,
-  ArrowLeft,
-  Play,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { CombineSetup } from "@/components/transform/CombineSetup";
@@ -33,7 +30,7 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
-import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
+import { toastError, toastSuccess } from "@/lib/notifications";
 import { HttpError } from "@/services/httpClient";
 import { selectableClass } from "@/lib/selectable";
 import {
@@ -43,7 +40,6 @@ import {
   emptyCombineDraft,
   parseTransformSection,
   TRANSFORM_SECTIONS,
-  transformEditorPath,
   type CombineDraft,
   type TransformEditorSection,
 } from "@/lib/transformEditor";
@@ -68,17 +64,24 @@ import {
   STEP_OP_ICONS,
   STEP_OPS,
 } from "@/features/transform/transformEditorModel";
+type AggregateFunction = "sum" | "count" | "mean" | "min" | "max";
+type AggregateDraft = { column: string; function: AggregateFunction; alias: string };
+
 export function TransformPage({ section: fixedSection }: { section?: TransformEditorSection }) {
   const { messages } = useLanguage();
-  const { id } = useParams<{ id: string }>();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const {
+    id,
+    workspaceId: routeWorkspaceId,
+    editorChipId: routeChipId,
+  } = useParams<{ id: string; workspaceId: string; editorChipId: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const t = messages.transform;
   const [editorSection, setEditorSection] = useState<TransformEditorSection>(() =>
     fixedSection ?? parseTransformSection(searchParams.get("section")),
   );
-  const workspaceId = searchParams.get("workspace") ?? undefined;
-  const chipId = searchParams.get("chip") ?? searchParams.get("input_chip") ?? undefined;
+  const workspaceId = routeWorkspaceId ?? searchParams.get("workspace") ?? undefined;
+  const chipId = routeChipId ?? searchParams.get("chip") ?? searchParams.get("input_chip") ?? undefined;
   const workspaceMode = Boolean(workspaceId && chipId);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetId, setDatasetId] = useState<string>();
@@ -113,14 +116,14 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   const [registerOpen, setRegisterOpen] = useState(false);
   const [registerChipName, setRegisterChipName] = useState("");
   const [registerBusy, setRegisterBusy] = useState(false);
-  const [linkedTransformId, setLinkedTransformId] = useState<string>();
   const [sourceMissing, setSourceMissing] = useState(false);
   const [inputSlot, setInputSlot] = useState<ChipInputSlotResponse | null>(null);
   const [combineDraft, setCombineDraft] = useState<CombineDraft | null>(null);
   const [rightPreview, setRightPreview] = useState<FramePreview | null>(null);
+  const [aggregateGroupBy, setAggregateGroupBy] = useState<string[]>([]);
+  const [aggregations, setAggregations] = useState<AggregateDraft[]>([]);
 
   const selected = datasets.find((item) => item.id === datasetId) ?? null;
-  const savedTransformId = transformId ?? linkedTransformId;
   const columns = selected?.columns ?? [];
   const baseColumns =
     sourcePreview && sourcePreview.columns.length > 0 ? sourcePreview.columns : columns;
@@ -132,12 +135,28 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     rightPreview && rightPreview.columns.length > 0
       ? rightPreview.columns
       : (rightSelected?.columns ?? []);
+  const cleanColumns = useMemo(
+    () => resolveColumnsAtStep(baseColumns, steps, steps.length),
+    [baseColumns, steps],
+  );
   const commonJoinKeys = useMemo(() => {
     const rightNames = new Set(rightColumns.map((column) => column.name));
-    return baseColumns.filter((column) => rightNames.has(column.name));
-  }, [baseColumns, rightColumns]);
+    return cleanColumns.filter((column) => rightNames.has(column.name));
+  }, [cleanColumns, rightColumns]);
+  const aggregateColumns = useMemo(() => {
+    const byName = new Map(cleanColumns.map((column) => [column.name, column]));
+    if (combineDraft?.mode === "join") {
+      for (const column of rightColumns) byName.set(column.name, column);
+    }
+    return [...byName.values()];
+  }, [cleanColumns, combineDraft?.mode, rightColumns]);
+  const usableAggregations = aggregations.filter(
+    (aggregation) => aggregation.column && aggregation.alias.trim(),
+  );
   const canPreviewRecipe =
-    canPreviewCombine(combineDraft, datasetId) || usableSteps(steps, baseColumns).length > 0;
+    canPreviewCombine(combineDraft, datasetId)
+    || usableSteps(steps, baseColumns).length > 0
+    || usableAggregations.length > 0;
   const combineModeLabel =
     combineDraft?.mode === "union" ? t.combineModeUnion : t.combineModeJoin;
 
@@ -146,34 +165,59 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   }, [fixedSection, searchParams]);
 
   function changeSection(section: TransformEditorSection) {
-    if (fixedSection) return;
     setEditorSection(section);
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current);
-      if (section === "clean") next.delete("section");
-      else next.set("section", section);
-      return next;
-    });
+    navigate(editorPath(transformId, section), { replace: true });
   }
 
-  function editorPath(nextTransformId?: string) {
-    if (!fixedSection) {
-      return transformEditorPath(nextTransformId, searchParams, editorSection);
-    }
+  function editorPath(
+    nextTransformId?: string,
+    nextSection: TransformEditorSection = editorSection,
+  ) {
     const params = new URLSearchParams(searchParams);
-    params.delete("section");
-    const base = nextTransformId
-      ? `/transform/${fixedSection}/${nextTransformId}`
-      : `/transform/${fixedSection}`;
+    params.delete("workspace");
+    params.delete("chip");
+    params.delete("input_chip");
+    if (nextSection === "clean") params.delete("section");
+    else params.set("section", nextSection);
+    const base = workspaceId && chipId
+      ? `/workspace/${workspaceId}/chips/${chipId}/transform${nextTransformId ? `/${nextTransformId}` : ""}`
+      : nextTransformId
+        ? `/transform/${nextTransformId}`
+        : "/transform";
     const query = params.toString();
     return query ? `${base}?${query}` : base;
   }
 
   function buildSpec(): TransformSpecV2 {
-    const spec = specFrom(selected, steps, baseColumns);
+    const cleanSpec = specFrom(selected, steps, baseColumns);
     const combine = combineDraftToSpec(combineDraft);
-    if (combine) spec.combine = combine;
-    return spec;
+    return {
+      version: 3,
+      sink: "parquet",
+      read: cleanSpec.read,
+      operations: [
+        ...(cleanSpec.steps && cleanSpec.steps.length > 0
+          ? [{ type: "clean" as const, steps: cleanSpec.steps }]
+          : []),
+        ...(combine?.mode === "join" && combine.right_dataset_id
+          ? [{
+              type: "join" as const,
+              right_dataset_id: combine.right_dataset_id,
+              on: combine.on ?? [],
+              how: combine.how,
+            }]
+          : combine?.mode === "union"
+            ? [{ type: "union" as const, dataset_ids: combine.union_dataset_ids ?? [] }]
+            : []),
+        ...(usableAggregations.length > 0
+          ? [{
+              type: "aggregate" as const,
+              group_by: aggregateGroupBy,
+              aggregations: usableAggregations,
+            }]
+          : []),
+      ],
+    };
   }
 
   const kindLabel: Record<string, string> = {
@@ -269,6 +313,8 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
       setTransformId(undefined);
       setSteps([]);
       setCombineDraft(null);
+      setAggregateGroupBy([]);
+      setAggregations([]);
       setRightPreview(null);
       setResultPreview(null);
       if (!workspaceMode) {
@@ -286,6 +332,8 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     setName("");
     setSteps([]);
     setCombineDraft(null);
+    setAggregateGroupBy([]);
+    setAggregations([]);
     setRightPreview(null);
     setResultPreview(null);
     void transformApi
@@ -295,8 +343,41 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         setTransformId(row.id);
         setDatasetId(row.dataset_id);
         setName(row.name);
-        setSteps(Array.isArray(row.spec?.steps) ? row.spec.steps : []);
-        setCombineDraft(combineDraftFromSpec(row.spec?.combine));
+        const cleanOperation = row.spec?.operations?.find((operation) => operation.type === "clean");
+        const combineOperation = row.spec?.operations?.find(
+          (operation) => operation.type === "join" || operation.type === "union",
+        );
+        const aggregateOperation = row.spec?.operations?.find(
+          (operation) => operation.type === "aggregate",
+        );
+        setSteps(
+          cleanOperation?.type === "clean"
+            ? cleanOperation.steps
+            : Array.isArray(row.spec?.steps)
+              ? row.spec.steps
+              : [],
+        );
+        setCombineDraft(
+          combineOperation?.type === "join"
+            ? combineDraftFromSpec({
+                mode: "join",
+                right_dataset_id: combineOperation.right_dataset_id,
+                on: combineOperation.on,
+                how: combineOperation.how,
+              })
+            : combineOperation?.type === "union"
+              ? combineDraftFromSpec({
+                  mode: "union",
+                  union_dataset_ids: combineOperation.dataset_ids,
+                })
+              : combineDraftFromSpec(row.spec?.combine),
+        );
+        setAggregateGroupBy(
+          aggregateOperation?.type === "aggregate" ? aggregateOperation.group_by : [],
+        );
+        setAggregations(
+          aggregateOperation?.type === "aggregate" ? aggregateOperation.aggregations : [],
+        );
       })
       .catch((err) => {
         if (!cancelled) {
@@ -389,27 +470,6 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   }, [commonJoinKeys, combineDraft]);
 
   useEffect(() => {
-    if (!datasetId || transformId) {
-      setLinkedTransformId(undefined);
-      return;
-    }
-    let cancelled = false;
-    void transformApi
-      .list()
-      .then((response) => {
-        if (cancelled) return;
-        const linked = response.transforms.find((row) => row.dataset_id === datasetId);
-        setLinkedTransformId(linked?.id);
-      })
-      .catch(() => {
-        if (!cancelled) setLinkedTransformId(undefined);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [datasetId, transformId]);
-
-  useEffect(() => {
     if (!detailOpen || !datasetId) return;
     const dataset = datasets.find((item) => item.id === datasetId) ?? null;
     if (dataset?.status === "planned") {
@@ -469,6 +529,8 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     messages,
     steps,
     combineDraft,
+    aggregateGroupBy,
+    aggregations,
     selected?.status,
   ]);
 
@@ -514,16 +576,20 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     setDetailTick((tick) => tick + 1);
   }
 
-  function onNew() {
-    setTransformId(undefined);
-    setDatasetId(undefined);
-    setName("");
+  function resetRecipe() {
     setSteps([]);
     setCombineDraft(null);
+    setAggregateGroupBy([]);
+    setAggregations([]);
     setRightPreview(null);
-    setSourcePreview(null);
     setResultPreview(null);
-    navigate(editorPath());
+    changeSection("clean");
+  }
+
+  function moveToNextTransform() {
+    const currentIndex = TRANSFORM_SECTIONS.indexOf(editorSection);
+    const next = TRANSFORM_SECTIONS[currentIndex + 1];
+    if (next) changeSection(next);
   }
 
   async function saveTransformDefinition() {
@@ -610,69 +676,12 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     setRegisterOpen(true);
   }
 
-  async function onDeleteSaved() {
-    if (!savedTransformId) return;
-    const title = name.trim() || selected?.filename || messages.transform.untitled;
-    const confirmed = await showConfirm(
-      messages.transform.deleteSavedRecipe,
-      messages.transform.deleteSavedRecipeConfirm(title),
-      { tone: "danger", confirmLabel: messages.common.delete },
-    );
-    if (!confirmed) return;
-    setBusy(true);
-    try {
-      await transformApi.delete(savedTransformId);
-      toastSuccess(messages.transform.deleteSavedRecipeDone);
-      setLinkedTransformId(undefined);
-      if (transformId) {
-        onNew();
-      }
-    } catch (err) {
-      toastDeleteError(messages.errors.deleteTransform, messages.errors.deleteBlocked, err);
-    } finally {
-      setBusy(false);
+  function confirmRecipe() {
+    if (workspaceMode || transformId) {
+      void saveTransformDefinition();
+      return;
     }
-  }
-
-  async function onRun() {
-    setBusy(true);
-    try {
-      let savedId = transformId;
-      const title = name.trim() || selected?.filename || messages.transform.untitled;
-      if (!datasetId) return;
-      if (savedId) {
-        await transformApi.update(savedId, {
-          name: title,
-          dataset_id: datasetId,
-          spec: buildSpec(),
-          ...(chipId ? { input_chip_id: chipId } : {}),
-        });
-      } else {
-        const row = await transformApi.create({
-          name: title,
-          dataset_id: datasetId,
-          spec: buildSpec(),
-          ...(chipId ? { input_chip_id: chipId } : {}),
-        });
-        savedId = row.id;
-        setTransformId(row.id);
-        navigate(editorPath(row.id), {
-          replace: true,
-        });
-      }
-      if (workspaceMode && workspaceId && chipId) {
-        await chipApi.run(chipId, { workspace_id: workspaceId });
-        toastSuccess(messages.workspace.runQueued);
-        navigate(`/workspace/${workspaceId}`);
-        return;
-      }
-      const run = await transformApi.run(savedId);
-      navigate(`/jobs/${run.id}`);
-    } catch (err) {
-      toastError(messages.errors.runJob, err);
-    } finally {
-      setBusy(false);
-    }
+    openRegister();
   }
 
   function updateStep(index: number, next: TransformStep) {
@@ -691,71 +700,34 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         description={t.description}
         actions={
           <>
-            {workspaceMode && workspaceId ? (
-              <Button
-                type="button"
-                variant="quiet"
-                className="gap-2"
-                disabled={busy}
-                onClick={() => navigate(`/workspace/${workspaceId}`)}
-              >
-                <ArrowLeft className="size-3.5" aria-hidden="true" />
-                {messages.workspace.backToCanvas}
-              </Button>
-            ) : (
-              <Button type="button" variant="quiet" className="gap-2" disabled={busy} onClick={onNew}>
-                <RotateCcw className="size-3.5" aria-hidden="true" />
-                {messages.transform.reset}
-              </Button>
-            )}
-            {savedTransformId ? (
-              <Button
-                type="button"
-                variant="quiet"
-                className="gap-2"
-                disabled={busy}
-                onClick={() => void onDeleteSaved()}
-              >
-                <Trash2 className="size-3.5" aria-hidden="true" />
-                {messages.transform.deleteSavedRecipe}
-              </Button>
-            ) : null}
+            <Button
+              type="button"
+              variant="quiet"
+              className="gap-2"
+              disabled={busy}
+              onClick={resetRecipe}
+            >
+              <RotateCcw className="size-3.5" aria-hidden="true" />
+              {messages.transform.reset}
+            </Button>
             <Button
               type="button"
               className="gap-2"
-              disabled={!datasetId || busy}
-              onClick={() => openDetail(canPreviewRecipe ? "result" : "source")}
+              disabled={!datasetId || busy || editorSection === TRANSFORM_SECTIONS.at(-1)}
+              onClick={moveToNextTransform}
             >
-              <Eye className="size-3.5" aria-hidden="true" />
-              {messages.transform.previewSteps}
-            </Button>
-            <Button type="button" className="gap-2" disabled={!datasetId || busy} onClick={openRegister}>
-              <BookmarkPlus className="size-3.5" aria-hidden="true" />
-              {busy
-                ? messages.common.saving
-                : workspaceMode
-                  ? messages.transform.saveToWorkspace
-                  : messages.transform.register}
+              <ChevronRight className="size-3.5" aria-hidden="true" />
+              {messages.transform.nextTransform}
             </Button>
             <Button
               variant="primary"
               type="button"
               className="gap-2"
               disabled={!datasetId || busy}
-              onClick={() => void onRun()}
+              onClick={confirmRecipe}
             >
-              {workspaceMode ? (
-                <Play className="size-3.5" aria-hidden="true" />
-              ) : (
-                <FileDown className="size-3.5" aria-hidden="true" />
-              )}
-              {busy
-                ? workspaceMode
-                  ? messages.common.running
-                  : messages.transform.exporting
-                : workspaceMode
-                  ? messages.transform.runChip
-                  : messages.transform.resultFile}
+              <BookmarkPlus className="size-3.5" aria-hidden="true" />
+              {busy ? messages.common.saving : messages.common.confirm}
             </Button>
           </>
         }
@@ -963,18 +935,35 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
           <section className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
             <PaneHeader
-              title={editorSection === "combine" ? t.combineSetup : messages.transform.setup}
+              title={
+                editorSection === "combine"
+                  ? t.combineSetup
+                  : editorSection === "aggregate"
+                    ? t.aggregateTitle
+                    : messages.transform.setup
+              }
               meta={
                 editorSection === "combine"
                   ? combineDraft
                     ? combineModeLabel
                     : t.combineInactive
                   : editorSection === "aggregate"
-                    ? messages.transform.soonPending
+                    ? messages.common.count(aggregations.length)
                     : messages.common.count(steps.length)
               }
               afterMeta={
-                editorSection === "clean" ? (
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-7 gap-1 px-2 text-[11px]"
+                    disabled={!datasetId || busy}
+                    onClick={() => openDetail(canPreviewRecipe ? "result" : "source")}
+                  >
+                    <Eye className="size-3.5" aria-hidden="true" />
+                    {messages.transform.previewSteps}
+                  </Button>
+                {editorSection === "clean" ? (
                 <div className="relative" ref={addStepRef}>
                   <Button
                     type="button"
@@ -1047,38 +1036,9 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                 </div>
                 ) : null
               }
+                </div>
+              }
             />
-            {!fixedSection ? (
-            <div className="border-b border-border px-4 py-3">
-              <div className="flex max-w-xl rounded-lg border border-border bg-raised p-1" role="tablist" aria-label={t.sectionNav}>
-                {TRANSFORM_SECTIONS.map((section) => {
-                  const label =
-                    section === "combine"
-                      ? t.sectionCombine
-                      : section === "aggregate"
-                        ? t.sectionAggregate
-                        : t.sectionClean;
-                  return (
-                    <button
-                      key={section}
-                      type="button"
-                      role="tab"
-                      aria-selected={editorSection === section}
-                      className={cn(
-                        "flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
-                        editorSection === section
-                          ? "bg-surface text-text shadow-sm"
-                          : "text-text-tertiary hover:text-text-secondary",
-                      )}
-                      onClick={() => changeSection(section)}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            ) : null}
             {!selected ? (
               <div className="flex min-h-0 flex-1 items-center justify-center px-4">
                 <p className="text-sm text-text-tertiary">{messages.transform.pickFile}</p>
@@ -1116,8 +1076,118 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                   </p>
                 ) : null}
                 {editorSection === "aggregate" ? (
-                  <div className="scroll-pane min-h-0 flex-1 overflow-auto p-4">
-                    <p className="text-sm leading-6 text-text-secondary">{t.aggregateHint}</p>
+                  <div className="scroll-pane min-h-0 flex-1 space-y-5 overflow-auto p-4">
+                    <section className="rounded-lg border border-border bg-raised p-4">
+                      <h3 className="text-sm font-semibold text-text">{t.aggregateGroupBy}</h3>
+                      <p className="mt-1 text-xs leading-5 text-text-tertiary">
+                        {t.aggregateGroupByHint}
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {aggregateColumns.map((column) => (
+                          <label
+                            key={column.name}
+                            className="flex cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={aggregateGroupBy.includes(column.name)}
+                              onChange={(event) =>
+                                setAggregateGroupBy((current) =>
+                                  event.target.checked
+                                    ? [...current, column.name]
+                                    : current.filter((name) => name !== column.name),
+                                )
+                              }
+                            />
+                            {column.name}
+                          </label>
+                        ))}
+                      </div>
+                    </section>
+                    <section className="rounded-lg border border-border bg-raised p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-text">{t.aggregateValues}</h3>
+                          <p className="mt-1 text-xs leading-5 text-text-tertiary">
+                            {t.aggregateValuesHint}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={aggregateColumns.length === 0}
+                          onClick={() => {
+                            const column = aggregateColumns[0]?.name ?? "";
+                            setAggregations((current) => [
+                              ...current,
+                              { column, function: "sum", alias: column ? `${column}_sum` : "" },
+                            ]);
+                          }}
+                        >
+                          <Plus className="size-3.5" aria-hidden="true" />
+                          {t.aggregateAdd}
+                        </Button>
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {aggregations.length === 0 ? (
+                          <p className="py-4 text-center text-sm text-text-tertiary">
+                            {t.aggregateEmpty}
+                          </p>
+                        ) : aggregations.map((aggregation, index) => (
+                          <div
+                            key={index}
+                            className="grid gap-2 rounded-md border border-border bg-surface p-2 md:grid-cols-[1fr_0.8fr_1fr_auto]"
+                          >
+                            <select
+                              className="h-9 rounded-md border border-border bg-surface px-2 text-xs text-text"
+                              value={aggregation.column}
+                              onChange={(event) =>
+                                setAggregations((current) => current.map((item, itemIndex) =>
+                                  itemIndex === index ? { ...item, column: event.target.value } : item,
+                                ))
+                              }
+                            >
+                              {aggregateColumns.map((column) => (
+                                <option key={column.name} value={column.name}>{column.name}</option>
+                              ))}
+                            </select>
+                            <select
+                              className="h-9 rounded-md border border-border bg-surface px-2 text-xs text-text"
+                              value={aggregation.function}
+                              onChange={(event) =>
+                                setAggregations((current) => current.map((item, itemIndex) =>
+                                  itemIndex === index
+                                    ? { ...item, function: event.target.value as AggregateFunction }
+                                    : item,
+                                ))
+                              }
+                            >
+                              {(["sum", "count", "mean", "min", "max"] as AggregateFunction[]).map((fn) => (
+                                <option key={fn} value={fn}>{t.aggregateFunctions[fn]}</option>
+                              ))}
+                            </select>
+                            <input
+                              className="h-9 rounded-md border border-border bg-surface px-2 text-xs text-text outline-none focus:border-accent"
+                              value={aggregation.alias}
+                              placeholder={t.aggregateAlias}
+                              onChange={(event) =>
+                                setAggregations((current) => current.map((item, itemIndex) =>
+                                  itemIndex === index ? { ...item, alias: event.target.value } : item,
+                                ))
+                              }
+                            />
+                            <Button
+                              type="button"
+                              variant="quiet"
+                              aria-label={messages.common.delete}
+                              onClick={() => setAggregations((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                            >
+                              <Trash2 className="size-3.5" aria-hidden="true" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
                   </div>
                 ) : editorSection === "combine" && !combineDraft ? (
                   <div className="scroll-pane min-h-0 flex-1 overflow-auto p-4">
@@ -1140,7 +1210,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                     draft={combineDraft}
                     datasetId={datasetId}
                     datasets={datasets}
-                    leftColumns={baseColumns}
+                    leftColumns={cleanColumns}
                     commonJoinKeys={commonJoinKeys}
                     onChange={setCombineDraft}
                     onDisable={() => setCombineDraft(null)}
@@ -1362,7 +1432,9 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
             </div>
             <div className="flex gap-2">
               <dt className="w-14 shrink-0">{messages.transform.sectionAggregate}</dt>
-              <dd className="text-text-secondary">{messages.transform.registerSummaryAggregate}</dd>
+              <dd className="text-text-secondary">
+                {messages.transform.registerSummaryAggregate(aggregations.length)}
+              </dd>
             </div>
           </dl>
         </div>

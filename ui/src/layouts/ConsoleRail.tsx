@@ -6,8 +6,6 @@ import {
   Database,
   DatabaseZap,
   FileText,
-  Filter,
-  GitBranch,
   History,
   LayoutDashboard,
   LayoutTemplate,
@@ -40,7 +38,9 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
           icon: <LayoutTemplate className={iconClassName} />,
           isActive: (pathname) =>
             pathname === "/workspace" ||
-            (pathname.startsWith("/workspace/") && !pathname.startsWith("/workspace/runs")),
+            (pathname.startsWith("/workspace/")
+              && !pathname.startsWith("/workspace/runs")
+              && !pathname.includes("/transform")),
         },
         {
           to: "/chips",
@@ -89,27 +89,14 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       icon: <Workflow className={iconClassName} />,
       isActive: (pathname) =>
         pathname === "/transform" ||
-        (/^\/transform\/[^/]+$/.test(pathname) && pathname !== "/transform/reshape"),
+        (/^\/transform\/[^/]+$/.test(pathname) && pathname !== "/transform/reshape") ||
+        /^\/workspace\/[^/]+\/chips\/[^/]+\/transform(?:\/[^/]+)?$/.test(pathname),
       children: [
         {
-          to: "/transform/clean",
-          label: messages.nav.transformClean,
-          icon: <Filter className={iconClassName} />,
-        },
-        {
-          to: "/transform/combine",
-          label: messages.nav.transformCombine,
+          to: "/transform",
+          label: messages.transform.title,
           icon: <Workflow className={iconClassName} />,
-        },
-        {
-          to: "/transform/aggregate",
-          label: messages.nav.transformAggregate,
-          icon: <ListChecks className={iconClassName} />,
-        },
-        {
-          to: "/transform/reshape",
-          label: messages.nav.transformReshape,
-          icon: <GitBranch className={iconClassName} />,
+          end: true,
         },
         {
           to: "/transforms",

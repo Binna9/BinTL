@@ -176,9 +176,9 @@ export function roundPoint(point: Point): Point {
 export function folderPathLabel(
   folderId: string | null | undefined,
   folders: WorkspaceFolder[],
-  rootSegment: string,
+  topLevelLabel: string,
 ): string {
-  const segments = [rootSegment];
+  const segments: string[] = [];
   let cursor: string | null = folderId ?? null;
   while (cursor) {
     const folder = folders.find((item) => item.id === cursor);
@@ -186,7 +186,7 @@ export function folderPathLabel(
     segments.push(folder.name);
     cursor = folder.parent_id;
   }
-  return segments.join("/");
+  return segments.length > 0 ? segments.reverse().join("/") : topLevelLabel;
 }
 
 
@@ -359,5 +359,4 @@ export function chipFixedInputId(chip: Chip): string {
   const value = chip.config.input_dataset_id;
   return typeof value === "string" ? value.trim() : "";
 }
-
 

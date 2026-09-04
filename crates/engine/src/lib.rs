@@ -58,6 +58,33 @@ pub struct CombineSpec {
     pub how: Option<String>,
 }
 
+/// Ordered recipe operation used by version 3 specs. Unlike the legacy
+/// `combine` field, these operations run exactly in the order they are stored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RecipeOperation {
+    Clean { steps: Vec<Step> },
+    Join {
+        right_dataset_id: String,
+        on: Vec<String>,
+        #[serde(default)]
+        how: Option<String>,
+    },
+    Union { dataset_ids: Vec<String> },
+    Aggregate {
+        #[serde(default)]
+        group_by: Vec<String>,
+        aggregations: Vec<AggregationSpec>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AggregationSpec {
+    pub column: String,
+    pub function: String,
+    pub alias: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Step {
@@ -124,6 +151,8 @@ pub struct TransformSpec {
     pub steps: Vec<Step>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub combine: Option<CombineSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<RecipeOperation>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved_paths: BTreeMap<String, String>,
 }
@@ -151,6 +180,7 @@ impl TransformSpec {
             read: None,
             steps: Vec::new(),
             combine: None,
+            operations: Vec::new(),
             resolved_paths: BTreeMap::new(),
         }
     }
@@ -169,8 +199,15 @@ impl TransformSpec {
             read: None,
             steps: Vec::new(),
             combine: None,
+            operations: Vec::new(),
             resolved_paths: BTreeMap::new(),
         }
+    }
+
+    pub fn v3() -> Self {
+        let mut spec = Self::v2();
+        spec.version = 3;
+        spec
     }
 
     pub fn with_read(mut self, delimiter: Option<String>, has_header: Option<bool>) -> Self {
@@ -223,6 +260,16 @@ impl TransformSpec {
                     validate_combine(combine)?;
                 }
             }
+            3 => {
+                if self.dest.is_some() {
+                    return Err(EngineError::Spec(
+                        "version 3 spec cannot include dest; load is a separate stage".into(),
+                    ));
+                }
+                for operation in &self.operations {
+                    validate_operation(operation)?;
+                }
+            }
             other => {
                 return Err(EngineError::Spec(format!("unsupported version {other}")));
             }
@@ -238,6 +285,54 @@ impl TransformSpec {
             }
         }
         Ok(())
+    }
+}
+
+fn validate_operation(operation: &RecipeOperation) -> Result<(), EngineError> {
+    match operation {
+        RecipeOperation::Clean { steps } => {
+            for step in steps {
+                validate_step(step)?;
+            }
+            Ok(())
+        }
+        RecipeOperation::Join { right_dataset_id, on, how } => {
+            let combine = CombineSpec {
+                mode: "join".into(),
+                right_dataset_id: Some(right_dataset_id.clone()),
+                on: on.clone(),
+                how: how.clone(),
+                ..Default::default()
+            };
+            validate_combine(&combine)
+        }
+        RecipeOperation::Union { dataset_ids } => {
+            let combine = CombineSpec {
+                mode: "union".into(),
+                union_dataset_ids: dataset_ids.clone(),
+                ..Default::default()
+            };
+            validate_combine(&combine)
+        }
+        RecipeOperation::Aggregate { aggregations, .. } => {
+            if aggregations.is_empty() {
+                return Err(EngineError::Spec("aggregate needs aggregations".into()));
+            }
+            for aggregation in aggregations {
+                if aggregation.column.trim().is_empty() || aggregation.alias.trim().is_empty() {
+                    return Err(EngineError::Spec(
+                        "aggregate column and alias are required".into(),
+                    ));
+                }
+                if !matches!(aggregation.function.as_str(), "sum" | "count" | "mean" | "min" | "max") {
+                    return Err(EngineError::Spec(format!(
+                        "unsupported aggregate function `{}`",
+                        aggregation.function
+                    )));
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -346,7 +441,7 @@ impl Engine for PolarsEngine {
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
         }
-        let df = apply(load_combined(input, spec, None)?, spec)?;
+        let df = execute_recipe(input, spec, None)?;
         write_parquet(df, output)
     }
 }
@@ -390,14 +485,122 @@ impl PolarsEngine {
     ) -> Result<FramePreview, EngineError> {
         spec.validate()?;
         let limit = limit.max(1);
-        let df = apply(
-            load_combined(input, spec, Some(PREVIEW_READ_CAP))?,
-            spec,
-        )?;
+        let df = execute_recipe(input, spec, Some(PREVIEW_READ_CAP))?;
         let sampled = df.height();
         let truncated = sampled >= PREVIEW_READ_CAP || sampled > limit;
         Ok(dataframe_to_preview(df, None, limit).with_truncated(truncated))
     }
+}
+
+fn execute_recipe(
+    input: &Path,
+    spec: &TransformSpec,
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    if spec.version < 3 {
+        return apply(load_combined(input, spec, n_rows)?, spec);
+    }
+    let mut frame = read_any(input, spec, n_rows)?;
+    for operation in &spec.operations {
+        frame = match operation {
+            RecipeOperation::Clean { steps } => apply_steps(frame, steps)?,
+            RecipeOperation::Join { right_dataset_id, on, how } => {
+                join_frame(frame, spec, right_dataset_id, on, how.as_deref(), n_rows)?
+            }
+            RecipeOperation::Union { dataset_ids } => {
+                union_frames(frame, spec, dataset_ids, n_rows)?
+            }
+            RecipeOperation::Aggregate { group_by, aggregations } => {
+                aggregate_frame(frame, group_by, aggregations)?
+            }
+        };
+    }
+    Ok(frame)
+}
+
+fn aggregate_frame(
+    frame: DataFrame,
+    group_by: &[String],
+    aggregations: &[AggregationSpec],
+) -> Result<DataFrame, EngineError> {
+    let expressions: Vec<Expr> = aggregations
+        .iter()
+        .map(|aggregation| {
+            let expression = match aggregation.function.as_str() {
+                "sum" => col(&aggregation.column).sum(),
+                "count" => col(&aggregation.column).count(),
+                "mean" => col(&aggregation.column).mean(),
+                "min" => col(&aggregation.column).min(),
+                "max" => col(&aggregation.column).max(),
+                _ => unreachable!("validated aggregate function"),
+            };
+            expression.alias(&aggregation.alias)
+        })
+        .collect();
+    let lazy = frame.lazy();
+    if group_by.is_empty() {
+        return Ok(lazy.select(expressions).collect()?);
+    }
+    let group_expressions: Vec<Expr> = group_by.iter().map(|column| col(column)).collect();
+    Ok(lazy.group_by(group_expressions).agg(expressions).collect()?)
+}
+
+fn apply_steps(df: DataFrame, steps: &[Step]) -> Result<DataFrame, EngineError> {
+    let mut lf = df.lazy();
+    for step in steps {
+        lf = apply_step(lf, step)?;
+    }
+    Ok(lf.collect()?)
+}
+
+fn join_frame(
+    left: DataFrame,
+    spec: &TransformSpec,
+    right_id: &str,
+    on: &[String],
+    how: Option<&str>,
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    let path = spec.resolved_paths.get(right_id).ok_or_else(|| {
+        EngineError::Spec(format!("missing path for join dataset `{right_id}`"))
+    })?;
+    let right = read_any(Path::new(path), spec, n_rows)?;
+    let join_type = match how.unwrap_or("left") {
+        "inner" => JoinType::Inner,
+        "left" => JoinType::Left,
+        other => return Err(EngineError::Spec(format!("unsupported join how `{other}`"))),
+    };
+    let on_cols: Vec<Expr> = on.iter().map(|column| col(column)).collect();
+    Ok(left
+        .lazy()
+        .join(right.lazy(), on_cols.clone(), on_cols, JoinArgs::new(join_type))
+        .collect()?)
+}
+
+fn union_frames(
+    first: DataFrame,
+    spec: &TransformSpec,
+    dataset_ids: &[String],
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    let mut frames = vec![first];
+    for id in dataset_ids {
+        let path = spec.resolved_paths.get(id).ok_or_else(|| {
+            EngineError::Spec(format!("missing path for union dataset `{id}`"))
+        })?;
+        frames.push(read_any(Path::new(path), spec, n_rows)?);
+    }
+    let lazy: Vec<LazyFrame> = frames.into_iter().map(|frame| frame.lazy()).collect();
+    Ok(concat(
+        &lazy,
+        UnionArgs {
+            rechunk: true,
+            to_supertypes: true,
+            diagonal: true,
+            ..Default::default()
+        },
+    )?
+    .collect()?)
 }
 
 impl FramePreview {
@@ -1067,6 +1270,76 @@ mod tests {
             .finish()
             .unwrap();
         assert_eq!(back.height(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v3_runs_clean_before_join_in_recipe_order() {
+        let dir = tmp("v3-clean-join");
+        let left = dir.join("left.csv");
+        let right = dir.join("right.csv");
+        fs::write(&left, "id,name\n1,alpha\n2,beta\n").unwrap();
+        fs::write(&right, "key,score\n1,10\n2,20\n").unwrap();
+        let mut spec = TransformSpec::parse_json(
+            r#"{
+              "version": 3,
+              "sink": "parquet",
+              "operations": [
+                {"type": "clean", "steps": [
+                  {"op": "rename", "map": {"id": "key"}}
+                ]},
+                {
+                  "type": "join",
+                  "right_dataset_id": "right",
+                  "on": ["key"],
+                  "how": "left"
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        spec.resolved_paths.insert(
+            "right".into(),
+            right.to_string_lossy().into_owned(),
+        );
+        let preview = PolarsEngine.preview(&left, &spec, 10).unwrap();
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["key", "name", "score"]
+        );
+        assert_eq!(preview.rows.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v3_aggregates_recipe_result() {
+        let dir = tmp("v3-aggregate");
+        let input = dir.join("input.csv");
+        fs::write(&input, "team,amount\na,10\na,20\nb,7\n").unwrap();
+        let spec = TransformSpec::parse_json(
+            r#"{
+              "version": 3,
+              "sink": "parquet",
+              "operations": [{
+                "type": "aggregate",
+                "group_by": ["team"],
+                "aggregations": [
+                  {"column": "amount", "function": "sum", "alias": "total"}
+                ]
+              }]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&input, &spec, 10).unwrap();
+        assert_eq!(preview.rows.len(), 2);
+        assert_eq!(
+            preview.columns.iter().map(|column| column.name.as_str()).collect::<Vec<_>>(),
+            vec!["team", "total"]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -35,7 +35,9 @@ function ConsoleShell() {
   const studio =
     !onSearchPage &&
     (loc.pathname === "/workspace" ||
-      (loc.pathname.startsWith("/workspace/") && !loc.pathname.startsWith("/workspace/runs")));
+      (loc.pathname.startsWith("/workspace/")
+        && !loc.pathname.startsWith("/workspace/runs")
+        && !loc.pathname.includes("/transform")));
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="sticky top-0 z-40 grid h-[4.75rem] shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border bg-surface px-5 shadow-[0_2px_5px_rgba(15,23,42,0.06)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.28)]">
@@ -69,6 +71,8 @@ function ConsoleShell() {
               <Route path="/workspace" element={<WorkspacePage />} />
               <Route path="/workspace/:workspaceId" element={<WorkspacePage />} />
               <Route path="/workspace/:workspaceId/chips/:chipId" element={<WorkspacePage />} />
+              <Route path="/workspace/:workspaceId/chips/:editorChipId/transform" element={<TransformPage />} />
+              <Route path="/workspace/:workspaceId/chips/:editorChipId/transform/:id" element={<TransformPage />} />
               <Route path="/chips" element={<ChipsPage />} />
               <Route path="/workspace/:workspaceId/tasks/:taskId" element={<Navigate to={loc.pathname.replace("/tasks/", "/chips/")} replace />} />
               <Route path="/db" element={<QueryPage />} />
@@ -76,7 +80,7 @@ function ConsoleShell() {
               <Route path="/extract/api" element={<ApiExtractPage />} />
               <Route path="/extracts" element={<ExtractResultsPage />} />
               <Route path="/transforms" element={<TransformFilesPage />} />
-              <Route path="/transform" element={<Navigate to="/transform/clean" replace />} />
+              <Route path="/transform" element={<TransformPage />} />
               <Route path="/transform/reshape" element={<TransformSoonPage kind="reshape" />} />
               <Route path="/transform/clean" element={<TransformPage section="clean" />} />
               <Route path="/transform/clean/:id" element={<TransformPage section="clean" />} />

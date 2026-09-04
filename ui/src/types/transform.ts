@@ -18,12 +18,32 @@ export interface CombineSpec {
   how?: "left" | "inner";
 }
 
+export type TransformOperation =
+  | { type: "clean"; steps: TransformStep[] }
+  | {
+      type: "join";
+      right_dataset_id: string;
+      on: string[];
+      how?: "left" | "inner";
+    }
+  | { type: "union"; dataset_ids: string[] }
+  | {
+      type: "aggregate";
+      group_by: string[];
+      aggregations: Array<{
+        column: string;
+        function: "sum" | "count" | "mean" | "min" | "max";
+        alias: string;
+      }>;
+    };
+
 export interface TransformSpecV2 {
-  version: 2;
+  version: 2 | 3;
   read?: { delimiter?: string; has_header?: boolean };
-  steps: TransformStep[];
+  steps?: TransformStep[];
   sink: "parquet";
   combine?: CombineSpec;
+  operations?: TransformOperation[];
 }
 
 export interface SavedTransform {
@@ -37,6 +57,7 @@ export interface SavedTransform {
     sink?: string;
     read?: { delimiter?: string; has_header?: boolean };
     combine?: CombineSpec;
+    operations?: TransformOperation[];
   };
   created_at: string;
   updated_at: string;

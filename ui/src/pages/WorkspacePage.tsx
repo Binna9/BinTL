@@ -176,7 +176,7 @@ export function WorkspacePage() {
   const workspaceFolderPath = folderPathLabel(
     selectedWorkspace?.folder_id,
     folders,
-    messages.workspace.pathRoot,
+    messages.workspace.topLevel,
   );
   const workspaceName = selectedWorkspace?.name ?? messages.workspace.selectWorkspace;
   const hasActiveRun = runs.some((run) => ACTIVE_STATUSES.has(run.status));
@@ -455,9 +455,9 @@ export function WorkspacePage() {
 
   function transformEditorPath(chip: Chip) {
     if (!workspaceId) return "/workspace";
-    const qs = new URLSearchParams({ workspace: workspaceId, chip: chip.id });
     const bound = chip.binding?.ref_kind === "transform" ? chip.binding.ref_id : undefined;
-    return bound ? `/transform/${bound}?${qs}` : `/transform?${qs}`;
+    const base = `/workspace/${workspaceId}/chips/${chip.id}/transform`;
+    return bound ? `${base}/${bound}` : base;
   }
 
   function openTransformEditor(chip: Chip) {
@@ -1143,13 +1143,13 @@ export function WorkspacePage() {
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
     const additive = event.ctrlKey || event.metaKey;
     const wasSelected = selectedChipIdsRef.current.includes(chip.id);
-    if (!additive) {
+    if (!additive && !wasSelected) {
       setSelectedChipIds([chip.id]);
       setSelectedEdgeIds([]);
     } else if (!wasSelected) {
       setSelectedChipIds([...selectedChipIdsRef.current, chip.id]);
     }
-    const dragIds = additive && wasSelected
+    const dragIds = wasSelected
       ? selectedChipIdsRef.current
       : additive
         ? [...new Set([...selectedChipIdsRef.current, chip.id])]

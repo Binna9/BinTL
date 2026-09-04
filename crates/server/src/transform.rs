@@ -201,6 +201,39 @@ async fn hydrate_v2_spec(
     row: &DatasetRow,
 ) -> Result<TransformSpec, AppError> {
     let mut spec = parse_v2_spec(value, row)?;
+    if spec.version == 3 {
+        let operations = value
+            .get("operations")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for operation in operations {
+            match operation.get("type").and_then(Value::as_str).unwrap_or("") {
+                "join" => {
+                    let id = operation
+                        .get("right_dataset_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| AppError::bad("join needs right_dataset_id"))?;
+                    hydrate_recipe_dataset(state, user, &mut spec, id).await?;
+                }
+                "union" => {
+                    let ids = operation
+                        .get("dataset_ids")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| AppError::bad("union needs dataset_ids"))?;
+                    for id in ids {
+                        let id = id
+                            .as_str()
+                            .ok_or_else(|| AppError::bad("union dataset id must be a string"))?;
+                        hydrate_recipe_dataset(state, user, &mut spec, id).await?;
+                    }
+                }
+                "clean" | "aggregate" => {}
+                other => return Err(AppError::bad(format!("unknown recipe operation `{other}`"))),
+            }
+        }
+        return Ok(spec);
+    }
     let Some(combine) = value.get("combine") else {
         return Ok(spec);
     };
@@ -251,26 +284,46 @@ async fn hydrate_v2_spec(
     Ok(spec)
 }
 
+async fn hydrate_recipe_dataset(
+    state: &AppState,
+    user: &CurrentUser,
+    spec: &mut TransformSpec,
+    id: &str,
+) -> Result<(), AppError> {
+    let dataset = access::require_dataset(&state.store, user, id).await?;
+    let path = state.store.resolve(&dataset.stored_path);
+    if !path.is_file() {
+        return Err(AppError::not_found(format!("recipe dataset `{id}` file missing")));
+    }
+    spec.resolved_paths
+        .insert(id.to_string(), path.to_string_lossy().into_owned());
+    Ok(())
+}
+
 fn parse_v2_spec(value: &Value, row: &DatasetRow) -> Result<TransformSpec, AppError> {
     let mut obj = value
         .as_object()
         .cloned()
         .ok_or_else(|| AppError::bad("spec must be an object"))?;
-    obj.entry("version").or_insert(json!(2));
+    obj.entry("version").or_insert(json!(3));
     obj.entry("sink").or_insert(json!("parquet"));
-    if obj.get("steps").is_none() {
+    let version = obj.get("version").and_then(Value::as_u64).unwrap_or(3);
+    if version == 2 && obj.get("steps").is_none() {
         obj.insert("steps".into(), json!([]));
+    }
+    if version == 3 && obj.get("operations").is_none() {
+        obj.insert("operations".into(), json!([]));
     }
     let spec = TransformSpec::parse_json(&Value::Object(obj).to_string())
         .map_err(|e| AppError::bad(e.to_string()))?;
-    if spec.version != 2 {
-        return Err(AppError::bad("transform spec must be version 2"));
+    if spec.version != 2 && spec.version != 3 {
+        return Err(AppError::bad("transform spec must be version 2 or 3"));
     }
     Ok(merge_read(spec, row))
 }
 
 fn default_v2_spec(row: &DatasetRow) -> TransformSpec {
-    merge_read(TransformSpec::v2(), row)
+    merge_read(TransformSpec::v3(), row)
 }
 
 fn preview_json(preview: FramePreview) -> Value {

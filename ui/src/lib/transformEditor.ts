@@ -4,8 +4,8 @@ import type { CombineSpec } from "@/types/transform";
 export type TransformEditorSection = "combine" | "clean" | "aggregate";
 
 export const TRANSFORM_SECTIONS: TransformEditorSection[] = [
-  "combine",
   "clean",
+  "combine",
   "aggregate",
 ];
 
