@@ -1,6 +1,29 @@
 use crate::*;
 
 impl Store {
+    pub async fn bind_chip_to_load(
+        &self,
+        chip_id: &str,
+        load_definition_id: &str,
+    ) -> Result<(), StorageError> {
+        let chip = self.get_chip(chip_id).await?
+            .ok_or_else(|| StorageError::NotFound("chip not found".into()))?;
+        if chip.kind != "load" {
+            return Err(StorageError::Invalid("only load chips can bind a load definition".into()));
+        }
+        let _ = self.get_load_definition(load_definition_id).await?
+            .ok_or_else(|| StorageError::NotFound("load definition not found".into()))?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM chip_bindings WHERE chip_id = ?")
+            .bind(chip_id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO chip_bindings (chip_id, ref_kind, ref_id) VALUES (?, 'load_definition', ?)")
+            .bind(chip_id).bind(load_definition_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE chips SET config_json = NULL, revision = revision + 1, updated_at = ? WHERE id = ?")
+            .bind(now_rfc3339()).bind(chip_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn insert_load_definition(
         &self,
         owner_user_id: &str,

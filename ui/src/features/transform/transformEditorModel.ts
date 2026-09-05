@@ -27,16 +27,14 @@ export function normalizeSlotColumns(
 export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
   if (slot.mode === "materialized" && slot.dataset) {
     const dataset = slot.dataset as unknown as Dataset;
-    return slot.source_chip_kind === "transform" && slot.source_chip_name
-      ? { ...dataset, filename: slot.source_chip_name }
-      : dataset;
+    return dataset;
   }
   if (slot.mode === "planned" && slot.planned) {
     const raw = slot.dataset as Dataset | undefined;
     if (!raw) {
       return {
         id: slot.planned.dataset_id,
-        kind: "database",
+        kind: slot.planned.kind ?? (slot.source_chip_kind === "transform" ? "transform" : "database"),
         filename: slot.source_chip_name || "planned input",
         stored_path: "",
         size_bytes: null,
@@ -164,4 +162,3 @@ export function resolveColumnsAtStep(
   }
   return cols;
 }
-

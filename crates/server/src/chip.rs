@@ -783,11 +783,21 @@ async fn chip_output_json(
         .and_then(Value::as_str)
         .unwrap_or(",");
     let output_name = if row.kind == "transform" {
-        store
-            .get_transform_for_chip(&row.id)
-            .await?
-            .map(|transform| transform.name)
-            .unwrap_or_else(|| row.name.clone())
+        let bound_transform = match store.get_chip_binding(&row.id).await? {
+            Some(binding) if binding.ref_kind == "transform" => {
+                store.get_transform(&binding.ref_id).await?
+            }
+            _ => None,
+        };
+        match bound_transform {
+            Some(transform) => transform.name,
+            None => match store.get_transform_for_chip(&row.id).await? {
+                Some(transform) => transform.name,
+                None => inferred_transform_output_name(store, row, workspace_id)
+                    .await?
+                    .unwrap_or_else(|| row.name.clone()),
+            },
+        }
     } else {
         row.name.clone()
     };
@@ -812,6 +822,46 @@ async fn chip_output_json(
         "available": false,
         "dataset_id": Value::Null,
     }))
+}
+
+pub(crate) async fn inferred_transform_output_name(
+    store: &Store,
+    row: &ChipRow,
+    workspace_id: &str,
+) -> Result<Option<String>, AppError> {
+    let source_id = store
+        .list_chip_edges(workspace_id)
+        .await?
+        .into_iter()
+        .find(|edge| edge.kind == "data" && edge.to_chip_id == row.id)
+        .map(|edge| edge.from_chip_id);
+    let Some(source_id) = source_id else { return Ok(None) };
+    let Some(source) = store.get_chip(&source_id).await? else { return Ok(None) };
+    let source_name = if source.kind == "transform" {
+        match store.get_chip_binding(&source.id).await? {
+            Some(binding) if binding.ref_kind == "transform" => store
+                .get_transform(&binding.ref_id)
+                .await?
+                .map(|transform| transform.name)
+                .unwrap_or(source.name),
+            _ => source.name,
+        }
+    } else {
+        source.name
+    };
+    let base = source_name.strip_suffix(".parquet").unwrap_or(&source_name);
+    let Some(rest) = base.strip_prefix("transform-") else {
+        return Ok(Some(format!("transform-{base}")));
+    };
+    let mut parts = rest.splitn(2, '-');
+    let first = parts.next().unwrap_or("");
+    let remainder = parts.next();
+    if first.len() == 2 && first.chars().all(|character| character.is_ascii_digit()) {
+        if let (Ok(sequence), Some(remainder)) = (first.parse::<u32>(), remainder) {
+            return Ok(Some(format!("transform-{:02}-{remainder}", sequence + 1)));
+        }
+    }
+    Ok(Some(format!("transform-02-{rest}")))
 }
 
 fn chip_run_json(row: &ChipRunRow) -> Result<Value, AppError> {
@@ -848,6 +898,7 @@ pub(crate) async fn validate_config(
         "transform" => validate_transform_config(store, workspace_id, config)
             .await
             .and_then(normalized_transform_config),
+        "load" if config.as_object().is_some_and(|value| value.is_empty()) => Ok(config),
         "load" => crate::load::validate_load_config(store, config).await
             .and_then(|value| serde_json::to_value(value).map_err(|e| AppError::bad(e.to_string()))),
         _ => Err(AppError::bad(
@@ -1079,10 +1130,11 @@ async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     let started = std::time::Instant::now();
 
     let (destination, loaded_rows, artifact_path) = match config.destination {
-        crate::load::LoadDestination::Database { connection_id, table } => {
+        crate::load::LoadDestination::Database { connection_id, database, table } => {
             let csv = prepare_load_csv(store, run, &dataset).await?;
-            let live = store.live_connection(&connection_id).await.map_err(|e| e.to_string())?;
-            let loaded = load_table(&live, &table, &csv, &config.write_mode).await.map_err(|e| e.to_string())? as i64;
+            let base = store.live_connection(&connection_id).await.map_err(|e| e.to_string())?;
+            let live = connectors::with_database(&base, database.as_deref());
+            let loaded = load_table(&live, &table, &csv, &config.write_mode, &config.conflict_keys).await.map_err(|e| e.to_string())? as i64;
             (format!("{}:{}", live.name, table), loaded, None)
         }
         crate::load::LoadDestination::File { format, filename } => {

@@ -177,6 +177,7 @@ impl Store {
         consumer_chip_id: &str,
         source_chip_id: &str,
         source_extract_definition_id: Option<&str>,
+        kind: &str,
         filename: &str,
         columns_json: &str,
         delimiter: &str,
@@ -189,6 +190,7 @@ impl Store {
         {
             sqlx::query(
                 "UPDATE datasets SET
+                   kind = ?,
                    source_chip_id = ?,
                    source_extract_definition_id = ?,
                    filename = ?,
@@ -199,6 +201,7 @@ impl Store {
                    updated_at = ?
                  WHERE id = ?",
             )
+            .bind(kind)
             .bind(source_chip_id)
             .bind(source_extract_definition_id)
             .bind(filename)
@@ -223,10 +226,11 @@ impl Store {
               columns_json, row_count, inspected_at, created_at, updated_at, workspace_id,
               producer_chip_run_id, status, source_chip_id, consumer_chip_id,
               source_extract_definition_id)
-             VALUES (?, 'database', NULL, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, NULL,
+             VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, NULL,
                      'planned', ?, ?, ?)",
         )
         .bind(&id)
+        .bind(kind)
         .bind(filename)
         .bind(&stored_path)
         .bind(delimiter)

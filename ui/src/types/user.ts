@@ -4,6 +4,7 @@ export interface SessionUser {
   id: string;
   userid: string;
   username: string;
+  avatar_data_url?: string | null;
   active: boolean;
   roles: string[];
   permissions: string[];

@@ -109,6 +109,7 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       to: "/load",
       label: messages.nav.load,
       icon: <Upload className={iconClassName} />,
+      isActive: (pathname) => pathname === "/load" || /^\/workspace\/[^/]+\/chips\/[^/]+\/load(?:\/[^/]+)?$/.test(pathname),
     },
     {
       to: "/history",

@@ -430,12 +430,16 @@ fn read_csv_batch(
     Ok(rows)
 }
 
-fn create_table_sql(family: &str, q: &str, raw_table: &str, cols: &[String]) -> String {
-    let defs = cols
+fn create_table_sql(family: &str, q: &str, raw_table: &str, cols: &[String], unique_keys: &[String]) -> String {
+    let mut defs = cols
         .iter()
         .map(|c| format!("{} TEXT", quote_ident(family, c)))
         .collect::<Vec<_>>()
         .join(", ");
+    if !unique_keys.is_empty() {
+        let keys = unique_keys.iter().map(|key| quote_ident(family, key)).collect::<Vec<_>>().join(", ");
+        defs.push_str(&format!(", UNIQUE ({keys})"));
+    }
     match family {
         "mssql" => format!(
             "IF OBJECT_ID(N'{}', N'U') IS NULL CREATE TABLE {q} ({defs})",
@@ -460,9 +464,10 @@ pub async fn load_table(
     table: &str,
     csv_path: &Path,
     mode: &str,
+    conflict_keys: &[String],
 ) -> Result<u64, ConnectError> {
-    if mode != "append" && mode != "replace" {
-        return Err(ConnectError::Invalid("mode must be append or replace".into()));
+    if !matches!(mode, "append" | "truncate" | "upsert" | "recreate" | "replace") {
+        return Err(ConnectError::Invalid("unsupported load mode".into()));
     }
     let family = driver_family(&c.driver)?;
     let parsed = parse_table(table)?;
@@ -471,55 +476,67 @@ pub async fn load_table(
     if cols.is_empty() {
         return Err(ConnectError::Invalid("csv has no columns".into()));
     }
-    let create = create_table_sql(family, &q, table, &cols);
+    if mode == "upsert" {
+        if conflict_keys.is_empty() || conflict_keys.iter().any(|key| !cols.contains(key)) {
+            return Err(ConnectError::Invalid("upsert keys must exist in the input columns".into()));
+        }
+        if c.driver == "redshift" || family == "mssql" {
+            return Err(ConnectError::Invalid("upsert is not yet supported for this driver".into()));
+        }
+    }
+    let create = create_table_sql(family, &q, table, &cols, if mode == "upsert" { conflict_keys } else { &[] });
     let mut n = 0u64;
     match family {
         "postgres" => {
             let pool = pg_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "replace" {
+            if mode == "recreate" { sqlx::query(&format!("DROP TABLE IF EXISTS {q}")).execute(&pool).await?; sqlx::query(&create).execute(&pool).await?; }
+            if matches!(mode, "replace" | "truncate") {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
             loop {
                 let rows = read_csv_batch(&mut reader, 2_000)?;
                 if rows.is_empty() { break; }
                 n += rows.len() as u64;
-                insert_sqlx::<Postgres>(&pool, family, &q, &cols, &rows).await?;
+                insert_sqlx::<Postgres>(&pool, family, &q, &cols, &rows, mode, conflict_keys).await?;
             }
             pool.close().await;
         }
         "mysql" => {
             let pool = my_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "replace" {
+            if mode == "recreate" { sqlx::query(&format!("DROP TABLE IF EXISTS {q}")).execute(&pool).await?; sqlx::query(&create).execute(&pool).await?; }
+            if matches!(mode, "replace" | "truncate") {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
             loop {
                 let rows = read_csv_batch(&mut reader, 2_000)?;
                 if rows.is_empty() { break; }
                 n += rows.len() as u64;
-                insert_sqlx::<MySql>(&pool, family, &q, &cols, &rows).await?;
+                insert_sqlx::<MySql>(&pool, family, &q, &cols, &rows, mode, conflict_keys).await?;
             }
             pool.close().await;
         }
         "sqlite" => {
             let pool = sqlite_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "replace" {
+            if mode == "recreate" { sqlx::query(&format!("DROP TABLE IF EXISTS {q}")).execute(&pool).await?; sqlx::query(&create).execute(&pool).await?; }
+            if matches!(mode, "replace" | "truncate") {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
             loop {
                 let rows = read_csv_batch(&mut reader, 2_000)?;
                 if rows.is_empty() { break; }
                 n += rows.len() as u64;
-                insert_sqlx::<Sqlite>(&pool, family, &q, &cols, &rows).await?;
+                insert_sqlx::<Sqlite>(&pool, family, &q, &cols, &rows, mode, conflict_keys).await?;
             }
             pool.close().await;
         }
         "mssql" => {
             let mut client = mssql_client(c).await?;
-            client.simple_query(create).await?;
-            if mode == "replace" {
+            client.simple_query(create.clone()).await?;
+            if mode == "recreate" { client.simple_query(format!("DROP TABLE {q}")).await.ok(); client.simple_query(create.clone()).await?; }
+            if matches!(mode, "replace" | "truncate") {
                 client.simple_query(clear_sql(family, &q)).await?;
             }
             let col_sql = cols
@@ -555,6 +572,8 @@ async fn insert_sqlx<DB>(
     q: &str,
     cols: &[String],
     rows: &[Vec<String>],
+    mode: &str,
+    conflict_keys: &[String],
 ) -> Result<(), ConnectError>
 where
     DB: sqlx::Database,
@@ -586,6 +605,28 @@ where
                 sql.push_str(&sql_lit(cell));
             }
             sql.push(')');
+        }
+        if mode == "upsert" {
+            let update_cols = cols.iter().filter(|col| !conflict_keys.contains(col)).collect::<Vec<_>>();
+            if family == "mysql" {
+                let assignments = update_cols.iter().map(|col| {
+                    let quoted = quote_ident(family, col);
+                    format!("{quoted} = VALUES({quoted})")
+                }).collect::<Vec<_>>().join(", ");
+                let fallback = quote_ident(family, &conflict_keys[0]);
+                sql.push_str(&format!(" ON DUPLICATE KEY UPDATE {}", if assignments.is_empty() { format!("{fallback} = {fallback}") } else { assignments }));
+            } else {
+                let keys = conflict_keys.iter().map(|key| quote_ident(family, key)).collect::<Vec<_>>().join(", ");
+                if update_cols.is_empty() {
+                    sql.push_str(&format!(" ON CONFLICT ({keys}) DO NOTHING"));
+                } else {
+                    let assignments = update_cols.iter().map(|col| {
+                        let quoted = quote_ident(family, col);
+                        format!("{quoted} = EXCLUDED.{quoted}")
+                    }).collect::<Vec<_>>().join(", ");
+                    sql.push_str(&format!(" ON CONFLICT ({keys}) DO UPDATE SET {assignments}"));
+                }
+            }
         }
         sqlx::query(&sql).execute(pool).await?;
     }

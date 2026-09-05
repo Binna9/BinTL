@@ -75,11 +75,16 @@ export function clampPoint(point: Point, bounds: { width: number; height: number
   };
 }
 
-export function canvasPoint(canvas: HTMLElement, clientX: number, clientY: number): Point {
+export function canvasPoint(
+  canvas: HTMLElement,
+  clientX: number,
+  clientY: number,
+  zoom = 1,
+): Point {
   const rect = canvas.getBoundingClientRect();
   return {
-    x: clientX - rect.left + canvas.scrollLeft,
-    y: clientY - rect.top + canvas.scrollTop,
+    x: (clientX - rect.left + canvas.scrollLeft) / zoom,
+    y: (clientY - rect.top + canvas.scrollTop) / zoom,
   };
 }
 
@@ -359,4 +364,3 @@ export function chipFixedInputId(chip: Chip): string {
   const value = chip.config.input_dataset_id;
   return typeof value === "string" ? value.trim() : "";
 }
-

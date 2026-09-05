@@ -123,6 +123,7 @@ export interface ChipInputSlotResponse {
     status: string;
     source_chip_id: string;
     consumer_chip_id: string;
+    kind?: string;
     columns: { name: string; dtype?: string; type?: string }[];
   };
 }

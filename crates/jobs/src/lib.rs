@@ -196,7 +196,7 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
                 ),
             )
             .await?;
-        let n = load_table(&live, &dest.table, &csv_path, &dest.mode).await?;
+        let n = load_table(&live, &dest.table, &csv_path, &dest.mode, &[]).await?;
         store
             .append_log(job_id, "info", &format!("loaded {n} rows"))
             .await?;

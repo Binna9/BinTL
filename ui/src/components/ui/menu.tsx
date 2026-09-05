@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AnimatePresence, motion, type Variants } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
@@ -35,22 +35,17 @@ interface MenuSidebarProps {
   inactive?: boolean;
 }
 
-const sidebarVariants: Variants = {
-  hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: { staggerChildren: 0.06 },
-  },
-};
+const MENU_OPEN_STORAGE_KEY = "bintl.sidebar.open-groups";
 
-const itemVariants: Variants = {
-  hidden: { opacity: 0, x: -12 },
-  visible: {
-    opacity: 1,
-    x: 0,
-    transition: { type: "spring", stiffness: 130, damping: 18 },
-  },
-};
+function storedOpenGroups(): Set<string> {
+  try {
+    const raw = window.sessionStorage.getItem(MENU_OPEN_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
 
 function MenuLink({
   item,
@@ -141,15 +136,27 @@ function MenuLink({
   );
 }
 
-function MenuGroup({ item, depth = 0, inactive = false }: { item: MenuItem; depth?: number; inactive?: boolean }) {
+function MenuGroup({
+  item,
+  depth = 0,
+  inactive = false,
+  openGroups,
+  setGroupOpen,
+}: {
+  item: MenuItem;
+  depth?: number;
+  inactive?: boolean;
+  openGroups: Set<string>;
+  setGroupOpen: (key: string, open: boolean) => void;
+}) {
   const location = useRenderLocation();
   const { messages } = useLanguage();
   const childActive = hasActiveDescendant(location.pathname, item, inactive);
-  const [isOpen, setIsOpen] = React.useState(childActive);
+  const isOpen = openGroups.has(item.to);
 
   React.useEffect(() => {
-    if (childActive) setIsOpen(true);
-  }, [childActive]);
+    if (childActive) setGroupOpen(item.to, true);
+  }, [childActive, item.to, setGroupOpen]);
 
   return (
     <>
@@ -161,7 +168,7 @@ function MenuGroup({ item, depth = 0, inactive = false }: { item: MenuItem; dept
           childActive ? "bg-subtle" : "hover:bg-subtle",
         )}
         aria-expanded={isOpen}
-        onClick={() => setIsOpen((open) => !open)}
+        onClick={() => setGroupOpen(item.to, !isOpen)}
       >
         <span className="h-5 w-[3px] shrink-0 rounded-full bg-transparent" aria-hidden="true" />
         <span
@@ -203,7 +210,14 @@ function MenuGroup({ item, depth = 0, inactive = false }: { item: MenuItem; dept
             >
               {item.children?.map((child) =>
                 child.children?.length ? (
-                  <MenuGroup key={child.to} item={child} depth={depth + 1} inactive={inactive} />
+                  <MenuGroup
+                    key={child.to}
+                    item={child}
+                    depth={depth + 1}
+                    inactive={inactive}
+                    openGroups={openGroups}
+                    setGroupOpen={setGroupOpen}
+                  />
                 ) : (
                   <MenuLink key={child.to} item={child} nested inactive={inactive} />
                 ),
@@ -219,6 +233,19 @@ function MenuGroup({ item, depth = 0, inactive = false }: { item: MenuItem; dept
 export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
   ({ items, className, inactive = false }, ref) => {
     const { messages } = useLanguage();
+    const [openGroups, setOpenGroups] = React.useState<Set<string>>(storedOpenGroups);
+    const setGroupOpen = React.useCallback((key: string, open: boolean) => {
+      setOpenGroups((current) => {
+        const next = new Set(current);
+        if (open) next.add(key); else next.delete(key);
+        try {
+          window.sessionStorage.setItem(MENU_OPEN_STORAGE_KEY, JSON.stringify([...next]));
+        } catch {
+          // Storage may be unavailable in privacy-restricted browser contexts.
+        }
+        return next;
+      });
+    }, []);
     return (
       <motion.aside
         ref={ref}
@@ -226,9 +253,7 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
           "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface p-3 text-text",
           className,
         )}
-        initial="hidden"
-        animate="visible"
-        variants={sidebarVariants}
+        initial={false}
         aria-label={messages.nav.mainMenu}
       >
         <nav
@@ -236,9 +261,14 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
           aria-label={messages.nav.platform}
         >
           {items.map((item) => (
-            <motion.div key={item.to} variants={itemVariants}>
+            <motion.div key={item.to}>
               {item.children ? (
-                <MenuGroup item={item} inactive={inactive} />
+                <MenuGroup
+                  item={item}
+                  inactive={inactive}
+                  openGroups={openGroups}
+                  setGroupOpen={setGroupOpen}
+                />
               ) : (
                 <MenuLink item={item} inactive={inactive} />
               )}

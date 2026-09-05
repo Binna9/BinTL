@@ -584,7 +584,6 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     aggregations,
     finalizedPreviewOpen,
     selected?.status,
-    resultSchemaColumns,
   ]);
 
   const grouped = useMemo(() => {
@@ -649,7 +648,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   }
 
   async function saveTransformDefinition(
-    options: { returnToWorkspace?: boolean } = {},
+    options: { returnToWorkspace?: boolean; updateRoute?: boolean } = {},
   ): Promise<string | undefined> {
     if (!datasetId) return undefined;
     const returnToWorkspace = options.returnToWorkspace ?? true;
@@ -663,18 +662,20 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
           dataset_id: datasetId,
           spec: buildSpec(),
           ...(chipId ? { input_chip_id: chipId } : {}),
-        });
+        }, { silent: true });
       } else {
         const row = await transformApi.create({
           name: title,
           dataset_id: datasetId,
           spec: buildSpec(),
           ...(chipId ? { input_chip_id: chipId } : {}),
-        });
+        }, { silent: true });
         savedTransformId = row.id;
         setTransformId(row.id);
         setName(row.name);
-        navigate(editorPath(row.id), { replace: true, state: location.state });
+        if (options.updateRoute !== false) {
+          navigate(editorPath(row.id), { replace: true, state: location.state });
+        }
       }
       if (workspaceMode && workspaceId && returnToWorkspace) {
         toastSuccess(messages.transform.saveToWorkspace);
@@ -811,8 +812,14 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
       messages.transform.confirmRecipeMessage,
     );
     if (!confirmed) return;
-    if (!workspaceMode && !newWorkspaceChip) {
-      const savedTransformId = await saveTransformDefinition({ returnToWorkspace: false });
+    // Confirming a recipe must persist it in every existing-chip flow. The old
+    // workspace branch only opened the result dialog, leaving the chip unbound
+    // even though the generated transform filename was already visible.
+    if (!newWorkspaceChip) {
+      const savedTransformId = await saveTransformDefinition({
+        returnToWorkspace: false,
+        updateRoute: false,
+      });
       if (!savedTransformId) return;
     }
     toastSuccess(messages.transform.recipeProcessed);

@@ -13,7 +13,7 @@ pub const PERM_USER_MANAGE: &str = "USER_MANAGE";
 pub const PERM_CONNECTION_WRITE: &str = "CONNECTION_WRITE";
 pub const PERM_WORKSPACE_ALL: &str = "WORKSPACE_ALL";
 
-const USER_COLS: &str = "id, userid, username, active, created_at, updated_at";
+const USER_COLS: &str = "id, userid, username, avatar_data_url, active, created_at, updated_at";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct RoleRow {
@@ -51,6 +51,7 @@ pub struct UserRow {
     pub id: String,
     pub userid: String,
     pub username: String,
+    pub avatar_data_url: Option<String>,
     pub active: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -81,6 +82,7 @@ struct UserCoreRow {
     pub id: String,
     pub userid: String,
     pub username: String,
+    pub avatar_data_url: Option<String>,
     pub active: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -121,6 +123,7 @@ impl UserCoreRow {
             id: self.id,
             userid: self.userid,
             username: self.username,
+            avatar_data_url: self.avatar_data_url,
             active: self.active,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -324,6 +327,31 @@ impl Store {
         self.get_user(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("user disappeared after update".into()))
+    }
+
+    pub async fn update_user_profile(
+        &self,
+        id: &str,
+        username: &str,
+        avatar_data_url: Option<&str>,
+    ) -> Result<UserRow, StorageError> {
+        let username = required_text(username, "username")?;
+        let now = now_rfc3339();
+        let result = sqlx::query(
+            "UPDATE users SET username = ?, avatar_data_url = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(username)
+        .bind(avatar_data_url)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound("user not found".into()));
+        }
+        self.get_user(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("user disappeared".into()))
     }
 
     pub async fn require_workspace_access(

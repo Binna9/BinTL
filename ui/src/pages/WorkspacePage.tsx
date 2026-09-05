@@ -1,6 +1,6 @@
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Pencil, Pin, Play, Puzzle, RefreshCw, Save, Spline, Workflow, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, Spline, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -85,6 +85,7 @@ function canvasWorkspaceId(pathname: string): string | null {
 }
 
 const PINNED_WORKSPACE_KEY = "bintl.canvas.pinned-workspace";
+const CANVAS_ZOOM_LEVELS = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 
 function storedPinnedWorkspace(): string | null {
   try {
@@ -102,6 +103,7 @@ export function WorkspacePage() {
   const currentWorkspaceRef = useRef(workspaceId);
   const refreshRequestRef = useRef(0);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const canvasZoomRef = useRef(1);
   const pendingViewRef = useRef<Point | null>(null);
   const positionsRef = useRef<Record<string, Point>>({});
   const savedRef = useRef<CanvasSnapshot>({ chips: [], positions: {}, edges: [] });
@@ -115,6 +117,7 @@ export function WorkspacePage() {
   const dirtyRef = useRef(false);
   const busyRef = useRef(false);
   const requestSaveRef = useRef<() => void>(() => {});
+  const requestRunRef = useRef<() => void>(() => {});
   const resetCanvasRef = useRef<() => void>(() => {});
   const dragGhostRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
@@ -169,6 +172,8 @@ export function WorkspacePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [canvasView, setCanvasView] = useState({ width: 800, height: 600 });
   const [canvasScroll, setCanvasScroll] = useState({ x: 0, y: 0 });
+  const [canvasZoom, setCanvasZoom] = useState(1);
+  canvasZoomRef.current = canvasZoom;
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
   const [selectedChipIds, setSelectedChipIds] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<MarqueeBox | null>(null);
@@ -192,6 +197,7 @@ export function WorkspacePage() {
     kind: "extract" | "transform" | "load";
     point: Point;
   } | null>(null);
+  const lastPlaceKindRef = useRef<"extract" | "transform" | "load">("extract");
   const [chipMenu, setChipMenu] = useState<ChipContextMenuState | null>(null);
   const [infoChip, setInfoChip] = useState<Chip | null>(null);
   const [propsChip, setPropsChip] = useState<Chip | null>(null);
@@ -229,15 +235,20 @@ export function WorkspacePage() {
     if (!workspaceId && !pinnedWorkspaceId) setWorkspacePickerOpen(true);
   }, [pinnedWorkspaceId, workspaceId]);
 
-  function togglePinnedWorkspace() {
+  async function togglePinnedWorkspace() {
     if (!workspaceId) {
       setWorkspacePickerOpen(true);
       return;
     }
     if (pinnedWorkspaceId === workspaceId) {
+      const confirmed = await showConfirm(
+        messages.workspace.unpinWorkspaceTitle,
+        messages.workspace.unpinWorkspaceMessage,
+        { confirmLabel: messages.workspace.unpinWorkspace },
+      );
+      if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
       localStorage.removeItem(PINNED_WORKSPACE_KEY);
       setPinnedWorkspaceId(null);
-      setWorkspacePickerOpen(true);
       return;
     }
     localStorage.setItem(PINNED_WORKSPACE_KEY, workspaceId);
@@ -486,12 +497,25 @@ export function WorkspacePage() {
         if (draft?.workspaceId === workspaceId) {
           incomingCanvasDraftRef.current = undefined;
           const restored = cloneCanvas(draft.chips, draft.positions, draft.edges);
-          setChips(restored.chips);
-          chipsRef.current = restored.chips;
+          const serverChips = new Map(chipResponse.chips.map((chip) => [chip.id, chip]));
+          const restoredChips = restored.chips.map((chip) => {
+            const serverChip = serverChips.get(chip.id);
+            if (!serverChip) return chip;
+            return {
+              ...chip,
+              config: serverChip.config,
+              binding: serverChip.binding,
+              output: serverChip.output,
+              revision: serverChip.revision,
+              updated_at: serverChip.updated_at,
+            };
+          });
+          setChips(restoredChips);
+          chipsRef.current = restoredChips;
           setEdges(restored.edges);
           setPositions(restored.positions);
           positionsRef.current = restored.positions;
-          markDirty(restored.chips, restored.positions, restored.edges);
+          markDirty(restoredChips, restored.positions, restored.edges);
           navigate(`/workspace/${workspaceId}`, { replace: true });
         }
       })
@@ -510,8 +534,8 @@ export function WorkspacePage() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const update = () => {
-      setCanvasView({ width: canvas.clientWidth, height: canvas.clientHeight });
-      setCanvasScroll({ x: canvas.scrollLeft, y: canvas.scrollTop });
+      setCanvasView({ width: canvas.clientWidth / canvasZoom, height: canvas.clientHeight / canvasZoom });
+      setCanvasScroll({ x: canvas.scrollLeft / canvasZoom, y: canvas.scrollTop / canvasZoom });
     };
     update();
     const observer = new ResizeObserver(update);
@@ -521,15 +545,51 @@ export function WorkspacePage() {
       observer.disconnect();
       canvas.removeEventListener("scroll", update);
     };
+  }, [canvasZoom, workspaceId]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const current = canvasZoomRef.current;
+      const currentIndex = CANVAS_ZOOM_LEVELS.reduce(
+        (nearest, level, index) => (
+          Math.abs(level - current) < Math.abs(CANVAS_ZOOM_LEVELS[nearest] - current)
+            ? index
+            : nearest
+        ),
+        0,
+      );
+      const direction = event.deltaY < 0 ? 1 : -1;
+      const next = CANVAS_ZOOM_LEVELS[
+        Math.max(0, Math.min(CANVAS_ZOOM_LEVELS.length - 1, currentIndex + direction))
+      ];
+      if (next === current) return;
+      const rect = canvas.getBoundingClientRect();
+      const pointerX = event.clientX - rect.left;
+      const pointerY = event.clientY - rect.top;
+      const worldX = (canvas.scrollLeft + pointerX) / current;
+      const worldY = (canvas.scrollTop + pointerY) / current;
+      canvasZoomRef.current = next;
+      setCanvasZoom(next);
+      requestAnimationFrame(() => {
+        canvas.scrollLeft = worldX * next - pointerX;
+        canvas.scrollTop = worldY * next - pointerY;
+      });
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
   }, [workspaceId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const view = pendingViewRef.current;
     if (!canvas || !view || loading) return;
-    canvas.scrollTo(view.x, view.y);
+    canvas.scrollTo(view.x * canvasZoom, view.y * canvasZoom);
     pendingViewRef.current = null;
-  }, [canvasWorld.height, canvasWorld.width, loading, positions, workspaceId]);
+  }, [canvasWorld.height, canvasWorld.width, canvasZoom, loading, positions, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId || !hasActiveRun) return;
@@ -569,15 +629,17 @@ export function WorkspacePage() {
     };
   }, [hasActiveRun, messages, workspaceId]);
 
-  function transformEditorPath(chip: Chip) {
+  function chipEditorPath(chip: Chip) {
     if (!workspaceId) return "/workspace";
-    const bound = chip.binding?.ref_kind === "transform" ? chip.binding.ref_id : undefined;
-    const base = `/workspace/${workspaceId}/chips/${chip.id}/transform`;
+    const editor = chip.kind === "load" ? "load" : "transform";
+    const bindingKind = chip.kind === "load" ? "load_definition" : "transform";
+    const bound = chip.binding?.ref_kind === bindingKind ? chip.binding.ref_id : undefined;
+    const base = `/workspace/${workspaceId}/chips/${chip.id}/${editor}`;
     return bound ? `${base}/${bound}` : base;
   }
 
-  function openTransformEditor(chip: Chip) {
-    if (chip.kind !== "transform") return;
+  function openChipEditor(chip: Chip) {
+    if (chip.kind !== "transform" && chip.kind !== "load") return;
     if (!workspaceId || currentWorkspaceRef.current !== workspaceId) return;
     void (async () => {
       const originalChipId = chip.id;
@@ -598,7 +660,7 @@ export function WorkspacePage() {
         savedRef.current.positions,
         savedRef.current.edges,
       );
-      navigate(transformEditorPath(currentChip), {
+      navigate(chipEditorPath(currentChip), {
         state: { canvasDraft: { workspaceId, ...snapshot } },
       });
     })();
@@ -634,6 +696,12 @@ export function WorkspacePage() {
     }
     const runnable = order;
     if (runnable.length === 0) return;
+    const confirmed = await showConfirm(
+      messages.workspace.runAllConfirmTitle,
+      messages.workspace.runAllConfirmMessage,
+      { confirmLabel: messages.workspace.runChip },
+    );
+    if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
     setBusy(true);
     try {
       for (const chip of runnable) {
@@ -752,6 +820,13 @@ export function WorkspacePage() {
       }
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       const key = event.key.toLowerCase();
+      if (key === "enter") {
+        if (isEditableTarget(event.target)) return;
+        event.preventDefault();
+        if (event.repeat || busyRef.current) return;
+        requestRunRef.current();
+        return;
+      }
       if (key === "s") {
         event.preventDefault();
         if (event.repeat) return;
@@ -772,6 +847,7 @@ export function WorkspacePage() {
 
   function placeTool(toolKind: "extract" | "transform" | "load", point: Point) {
     if (!workspaceId) return;
+    lastPlaceKindRef.current = toolKind;
     setPendingPlace({ kind: toolKind, point });
   }
 
@@ -855,6 +931,24 @@ export function WorkspacePage() {
     });
     setPendingPlace(null);
     navigate(`/transform?${params.toString()}`);
+  }
+
+  function placeNewLoadChip(name: string) {
+    if (!pendingPlace) return;
+    const now = new Date().toISOString();
+    const chip: Chip = {
+      id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+      owner_user_id: "",
+      name,
+      kind: "load",
+      config: {},
+      revision: 0,
+      active: true,
+      created_at: now,
+      updated_at: now,
+    };
+    placeCatalogChips([chip], pendingPlace.point);
+    setPendingPlace(null);
   }
 
   function dropChipsLocally(chipIdsToDrop: string[]) {
@@ -1039,8 +1133,8 @@ export function WorkspacePage() {
             Object.entries(positionsToSave).map(([id, point]) => [id, roundPoint(point)]),
           ),
           view: {
-            x: Math.round(canvasRef.current?.scrollLeft ?? 0),
-            y: Math.round(canvasRef.current?.scrollTop ?? 0),
+            x: Math.round((canvasRef.current?.scrollLeft ?? 0) / canvasZoomRef.current),
+            y: Math.round((canvasRef.current?.scrollTop ?? 0) / canvasZoomRef.current),
           },
         },
         chips: chipsToSave.map((chip) => chip.id),
@@ -1187,6 +1281,9 @@ export function WorkspacePage() {
   requestSaveRef.current = () => {
     void requestSave();
   };
+  requestRunRef.current = () => {
+    void runWorkspace();
+  };
   resetCanvasRef.current = resetCanvas;
 
   function onToolDragStart(kindValue: "extract" | "transform" | "load", event: DragEvent<HTMLButtonElement>) {
@@ -1211,7 +1308,7 @@ export function WorkspacePage() {
     event.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
     const point = { x: grab.x - NODE_W / 2, y: grab.y - NODE_H / 2 };
     const toolKind = event.dataTransfer.getData(TOOL_KIND);
     if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load") return;
@@ -1224,7 +1321,7 @@ export function WorkspacePage() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const node = positionsRef.current[chip.id] ?? { x: 56, y: 48 };
-    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
     const additive = event.ctrlKey || event.metaKey;
     const wasSelected = selectedChipIdsRef.current.includes(chip.id);
     if (!additive && !wasSelected) {
@@ -1293,7 +1390,7 @@ export function WorkspacePage() {
       return;
     }
     scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
-    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
     const tentative = { x: grab.x - drag.dx, y: grab.y - drag.dy };
     const nextPrimary = clampPoint(tentative);
     const deltaX = nextPrimary.x - drag.startX;
@@ -1327,7 +1424,7 @@ export function WorkspacePage() {
     event.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
     const kindValue = edgeTool;
     const next = { fromId: chip.id, kind: kindValue, fromSide: side, x: grab.x, y: grab.y };
     setSelectedEdgeIds([]);
@@ -1352,7 +1449,7 @@ export function WorkspacePage() {
     }
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
-    const point = canvasPoint(canvas, clientX, clientY);
+    const point = canvasPoint(canvas, clientX, clientY, canvasZoomRef.current);
     const snap = 26;
     let nearest: { id: string; distance: number } | undefined;
     for (const chip of chipsRef.current) {
@@ -1379,7 +1476,7 @@ export function WorkspacePage() {
       return;
     }
     scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
-    const grab = canvasPoint(canvas, event.clientX, event.clientY);
+    const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
     const current = linkingRef.current;
     if (!current) return;
     const toId = linkTargetAt(event.clientX, event.clientY, current.fromId);
@@ -1473,7 +1570,7 @@ export function WorkspacePage() {
       return;
     }
 
-    const grab = clampMarqueePoint(canvasPoint(canvas, event.clientX, event.clientY));
+    const grab = clampMarqueePoint(canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current));
     marqueeRef.current = {
       pointerId: event.pointerId,
       x0: grab.x,
@@ -1508,7 +1605,7 @@ export function WorkspacePage() {
     // Keep the marquee alive outside the viewport: clamp to the canvas world
     // and auto-scroll so the selection can reach the far edge.
     scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
-    const grab = clampMarqueePoint(canvasPoint(canvas, event.clientX, event.clientY));
+    const grab = clampMarqueePoint(canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current));
     if (Math.abs(grab.x - box.x0) > 3 || Math.abs(grab.y - box.y0) > 3) box.moved = true;
     box.x1 = grab.x;
     box.y1 = grab.y;
@@ -1538,9 +1635,36 @@ export function WorkspacePage() {
   function jumpCanvasTo(worldX: number, worldY: number) {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const zoom = canvasZoomRef.current;
     canvas.scrollTo({
-      left: Math.max(0, worldX - canvas.clientWidth / 2),
-      top: Math.max(0, worldY - canvas.clientHeight / 2),
+      left: Math.max(0, worldX * zoom - canvas.clientWidth / 2),
+      top: Math.max(0, worldY * zoom - canvas.clientHeight / 2),
+    });
+  }
+
+  function changeCanvasZoom(direction: -1 | 1) {
+    const current = canvasZoomRef.current;
+    const currentIndex = CANVAS_ZOOM_LEVELS.reduce(
+      (nearest, level, index) => (
+        Math.abs(level - current) < Math.abs(CANVAS_ZOOM_LEVELS[nearest] - current)
+          ? index
+          : nearest
+      ),
+      0,
+    );
+    const next = CANVAS_ZOOM_LEVELS[
+      Math.max(0, Math.min(CANVAS_ZOOM_LEVELS.length - 1, currentIndex + direction))
+    ];
+    if (next === current) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const worldX = (canvas.scrollLeft + canvas.clientWidth / 2) / current;
+    const worldY = (canvas.scrollTop + canvas.clientHeight / 2) / current;
+    canvasZoomRef.current = next;
+    setCanvasZoom(next);
+    requestAnimationFrame(() => {
+      canvas.scrollLeft = worldX * next - canvas.clientWidth / 2;
+      canvas.scrollTop = worldY * next - canvas.clientHeight / 2;
     });
   }
 
@@ -1711,10 +1835,15 @@ export function WorkspacePage() {
                 <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
                   {messages.workspace.title}
                 </p>
-                <div className="mt-0.5 flex min-w-0 items-center gap-7">
+                <div className="mt-0.5 flex min-w-0 items-center">
                   <h1 className="min-w-0 truncate text-sm font-semibold tracking-[-0.015em] text-text">
                     {focusChip?.name ?? selectedWorkspace?.name ?? messages.workspace.selectWorkspace}
                   </h1>
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-3">
+              <div className="flex items-center gap-1">
                   <Button
                     type="button"
                     variant="quiet"
@@ -1733,7 +1862,7 @@ export function WorkspacePage() {
                     )}
                     disabled={!workspaceId}
                     aria-pressed={pinnedWorkspaceId === workspaceId}
-                    onClick={togglePinnedWorkspace}
+                    onClick={() => void togglePinnedWorkspace()}
                   >
                     <Pin
                       className={cn("size-3.5", pinnedWorkspaceId === workspaceId && "fill-current")}
@@ -1743,16 +1872,13 @@ export function WorkspacePage() {
                       ? messages.workspace.unpinWorkspace
                       : messages.workspace.pinWorkspace}
                   </Button>
-                </div>
               </div>
-            </div>
-            <ul className="flex shrink-0 items-center gap-2">
-              <li className="hidden text-[11px] text-text-tertiary sm:block">
-                {messages.workspace.chipContextHint}
-              </li>
+              <ul className="flex shrink-0 items-center gap-2">
               <ShortcutHint keys={["Ctrl", "S"]} label={messages.workspace.shortcutSave} />
+              <ShortcutHint keys={["Ctrl", "Enter"]} label={messages.workspace.shortcutRun} />
               <ShortcutHint keys={["Ctrl", "Z"]} label={messages.workspace.shortcutReset} />
-            </ul>
+              </ul>
+            </div>
           </div>
         </header>
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -1824,14 +1950,22 @@ export function WorkspacePage() {
           }}
         >
           <div
-            className="relative"
             style={{
-              width: canvasWorld.width,
-              height: canvasWorld.height,
-              backgroundImage: "radial-gradient(circle, var(--theme-canvas-dot) 1px, transparent 1.5px)",
-              backgroundSize: "22px 22px",
+              width: canvasWorld.width * canvasZoom,
+              height: canvasWorld.height * canvasZoom,
             }}
           >
+            <div
+              className="relative"
+              style={{
+                width: canvasWorld.width,
+                height: canvasWorld.height,
+                transform: `scale(${canvasZoom})`,
+                transformOrigin: "top left",
+                backgroundImage: "radial-gradient(circle, var(--theme-canvas-dot) 1px, transparent 1.5px)",
+                backgroundSize: "22px 22px",
+              }}
+            >
         <svg
           className="pointer-events-none absolute inset-0"
           width={canvasWorld.width}
@@ -2052,8 +2186,39 @@ export function WorkspacePage() {
                 />
               );
             })() : null}
+            </div>
           </div>
         </section>
+        {workspaceId ? (
+          <div className="absolute right-5 top-[8.75rem] z-20 flex h-8 items-center overflow-hidden rounded-lg border border-border-strong/70 bg-surface/90 shadow-md backdrop-blur">
+            <button
+              type="button"
+              className="grid h-full w-8 place-items-center text-text-secondary transition-colors hover:bg-accent-subtle hover:text-accent disabled:opacity-35"
+              aria-label={messages.workspace.zoomOut}
+              title={messages.workspace.zoomOut}
+              disabled={canvasZoom <= CANVAS_ZOOM_LEVELS[0]}
+              onClick={() => changeCanvasZoom(-1)}
+            >
+              <Minus className="size-3.5" aria-hidden="true" />
+            </button>
+            <span
+              className="min-w-12 border-x border-border px-2 text-center text-[11px] font-semibold tabular-nums text-text-secondary"
+              title={messages.workspace.zoomHint}
+            >
+              {Math.round(canvasZoom * 100)}%
+            </span>
+            <button
+              type="button"
+              className="grid h-full w-8 place-items-center text-text-secondary transition-colors hover:bg-accent-subtle hover:text-accent disabled:opacity-35"
+              aria-label={messages.workspace.zoomIn}
+              title={messages.workspace.zoomIn}
+              disabled={canvasZoom >= CANVAS_ZOOM_LEVELS[CANVAS_ZOOM_LEVELS.length - 1]}
+              onClick={() => changeCanvasZoom(1)}
+            >
+              <Plus className="size-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
         {workspaceId ? (
           <WorkspaceMinimap
             chips={chips}
@@ -2070,7 +2235,7 @@ export function WorkspacePage() {
 
       <ChipPlaceDialog
         open={Boolean(pendingPlace)}
-        kind={pendingPlace?.kind ?? "extract"}
+        kind={pendingPlace?.kind ?? lastPlaceKindRef.current}
         catalogChips={catalogChips}
         datasets={datasets}
         canvasChipIds={new Set(chips.map((chip) => chip.id))}
@@ -2079,11 +2244,15 @@ export function WorkspacePage() {
           messages.workspace.defaultTransformChipName,
           (chip) => chip.kind === "transform",
         )}
+        defaultLoadName={messages.workspace.defaultLoadChipName(
+          chips.filter((item) => item.kind === "load").length + 1,
+        )}
         messages={messages}
         busy={busy}
         onClose={cancelPlaceChip}
         onPlaceCatalog={confirmCatalogChips}
         onPlaceNewTransform={(draft) => placeNewTransformChip(draft)}
+        onPlaceNewLoad={placeNewLoadChip}
       />
 
       <ChipContextMenu
@@ -2094,7 +2263,7 @@ export function WorkspacePage() {
         onRun={(chip) => void runSingleChip(chip)}
         onInfo={setInfoChip}
         onProperties={openChipProperties}
-        onEdit={openTransformEditor}
+        onEdit={openChipEditor}
         onDelete={(chip) => void deleteCanvasChip(chip)}
       />
 
@@ -2182,13 +2351,9 @@ export function WorkspacePage() {
         folders={folders}
         workspaces={workspaces}
         focusFolderId={selectedWorkspace?.folder_id ?? null}
-        currentWorkspaceId={workspaceId}
         onClose={() => setManageOpen(false)}
         onFoldersChange={setFolders}
         onWorkspacesChange={setWorkspaces}
-        onOpenWorkspace={(id) => {
-          void requestOpenWorkspace(id);
-        }}
       />
 
       <AppDialog

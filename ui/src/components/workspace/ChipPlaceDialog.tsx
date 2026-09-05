@@ -702,20 +702,69 @@ function TransformNewPanel({
   );
 }
 
-function LoadCatalogPanel({ chips, canvasChipIds, messages, busy, onClose, onPlace, onRegister, dragHandleRef }: {
+function LoadCatalogPanel({ chips, canvasChipIds, messages, busy, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
   chips: Chip[]; canvasChipIds: Set<string>; messages: Messages; busy?: boolean;
-  onClose: () => void; onPlace: (ids: string[]) => void; onRegister: () => void;
+  onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty: () => void; onRegister: () => void;
   dragHandleRef: RefObject<HTMLDivElement | null>;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
-  return <div className="flex min-h-0 flex-1 flex-col">
-    <div ref={dragHandleRef} className="chip-place-head cursor-move"><div><p className="chip-place-eyebrow">{messages.workspace.load}</p><h2 className="chip-place-title">{messages.workspace.placeLoadTitle}</h2></div></div>
-    <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-      <CatalogChipPanel kind="load" chips={chips} canvasChipIds={canvasChipIds} messages={messages} selectedIds={selected} onSelectedIdsChange={setSelected} />
-      <Button variant="secondary" onClick={onRegister}><Plus className="size-3.5" />{messages.workspace.registerLoadFirst}</Button>
+  return (
+    <div className="chip-place-main">
+      <PlacePanelHeader
+        icon={<FileOutput className="size-4" aria-hidden="true" />}
+        iconClassName="bg-warning-subtle text-warning"
+        title={messages.workspace.placeLoadTitle}
+        hint={messages.workspace.placeLoadSimpleHint}
+        dragHandleRef={dragHandleRef}
+      />
+
+      <div className="grid shrink-0 grid-cols-2 gap-2 px-4 pt-4">
+        <Button
+          type="button"
+          variant="secondary"
+          className="h-10 gap-1.5 text-[12px]"
+          disabled={busy}
+          onClick={onPlaceEmpty}
+        >
+          <Layers3 className="size-3.5" aria-hidden="true" />
+          {messages.workspace.placeLoadEmptyChip}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          className="h-10 gap-1.5 text-[12px]"
+          disabled={busy}
+          onClick={onRegister}
+        >
+          <Plus className="size-3.5" aria-hidden="true" />
+          {messages.workspace.registerLoadFirst}
+        </Button>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-2 pt-4">
+        <p className="shrink-0 text-[11px] text-text-tertiary">
+          {messages.workspace.placeLoadCatalogHint}
+        </p>
+        <CatalogChipPanel
+          kind="load"
+          chips={chips}
+          canvasChipIds={canvasChipIds}
+          messages={messages}
+          selectedIds={selected}
+          onSelectedIdsChange={setSelected}
+        />
+      </div>
+
+      <PlaceDialogFooter
+        cancelLabel={messages.common.cancel}
+        submitLabel={messages.workspace.placeSelected}
+        canSubmit={selected.length > 0}
+        busy={busy}
+        onCancel={onClose}
+        onSubmit={() => onPlace(selected)}
+      />
     </div>
-    <PlaceDialogFooter cancelLabel={messages.common.cancel} submitLabel={messages.workspace.placeSelected} canSubmit={selected.length > 0} busy={busy} onCancel={onClose} onSubmit={() => onPlace(selected)} />
-  </div>;
+  );
 }
 
 export function ChipPlaceDialog({
@@ -725,11 +774,13 @@ export function ChipPlaceDialog({
   datasets,
   canvasChipIds,
   defaultTransformName,
+  defaultLoadName,
   messages,
   busy,
   onClose,
   onPlaceCatalog,
   onPlaceNewTransform,
+  onPlaceNewLoad,
 }: {
   open: boolean;
   kind: ChipPlaceKind;
@@ -737,11 +788,13 @@ export function ChipPlaceDialog({
   datasets: Dataset[];
   canvasChipIds: Set<string>;
   defaultTransformName: string;
+  defaultLoadName: string;
   messages: Messages;
   busy?: boolean;
   onClose: () => void;
   onPlaceCatalog: (chipIds: string[]) => void;
   onPlaceNewTransform: (draft: TransformPlaceDraft) => void;
+  onPlaceNewLoad: (name: string) => void;
 }) {
   const navigate = useNavigate();
   const dragHandleRef = useRef<HTMLDivElement>(null);
@@ -807,6 +860,7 @@ export function ChipPlaceDialog({
           busy={busy}
           onClose={onClose}
           onPlace={onPlaceCatalog}
+          onPlaceEmpty={() => onPlaceNewLoad(defaultLoadName)}
           onRegister={() => { onClose(); navigate("/load"); }}
           dragHandleRef={dragHandleRef}
         />

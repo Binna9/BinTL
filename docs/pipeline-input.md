@@ -22,9 +22,9 @@
 
 ### 동기화 시점
 
-1. 워크스페이스 **저장** 시 `data` 엣지(추출→변환)마다 planned dataset upsert
-2. `GET /api/workspaces/:id/chips/:chip_id/input-slot` — 변환 칩의 예정 입력 조회
-3. 변환 페이지는 planned dataset으로 **컬럼 기반 spec 작성** (파일 없이)
+1. 워크스페이스 **저장** 시 `data` 엣지(추출/변환→변환/적재)마다 planned dataset upsert
+2. `GET /api/workspaces/:id/chips/:chip_id/input-slot` — 변환·적재 칩의 예정 입력 조회
+3. 변환 페이지는 planned dataset으로 **컬럼 기반 spec 작성** (파일 없이), 적재 페이지는 같은 데이터 파일 패널에서 예정 입력 스키마를 확인하고 적재 대상을 미리 설정
 
 ### 실행 시
 

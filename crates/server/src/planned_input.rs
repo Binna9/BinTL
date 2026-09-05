@@ -19,7 +19,7 @@ pub async fn sync_workspace_planned_inputs(
             Some(chip) => chip,
             None => continue,
         };
-        if to_chip.kind != "transform" {
+        if to_chip.kind != "transform" && to_chip.kind != "load" {
             continue;
         }
         let _ = ensure_planned_input_for_transform(
@@ -47,7 +47,7 @@ pub async fn ensure_planned_input_for_transform(
     if upstream.kind != "extract" && upstream.kind != "transform" {
         return Err(AppError::bad("upstream chip must produce data"));
     }
-    let upstream_name = chip_input_display_name(&state.store, &upstream).await?;
+    let upstream_name = chip_input_display_name(&state.store, &upstream, workspace_id).await?;
     let schema = planned_schema_for_chip(state, workspace_id, upstream_chip_id).await?;
     let columns = schema.columns;
     let columns_json =
@@ -59,6 +59,7 @@ pub async fn ensure_planned_input_for_transform(
             transform_chip_id,
             upstream_chip_id,
             schema.source_extract_definition_id.as_deref(),
+            if upstream.kind == "transform" { "transform" } else { schema.kind.as_str() },
             &format!("{}.planned", upstream_name),
             &columns_json,
             &schema.delimiter,
@@ -70,11 +71,13 @@ pub async fn ensure_planned_input_for_transform(
         "status": dataset.status,
         "source_chip_id": upstream_chip_id,
         "consumer_chip_id": transform_chip_id,
+        "kind": dataset.kind,
         "columns": columns,
     }))
 }
 
 struct PlannedSchema {
+    kind: String,
     columns: Vec<Value>,
     delimiter: String,
     header: bool,
@@ -142,6 +145,7 @@ async fn planned_schema_for_chip(
 
 fn schema_from_dataset(dataset: &storage::DatasetRow) -> PlannedSchema {
     PlannedSchema {
+        kind: dataset.kind.clone(),
         columns: dataset.columns_json.as_deref()
             .and_then(|raw| serde_json::from_str(raw).ok()).unwrap_or_default(),
         delimiter: dataset.delimiter.clone().unwrap_or_else(|| ",".into()),
@@ -165,6 +169,7 @@ async fn schema_from_extract(
         .ok_or_else(|| AppError::bad("extract source required"))?;
     let live = state.store.live_connection(connection_id).await?;
     Ok(PlannedSchema {
+        kind: if source.get("type").and_then(Value::as_str) == Some("http") { "api".into() } else { "database".into() },
         columns: introspect_extract_source(&live, &source).await?,
         delimiter: config.get("delimiter").and_then(Value::as_str).unwrap_or(",").into(),
         header: config.get("header").and_then(Value::as_bool).unwrap_or(true),
@@ -307,7 +312,7 @@ pub async fn get_transform_input_slot(
     };
     let source_chip = state.store.get_chip(&edge.from_chip_id).await?;
     let source_name = match source_chip.as_ref() {
-        Some(chip) => chip_input_display_name(&state.store, chip).await?,
+        Some(chip) => chip_input_display_name(&state.store, chip, workspace_id).await?,
         None => String::new(),
     };
     let source_kind = source_chip.as_ref().map(|chip| chip.kind.as_str());
@@ -349,17 +354,21 @@ pub async fn get_transform_input_slot(
 async fn chip_input_display_name(
     store: &storage::Store,
     chip: &storage::ChipRow,
+    workspace_id: &str,
 ) -> Result<String, AppError> {
     if chip.kind == "transform" {
         if let Some(binding) = store.get_chip_binding(&chip.id).await? {
             if binding.ref_kind == "transform" {
                 if let Some(transform) = store.get_transform(&binding.ref_id).await? {
-                    return Ok(transform.name);
+                    return Ok(storage::chip_slot::display_filename(&transform.name, "transform", ","));
                 }
             }
         }
         if let Some(transform) = store.get_transform_for_chip(&chip.id).await? {
-            return Ok(transform.name);
+            return Ok(storage::chip_slot::display_filename(&transform.name, "transform", ","));
+        }
+        if let Some(name) = crate::chip::inferred_transform_output_name(store, chip, workspace_id).await? {
+            return Ok(storage::chip_slot::display_filename(&name, "transform", ","));
         }
     }
     Ok(chip.name.clone())

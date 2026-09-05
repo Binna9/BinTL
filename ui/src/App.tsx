@@ -37,7 +37,8 @@ function ConsoleShell() {
     (loc.pathname === "/workspace" ||
       (loc.pathname.startsWith("/workspace/")
         && !loc.pathname.startsWith("/workspace/runs")
-        && !loc.pathname.includes("/transform")));
+        && !loc.pathname.includes("/transform")
+        && !loc.pathname.includes("/load")));
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="sticky top-0 z-40 grid h-[4.75rem] shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border bg-surface px-5 shadow-[0_2px_5px_rgba(15,23,42,0.06)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.28)]">
@@ -89,6 +90,8 @@ function ConsoleShell() {
               <Route path="/transform/aggregate" element={<TransformPage section="aggregate" />} />
               <Route path="/transform/aggregate/:id" element={<TransformPage section="aggregate" />} />
               <Route path="/transform/:id" element={<TransformPage />} />
+              <Route path="/workspace/:workspaceId/chips/:editorChipId/load" element={<LoadPage />} />
+              <Route path="/workspace/:workspaceId/chips/:editorChipId/load/:id" element={<LoadPage />} />
               <Route path="/load" element={<LoadPage />} />
               <Route path="/history" element={<HistoryPage />} />
               <Route path="/jobs" element={<Navigate to="/history" replace />} />

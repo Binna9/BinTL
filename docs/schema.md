@@ -575,3 +575,61 @@ UI 정식 경로는 `/transform`과 `/transform/:id`이며 `?section=clean|combi
 
 7. **검색 엔티티 `extract`**
    `search_documents.entity_type`에 `extract`가 있는데 UI 카탈로그의 축은 `extract_definitions`다. 인덱스가 실행 이력만 잡으면 카탈로그 검색과 어긋난다.
+
+## 후속 구조 개선안 · 정의/실행 모델 통일
+
+현재 추출·변환·적재는 서로 다른 시기에 추가되어 정의와 실행을 저장하는 기준이 일관되지 않다.
+
+| 처리 종류 | 현재 정의 | 현재 실행 | 실행 상세/결과 |
+| -------- | -------- | -------- | ------------ |
+| 추출 | `extract_definitions` | `extracts` + `chip_runs` | `extracts`에 상태가 섞이고 산출은 `datasets` |
+| 변환 | `transforms` | `jobs` + `chip_runs` | `jobs`, 산출은 `datasets` |
+| 적재 | `load_definitions` | `chip_runs` | `load_results` |
+
+`loads` 실행 테이블을 새로 추가하여 대칭을 맞추지 않는다. 적재의 `chip_runs + load_results` 방식이 목표 구조에 더 가깝고, 추출과 변환에 남은 구형 실행 계층을 공통 실행 모델로 흡수하는 방향으로 정리한다.
+
+### 목표 구조
+
+| 역할 | 목표 테이블 |
+| ---- | ---------- |
+| 재사용 가능한 설정 | `extract_definitions`, `transform_definitions`, `load_definitions` |
+| 캔버스 칩과 정의 연결 | `chip_bindings` |
+| 모든 종류의 공통 실행 상태·시간·오류 | `chip_runs` |
+| 추출·변환의 실제 산출 파일과 스키마 | `datasets` |
+| 종류별 실행 부가 정보 | 필요할 때만 `extract_run_details`, `transform_run_details`, `load_run_details` |
+| 실행 전 연결선 기반 예상 입력 | `planned_inputs` |
+
+목표 관계는 다음과 같다.
+
+```text
+chips
+  ├─ chip_bindings ──► *_definitions
+  └─ chip_runs
+       ├─ input_dataset_id
+       ├─ output_dataset_id
+       └─ *_run_details (종류별 부가 정보가 있을 때만)
+
+datasets       실제 추출·변환 결과
+planned_inputs 실행 전 예상 입력 스키마
+```
+
+### 명명 및 저장 원칙
+
+1. 재사용 설정은 모두 `*_definitions`에 저장한다. 현재 `transforms`는 최종적으로 `transform_definitions`로 바꾼다.
+2. 큐 상태, 시작·완료 시각, 오류, 입력·출력 참조는 모두 `chip_runs`가 소유한다.
+3. 추출·변환 산출물은 `datasets`에 저장하고 `chip_runs.output_dataset_id`로 참조한다.
+4. 적재 건수, 거부 건수, 대상, 검증 결과처럼 공통 실행 컬럼이 아닌 값만 상세 테이블에 둔다. 현재 `load_results`는 `load_run_details`로 바꾸는 것을 검토한다.
+5. 스키마만 존재하는 예정 입력은 실제 파일 카탈로그인 `datasets`에 섞지 않고 `planned_inputs`로 분리한다.
+6. `legacy_extract_id`, `legacy_job_id`는 제거하고 실행과 산출 추적을 `chip_runs` 기준으로 통일한다.
+7. `extracts`와 `jobs`는 신규 쓰기를 먼저 중단한 뒤 호환 뷰 또는 읽기 전용 계층을 거쳐 제거한다.
+
+### 권장 마이그레이션 순서
+
+1. `transform_definitions`, `planned_inputs`, 필요한 `*_run_details` 테이블을 추가한다.
+2. 기존 데이터를 새 구조로 백필하고 구·신 구조 간 행 수와 참조 무결성을 검증한다.
+3. 서버 쓰기를 새 구조에 이중 기록하여 실행·이력·파일 삭제 동작을 비교한다.
+4. 조회 API와 검색 인덱스를 `*_definitions`, `chip_runs`, `datasets` 기준으로 전환한다.
+5. 이중 기록을 종료하고 `extracts`, `jobs`, `legacy_*` 참조를 읽기 전용으로 만든다.
+6. 충분한 호환 기간과 복구 검증 후 구형 테이블을 뷰로 대체하거나 제거한다.
+
+이 개선은 테이블 이름만 바꾸는 작업이 아니다. 실행 큐, 실행 이력, 결과 파일 생명주기, 삭제 가드, 검색 인덱스와 API 응답을 함께 이전해야 하므로 별도 구조개선 작업으로 진행한다.

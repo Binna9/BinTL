@@ -13,6 +13,8 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/me", get(me))
+        .route("/api/me/profile", axum::routing::patch(update_profile))
+        .route("/api/me/password", axum::routing::patch(change_password))
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{id}", axum::routing::patch(update_user))
         .route("/api/roles", get(list_roles))
@@ -36,11 +38,24 @@ struct PatchUserBody {
     active: Option<bool>,
 }
 
+#[derive(Deserialize)]
+struct ChangePasswordBody {
+    current_password: String,
+    new_password: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateProfileBody {
+    username: String,
+    avatar_data_url: Option<String>,
+}
+
 pub fn user_json(row: &UserRow) -> Value {
     json!({
         "id": row.id,
         "userid": row.userid,
         "username": row.username,
+        "avatar_data_url": row.avatar_data_url,
         "active": row.active != 0,
         "roles": row.roles,
         "permissions": row.permissions,
@@ -51,6 +66,55 @@ pub fn user_json(row: &UserRow) -> Value {
 
 async fn me(user: CurrentUser) -> Json<Value> {
     Json(user_json(&user.0))
+}
+
+async fn update_profile(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<UpdateProfileBody>,
+) -> Result<Json<Value>, AppError> {
+    if let Some(avatar) = body.avatar_data_url.as_deref() {
+        let valid_type = avatar.starts_with("data:image/jpeg;base64,")
+            || avatar.starts_with("data:image/png;base64,")
+            || avatar.starts_with("data:image/webp;base64,");
+        if !avatar.is_empty() && (!valid_type || avatar.len() > 750_000) {
+            return Err(AppError::bad("invalid profile image"));
+        }
+    }
+    let updated = state
+        .store
+        .update_user_profile(
+            &user.0.id,
+            &body.username,
+            body.avatar_data_url
+                .as_deref()
+                .filter(|value| !value.is_empty()),
+        )
+        .await?;
+    Ok(Json(user_json(&updated)))
+}
+
+async fn change_password(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<ChangePasswordBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.new_password.trim().len() < 8 {
+        return Err(AppError::bad("new password must be at least 8 characters"));
+    }
+    if state
+        .store
+        .authenticate(&user.0.userid, &body.current_password)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::bad("current password is incorrect"));
+    }
+    state
+        .store
+        .update_user(&user.0.id, None, Some(&body.new_password), None, None)
+        .await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn list_users(
