@@ -5,6 +5,7 @@ import {
   bindingKindLabel,
   formatTransformStepSummary,
   parseExtractConfig,
+  parseLoadConfig,
   parseTransformConfig,
   supportsReadableDetail,
 } from "@/lib/chipDetail";
@@ -22,13 +23,14 @@ function DetailRow({ label, children, className }: { label: string; children: Re
   );
 }
 
-export function ChipDetailView({ chip }: { chip: Chip }) {
+export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileName?: string }) {
   const { messages } = useLanguage();
   const [connectionName, setConnectionName] = useState("");
   const [datasetName, setDatasetName] = useState("");
 
   const extract = chip.kind === "extract" ? parseExtractConfig(chip.config) : null;
   const transform = chip.kind === "transform" ? parseTransformConfig(chip.config) : null;
+  const load = chip.kind === "load" ? parseLoadConfig(chip.config) : null;
 
   const stepLabels = useMemo<Record<StepOp, string>>(
     () => ({
@@ -46,7 +48,7 @@ export function ChipDetailView({ chip }: { chip: Chip }) {
 
   useEffect(() => {
     let cancelled = false;
-    const connectionId = extract?.connectionId ?? "";
+    const connectionId = extract?.connectionId ?? load?.connectionId ?? "";
     if (!connectionId) {
       setConnectionName("");
       return;
@@ -64,7 +66,7 @@ export function ChipDetailView({ chip }: { chip: Chip }) {
     return () => {
       cancelled = true;
     };
-  }, [extract?.connectionId]);
+  }, [extract?.connectionId, load?.connectionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,8 +90,19 @@ export function ChipDetailView({ chip }: { chip: Chip }) {
     };
   }, [transform?.inputDatasetId]);
 
-  if (chip.kind === "load") {
-    return <p className="text-sm text-text-secondary">{messages.workspace.loadUnavailable}</p>;
+  if (chip.kind === "load" && load) {
+    return <dl className="grid gap-4">
+      {chip.binding ? <DetailRow label={messages.chips.binding}>{bindingKindLabel(chip.binding.ref_kind, messages)}</DetailRow> : null}
+      <DetailRow label={messages.load.destinationType}>{load.destinationType === "database" ? messages.load.database : messages.load.file}</DetailRow>
+      {load.destinationType === "database" ? <>
+        <DetailRow label={messages.load.connection}>{connectionName || load.connectionId}</DetailRow>
+        <DetailRow label={messages.load.table}>{load.table}</DetailRow>
+      </> : <>
+        <DetailRow label={messages.load.format}>{load.format.toUpperCase()}</DetailRow>
+        <DetailRow label={messages.load.filename}>{load.filename}</DetailRow>
+      </>}
+      <DetailRow label={messages.load.writeMode}>{load.writeMode === "append" ? messages.load.append : messages.load.replace}</DetailRow>
+    </dl>;
   }
 
   if (!supportsReadableDetail(chip.kind)) {
@@ -153,8 +166,11 @@ export function ChipDetailView({ chip }: { chip: Chip }) {
             {bindingKindLabel(chip.binding.ref_kind, messages)}
           </DetailRow>
         ) : null}
+        <DetailRow label={messages.workspace.dataFileName}>
+          {chip.output?.filename || messages.workspace.outputEmpty}
+        </DetailRow>
         <DetailRow label={messages.workspace.inputDataset}>
-          {datasetName || transform.inputDatasetId || messages.chips.detailUnset}
+          {inputFileName || datasetName || transform.inputDatasetId || messages.chips.detailUnset}
         </DetailRow>
         <div>
           <dt className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">

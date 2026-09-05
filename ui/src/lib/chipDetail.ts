@@ -19,6 +19,15 @@ export type TransformConfigView = {
   steps: TransformStep[];
 };
 
+export type LoadConfigView = {
+  destinationType: "database" | "file";
+  connectionId: string;
+  table: string;
+  format: string;
+  filename: string;
+  writeMode: string;
+};
+
 function textValue(config: ChipConfig, key: string, fallback = ""): string {
   return typeof config[key] === "string" ? (config[key] as string) : fallback;
 }
@@ -58,11 +67,42 @@ export function parseExtractConfig(config: ChipConfig): ExtractConfigView | null
 
 export function parseTransformConfig(config: ChipConfig): TransformConfigView | null {
   const spec = objectValue(config, "spec");
-  const rawSteps = spec.steps;
-  const steps = Array.isArray(rawSteps) ? rawSteps.filter(isTransformStep) : [];
+  const legacySteps = Array.isArray(spec.steps)
+    ? spec.steps.filter(isTransformStep)
+    : [];
+  const cleanOperation = Array.isArray(spec.operations)
+    ? spec.operations.find(
+        (operation) =>
+          operation != null
+          && typeof operation === "object"
+          && !Array.isArray(operation)
+          && (operation as { type?: unknown }).type === "clean",
+      )
+    : undefined;
+  const operationSteps =
+    cleanOperation != null
+    && typeof cleanOperation === "object"
+    && !Array.isArray(cleanOperation)
+    && Array.isArray((cleanOperation as { steps?: unknown }).steps)
+      ? (cleanOperation as { steps: unknown[] }).steps.filter(isTransformStep)
+      : [];
   return {
     inputDatasetId: textValue(config, "input_dataset_id"),
-    steps,
+    steps: cleanOperation === undefined ? legacySteps : operationSteps,
+  };
+}
+
+export function parseLoadConfig(config: ChipConfig): LoadConfigView | null {
+  const destination = objectValue(config, "destination");
+  const type = textValue(destination, "type");
+  if (type !== "database" && type !== "file") return null;
+  return {
+    destinationType: type,
+    connectionId: textValue(destination, "connection_id"),
+    table: textValue(destination, "table"),
+    format: textValue(destination, "format"),
+    filename: textValue(destination, "filename"),
+    writeMode: textValue(config, "write_mode", "append"),
   };
 }
 
@@ -102,14 +142,15 @@ export function formatTransformStepSummary(step: TransformStep): string {
 export function bindingKindLabel(
   refKind: string,
   messages: {
-    chips: { bindingExtract: string; bindingTransform: string };
+    chips: { bindingExtract: string; bindingTransform: string; bindingLoad: string };
   },
 ): string {
   if (refKind === "extract_definition") return messages.chips.bindingExtract;
   if (refKind === "transform") return messages.chips.bindingTransform;
+  if (refKind === "load_definition") return messages.chips.bindingLoad;
   return refKind;
 }
 
 export function supportsReadableDetail(kind: ChipKind): boolean {
-  return kind === "extract" || kind === "transform";
+  return kind === "extract" || kind === "transform" || kind === "load";
 }

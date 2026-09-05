@@ -8,6 +8,7 @@ mod auth;
 mod config;
 mod error;
 mod extract;
+mod load;
 mod search;
 mod state;
 mod chip;

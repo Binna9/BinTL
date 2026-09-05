@@ -5,7 +5,7 @@ use std::time::Instant;
 use csv::WriterBuilder;
 use futures_util::TryStreamExt;
 use serde::Serialize;
-use sqlx::Column;
+use sqlx::{Column, Executor};
 use storage::LiveConnection;
 
 use crate::extract::{tick_progress, tick_progress_at, with_sequence, with_sequence_header};
@@ -103,10 +103,54 @@ pub async fn extract_query(
         .from_path(dest)?;
     let family = driver_family(&c.driver)?;
     let n = match family {
-        "postgres" => stream_pg(c, &sql, &mut wtr, opts.header, opts.add_sequence, None, on_progress).await?,
-        "mysql" => stream_my(c, &sql, &mut wtr, opts.header, opts.add_sequence, None, on_progress).await?,
-        "sqlite" => stream_sqlite(c, &sql, &mut wtr, opts.header, opts.add_sequence, None, on_progress).await?,
-        "mssql" => stream_ms(c, &sql, &mut wtr, opts.header, opts.add_sequence, None, on_progress).await?,
+        "postgres" => {
+            stream_pg(
+                c,
+                &sql,
+                &mut wtr,
+                opts.header,
+                opts.add_sequence,
+                None,
+                on_progress,
+            )
+            .await?
+        }
+        "mysql" => {
+            stream_my(
+                c,
+                &sql,
+                &mut wtr,
+                opts.header,
+                opts.add_sequence,
+                None,
+                on_progress,
+            )
+            .await?
+        }
+        "sqlite" => {
+            stream_sqlite(
+                c,
+                &sql,
+                &mut wtr,
+                opts.header,
+                opts.add_sequence,
+                None,
+                on_progress,
+            )
+            .await?
+        }
+        "mssql" => {
+            stream_ms(
+                c,
+                &sql,
+                &mut wtr,
+                opts.header,
+                opts.add_sequence,
+                None,
+                on_progress,
+            )
+            .await?
+        }
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     wtr.flush()?;
@@ -189,6 +233,12 @@ impl RowSink {
         }
     }
 
+    fn set_columns(&mut self, columns: Vec<String>) {
+        if self.columns.is_empty() {
+            self.columns = columns;
+        }
+    }
+
     fn push(&mut self, columns: Vec<String>, rec: Vec<String>) -> bool {
         if self.columns.is_empty() {
             self.columns = columns;
@@ -223,6 +273,7 @@ async fn collect_pg(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<(), ConnectError> {
     let pool = pg_pool(c).await?;
+    sink.set_columns(describe_columns(&pool, sql).await?);
     let mut stream = sqlx::query(sql).fetch(&pool);
     while let Some(row) = stream.try_next().await? {
         let cols = colnames_sqlx(&row);
@@ -243,6 +294,7 @@ async fn collect_my(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<(), ConnectError> {
     let pool = my_pool(c).await?;
+    sink.set_columns(describe_columns(&pool, sql).await?);
     let mut stream = sqlx::query(sql).fetch(&pool);
     while let Some(row) = stream.try_next().await? {
         let cols = colnames_sqlx(&row);
@@ -263,6 +315,7 @@ async fn collect_sqlite(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<(), ConnectError> {
     let pool = sqlite_pool(c).await?;
+    sink.set_columns(describe_columns(&pool, sql).await?);
     let mut stream = sqlx::query(sql).fetch(&pool);
     while let Some(row) = stream.try_next().await? {
         let cols = colnames_sqlx(&row);
@@ -284,11 +337,17 @@ async fn collect_ms(
 ) -> Result<(), ConnectError> {
     let mut client = mssql_client(c).await?;
     if let Some(n) = sink.limit {
-        client
-            .execute(format!("SET ROWCOUNT {n}"), &[])
-            .await?;
+        client.execute(format!("SET ROWCOUNT {n}"), &[]).await?;
     }
-    let stream = client.simple_query(sql.to_string()).await?;
+    let mut stream = client.simple_query(sql.to_string()).await?;
+    if let Some(columns) = stream.columns().await? {
+        sink.set_columns(
+            columns
+                .iter()
+                .map(|column| column.name().to_string())
+                .collect(),
+        );
+    }
     let mut rows = stream.into_row_stream();
     while let Some(row) = rows.try_next().await? {
         let cols: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
@@ -318,15 +377,14 @@ async fn stream_pg(
     sqlx::query("SET default_transaction_read_only = on")
         .execute(&pool)
         .await?;
+    let columns = describe_columns(&pool, sql).await?;
+    if header {
+        wtr.write_record(&with_sequence_header(add_sequence, columns))?;
+    }
     let mut stream = sqlx::query(sql).fetch(&pool);
     let mut n = 0u64;
-    let mut wrote_header = false;
     while let Some(row) = stream.try_next().await? {
         let cols = colnames_sqlx(&row);
-        if header && !wrote_header {
-            wtr.write_record(&with_sequence_header(add_sequence, cols.clone()))?;
-            wrote_header = true;
-        }
         if let Some(lim) = limit {
             if n >= lim {
                 break;
@@ -354,15 +412,14 @@ async fn stream_my(
     sqlx::query("SET SESSION TRANSACTION READ ONLY")
         .execute(&pool)
         .await?;
+    let columns = describe_columns(&pool, sql).await?;
+    if header {
+        wtr.write_record(&with_sequence_header(add_sequence, columns))?;
+    }
     let mut stream = sqlx::query(sql).fetch(&pool);
     let mut n = 0u64;
-    let mut wrote_header = false;
     while let Some(row) = stream.try_next().await? {
         let cols = colnames_sqlx(&row);
-        if header && !wrote_header {
-            wtr.write_record(&with_sequence_header(add_sequence, cols.clone()))?;
-            wrote_header = true;
-        }
         if let Some(lim) = limit {
             if n >= lim {
                 break;
@@ -388,15 +445,14 @@ async fn stream_sqlite(
 ) -> Result<u64, ConnectError> {
     let pool = sqlite_pool(c).await?;
     sqlx::query("PRAGMA query_only = ON").execute(&pool).await?;
+    let columns = describe_columns(&pool, sql).await?;
+    if header {
+        wtr.write_record(&with_sequence_header(add_sequence, columns))?;
+    }
     let mut stream = sqlx::query(sql).fetch(&pool);
     let mut n = 0u64;
-    let mut wrote_header = false;
     while let Some(row) = stream.try_next().await? {
         let cols = colnames_sqlx(&row);
-        if header && !wrote_header {
-            wtr.write_record(&with_sequence_header(add_sequence, cols.clone()))?;
-            wrote_header = true;
-        }
         if let Some(lim) = limit {
             if n >= lim {
                 break;
@@ -423,16 +479,24 @@ async fn stream_ms(
     let mut client = mssql_client(c).await?;
     client.execute("BEGIN TRANSACTION", &[]).await?;
     let result = async {
-        let stream = client.simple_query(sql.to_string()).await?;
+        let mut stream = client.simple_query(sql.to_string()).await?;
+        let columns = stream
+            .columns()
+            .await?
+            .map(|columns| {
+                columns
+                    .iter()
+                    .map(|column| column.name().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if header {
+            wtr.write_record(&with_sequence_header(add_sequence, columns))?;
+        }
         let mut rows = stream.into_row_stream();
         let mut n = 0u64;
-        let mut wrote_header = false;
         while let Some(row) = rows.try_next().await? {
             let cols: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
-            if header && !wrote_header {
-                wtr.write_record(&with_sequence_header(add_sequence, cols.clone()))?;
-                wrote_header = true;
-            }
             if let Some(lim) = limit {
                 if n >= lim {
                     break;
@@ -459,6 +523,20 @@ async fn stream_ms(
 
 fn colnames_sqlx<R: sqlx::Row>(row: &R) -> Vec<String> {
     row.columns().iter().map(|c| c.name().to_string()).collect()
+}
+
+async fn describe_columns<'e, DB, E>(executor: E, sql: &str) -> Result<Vec<String>, ConnectError>
+where
+    DB: sqlx::Database,
+    E: Executor<'e, Database = DB>,
+{
+    Ok(executor
+        .describe(sql)
+        .await?
+        .columns()
+        .iter()
+        .map(|column| column.name().to_string())
+        .collect())
 }
 
 /// Cap a preview SELECT at the DB so large tables do not stream unbounded rows.
@@ -572,12 +650,26 @@ fn has_internal_semicolon(sql: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn temp_path(label: &str, extension: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "bintl-{label}-{}-{nonce}.{extension}",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn sql_normalize_and_kind() {
         assert_eq!(normalize_sql("  SELECT 1;  ").unwrap(), "SELECT 1");
         assert!(normalize_sql("").is_err());
         assert!(normalize_sql("SELECT 1; DELETE FROM t").is_err());
-        assert_eq!(sql_kind("/* x */ -- y\nWITH a AS (SELECT 1) SELECT * FROM a"), SqlKind::Rows);
+        assert_eq!(
+            sql_kind("/* x */ -- y\nWITH a AS (SELECT 1) SELECT * FROM a"),
+            SqlKind::Rows
+        );
         assert_eq!(sql_kind("UPDATE t SET a = 1"), SqlKind::Exec);
         assert!(normalize_sql("SELECT ';'").is_ok());
     }
@@ -591,5 +683,55 @@ mod tests {
         assert_eq!(show, "SHOW search_path");
         let ms = apply_preview_limit("mssql", "SELECT * FROM dbo.t", 50);
         assert_eq!(ms, "SELECT * FROM dbo.t");
+    }
+
+    #[tokio::test]
+    async fn empty_query_keeps_preview_columns_and_csv_header() {
+        let database = temp_path("empty-query", "sqlite");
+        let output = temp_path("empty-query", "csv");
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&database)
+            .create_if_missing(true);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE items (id INTEGER, name TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let connection = LiveConnection {
+            id: "test".into(),
+            name: "test".into(),
+            driver: "sqlite".into(),
+            host: String::new(),
+            port: 0,
+            database: database.to_string_lossy().into_owned(),
+            username: String::new(),
+            password: String::new(),
+            ssl: false,
+        };
+        let sql = "SELECT id, name FROM items WHERE 1 = 0";
+        let preview = run_sql(&connection, sql, 50, None).await.unwrap();
+        assert_eq!(preview.columns, ["id", "name"]);
+        assert!(preview.rows.is_empty());
+
+        let options = ExtractOptions {
+            delimiter: b',',
+            header: true,
+            quote: b'"',
+            add_sequence: false,
+        };
+        let rows = extract_query(&connection, sql, &output, &options, None)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+        assert_eq!(std::fs::read_to_string(&output).unwrap(), "id,name\n");
+
+        std::fs::remove_file(database).unwrap();
+        std::fs::remove_file(output).unwrap();
     }
 }

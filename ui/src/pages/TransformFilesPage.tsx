@@ -15,7 +15,7 @@ import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtWhen } from "@/lib/format";
-import { showConfirm, toastDeleteError, toastError } from "@/lib/notifications";
+import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { datasetApi } from "@/services/transform/datasetApi";
 import type { Dataset, FramePreview } from "@/types/dataset";
 
@@ -78,6 +78,7 @@ export function TransformFilesPage() {
       }
       setSelected([]);
       await refresh();
+      toastSuccess(messages.transformFiles.deleteDone);
     } catch (err) {
       toastDeleteError(messages.errors.deleteDataset, messages.errors.deleteBlocked, err);
       await refresh();

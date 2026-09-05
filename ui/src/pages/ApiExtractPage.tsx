@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { BookmarkPlus, Eye, FileDown, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { BookmarkPlus, Braces, Clock3, Code2, Eye, FileDown, FileJson2, Globe2, ListFilter, Plus, RotateCcw, Settings2, Trash2 } from "lucide-react";
 import {
   columnWidthsForContent,
   DataGrid,
@@ -19,6 +19,7 @@ import { useConnections } from "@/hooks/connections/useConnections";
 import { isExtractActive } from "@/hooks/extract/useExtracts";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { extractSourceType, nextSequencedChipName } from "@/lib/chipSequence";
 import { DELIMITER_VALUES } from "@/lib/delimiter";
 import { layout } from "@/lib/layout";
 import { toastError, toastSuccess } from "@/lib/notifications";
@@ -52,9 +53,9 @@ function KvEditor({
   addLabel: string;
 }) {
   return (
-    <div className="space-y-2">
+    <div className="space-y-2.5">
       {rows.map((row, index) => (
-        <div key={index} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_auto] gap-2">
+        <div key={index} className="group grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_auto] items-center gap-2">
           <input
             className="field-control technical"
             value={row.name}
@@ -77,7 +78,7 @@ function KvEditor({
           />
           <button
             type="button"
-            className="inline-flex size-9 items-center justify-center rounded-lg text-text-tertiary hover:bg-subtle hover:text-text"
+            className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent text-text-tertiary opacity-70 transition hover:border-border hover:bg-raised hover:text-danger group-hover:opacity-100"
             onClick={() => onChange(rows.filter((_, i) => i !== index))}
             aria-label="remove"
           >
@@ -85,7 +86,7 @@ function KvEditor({
           </button>
         </div>
       ))}
-      <Button type="button" variant="secondary" className="gap-1.5" onClick={() => onChange([...rows, emptyKv()])}>
+      <Button type="button" variant="secondary" className="mt-1 gap-1.5 border-dashed" onClick={() => onChange([...rows, emptyKv()])}>
         <Plus className="size-3.5" />
         {addLabel}
       </Button>
@@ -97,17 +98,25 @@ function RequestSection({
   title,
   children,
   className,
+  icon,
+  meta,
 }: {
   title: string;
   children: ReactNode;
   className?: string;
+  icon?: ReactNode;
+  meta?: ReactNode;
 }) {
   return (
-    <section className={cn("overflow-hidden rounded-xl border border-border bg-subtle/40", className)}>
-      <div className="border-b border-border bg-raised px-4 py-3">
-        <h2 className="text-sm font-bold text-text">{title}</h2>
+    <section className={cn("overflow-hidden rounded-xl border border-border/80 bg-surface shadow-[0_1px_2px_rgba(15,23,42,0.03)]", className)}>
+      <div className="flex min-h-12 items-center justify-between gap-3 border-b border-border/70 bg-raised/70 px-4 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          {icon ? <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-accent-subtle text-accent">{icon}</span> : null}
+          <h2 className="truncate text-[13px] font-semibold text-text">{title}</h2>
+        </div>
+        {meta ? <div className="shrink-0 text-[11px] text-text-tertiary">{meta}</div> : null}
       </div>
-      <div className="p-4">{children}</div>
+      <div className="p-4 md:p-5">{children}</div>
     </section>
   );
 }
@@ -321,6 +330,21 @@ export function ApiExtractPage() {
     setRegisterName("");
   }
 
+  async function openRegister() {
+    try {
+      const response = await chipApi.listCatalog();
+      setRegisterName(nextSequencedChipName(
+        response.chips,
+        messages.apiExtract.defaultChipName,
+        (chip) => chip.kind === "extract" && extractSourceType(chip) === "http",
+      ));
+    } catch (err) {
+      setRegisterName(messages.apiExtract.defaultChipName(1));
+      toastError(messages.workspace.loadError, err);
+    }
+    setIsRegisterOpen(true);
+  }
+
   const extractBusy = extracting || (extractRow ? isExtractActive(extractRow.status) : false);
   const canRun = Boolean(browseId);
   const canExtract = canRun && Boolean(preview) && !extractBusy;
@@ -362,10 +386,7 @@ export function ApiExtractPage() {
               type="button"
               className="gap-1.5"
               disabled={!canRun}
-              onClick={() => {
-                setRegisterName(path.trim().replace(/^\//, "").replace(/\//g, "_") || messages.workspace.untitledExtract(1));
-                setIsRegisterOpen(true);
-              }}
+              onClick={() => void openRegister()}
             >
               <BookmarkPlus className="size-3.5" />
               {messages.query.registerTask}
@@ -420,9 +441,14 @@ export function ApiExtractPage() {
               title={messages.apiExtract.detailTitle}
               meta={browseId ? httpConnections.find((connection) => connection.id === browseId)?.name : undefined}
             />
-            <div className="scroll-pane min-h-0 flex-1 overflow-y-auto p-4">
+            <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-subtle/25 p-4 md:p-5">
               <div className="mx-auto flex max-w-5xl flex-col gap-4">
-                <RequestSection title={messages.apiExtract.apiInfo}>
+                <RequestSection
+                  title={messages.apiExtract.apiInfo}
+                  icon={<Globe2 className="size-3.5" aria-hidden="true" />}
+                  meta={<span className="rounded-md border border-border bg-surface px-2 py-1 font-mono font-semibold text-text-secondary">{requestType === "graphql" ? "GraphQL · POST" : `${requestType.toUpperCase()} · ${method}`}</span>}
+                  className="ring-1 ring-accent/5"
+                >
                   <div className="grid gap-3 md:grid-cols-[7rem_7rem_minmax(0,1fr)]">
                     <FormField label={messages.apiExtract.requestType}>
                       <Select
@@ -467,8 +493,8 @@ export function ApiExtractPage() {
                   </div>
                 </RequestSection>
 
-                <section className="grid gap-4 lg:grid-cols-2">
-                  <RequestSection title={messages.apiExtract.queryParams}>
+                <section className="grid items-start gap-4 lg:grid-cols-2">
+                  <RequestSection title={messages.apiExtract.queryParams} icon={<ListFilter className="size-3.5" aria-hidden="true" />} meta={<span>{compactKv(query).length}</span>}>
                     <KvEditor
                       rows={query}
                       onChange={setQuery}
@@ -477,7 +503,7 @@ export function ApiExtractPage() {
                       addLabel={messages.apiExtract.addParam}
                     />
                   </RequestSection>
-                  <RequestSection title={messages.apiExtract.headers}>
+                  <RequestSection title={messages.apiExtract.headers} icon={<Code2 className="size-3.5" aria-hidden="true" />} meta={<span>{compactKv(headers).length}</span>}>
                     <KvEditor
                       rows={headers}
                       onChange={setHeaders}
@@ -488,13 +514,16 @@ export function ApiExtractPage() {
                   </RequestSection>
                 </section>
 
-                <RequestSection title={messages.apiExtract.requestOptions}>
-                  <FormField label={messages.apiExtract.timeout}>
-                    <input className="field-control technical max-w-48" type="number" min="1000" max="300000" value={timeoutMs} onChange={(event) => setTimeoutMs(Number(event.target.value) || 60_000)} />
-                  </FormField>
+                <RequestSection title={messages.apiExtract.requestOptions} icon={<Settings2 className="size-3.5" aria-hidden="true" />}>
+                  <div className="flex max-w-sm items-end gap-3 rounded-lg border border-border/70 bg-raised/50 p-3">
+                    <span className="mb-0.5 grid size-9 shrink-0 place-items-center rounded-lg bg-surface text-text-tertiary shadow-sm"><Clock3 className="size-4" aria-hidden="true" /></span>
+                    <FormField label={messages.apiExtract.timeout}>
+                      <input className="field-control technical" type="number" min="1000" max="300000" value={timeoutMs} onChange={(event) => setTimeoutMs(Number(event.target.value) || 60_000)} />
+                    </FormField>
+                  </div>
                 </RequestSection>
                 {requestType === "graphql" ? (
-                  <RequestSection title={messages.apiExtract.graphql}>
+                  <RequestSection title={messages.apiExtract.graphql} icon={<Braces className="size-3.5" aria-hidden="true" />}>
                     <div className="grid gap-4 lg:grid-cols-2">
                       <FormField label={messages.apiExtract.graphqlQuery}>
                         <textarea className="field-control technical min-h-[12rem] font-mono text-[12px]" value={graphqlQuery} placeholder="query Users($first: Int!) { users(first: $first) { nodes { id name } } }" onChange={(event) => setGraphqlQuery(event.target.value)} />
@@ -510,7 +539,7 @@ export function ApiExtractPage() {
                     </div>
                   </RequestSection>
                 ) : method === "GET" || method === "HEAD" ? null : (
-                  <RequestSection title={messages.apiExtract.requestBody}>
+                  <RequestSection title={messages.apiExtract.requestBody} icon={<FileJson2 className="size-3.5" aria-hidden="true" />}>
                     <FormField label={messages.apiExtract.bodyType}>
                       <Select value={bodyMode} options={[{ value: "json", label: "JSON" }, { value: "raw", label: messages.apiExtract.rawText }, { value: "urlencoded", label: "x-www-form-urlencoded" }, { value: "multipart", label: "multipart/form-data" }]} onChange={(value) => setBodyMode(value as typeof bodyMode)} />
                     </FormField>

@@ -10,7 +10,7 @@ export function isDraftChipId(id: string): boolean {
 }
 
 export interface ChipBinding {
-  ref_kind: "extract_definition" | "transform";
+  ref_kind: "extract_definition" | "transform" | "load_definition";
   ref_id: string;
 }
 
@@ -94,6 +94,7 @@ export interface RegisterChipRequest {
   run_after?: boolean;
   extract?: ChipConfig;
   transform_id?: string;
+  load_definition_id?: string;
 }
 
 export interface RunChipRequest {
@@ -113,6 +114,7 @@ export interface ChipInputSlotResponse {
   dataset_id?: string;
   source_chip_id?: string;
   source_chip_name?: string;
+  source_chip_kind?: ChipKind;
   status?: string;
   columns?: { name: string; dtype?: string; type?: string }[];
   dataset?: Record<string, unknown>;

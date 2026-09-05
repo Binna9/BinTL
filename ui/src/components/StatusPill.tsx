@@ -9,7 +9,7 @@ const tone: Record<string, string> = {
   canceled: "text-text-tertiary before:bg-text-tertiary",
 };
 
-export function StatusPill({ value }: { value: string }) {
+export function StatusPill({ value, label }: { value: string; label?: string }) {
   const { messages } = useLanguage();
   const labels: Record<string, string> = messages.status;
   return (
@@ -19,7 +19,7 @@ export function StatusPill({ value }: { value: string }) {
         tone[value] ?? "text-text-secondary before:bg-text-tertiary",
       )}
     >
-      {labels[value] ?? value}
+      {label ?? labels[value] ?? value}
     </span>
   );
 }

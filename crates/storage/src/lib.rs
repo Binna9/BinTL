@@ -8,6 +8,7 @@ mod extract_repo;
 mod file_repo;
 mod identity;
 mod job_repo;
+mod load_repo;
 mod models;
 mod password;
 mod process_log;

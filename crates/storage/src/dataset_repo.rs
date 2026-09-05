@@ -154,11 +154,14 @@ impl Store {
                 "linked chip run is not running".into(),
             ));
         }
-        let chip_name = self
-            .get_chip(&run.chip_id)
-            .await?
-            .map(|chip| chip.name)
-            .unwrap_or_else(|| "result".into());
+        let chip_name = match self.get_transform_for_chip(&run.chip_id).await? {
+            Some(transform) => transform.name,
+            None => self
+                .get_chip(&run.chip_id)
+                .await?
+                .map(|chip| chip.name)
+                .unwrap_or_else(|| "result".into()),
+        };
         let display_name = chip_slot::display_filename(&chip_name, "transform", ",");
         let size = tokio::fs::metadata(self.resolve(stored_path)).await?.len() as i64;
         let now = now_rfc3339();

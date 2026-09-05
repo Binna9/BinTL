@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Braces,
@@ -8,8 +8,10 @@ import {
   Database,
   DatabaseZap,
   FileSpreadsheet,
+  FileOutput,
   FileStack,
   Layers3,
+  Plus,
   Search,
   Upload,
   Workflow,
@@ -23,7 +25,7 @@ import { selectableClass } from "@/lib/selectable";
 import type { Chip } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
-export type ChipPlaceKind = "extract" | "transform";
+export type ChipPlaceKind = "extract" | "transform" | "load";
 
 export type TransformPlaceDraft = {
   name: string;
@@ -75,11 +77,11 @@ function CatalogChipPanel({
     if (!needle) return options;
     return options.filter((chip) => chip.name.toLowerCase().includes(needle));
   }, [options, query]);
-  const RowIcon = kind === "extract" ? DatabaseZap : Workflow;
-  const iconClassName = kind === "extract" ? "text-accent" : "text-success";
+  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : FileOutput;
+  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : "text-warning";
   const emptyHint = kind === "extract"
     ? messages.workspace.emptyCatalogExtract
-    : messages.workspace.emptyCatalogTransform;
+    : kind === "transform" ? messages.workspace.emptyCatalogTransform : messages.workspace.emptyCatalogLoad;
 
   if (options.length === 0) {
     return (
@@ -700,13 +702,29 @@ function TransformNewPanel({
   );
 }
 
+function LoadCatalogPanel({ chips, canvasChipIds, messages, busy, onClose, onPlace, onRegister, dragHandleRef }: {
+  chips: Chip[]; canvasChipIds: Set<string>; messages: Messages; busy?: boolean;
+  onClose: () => void; onPlace: (ids: string[]) => void; onRegister: () => void;
+  dragHandleRef: RefObject<HTMLDivElement | null>;
+}) {
+  const [selected, setSelected] = useState<string[]>([]);
+  return <div className="flex min-h-0 flex-1 flex-col">
+    <div ref={dragHandleRef} className="chip-place-head cursor-move"><div><p className="chip-place-eyebrow">{messages.workspace.load}</p><h2 className="chip-place-title">{messages.workspace.placeLoadTitle}</h2></div></div>
+    <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+      <CatalogChipPanel kind="load" chips={chips} canvasChipIds={canvasChipIds} messages={messages} selectedIds={selected} onSelectedIdsChange={setSelected} />
+      <Button variant="secondary" onClick={onRegister}><Plus className="size-3.5" />{messages.workspace.registerLoadFirst}</Button>
+    </div>
+    <PlaceDialogFooter cancelLabel={messages.common.cancel} submitLabel={messages.workspace.placeSelected} canSubmit={selected.length > 0} busy={busy} onCancel={onClose} onSubmit={() => onPlace(selected)} />
+  </div>;
+}
+
 export function ChipPlaceDialog({
   open,
   kind,
   catalogChips,
   datasets,
   canvasChipIds,
-  defaultTransformIndex,
+  defaultTransformName,
   messages,
   busy,
   onClose,
@@ -718,7 +736,7 @@ export function ChipPlaceDialog({
   catalogChips: Chip[];
   datasets: Dataset[];
   canvasChipIds: Set<string>;
-  defaultTransformIndex: number;
+  defaultTransformName: string;
   messages: Messages;
   busy?: boolean;
   onClose: () => void;
@@ -729,7 +747,7 @@ export function ChipPlaceDialog({
   const dragHandleRef = useRef<HTMLDivElement>(null);
   const dialogTitle = kind === "extract"
     ? messages.workspace.placeExtractTitle
-    : messages.workspace.placeTransformTitle;
+    : kind === "transform" ? messages.workspace.placeTransformTitle : messages.workspace.placeLoadTitle;
 
   function goDbRegister() {
     onClose();
@@ -767,10 +785,10 @@ export function ChipPlaceDialog({
           canvasChipIds={canvasChipIds}
           dragHandleRef={dragHandleRef}
         />
-      ) : (
+      ) : kind === "transform" ? (
         <TransformNewPanel
           datasets={datasets}
-          defaultName={messages.workspace.defaultTransformChipName(defaultTransformIndex)}
+          defaultName={defaultTransformName}
           messages={messages}
           busy={busy}
           onClose={onClose}
@@ -779,6 +797,17 @@ export function ChipPlaceDialog({
           onPlaceCatalog={onPlaceCatalog}
           catalogChips={catalogChips}
           canvasChipIds={canvasChipIds}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : (
+        <LoadCatalogPanel
+          chips={catalogChips}
+          canvasChipIds={canvasChipIds}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceCatalog}
+          onRegister={() => { onClose(); navigate("/load"); }}
           dragHandleRef={dragHandleRef}
         />
       )}

@@ -11,7 +11,7 @@ import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { fmtWhen } from "@/lib/format";
-import { showConfirm, toastError } from "@/lib/notifications";
+import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { chipApi } from "@/services/chips/chipApi";
 import type { Chip, ChipKind } from "@/types/chip";
 
@@ -99,6 +99,7 @@ export function ChipsPage() {
       if (detail && selectedSet.has(detail.id)) setDetail(null);
       setSelected([]);
       setChips((current) => current.filter((item) => !selectedSet.has(item.id)));
+      toastSuccess(messages.chips.deleteDone);
     } catch (error) {
       toastError(messages.workspace.deleteChipError, error);
       await refresh();

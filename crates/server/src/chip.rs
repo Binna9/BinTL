@@ -3,15 +3,15 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use connectors::{
-    normalize_sql, parse_delimiter, parse_http_spec, parse_ident, parse_table, sql_kind, HttpKv,
+    load_table, normalize_sql, parse_delimiter, parse_http_spec, parse_ident, parse_table, sql_kind, HttpKv,
     HttpRequestSpec, SqlKind,
 };
-use engine::TransformSpec;
+use engine::{Engine, PolarsEngine, TransformSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
-use storage::{ChipRow, ChipRunRow, RegisterExtractChip, RegisterTransformChip, Store};
+use storage::{ChipRow, ChipRunRow, RegisterExtractChip, RegisterLoadChip, RegisterTransformChip, Store};
 use tokio::sync::{mpsc, Semaphore};
 
 use crate::access::{self, CurrentUser};
@@ -101,6 +101,8 @@ struct RegisterChipBody {
     extract: Option<Value>,
     #[serde(default)]
     transform_id: Option<String>,
+    #[serde(default)]
+    load_definition_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,7 +281,17 @@ async fn register_chip(
                 })
                 .await?
         }
-        _ => return Err(AppError::bad("chip kind must be extract or transform")),
+        "load" => {
+            let load_definition_id = body.load_definition_id.as_deref().map(str::trim)
+                .filter(|value| !value.is_empty()).ok_or_else(|| AppError::bad("load_definition_id required"))?;
+            crate::load::require_load(&state.store, &user, load_definition_id).await?;
+            state.store.register_load_chip(&RegisterLoadChip {
+                name: name.to_string(), owner_user_id: user.id().to_string(),
+                workspace_id: body.workspace_id.clone(), load_definition_id: load_definition_id.to_string(),
+                place_on_workspace: body.place_on_workspace,
+            }).await?
+        }
+        _ => return Err(AppError::bad("chip kind must be extract, transform, or load")),
     };
     let chip_json = chip_json(&state.store, &chip).await?;
     let should_run = body.run_after.unwrap_or(body.place_on_workspace);
@@ -428,17 +440,35 @@ async fn queue_chip_run(
         "transform" => {
             queue_transform_chip_run(state, user, chip, workspace_id, requested_input).await
         }
+        "load" => queue_load_chip_run(state, user, chip, workspace_id, requested_input).await,
         _ => {
             access::require_workspace(&state.store, user, workspace_id).await?;
             if chip.active == 0 {
                 return Err(AppError::conflict("chip is inactive"));
             }
-            if chip.kind == "load" {
-                return Err(AppError::bad("load chips are not supported"));
-            }
             Err(AppError::bad("unsupported chip kind"))
         }
     }
+}
+
+async fn queue_load_chip_run(
+    state: &AppState, user: &CurrentUser, chip: &ChipRow, workspace_id: &str,
+    requested_input: Option<String>,
+) -> Result<ChipRunRow, AppError> {
+    access::require_workspace(&state.store, user, workspace_id).await?;
+    if chip.active == 0 { return Err(AppError::conflict("chip is inactive")); }
+    let config_raw = state.store.resolve_chip_config_json(chip).await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let value: Value = serde_json::from_str(&config_raw).map_err(|e| AppError::bad(e.to_string()))?;
+    reject_forbidden_config(&value)?;
+    crate::load::validate_load_config(&state.store, value).await?;
+    let dataset_id = crate::planned_input::resolve_materialized_transform_input(
+        state, user, workspace_id, &chip.id, requested_input, None,
+    ).await?;
+    let dataset = state.store.get_dataset(&dataset_id).await?
+        .ok_or_else(|| AppError::not_found("input dataset not found"))?;
+    if !state.store.resolve(&dataset.stored_path).is_file() { return Err(AppError::not_found("input dataset file missing")); }
+    enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&dataset_id)).await
 }
 
 async fn queue_extract_chip_run(
@@ -635,6 +665,15 @@ async fn get_run_logs(
             .map(|log| format!("{}  {:<5}  {}", log.ts, log.level, log.message))
             .collect::<Vec<_>>()
             .join("\n")
+    } else if run.kind == "load" {
+        match state.store.get_load_result(&run.id).await? {
+            Some(result) => format!(
+                "load succeeded\ndestination: {}\nmode: {}\nloaded rows: {}\nrejected rows: {}\nduration: {} ms\nvalidation: {}",
+                result.destination, result.write_mode, result.loaded_rows, result.rejected_rows,
+                result.duration_ms, result.validation_status,
+            ),
+            None => run.error_message.unwrap_or_default(),
+        }
     } else {
         String::new()
     };
@@ -743,7 +782,16 @@ async fn chip_output_json(
         .get("delimiter")
         .and_then(Value::as_str)
         .unwrap_or(",");
-    let filename = storage::chip_slot::display_filename(&row.name, &row.kind, delimiter);
+    let output_name = if row.kind == "transform" {
+        store
+            .get_transform_for_chip(&row.id)
+            .await?
+            .map(|transform| transform.name)
+            .unwrap_or_else(|| row.name.clone())
+    } else {
+        row.name.clone()
+    };
+    let filename = storage::chip_slot::display_filename(&output_name, &row.kind, delimiter);
     if let Some(dataset_id) = store
         .latest_chip_output_for_workspace(workspace_id, &row.id)
         .await?
@@ -754,7 +802,7 @@ async fn chip_output_json(
             .ok_or_else(|| AppError::not_found("dataset not found"))?;
         let available = store.resolve(&dataset.stored_path).is_file();
         return Ok(json!({
-            "filename": dataset.filename,
+            "filename": if row.kind == "transform" { filename } else { dataset.filename },
             "available": available,
             "dataset_id": dataset.id,
         }));
@@ -800,7 +848,8 @@ pub(crate) async fn validate_config(
         "transform" => validate_transform_config(store, workspace_id, config)
             .await
             .and_then(normalized_transform_config),
-        "load" => Err(AppError::bad("load chips are not supported")),
+        "load" => crate::load::validate_load_config(store, config).await
+            .and_then(|value| serde_json::to_value(value).map_err(|e| AppError::bad(e.to_string()))),
         _ => Err(AppError::bad(
             "chip kind must be extract, transform, or load",
         )),
@@ -921,8 +970,8 @@ async fn validate_transform_config(
     let spec_json =
         serde_json::to_string(&config.spec).map_err(|error| AppError::bad(error.to_string()))?;
     let spec = TransformSpec::parse_json(&spec_json)?;
-    if spec.version != 2 {
-        return Err(AppError::bad("transform spec must be version 2"));
+    if spec.version != 2 && spec.version != 3 {
+        return Err(AppError::bad("transform spec must be version 2 or 3"));
     }
     let input_dataset_id = config
         .input_dataset_id
@@ -1014,9 +1063,77 @@ async fn run_one(store: &Store, job_tx: &mpsc::Sender<String>, run_id: &str) -> 
     match run.kind.as_str() {
         "extract" => run_extract(store, &run).await,
         "transform" => run_transform(store, job_tx, &run).await,
-        "load" => Err("load chips are not supported".into()),
+        "load" => run_load(store, &run).await,
         kind => Err(format!("unsupported chip kind {kind}")),
     }
+}
+
+async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {
+    let config: crate::load::LoadConfig = serde_json::from_str(&run.config_snapshot_json)
+        .map_err(|error| format!("invalid load config snapshot: {error}"))?;
+    let dataset_id = run.input_dataset_id.as_deref().ok_or_else(|| "load input_dataset_id missing".to_string())?;
+    let dataset = store.get_dataset(dataset_id).await.map_err(|e| e.to_string())?
+        .ok_or_else(|| "input dataset not found".to_string())?;
+    let input = store.resolve(&dataset.stored_path);
+    let input_bytes = std::fs::metadata(&input).ok().map(|m| m.len() as i64);
+    let started = std::time::Instant::now();
+
+    let (destination, loaded_rows, artifact_path) = match config.destination {
+        crate::load::LoadDestination::Database { connection_id, table } => {
+            let csv = prepare_load_csv(store, run, &dataset).await?;
+            let live = store.live_connection(&connection_id).await.map_err(|e| e.to_string())?;
+            let loaded = load_table(&live, &table, &csv, &config.write_mode).await.map_err(|e| e.to_string())? as i64;
+            (format!("{}:{}", live.name, table), loaded, None)
+        }
+        crate::load::LoadDestination::File { format, filename } => {
+            let rel = format!("loads/{}/{}/{}", run.workspace_id, run.chip_id, filename);
+            let output = store.resolve(&rel);
+            if let Some(parent) = output.parent() { tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?; }
+            if format == "csv" {
+                let csv = prepare_load_csv(store, run, &dataset).await?;
+                tokio::fs::copy(csv, &output).await.map_err(|e| e.to_string())?;
+            } else if input.extension().and_then(|v| v.to_str()).map(|v| v.eq_ignore_ascii_case("parquet")).unwrap_or(false) {
+                tokio::fs::copy(&input, &output).await.map_err(|e| e.to_string())?;
+            } else {
+                let input = input.clone();
+                let output = output.clone();
+                let delimiter = dataset.delimiter.clone();
+                let header = dataset.has_header.map(|v| v != 0);
+                tokio::task::spawn_blocking(move || PolarsEngine.transform(&input, &output, &TransformSpec::identity().with_read(delimiter, header)))
+                    .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            }
+            (rel.clone(), dataset.row_count.unwrap_or(0), Some(rel))
+        }
+    };
+    store.insert_load_result(&run.id, &destination, &config.write_mode, dataset.row_count, loaded_rows,
+        input_bytes, started.elapsed().as_millis() as i64, artifact_path.as_deref()).await.map_err(|e| e.to_string())?;
+    store.set_load_chip_run_succeeded(&run.id).await.map_err(|e| e.to_string())
+}
+
+async fn prepare_load_csv(store: &Store, run: &ChipRunRow, dataset: &storage::DatasetRow) -> Result<std::path::PathBuf, String> {
+    let input = store.resolve(&dataset.stored_path);
+    let canonical = store.resolve(&format!("staging/load-{}.csv", run.id));
+    if let Some(parent) = canonical.parent() { tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?; }
+    if input.extension().and_then(|v| v.to_str()).map(|v| v.eq_ignore_ascii_case("parquet")).unwrap_or(false) {
+        let source = input.clone();
+        let target = canonical.clone();
+        tokio::task::spawn_blocking(move || PolarsEngine::export_csv(&source, &target))
+            .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    } else if dataset.delimiter.as_deref().unwrap_or(",") == "," && dataset.has_header.unwrap_or(1) != 0 {
+        return Ok(input);
+    } else {
+        let parquet = store.resolve(&format!("staging/load-{}.parquet", run.id));
+        let source = input.clone();
+        let parquet_target = parquet.clone();
+        let delimiter = dataset.delimiter.clone();
+        let header = dataset.has_header.map(|v| v != 0);
+        tokio::task::spawn_blocking(move || PolarsEngine.transform(&source, &parquet_target, &TransformSpec::identity().with_read(delimiter, header)))
+            .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+        let target = canonical.clone();
+        tokio::task::spawn_blocking(move || PolarsEngine::export_csv(&parquet, &target))
+            .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    }
+    Ok(canonical)
 }
 
 async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {

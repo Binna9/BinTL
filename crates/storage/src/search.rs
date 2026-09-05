@@ -485,6 +485,12 @@ impl Store {
                 };
                 Ok(transform.name)
             }
+            "load_definition" => {
+                let Some(definition) = self.get_load_definition(&binding.ref_id).await? else {
+                    return Ok(String::new());
+                };
+                Ok(join_keywords([&definition.name, &definition.destination_type, &definition.spec_json]))
+            }
             _ => Ok(String::new()),
         }
     }

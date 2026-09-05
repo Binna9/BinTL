@@ -92,8 +92,10 @@ Dataset으로 등록되므로 다음 작업의 입력으로 사용할 수 있다
 
 ### Load
 
-종류는 예약되어 있지만 이번 MVP에서는 생성과 실행을 지원하지 않는다. 기존 v1
-job의 적재 경로는 호환용으로만 남는다.
+Dataset을 입력으로 받아 독립 `load_definition`에 저장된 목적지로 적재한다.
+1차 목적지는 DB와 서버 파일이며 DB는 append/replace, 파일은 replace를 지원한다.
+실행 결과는 `load_results`에 행 수, 바이트, 처리 시간과 검증 상태를 남긴다.
+기존 TransformSpec의 dest 경로는 호환용으로만 남는다.
 
 ## API
 
@@ -121,11 +123,11 @@ job의 적재 경로는 호환용으로만 남는다.
 
 ## Flow
 
-저장된 칩을 연결선으로 잇는다. `data` 선이 있으면 Transform 입력은 config의 `input_dataset_id`보다 앞 칩의 최신 성공 산출을 쓴다. 첫 실행은 칩 단위다. 그래프 전체 순차 실행은 이후 범위다.
+저장된 칩을 연결선으로 잇는다. `data` 선이 있으면 Transform 입력은 config의 `input_dataset_id`보다 앞 칩의 최신 성공 산출을 쓴다. 실행 전에는 extract 또는 앞 transform의 예상 출력 스키마를 planned dataset으로 전달하므로 `Extract → Transform 1 → Transform 2 → …` 체인을 미리 구성하고 편집할 수 있다. 캔버스 전체 실행은 data 의존 순서대로 진행한다.
 
 후속 범위:
 
-- 독립 Load 작업과 E→T→L
+- DB별 COPY/Bulk 적재 어댑터와 Upsert
 - 재시도와 취소
 - 수동/주기 스케줄
 - 분기와 병합 DAG

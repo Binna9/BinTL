@@ -68,7 +68,6 @@ export function CombineSetup({
   leftColumns,
   commonJoinKeys,
   onChange,
-  onDisable,
 }: {
   messages: Messages;
   draft: CombineDraft;
@@ -77,7 +76,6 @@ export function CombineSetup({
   leftColumns: DatasetColumn[];
   commonJoinKeys: DatasetColumn[];
   onChange: (draft: CombineDraft) => void;
-  onDisable?: () => void;
 }) {
   const t = messages.transform;
 
@@ -110,11 +108,6 @@ export function CombineSetup({
             <Layers className="size-3.5" aria-hidden="true" />
             {t.combineModeUnion}
           </Button>
-          {onDisable ? (
-            <Button type="button" variant="quiet" onClick={onDisable}>
-              {t.combineDisable}
-            </Button>
-          ) : null}
         </div>
 
         {draft.mode === "join" ? (

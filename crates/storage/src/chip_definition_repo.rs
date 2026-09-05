@@ -128,6 +128,13 @@ impl Store {
                 })
                 .to_string())
             }
+            "load_definition" => {
+                let row = self
+                    .get_load_definition(&binding.ref_id)
+                    .await?
+                    .ok_or_else(|| StorageError::NotFound("load definition not found".into()))?;
+                Ok(row.spec_json)
+            }
             other => Err(StorageError::Invalid(format!(
                 "unknown chip binding kind {other}"
             ))),
@@ -301,6 +308,36 @@ impl Store {
         self.get_chip(&chip_id)
             .await?
             .ok_or_else(|| StorageError::NotFound("chip disappeared after register".into()))
+    }
+
+    pub async fn register_load_chip(
+        &self,
+        input: &RegisterLoadChip,
+    ) -> Result<ChipRow, StorageError> {
+        let name = required_text(&input.name, "chip name")?;
+        let definition = self.get_load_definition(&input.load_definition_id).await?
+            .ok_or_else(|| StorageError::NotFound("load definition not found".into()))?;
+        if definition.owner_user_id != input.owner_user_id {
+            return Err(StorageError::NotFound("load definition not found".into()));
+        }
+        if input.place_on_workspace {
+            self.require_workspace(input.workspace_id.as_deref().filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| StorageError::Invalid("workspace_id required".into()))?).await?;
+        }
+        let chip_id = Uuid::new_v4().to_string();
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO chips (id, owner_user_id, name, kind, config_json, revision, active, created_at, updated_at) VALUES (?, ?, ?, 'load', NULL, 1, 1, ?, ?)")
+            .bind(&chip_id).bind(&input.owner_user_id).bind(name).bind(&now).bind(&now)
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO chip_bindings (chip_id, ref_kind, ref_id) VALUES (?, 'load_definition', ?)")
+            .bind(&chip_id).bind(&input.load_definition_id).execute(&mut *tx).await?;
+        if input.place_on_workspace {
+            sqlx::query("INSERT INTO workspace_chips (workspace_id, chip_id, created_at) VALUES (?, ?, ?) ON CONFLICT(workspace_id, chip_id) DO NOTHING")
+                .bind(input.workspace_id.as_deref()).bind(&chip_id).bind(&now).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        self.get_chip(&chip_id).await?.ok_or_else(|| StorageError::NotFound("chip disappeared after register".into()))
     }
 
     pub async fn insert_chip(

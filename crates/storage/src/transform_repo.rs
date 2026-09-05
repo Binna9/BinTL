@@ -149,6 +149,23 @@ impl Store {
         Ok(row)
     }
 
+    pub async fn get_transform_for_chip(
+        &self,
+        chip_id: &str,
+    ) -> Result<Option<TransformRow>, StorageError> {
+        let row = sqlx::query_as::<_, TransformRow>(
+            "SELECT id, name, dataset_id, spec_json, created_at, updated_at, workspace_id, input_chip_id
+             FROM transforms
+             WHERE input_chip_id = ?
+             ORDER BY updated_at DESC
+             LIMIT 1",
+        )
+        .bind(chip_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     pub async fn delete_transform(&self, id: &str) -> Result<(), StorageError> {
         delete_guard::ensure_transform_deletable(&self.pool, id).await?;
         let deleted = sqlx::query("DELETE FROM transforms WHERE id = ?")

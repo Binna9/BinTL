@@ -1,7 +1,6 @@
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
-import { useNavigate, useParams } from "react-router-dom";
-import { ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FolderOpen, Pencil, Play, Puzzle, RefreshCw, Save, Spline, Workflow, X } from "lucide-react";
+import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Pencil, Pin, Play, Puzzle, RefreshCw, Save, Spline, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -17,8 +16,10 @@ import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { WorkspaceManageDialog } from "@/components/workspace/WorkspaceManageDialog";
+import { WorkspaceTreePicker } from "@/components/workspace/WorkspaceTreePicker";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { nextSequencedChipName } from "@/lib/chipSequence";
 import { layout } from "@/lib/layout";
 import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { datasetApi } from "@/services/transform/datasetApi";
@@ -53,6 +54,7 @@ import {
   normalizeMarquee,
   omitPoint,
   pointerOutsideCanvas,
+  portPoint,
   previewGeometry,
   routeSides,
   asPortSide,
@@ -76,8 +78,25 @@ import {
   WorkspaceLayers,
   WorkspaceMinimap,
 } from "@/components/workspace/WorkspaceCanvasParts";
+
+function canvasWorkspaceId(pathname: string): string | null {
+  const match = pathname.match(/^\/workspace\/([^/]+)(?:\/chips\/[^/]+)?\/?$/);
+  return match?.[1] ?? null;
+}
+
+const PINNED_WORKSPACE_KEY = "bintl.canvas.pinned-workspace";
+
+function storedPinnedWorkspace(): string | null {
+  try {
+    return localStorage.getItem(PINNED_WORKSPACE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function WorkspacePage() {
   const { messages } = useLanguage();
+  const location = useLocation();
   const navigate = useNavigate();
   const { workspaceId, chipId } = useParams<{ workspaceId: string; chipId: string }>();
   const currentWorkspaceRef = useRef(workspaceId);
@@ -86,7 +105,12 @@ export function WorkspacePage() {
   const pendingViewRef = useRef<Point | null>(null);
   const positionsRef = useRef<Record<string, Point>>({});
   const savedRef = useRef<CanvasSnapshot>({ chips: [], positions: {}, edges: [] });
+  const incomingCanvasDraftRef = useRef(
+    (location.state as { canvasDraft?: CanvasSnapshot & { workspaceId: string } } | null)
+      ?.canvasDraft,
+  );
   const savedIdsRef = useRef(new Set<string>());
+  const savedDraftIdMapRef = useRef(new Map<string, string>());
   const confirmingSaveRef = useRef(false);
   const dirtyRef = useRef(false);
   const busyRef = useRef(false);
@@ -138,6 +162,10 @@ export function WorkspacePage() {
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
+  const [pinnedWorkspaceId, setPinnedWorkspaceId] = useState<string | null>(storedPinnedWorkspace);
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(
+    () => !workspaceId && !storedPinnedWorkspace(),
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [canvasView, setCanvasView] = useState({ width: 800, height: 600 });
   const [canvasScroll, setCanvasScroll] = useState({ x: 0, y: 0 });
@@ -155,12 +183,13 @@ export function WorkspacePage() {
     fromSide: PortSide;
     x: number;
     y: number;
+    toId?: string;
   } | null>(null);
   const linkingRef = useRef(linking);
   linkingRef.current = linking;
 
   const [pendingPlace, setPendingPlace] = useState<{
-    kind: "extract" | "transform";
+    kind: "extract" | "transform" | "load";
     point: Point;
   } | null>(null);
   const [chipMenu, setChipMenu] = useState<ChipContextMenuState | null>(null);
@@ -172,6 +201,15 @@ export function WorkspacePage() {
   dirtyRef.current = dirty;
   busyRef.current = busy;
 
+  const navigationBlocker = useBlocker(({ currentLocation, nextLocation }) => {
+    if (!dirtyRef.current) return false;
+    const currentCanvasId = canvasWorkspaceId(currentLocation.pathname);
+    const nextCanvasId = canvasWorkspaceId(nextLocation.pathname);
+    if (currentCanvasId && currentCanvasId === nextCanvasId) return false;
+    return currentLocation.pathname !== nextLocation.pathname
+      || currentLocation.search !== nextLocation.search;
+  });
+
   const selectedWorkspace = workspaces.find((item) => item.id === workspaceId);
   const workspaceFolderPath = folderPathLabel(
     selectedWorkspace?.folder_id,
@@ -179,8 +217,32 @@ export function WorkspacePage() {
     messages.workspace.topLevel,
   );
   const workspaceName = selectedWorkspace?.name ?? messages.workspace.selectWorkspace;
+  const infoInputFileName = infoChip
+    ? chips.find((chip) => chip.id === edges.find(
+        (edge) => edge.kind === "data" && edge.to_chip_id === infoChip.id,
+      )?.from_chip_id)?.output?.filename
+    : undefined;
   const hasActiveRun = runs.some((run) => ACTIVE_STATUSES.has(run.status));
   const canvasWorld = useMemo(() => ({ width: CANVAS_W, height: CANVAS_H }), []);
+
+  useEffect(() => {
+    if (!workspaceId && !pinnedWorkspaceId) setWorkspacePickerOpen(true);
+  }, [pinnedWorkspaceId, workspaceId]);
+
+  function togglePinnedWorkspace() {
+    if (!workspaceId) {
+      setWorkspacePickerOpen(true);
+      return;
+    }
+    if (pinnedWorkspaceId === workspaceId) {
+      localStorage.removeItem(PINNED_WORKSPACE_KEY);
+      setPinnedWorkspaceId(null);
+      setWorkspacePickerOpen(true);
+      return;
+    }
+    localStorage.setItem(PINNED_WORKSPACE_KEY, workspaceId);
+    setPinnedWorkspaceId(workspaceId);
+  }
 
   function rememberSaved(
     nextChips: Chip[],
@@ -189,6 +251,7 @@ export function WorkspacePage() {
   ) {
     savedRef.current = cloneCanvas(nextChips, nextPositions, nextEdges);
     savedIdsRef.current = new Set(nextChips.map((chip) => chip.id));
+    dirtyRef.current = false;
     setDirty(false);
   }
 
@@ -229,8 +292,42 @@ export function WorkspacePage() {
           || original.from_chip_id !== edge.from_chip_id
           || original.to_chip_id !== edge.to_chip_id;
       });
+    dirtyRef.current = dirtyNow;
     setDirty(dirtyNow);
   }
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  useEffect(() => {
+    if (navigationBlocker.state !== "blocked" || confirmingSaveRef.current) return;
+    confirmingSaveRef.current = true;
+    void (async () => {
+      try {
+        const confirmed = await showConfirm(
+          messages.workspace.leaveConfirmTitle,
+          messages.workspace.leaveConfirmMessage,
+          { confirmLabel: messages.common.save },
+        );
+        if (!confirmed) {
+          navigationBlocker.proceed();
+          return;
+        }
+        const saved = await saveCanvas();
+        if (saved) navigationBlocker.proceed();
+        else navigationBlocker.reset();
+      } finally {
+        confirmingSaveRef.current = false;
+      }
+    })();
+  }, [messages, navigationBlocker]);
 
   function dropEdgesLocally(edgeIdsToDrop: string[]) {
     if (edgeIdsToDrop.length === 0) return;
@@ -323,8 +420,15 @@ export function WorkspacePage() {
         setWorkspaces(workspaceResponse.workspaces);
         setFolders(folderResponse.folders);
         setDatasets(datasetResponse.datasets);
-        if (!workspaceId && workspaceResponse.workspaces.length > 0) {
-          navigate(`/workspace/${workspaceResponse.workspaces[0].id}`, { replace: true });
+        if (!workspaceId && pinnedWorkspaceId) {
+          if (workspaceResponse.workspaces.some((item) => item.id === pinnedWorkspaceId)) {
+            setWorkspacePickerOpen(false);
+            navigate(`/workspace/${pinnedWorkspaceId}`, { replace: true });
+          } else {
+            localStorage.removeItem(PINNED_WORKSPACE_KEY);
+            setPinnedWorkspaceId(null);
+            setWorkspacePickerOpen(true);
+          }
         }
       })
       .catch((reason: unknown) => {
@@ -336,7 +440,7 @@ export function WorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [messages, navigate, workspaceId]);
+  }, [messages, navigate, pinnedWorkspaceId, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId) {
@@ -378,6 +482,18 @@ export function WorkspacePage() {
         setSelectedChipIds([]);
         setSelectedEdgeIds([]);
         rememberSaved(chipResponse.chips, nextPositions, nextEdges);
+        const draft = incomingCanvasDraftRef.current;
+        if (draft?.workspaceId === workspaceId) {
+          incomingCanvasDraftRef.current = undefined;
+          const restored = cloneCanvas(draft.chips, draft.positions, draft.edges);
+          setChips(restored.chips);
+          chipsRef.current = restored.chips;
+          setEdges(restored.edges);
+          setPositions(restored.positions);
+          positionsRef.current = restored.positions;
+          markDirty(restored.chips, restored.positions, restored.edges);
+          navigate(`/workspace/${workspaceId}`, { replace: true });
+        }
       })
       .catch((reason: unknown) => {
         if (!cancelled) toastError(messages.workspace.loadError, reason);
@@ -462,17 +578,29 @@ export function WorkspacePage() {
 
   function openTransformEditor(chip: Chip) {
     if (chip.kind !== "transform") return;
-    if (isDraftChipId(chip.id)) {
-      toastError(messages.workspace.saveFirst);
-      return;
-    }
+    if (!workspaceId || currentWorkspaceRef.current !== workspaceId) return;
     void (async () => {
-      if (dirtyRef.current) {
+      const originalChipId = chip.id;
+      if (dirtyRef.current || isDraftChipId(originalChipId)) {
+        const confirmed = await showConfirm(
+          messages.workspace.saveConfirmTitle,
+          messages.workspace.saveConfirmMessage,
+        );
+        if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
         const saved = await saveCanvas();
-        if (!saved) return;
+        if (!saved || currentWorkspaceRef.current !== workspaceId) return;
       }
-      if (!workspaceId || currentWorkspaceRef.current !== workspaceId) return;
-      navigate(transformEditorPath(chip));
+      const savedChipId = savedDraftIdMapRef.current.get(originalChipId) ?? originalChipId;
+      const currentChip = chipsRef.current.find((item) => item.id === savedChipId) ?? chip;
+      if (isDraftChipId(currentChip.id)) return;
+      const snapshot = cloneCanvas(
+        chipsRef.current,
+        savedRef.current.positions,
+        savedRef.current.edges,
+      );
+      navigate(transformEditorPath(currentChip), {
+        state: { canvasDraft: { workspaceId, ...snapshot } },
+      });
     })();
   }
 
@@ -504,7 +632,7 @@ export function WorkspacePage() {
       toastError(messages.workspace.runCycleError);
       return;
     }
-    const runnable = order.filter((chip) => chip.kind !== "load");
+    const runnable = order;
     if (runnable.length === 0) return;
     setBusy(true);
     try {
@@ -531,15 +659,11 @@ export function WorkspacePage() {
       toastError(messages.workspace.saveFirst);
       return;
     }
-    if (chip.kind === "load") {
-      toastError(messages.workspace.loadUnavailable);
-      return;
-    }
     setBusy(true);
     try {
       await chipApi.run(chip.id, { workspace_id: workspaceId });
       await waitForChipRun(chip.id);
-      toastSuccess(messages.workspace.runQueued);
+      toastSuccess(messages.workspace.runChipCompleted(chip.name));
     } catch (reason) {
       toastError(messages.workspace.runChipError, reason);
     } finally {
@@ -646,7 +770,7 @@ export function WorkspacePage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [workspaceId, chips, edges]);
 
-  function placeTool(toolKind: "extract" | "transform", point: Point) {
+  function placeTool(toolKind: "extract" | "transform" | "load", point: Point) {
     if (!workspaceId) return;
     setPendingPlace({ kind: toolKind, point });
   }
@@ -720,52 +844,17 @@ export function WorkspacePage() {
       return;
     }
 
-    void (async () => {
-      try {
-        if (dirtyRef.current) {
-          const saved = await saveCanvas();
-          if (!saved) return;
-        }
-        if (currentWorkspaceRef.current !== workspaceId) return;
-        setBusy(true);
-        let created: Chip;
-        try {
-          created = await chipApi.create(workspaceId, {
-            name,
-            kind: "transform",
-            config: {
-              spec: { version: 2, sink: "parquet", steps: [] },
-              input_dataset_id: inputDatasetId,
-            },
-          });
-          if (currentWorkspaceRef.current !== workspaceId) return;
-          flushSync(() => {
-            const nextPoint = clampPoint(point);
-            const nextPositions = { ...positionsRef.current, [created.id]: nextPoint };
-            const nextChips = chipsRef.current.some((chip) => chip.id === created.id)
-              ? chipsRef.current
-              : [created, ...chipsRef.current];
-            positionsRef.current = nextPositions;
-            chipsRef.current = nextChips;
-            setChips(nextChips);
-            setPositions(nextPositions);
-            markDirty(nextChips, nextPositions, edges);
-            setSelectedChipIds([created.id]);
-            setSelectedEdgeIds([]);
-            setPendingPlace(null);
-          });
-        } finally {
-          if (currentWorkspaceRef.current === workspaceId) setBusy(false);
-        }
-        const saved = await saveCanvas();
-        if (!saved || currentWorkspaceRef.current !== workspaceId) return;
-        navigate(transformEditorPath(created));
-      } catch (reason) {
-        if (currentWorkspaceRef.current === workspaceId) {
-          toastError(messages.workspace.saveChipError, reason);
-        }
-      }
-    })();
+    const draftPoint = clampPoint(point);
+    const params = new URLSearchParams({
+      workspace: workspaceId,
+      new_chip: "1",
+      dataset: inputDatasetId,
+      chip_name: name,
+      x: String(Math.round(draftPoint.x)),
+      y: String(Math.round(draftPoint.y)),
+    });
+    setPendingPlace(null);
+    navigate(`/transform?${params.toString()}`);
   }
 
   function dropChipsLocally(chipIdsToDrop: string[]) {
@@ -913,6 +1002,7 @@ export function WorkspacePage() {
       const currentChips = chipsRef.current;
       const draftChips = currentChips.filter((chip) => isDraftChipId(chip.id));
       const idMap = new Map<string, string>();
+      savedDraftIdMapRef.current = idMap;
       let chipsToSave = [...currentChips];
       let positionsToSave = { ...positionsRef.current };
       let edgesToSave = [...edges];
@@ -1021,17 +1111,11 @@ export function WorkspacePage() {
   async function requestOpenWorkspace(id: string) {
     if (id && id === workspaceId) {
       setManageOpen(false);
+      setWorkspacePickerOpen(false);
       return;
     }
-    if (dirtyRef.current) {
-      const confirmed = await showConfirm(
-        messages.workspace.switchConfirmTitle,
-        messages.workspace.switchConfirmMessage,
-        { tone: "danger", confirmLabel: messages.workspace.switchConfirmAction },
-      );
-      if (!confirmed) return;
-    }
     setManageOpen(false);
+    setWorkspacePickerOpen(false);
     if (id) navigate(`/workspace/${id}`);
     else navigate("/workspace");
   }
@@ -1105,7 +1189,7 @@ export function WorkspacePage() {
   };
   resetCanvasRef.current = resetCanvas;
 
-  function onToolDragStart(kindValue: "extract" | "transform", event: DragEvent<HTMLButtonElement>) {
+  function onToolDragStart(kindValue: "extract" | "transform" | "load", event: DragEvent<HTMLButtonElement>) {
     event.dataTransfer.setData(TOOL_KIND, kindValue);
     event.dataTransfer.effectAllowed = "copy";
     const ghost = document.createElement("div");
@@ -1130,7 +1214,7 @@ export function WorkspacePage() {
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
     const point = { x: grab.x - NODE_W / 2, y: grab.y - NODE_H / 2 };
     const toolKind = event.dataTransfer.getData(TOOL_KIND);
-    if (toolKind !== "extract" && toolKind !== "transform") return;
+    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load") return;
     placeTool(toolKind, point);
   }
 
@@ -1245,9 +1329,44 @@ export function WorkspacePage() {
     if (!canvas) return;
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
     const kindValue = edgeTool;
+    const next = { fromId: chip.id, kind: kindValue, fromSide: side, x: grab.x, y: grab.y };
     setSelectedEdgeIds([]);
-    setLinking({ fromId: chip.id, kind: kindValue, fromSide: side, x: grab.x, y: grab.y });
+    // React state may not render before a quick pointerup. Keep the gesture ref
+    // synchronous so fast drags cannot lose their source chip.
+    linkingRef.current = next;
+    setLinking(next);
     event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function clearLinking() {
+    linkingRef.current = null;
+    setLinking(null);
+  }
+
+  function linkTargetAt(clientX: number, clientY: number, fromId: string): string | undefined {
+    for (const element of document.elementsFromPoint(clientX, clientY)) {
+      const host = element.closest("[data-chip-id]");
+      if (host instanceof HTMLElement && host.dataset.chipId && host.dataset.chipId !== fromId) {
+        return host.dataset.chipId;
+      }
+    }
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const point = canvasPoint(canvas, clientX, clientY);
+    const snap = 26;
+    let nearest: { id: string; distance: number } | undefined;
+    for (const chip of chipsRef.current) {
+      if (chip.id === fromId) continue;
+      const position = positionsRef.current[chip.id];
+      if (!position) continue;
+      const dx = Math.max(position.x - point.x, 0, point.x - (position.x + NODE_W));
+      const dy = Math.max(position.y - point.y, 0, point.y - (position.y + NODE_H));
+      const distance = Math.hypot(dx, dy);
+      if (distance <= snap && (!nearest || distance < nearest.distance)) {
+        nearest = { id: chip.id, distance };
+      }
+    }
+    return nearest?.id;
   }
 
   function onPortPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -1256,27 +1375,35 @@ export function WorkspacePage() {
     if (!canvas) return;
     if (pointerOutsideCanvas(canvas, event.clientX, event.clientY)) {
       releasePointer(event.currentTarget, event.pointerId);
-      setLinking(null);
+      clearLinking();
       return;
     }
     scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
     const grab = canvasPoint(canvas, event.clientX, event.clientY);
-    setLinking((current) => current ? { ...current, x: grab.x, y: grab.y } : current);
+    const current = linkingRef.current;
+    if (!current) return;
+    const toId = linkTargetAt(event.clientX, event.clientY, current.fromId);
+    const fromPoint = positionsRef.current[current.fromId];
+    const toPoint = toId ? positionsRef.current[toId] : undefined;
+    const endpoint = fromPoint && toPoint
+      ? portPoint(toPoint, routeSides(fromPoint, toPoint).toSide)
+      : grab;
+    const next = { ...current, ...endpoint, toId };
+    linkingRef.current = next;
+    setLinking(next);
   }
 
   function onPortPointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
     const link = linkingRef.current;
-    setLinking(null);
+    clearLinking();
     if (!link) return;
-    const target = document.elementFromPoint(event.clientX, event.clientY);
-    const host = target instanceof Element ? target.closest("[data-chip-id]") : null;
-    const toId = host instanceof HTMLElement ? host.dataset.chipId : undefined;
+    const toId = link.toId ?? linkTargetAt(event.clientX, event.clientY, link.fromId);
     if (toId) void connectChips(link.fromId, toId, link.kind);
   }
 
   function onPortPointerCancel(event: ReactPointerEvent<HTMLButtonElement>) {
     releasePointer(event.currentTarget, event.pointerId);
-    setLinking(null);
+    clearLinking();
   }
 
   function cancelCanvasGesture(pointerId: number) {
@@ -1442,6 +1569,12 @@ export function WorkspacePage() {
       hint: messages.workspace.transformHint,
       icon: Workflow,
     },
+    {
+      kind: "load" as const,
+      label: messages.workspace.load,
+      hint: messages.workspace.loadHint,
+      icon: FileOutput,
+    },
   ];
   const edgeTools = [
     {
@@ -1578,9 +1711,39 @@ export function WorkspacePage() {
                 <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
                   {messages.workspace.title}
                 </p>
-                <h1 className="mt-0.5 min-w-0 truncate text-sm font-semibold tracking-[-0.015em] text-text">
-                  {focusChip?.name ?? selectedWorkspace?.name ?? messages.workspace.selectWorkspace}
-                </h1>
+                <div className="mt-0.5 flex min-w-0 items-center gap-7">
+                  <h1 className="min-w-0 truncate text-sm font-semibold tracking-[-0.015em] text-text">
+                    {focusChip?.name ?? selectedWorkspace?.name ?? messages.workspace.selectWorkspace}
+                  </h1>
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    className="h-7 shrink-0 gap-1.5 px-2 text-[11px]"
+                    onClick={() => setWorkspacePickerOpen(true)}
+                  >
+                    <ArrowLeftRight className="size-3.5" aria-hidden="true" />
+                    {messages.workspace.switchWorkspace}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="quiet"
+                    className={cn(
+                      "h-7 shrink-0 gap-1.5 px-2 text-[11px]",
+                      pinnedWorkspaceId === workspaceId && "bg-accent-subtle text-accent",
+                    )}
+                    disabled={!workspaceId}
+                    aria-pressed={pinnedWorkspaceId === workspaceId}
+                    onClick={togglePinnedWorkspace}
+                  >
+                    <Pin
+                      className={cn("size-3.5", pinnedWorkspaceId === workspaceId && "fill-current")}
+                      aria-hidden="true"
+                    />
+                    {pinnedWorkspaceId === workspaceId
+                      ? messages.workspace.unpinWorkspace
+                      : messages.workspace.pinWorkspace}
+                  </Button>
+                </div>
               </div>
             </div>
             <ul className="flex shrink-0 items-center gap-2">
@@ -1735,7 +1898,7 @@ export function WorkspacePage() {
         {chips.map((chip) => {
           const point = positions[chip.id] ?? fallbackPoint(0);
           const latest = latestByChip.get(chip.id);
-          const Icon = chip.kind === "transform" ? Workflow : DatabaseZap;
+          const Icon = chip.kind === "transform" ? Workflow : chip.kind === "load" ? FileOutput : DatabaseZap;
           return (
             <div
               key={chip.id}
@@ -1747,6 +1910,7 @@ export function WorkspacePage() {
               className={cn(
                 "workspace-node absolute flex h-[96px] w-[100px] cursor-grab select-none flex-col items-center gap-0.5 px-1.5 pb-1.5 pt-4 text-center active:cursor-grabbing",
                 selectedChipIds.includes(chip.id) && "is-selected",
+                linking?.toId === chip.id && "is-link-target",
               )}
               style={{ left: point.x, top: point.y }}
               onPointerDown={(event) => onNodePointerDown(chip, event)}
@@ -1781,6 +1945,9 @@ export function WorkspacePage() {
                 onPointerMove={onPortPointerMove}
                 onPointerUp={onPortPointerUp}
                 onPointerCancel={onPortPointerCancel}
+                onLostPointerCapture={() => {
+                  if (linkingRef.current?.fromId === chip.id) clearLinking();
+                }}
               />
               <ChipLinkHandle
                 side="right"
@@ -1790,6 +1957,9 @@ export function WorkspacePage() {
                 onPointerMove={onPortPointerMove}
                 onPointerUp={onPortPointerUp}
                 onPointerCancel={onPortPointerCancel}
+                onLostPointerCapture={() => {
+                  if (linkingRef.current?.fromId === chip.id) clearLinking();
+                }}
               />
               <ChipLinkHandle
                 side="top"
@@ -1799,6 +1969,9 @@ export function WorkspacePage() {
                 onPointerMove={onPortPointerMove}
                 onPointerUp={onPortPointerUp}
                 onPointerCancel={onPortPointerCancel}
+                onLostPointerCapture={() => {
+                  if (linkingRef.current?.fromId === chip.id) clearLinking();
+                }}
               />
               <ChipLinkHandle
                 side="bottom"
@@ -1808,6 +1981,9 @@ export function WorkspacePage() {
                 onPointerMove={onPortPointerMove}
                 onPointerUp={onPortPointerUp}
                 onPointerCancel={onPortPointerCancel}
+                onLostPointerCapture={() => {
+                  if (linkingRef.current?.fromId === chip.id) clearLinking();
+                }}
               />
               <button
                 type="button"
@@ -1829,17 +2005,28 @@ export function WorkspacePage() {
               </button>
               <span className={cn(
                 "workspace-node-icon",
-                chip.kind === "extract" ? "is-extract" : "is-transform",
+                chip.kind === "extract" ? "is-extract" : chip.kind === "load" ? "is-load" : "is-transform",
               )}>
                 <Icon aria-hidden="true" />
               </span>
               <span className="w-full truncate text-[11px] font-semibold leading-tight text-text">{chip.name}</span>
               <span className="text-[9px] font-medium uppercase tracking-wide text-text-tertiary">
-                {chip.kind === "extract" ? messages.workspace.extract : messages.workspace.transform}
+                {chipKindLabel(chip.kind, messages)}
               </span>
               <span className="mt-auto flex h-4 scale-90 items-center justify-center">
                 {latest ? (
-                  <StatusPill value={latest.status} />
+                  <StatusPill
+                    value={latest.status}
+                    label={
+                      ACTIVE_STATUSES.has(latest.status)
+                        ? messages.workspace.runStatusRunning
+                        : latest.status === "succeeded"
+                          ? messages.workspace.runStatusSucceeded
+                          : latest.status === "failed"
+                            ? messages.workspace.runStatusFailed
+                            : undefined
+                    }
+                  />
                 ) : (
                   <span className="text-[9px] font-medium text-text-tertiary">
                     {chip.output?.available
@@ -1887,7 +2074,11 @@ export function WorkspacePage() {
         catalogChips={catalogChips}
         datasets={datasets}
         canvasChipIds={new Set(chips.map((chip) => chip.id))}
-        defaultTransformIndex={chips.filter((chip) => chip.kind === "transform").length + 1}
+        defaultTransformName={nextSequencedChipName(
+          [...catalogChips, ...chips],
+          messages.workspace.defaultTransformChipName,
+          (chip) => chip.kind === "transform",
+        )}
         messages={messages}
         busy={busy}
         onClose={cancelPlaceChip}
@@ -1948,7 +2139,7 @@ export function WorkspacePage() {
                 </dd>
               </div>
             </dl>
-            <ChipDetailView chip={infoChip} />
+            <ChipDetailView chip={infoChip} inputFileName={infoInputFileName} />
           </div>
         ) : null}
       </AppDialog>
@@ -1999,6 +2190,27 @@ export function WorkspacePage() {
           void requestOpenWorkspace(id);
         }}
       />
+
+      <AppDialog
+        open={workspacePickerOpen}
+        title={messages.workspace.selectWorkspace}
+        icon={<FolderOpen className="size-4" aria-hidden="true" />}
+        className="w-[min(92vw,560px)]"
+        minWidth={360}
+        minHeight={320}
+        onClose={() => setWorkspacePickerOpen(false)}
+      >
+        <div className="rounded-2xl bg-gradient-to-br from-accent-subtle/45 via-transparent to-transparent p-2">
+          <WorkspaceTreePicker
+            folders={folders}
+            workspaces={workspaces}
+            value={workspaceId ?? ""}
+            onChange={(id) => void requestOpenWorkspace(id)}
+            className="min-h-64"
+            showSelectionPath={false}
+          />
+        </div>
+      </AppDialog>
     </>
   );
 }

@@ -18,7 +18,7 @@ import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useFiles } from "@/hooks/files/useFiles";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtDelimiterGlyph } from "@/lib/format";
-import { showConfirm, toastDeleteError, toastError } from "@/lib/notifications";
+import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { fileApi } from "@/services/files/fileApi";
 import type {
   FilePreview,
@@ -188,6 +188,7 @@ export function FilesPage() {
       }
       setStoredSelected([]);
       await refreshFiles();
+      toastSuccess(messages.files.deleteDone);
     } catch (err) {
       toastDeleteError(messages.errors.deleteFile, messages.errors.deleteBlocked, err);
       await refreshFiles();

@@ -402,24 +402,32 @@ pub(crate) fn stringify_ms(row: &tiberius::Row, i: usize) -> String {
     String::new()
 }
 
-fn read_csv(path: &Path) -> Result<(Vec<String>, Vec<Vec<String>>), ConnectError> {
+fn open_load_csv(path: &Path) -> Result<(csv::Reader<std::fs::File>, Vec<String>), ConnectError> {
     let mut rdr = csv::Reader::from_path(path)?;
     let headers: Vec<String> = rdr
         .headers()?
         .iter()
         .map(|s| s.to_string())
         .collect();
+    let mut seen = std::collections::HashSet::new();
     for h in &headers {
-        if !h.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || h.is_empty() {
+        if h.trim().is_empty() || h.chars().any(char::is_control) || !seen.insert(h) {
             return Err(ConnectError::Invalid(format!("bad column name `{h}`")));
         }
     }
-    let mut rows = Vec::new();
-    for rec in rdr.records() {
-        let rec = rec?;
-        rows.push(rec.iter().map(|s| s.to_string()).collect());
+    Ok((rdr, headers))
+}
+
+fn read_csv_batch(
+    rdr: &mut csv::Reader<std::fs::File>,
+    batch_size: usize,
+) -> Result<Vec<Vec<String>>, ConnectError> {
+    let mut rows = Vec::with_capacity(batch_size);
+    for record in rdr.records().take(batch_size) {
+        let record = record?;
+        rows.push(record.iter().map(str::to_string).collect());
     }
-    Ok((headers, rows))
+    Ok(rows)
 }
 
 fn create_table_sql(family: &str, q: &str, raw_table: &str, cols: &[String]) -> String {
@@ -444,7 +452,8 @@ fn clear_sql(family: &str, q: &str) -> String {
     }
 }
 
-/// ponytail: row batches via QueryBuilder; COPY/bulk insert when volume matters.
+/// Streams bounded row batches so input size does not determine memory use.
+/// Native COPY/bulk writers can replace each family branch without changing callers.
 /// New tables are created as TEXT columns from the CSV header.
 pub async fn load_table(
     c: &LiveConnection,
@@ -458,12 +467,12 @@ pub async fn load_table(
     let family = driver_family(&c.driver)?;
     let parsed = parse_table(table)?;
     let q = qualified(family, &parsed);
-    let (cols, rows) = read_csv(csv_path)?;
+    let (mut reader, cols) = open_load_csv(csv_path)?;
     if cols.is_empty() {
         return Err(ConnectError::Invalid("csv has no columns".into()));
     }
     let create = create_table_sql(family, &q, table, &cols);
-    let n = rows.len() as u64;
+    let mut n = 0u64;
     match family {
         "postgres" => {
             let pool = pg_pool(c).await?;
@@ -471,7 +480,12 @@ pub async fn load_table(
             if mode == "replace" {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
-            insert_sqlx::<Postgres>(&pool, family, &q, &cols, &rows).await?;
+            loop {
+                let rows = read_csv_batch(&mut reader, 2_000)?;
+                if rows.is_empty() { break; }
+                n += rows.len() as u64;
+                insert_sqlx::<Postgres>(&pool, family, &q, &cols, &rows).await?;
+            }
             pool.close().await;
         }
         "mysql" => {
@@ -480,7 +494,12 @@ pub async fn load_table(
             if mode == "replace" {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
-            insert_sqlx::<MySql>(&pool, family, &q, &cols, &rows).await?;
+            loop {
+                let rows = read_csv_batch(&mut reader, 2_000)?;
+                if rows.is_empty() { break; }
+                n += rows.len() as u64;
+                insert_sqlx::<MySql>(&pool, family, &q, &cols, &rows).await?;
+            }
             pool.close().await;
         }
         "sqlite" => {
@@ -489,7 +508,12 @@ pub async fn load_table(
             if mode == "replace" {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
-            insert_sqlx::<Sqlite>(&pool, family, &q, &cols, &rows).await?;
+            loop {
+                let rows = read_csv_batch(&mut reader, 2_000)?;
+                if rows.is_empty() { break; }
+                n += rows.len() as u64;
+                insert_sqlx::<Sqlite>(&pool, family, &q, &cols, &rows).await?;
+            }
             pool.close().await;
         }
         "mssql" => {
@@ -503,7 +527,11 @@ pub async fn load_table(
                 .map(|c| quote_ident(family, c))
                 .collect::<Vec<_>>()
                 .join(", ");
-            for row in &rows {
+            loop {
+              let rows = read_csv_batch(&mut reader, 500)?;
+              if rows.is_empty() { break; }
+              n += rows.len() as u64;
+              for row in &rows {
                 let placeholders = (1..=cols.len())
                     .map(|i| format!("@P{i}"))
                     .collect::<Vec<_>>()
@@ -513,6 +541,7 @@ pub async fn load_table(
                 let args: Vec<&dyn tiberius::ToSql> =
                     binds.iter().map(|s| s as &dyn tiberius::ToSql).collect();
                 client.execute(sql, &args).await?;
+              }
             }
         }
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
@@ -636,5 +665,17 @@ mod tests {
         assert_eq!(parse_ident("dw-1").unwrap(), "dw-1");
         assert!(parse_ident("").is_err());
         assert!(parse_ident("drop;").is_err());
+    }
+
+    #[test]
+    fn load_csv_reads_bounded_batches() {
+        let path = std::env::temp_dir().join(format!("bintl-load-{}.csv", std::process::id()));
+        std::fs::write(&path, "id,name\n1,a\n2,b\n3,c\n").unwrap();
+        let (mut reader, columns) = open_load_csv(&path).unwrap();
+        assert_eq!(columns, vec!["id", "name"]);
+        assert_eq!(read_csv_batch(&mut reader, 2).unwrap().len(), 2);
+        assert_eq!(read_csv_batch(&mut reader, 2).unwrap().len(), 1);
+        assert!(read_csv_batch(&mut reader, 2).unwrap().is_empty());
+        std::fs::remove_file(path).unwrap();
     }
 }

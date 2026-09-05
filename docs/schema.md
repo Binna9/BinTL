@@ -1,6 +1,6 @@
 # SQLite 스키마 (`data/etl.db`)
 
-작성: 2026-09-04 (실DB `_sqlx_migrations` = **1…22** / 코드에 **0023** 있음·미적용)
+현행화: 2026-09-05 (실DB·코드 `_sqlx_migrations` = **1…23**, 전부 적용)
 
 SQLite는 `COMMENT ON`을 지원하지 않는다. 테이블·컬럼 의미는 이 문서가 기준이다.
 
@@ -247,19 +247,14 @@ DB/API 추출 **레시피**(카탈로그·칩 바인딩 대상). 화면 “추�
 | `workspace_id` | 작업 공간 ID | `workspaces.id`                                           |
 | `from_chip_id` | 출발 칩     | `chips.id`                                                |
 | `to_chip_id`   | 도착 칩     | `chips.id`                                                |
-| `kind`         | 종류       | 아래 마이그레이션 상태 참고                                              |
+| `kind`         | 종류       | `data` \| `on_success` \| `on_error` \| `always`                      |
 | `from_port`    | 출발 포트    | 기본 `out`                                                  |
 | `to_port`      | 도착 포트    | 기본 `in`                                                   |
 | `created_at`   | 생성 시각    |                                                           |
 
-**`kind` (마이그레이션 상태)**
+`kind`는 `data` \| `on_success` \| `on_error` \| `always`다. 0023에서 기존 `then`을 `always`로 이전했고 DB CHECK와 UI·서버 값이 일치한다.
 
-| 상태 | 허용 값 |
-| --- | --- |
-| 실DB ≤0022 (현재) | `data` \| `then` \| `on_error` |
-| 코드 0023 적용 후 | `data` \| `on_success` \| `on_error` \| `always` (`then` → `always`로 이전) |
-
-같은 워크스페이스에서 `(from_chip_id, to_chip_id, kind)`는 유일하다. 사이클은 저장 시 거부한다. `data` 선은 추출·변환에서 시작해 변환·적재로만 갈 수 있다. UI/서버는 이미 `on_success`/`always`를 쓰도록 맞춰 두었을 수 있으므로, **0023을 반드시 적용**해야 CHECK와 코드가 맞는다.
+같은 워크스페이스에서 `(from_chip_id, to_chip_id, kind)`는 유일하다. 사이클은 저장 시 거부한다. `data` 선은 추출·변환에서 시작해 변환·적재로만 갈 수 있다.
 
 ## chip_output_slots — 칩 산출 슬롯
 
@@ -335,7 +330,7 @@ DB/API 추출 **레시피**(카탈로그·칩 바인딩 대상). 화면 “추�
 | `source_extract_definition_id` | 추출 정의 ID | planned 스키마 출처 `extract_definitions.id` |
 
 
-`status=planned` 행은 `stored_path`가 `__planned__/{id}` placeholder이며 실파일이 없다. 워크스페이스 저장 시 data 엣지마다 sync되고, transform 실행 시 upstream extract를 동기 실행해 materialize한다.
+`status=planned` 행은 `stored_path`가 `__planned__/{id}` placeholder이며 실파일이 없다. 워크스페이스 저장 시 data 엣지마다 sync된다. upstream은 extract뿐 아니라 transform도 가능하며, 아직 실행 결과가 없으면 데이터 선을 역추적한 뒤 각 TransformSpec v2/v3를 순서대로 적용해 예상 출력 스키마를 다음 transform에 전달한다. 따라서 `Extract → Transform 1 → Transform 2 → …` 체인을 실행 전에 설계·편집할 수 있다.
 
 ---
 
@@ -368,7 +363,7 @@ DB/API 추출 **레시피**(카탈로그·칩 바인딩 대상). 화면 “추�
 
 커넥션에서 서버 파일로 뽑은 **실행 이력**(레시피 아님). UI 추출 목록의 N개와 행 수가 같을 필요 없다 — 그건 `extract_definitions`다.
 종류는 `database`(DB)와 `api`(HTTP)다. 디스크 경로는 `extracts/{databases|api}/{id}/…` 이고, 성공 시 같은 id로 `datasets` 행이 생기거나 연결된다.
-API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
+DB와 HTTP API 추출 모두 실행된다. HTTP 설정은 `sql_text`에 직렬화한 요청 스펙을 보관하는 호환 구조를 사용한다.
 칩 실행도 내부적으로 이 테이블에 한 행을 남기고 `chip_runs.legacy_extract_id`로 가리킨다.
 
 
@@ -399,9 +394,9 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 
 
 
-## transforms — 변환 정의 (호환)
+## transforms — 변환 정의
 
-기존 변환 화면의 저장 정의. 입력 데이터셋(기준/왼쪽)과 TransformSpec v2 JSON.
+변환 레시피의 저장 정의. 입력 데이터셋(기준/왼쪽)과 TransformSpec JSON을 보관한다. 현재 UI는 순서가 명시된 v3를 저장하며 엔진은 기존 v2도 읽는다.
 
 
 | 컬럼             | 한글명        | 설명                    |
@@ -410,46 +405,57 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 | `name`         | 이름         |                       |
 | `dataset_id`   | 입력 데이터셋 ID | `datasets.id`. combine 시 기준 파일 |
 | `input_chip_id`| 입력 칩 ID    | 워크스페이스 transform 칩과 연결 (planned 입력) |
-| `spec_json`    | 스펙         | TransformSpec v2 JSON (아래) |
+| `spec_json`    | 스펙         | TransformSpec v3 JSON (아래). 기존 v2도 호환 |
 | `created_at`   | 생성 시각      |                       |
 | `updated_at`   | 수정 시각      |                       |
 | `workspace_id` | 작업 공간 ID   | 입력 데이터셋과 같은 작업 공간     |
 
-### `spec_json` (TransformSpec v2)
+### `spec_json` (TransformSpec v3)
 
-엔진·UI 공통. SQLite 컬럼은 아니지만 이 테이블에 저장되는 JSON 형태다.
+엔진·UI 공통. SQLite 컬럼은 아니지만 이 테이블에 저장되는 JSON 형태다. `operations` 배열 순서대로 정제·붙이기·집계를 실행한다.
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "read": { "delimiter": ",", "has_header": true },
-  "steps": [
-    { "op": "filter", "expr": "amount >= 1" },
-    { "op": "select", "columns": ["id", "amount"] }
-  ],
   "sink": "parquet",
-  "combine": {
-    "mode": "join",
-    "right_dataset_id": "<datasets.id>",
-    "on": ["id"],
-    "how": "left"
-  }
+  "operations": [
+    {
+      "type": "clean",
+      "steps": [
+        { "op": "filter", "expr": "amount >= 1" },
+        { "op": "select", "columns": ["id", "amount"] }
+      ]
+    },
+    {
+      "type": "join",
+      "right_dataset_id": "<datasets.id>",
+      "on": ["id"],
+      "how": "left"
+    },
+    {
+      "type": "aggregate",
+      "group_by": ["department"],
+      "aggregations": [
+        { "column": "amount", "function": "sum", "alias": "amount_sum" }
+      ]
+    }
+  ]
 }
 ```
 
 | 필드 | 설명 |
 | --- | --- |
-| `steps` | 정제 스텝. `select`, `drop`, `rename`, `filter`, `cast`, `fill_null`, `sort`, `unique` |
-| `combine` | 선택. **붙이기** 화면용. `steps` 앞에 적용된다 |
-| `combine.mode` | `join` (가로) \| `union` (세로 이어 붙이기) |
-| `combine.right_dataset_id` | join 시 오른쪽 `datasets.id` |
-| `combine.union_dataset_ids` | union 시 기준 파일 아래에 붙일 `datasets.id` 목록 |
-| `combine.on` | join 키 컬럼 (양쪽 동일 이름) |
-| `combine.how` | `left` \| `inner` (join만) |
+| `version` | 현재 `3`. v3는 `operations`가 필수이며 `dest`를 허용하지 않는다 |
+| `operations` | 실행 순서가 보존되는 작업 배열 |
+| `operations[].type=clean` | 정제 스텝 묶음. `select`, `drop`, `rename`, `filter`, `cast`, `fill_null`, `sort`, `unique` |
+| `operations[].type=join` | 가로 조인. `right_dataset_id`, `on`, `how(left/inner)` 사용 |
+| `operations[].type=union` | 세로 이어 붙이기. `dataset_ids` 사용 |
+| `operations[].type=aggregate` | 그룹 집계. `group_by`와 `aggregations` 사용. 함수는 `sum`, `count`, `mean`, `min`, `max` |
 
-미리보기·실행 시 서버가 `right_dataset_id` / `union_dataset_ids`를 파일 경로로 풀어 엔진에 넘긴다. DB에는 dataset ID만 남긴다.
+미리보기·실행 시 서버가 `right_dataset_id` / `dataset_ids`를 파일 경로로 풀어 엔진에 넘긴다. DB에는 dataset ID만 남긴다. 기존 v2의 최상위 `steps`와 `combine`은 읽기 호환용으로 유지한다.
 
-정제(`/transform/clean`)는 `steps`만, 붙이기(`/transform/combine`)는 `combine`을 쓴다. 둘 다 같은 `transforms` 행에 저장 가능하다.
+UI 정식 경로는 `/transform`과 `/transform/:id`이며 `?section=clean|combine|aggregate`로 편집 섹션을 고른다. 캔버스 칩 편집은 `/workspace/:workspaceId/chips/:chipId/transform/:id` 형태다.
 
 
 ---
@@ -513,7 +519,7 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 | `title`         | 제목       | 검색 결과 한 줄 제목 |
 | `subtitle`      | 부제       | 종류·출처 라벨 |
 | `keywords`      | 키워드      | LIKE 검색용. 이름·경로·SQL 등을 소문자로 이어 붙임 |
-| `route`         | 이동 경로    | UI 라우트 (예: `/transform/clean/:id`) |
+| `route`         | 이동 경로    | UI 라우트 (예: `/transform/:id`) |
 | `scope`         | 노출 범위    | `global` (전원) \| `user` (소유자) \| `workspace` (작업 공간 소유) |
 | `workspace_id`  | 작업 공간 ID | `scope = workspace`일 때 |
 | `owner_user_id` | 소유자 ID   | `scope = user`일 때 |
@@ -546,7 +552,8 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 
 ## 설계 메모 · 고쳐야 할 점
 
-실DB 스냅샷(2026-09-04): `extract_definitions` 5, `extracts` 1, `chips` 3, `chip_bindings` 2, `chip_runs` 0, `datasets` 13(그중 `planned` 1), 마이그레이션 **22까지**, **0023 미적용**.
+적재 정의는 `load_definitions`, 실행별 적재량·처리 시간·기본 검증 상태는 `load_results`에 저장한다.
+`chip_bindings.ref_kind = load_definition`으로 재사용 가능한 적재 칩과 연결한다. 마이그레이션은 **24까지 적용**한다.
 
 1. **정의/실행 이중 구조가 이름만으로 안 드러남**  
    `extracts` ↔ `extract_definitions`, `jobs` ↔ `transforms`, 그리고 또 `chip_runs`가 실행을 감싼다. 신규 개발자가 extracts를 “추출 목록”으로 오해하기 쉽다. 장기적으로는 실행을 `chip_runs`(또는 run 테이블)로 단일화하고 `extracts`/`jobs`는 폐기·뷰화하는 편이 낫다.
@@ -566,9 +573,5 @@ API 실행기는 아직 미구현이며, 생성 경로는 현재 DB만 연다.
 6. **extract id = dataset id 관례**  
    성공 추출에서 두 PK를 같게 쓰는 경로가 있어 `datasets.extract_id`가 자기 자신을 가리키는 형태가 된다. 편하긴 하나 FK 의미·삭제 순서가 헷갈린다.
 
-7. **마이그레이션 드리프트**  
-   코드/문서의 엣지 kind(`on_success`/`always`)와 실DB CHECK(`then`)가 어긋나 있다. 서버 기동 시 0023 적용이 선행돼야 한다.
-
-8. **검색 엔티티 `extract`**  
+7. **검색 엔티티 `extract`**
    `search_documents.entity_type`에 `extract`가 있는데 UI 카탈로그의 축은 `extract_definitions`다. 인덱스가 실행 이력만 잡으면 카탈로그 검색과 어긋난다.
-

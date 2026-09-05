@@ -2103,6 +2103,15 @@ a {
     inset 0 1px 0 color-mix(in srgb, white 88%, transparent);
 }
 
+.workspace-node.is-link-target {
+  box-shadow:
+    -1.5px -1.5px 3px color-mix(in srgb, white 92%, transparent),
+    5px 9px 16px color-mix(in srgb, var(--theme-text) 16%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--theme-accent) 58%, transparent),
+    0 0 22px color-mix(in srgb, var(--theme-accent) 24%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 88%, transparent);
+}
+
 .workspace-marquee {
   border: 1px solid color-mix(in srgb, var(--theme-accent) 70%, transparent);
   border-radius: 0.35rem;
@@ -2130,6 +2139,11 @@ a {
 
 .workspace-node-icon.is-transform {
   color: var(--theme-success);
+}
+
+.workspace-node-icon.is-load {
+  color: var(--color-warning);
+  background: var(--color-warning-subtle);
 }
 
 .workspace-node-icon svg {
@@ -2186,6 +2200,10 @@ a {
 
 .workspace-minimap-chip.is-transform {
   background: var(--theme-success);
+}
+
+.workspace-minimap-chip.is-load {
+  background: var(--theme-warning);
 }
 
 .workspace-minimap-view {

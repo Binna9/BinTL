@@ -34,6 +34,7 @@ import { useConnections } from "@/hooks/connections/useConnections";
 import { isExtractActive } from "@/hooks/extract/useExtracts";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { extractSourceType, nextSequencedChipName } from "@/lib/chipSequence";
 import { DELIMITER_VALUES } from "@/lib/delimiter";
 import { layout } from "@/lib/layout";
 import { toastError, toastSuccess } from "@/lib/notifications";
@@ -443,8 +444,18 @@ export function QueryPage() {
     }
   }
 
-  function openRegister() {
-    setRegisterName(selected?.qualified || messages.workspace.untitledExtract(1));
+  async function openRegister() {
+    try {
+      const response = await chipApi.listCatalog();
+      setRegisterName(nextSequencedChipName(
+        response.chips,
+        messages.query.defaultChipName,
+        (chip) => chip.kind === "extract" && extractSourceType(chip) !== "http",
+      ));
+    } catch (err) {
+      setRegisterName(messages.query.defaultChipName(1));
+      toastError(messages.workspace.loadError, err);
+    }
     setIsRegisterOpen(true);
   }
 

@@ -6,7 +6,11 @@ import type { StepOp, TransformStep } from "@/types/transform";
 export function defaultTransformName(sourceName: string): string {
   const trimmed = sourceName.trim();
   if (!trimmed) return trimmed;
-  if (trimmed.toLocaleLowerCase().startsWith("transform-")) return trimmed;
+  const chained = /^transform-(?:(\d+)-)?(.+)$/i.exec(trimmed);
+  if (chained) {
+    const sequence = chained[1] ? Number.parseInt(chained[1], 10) + 1 : 2;
+    return `transform-${String(sequence).padStart(2, "0")}-${chained[2]}`;
+  }
   return `transform-${trimmed}`;
 }
 
@@ -22,7 +26,10 @@ export function normalizeSlotColumns(
 
 export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
   if (slot.mode === "materialized" && slot.dataset) {
-    return slot.dataset as unknown as Dataset;
+    const dataset = slot.dataset as unknown as Dataset;
+    return slot.source_chip_kind === "transform" && slot.source_chip_name
+      ? { ...dataset, filename: slot.source_chip_name }
+      : dataset;
   }
   if (slot.mode === "planned" && slot.planned) {
     const raw = slot.dataset as Dataset | undefined;
@@ -51,6 +58,9 @@ export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
     }
     return {
       ...raw,
+      filename: slot.source_chip_kind === "transform" && slot.source_chip_name
+        ? slot.source_chip_name
+        : raw.filename,
       status: raw.status ?? "planned",
       columns: raw.columns?.length
         ? raw.columns
@@ -154,5 +164,4 @@ export function resolveColumnsAtStep(
   }
   return cols;
 }
-
 

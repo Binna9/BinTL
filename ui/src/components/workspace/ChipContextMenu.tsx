@@ -103,7 +103,7 @@ export function ChipContextMenu({
       id: "run",
       label: messages.workspace.chipMenuRun,
       icon: Play,
-      disabled: busy || chip.kind === "load",
+      disabled: busy,
       onSelect: () => onRun(chip),
     },
     {

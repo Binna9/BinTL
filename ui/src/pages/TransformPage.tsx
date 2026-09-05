@@ -1,15 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
+  ArrowLeft,
   BookmarkPlus,
   ChevronRight,
+  Download,
   Eye,
   FileSpreadsheet,
+  Filter,
+  ListChecks,
   Plus,
   RotateCcw,
   Search,
   Trash2,
+  Workflow,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { CombineSetup } from "@/components/transform/CombineSetup";
@@ -26,11 +31,13 @@ import { FormField } from "@/components/ui/form-field";
 import { MetaField } from "@/components/ui/meta-field";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
+import { Select } from "@/components/ui/select";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { nextSequencedChipName } from "@/lib/chipSequence";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
-import { toastError, toastSuccess } from "@/lib/notifications";
+import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { HttpError } from "@/services/httpClient";
 import { selectableClass } from "@/lib/selectable";
 import {
@@ -46,7 +53,8 @@ import {
 import { chipApi } from "@/services/chips/chipApi";
 import { datasetApi } from "@/services/transform/datasetApi";
 import { transformApi } from "@/services/transform/transformApi";
-import type { Dataset, FramePreview } from "@/types/dataset";
+import { workspaceApi } from "@/services/workspace/workspaceApi";
+import type { Dataset, DatasetColumn, FramePreview } from "@/types/dataset";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type {
   StepOp,
@@ -69,6 +77,7 @@ type AggregateDraft = { column: string; function: AggregateFunction; alias: stri
 
 export function TransformPage({ section: fixedSection }: { section?: TransformEditorSection }) {
   const { messages } = useLanguage();
+  const location = useLocation();
   const {
     id,
     workspaceId: routeWorkspaceId,
@@ -83,6 +92,11 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   const workspaceId = routeWorkspaceId ?? searchParams.get("workspace") ?? undefined;
   const chipId = routeChipId ?? searchParams.get("chip") ?? searchParams.get("input_chip") ?? undefined;
   const workspaceMode = Boolean(workspaceId && chipId);
+  const navigationState = location.state as {
+    canvasDraft?: unknown;
+  } | null;
+  const newWorkspaceChip = Boolean(workspaceId && !chipId && searchParams.get("new_chip") === "1");
+  const draftInitializedRef = useRef(false);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetId, setDatasetId] = useState<string>();
   const [transformId, setTransformId] = useState<string>();
@@ -91,14 +105,12 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   const [sourcePreview, setSourcePreview] = useState<FramePreview | null>(null);
   const [resultPreview, setResultPreview] = useState<FramePreview | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [finalizedPreviewOpen, setFinalizedPreviewOpen] = useState(false);
   const [detailTab, setDetailTab] = useState<"source" | "result">("source");
   const [detailTick, setDetailTick] = useState(0);
   const [detailLoading, setDetailLoading] = useState(false);
   const [expandedKinds, setExpandedKinds] = useState<Set<(typeof KIND_ORDER)[number]>>(
-    // Keep the available source files visible when the editor opens. The
-    // groups remain collapsible, but the catalog must not look empty by
-    // default.
-    new Set(KIND_ORDER),
+    new Set(),
   );
   const [kindSearch, setKindSearch] = useState<
     Record<(typeof KIND_ORDER)[number], string>
@@ -118,7 +130,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   const [registerBusy, setRegisterBusy] = useState(false);
   const [sourceMissing, setSourceMissing] = useState(false);
   const [inputSlot, setInputSlot] = useState<ChipInputSlotResponse | null>(null);
-  const [combineDraft, setCombineDraft] = useState<CombineDraft | null>(null);
+  const [combineDraft, setCombineDraft] = useState<CombineDraft | null>(() => emptyCombineDraft());
   const [rightPreview, setRightPreview] = useState<FramePreview | null>(null);
   const [aggregateGroupBy, setAggregateGroupBy] = useState<string[]>([]);
   const [aggregations, setAggregations] = useState<AggregateDraft[]>([]);
@@ -153,12 +165,41 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   const usableAggregations = aggregations.filter(
     (aggregation) => aggregation.column && aggregation.alias.trim(),
   );
+  const resultSchemaColumns = useMemo(() => {
+    const validAggregations = aggregations.filter(
+      (aggregation) => aggregation.column && aggregation.alias.trim(),
+    );
+    if (validAggregations.length === 0) return aggregateColumns;
+
+    const sourceByName = new Map(
+      aggregateColumns.map((column) => [column.name, column]),
+    );
+    const result: DatasetColumn[] = aggregateGroupBy
+      .map((columnName) => sourceByName.get(columnName))
+      .filter((column): column is DatasetColumn => column != null);
+
+    for (const aggregation of validAggregations) {
+      result.push({
+        name: aggregation.alias.trim(),
+        dtype:
+          aggregation.function === "count"
+            ? "Int64"
+            : (sourceByName.get(aggregation.column)?.dtype ?? "String"),
+      });
+    }
+    return result;
+  }, [aggregateColumns, aggregateGroupBy, aggregations]);
   const canPreviewRecipe =
     canPreviewCombine(combineDraft, datasetId)
     || usableSteps(steps, baseColumns).length > 0
     || usableAggregations.length > 0;
   const combineModeLabel =
     combineDraft?.mode === "union" ? t.combineModeUnion : t.combineModeJoin;
+  const hasCombineDraft = Boolean(
+    combineDraft?.rightDatasetId
+    || combineDraft?.unionDatasetIds.length
+    || combineDraft?.joinKeys.length,
+  );
 
   useEffect(() => {
     setEditorSection(fixedSection ?? parseTransformSection(searchParams.get("section")));
@@ -166,7 +207,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
   function changeSection(section: TransformEditorSection) {
     setEditorSection(section);
-    navigate(editorPath(transformId, section), { replace: true });
+    navigate(editorPath(transformId, section), { replace: true, state: location.state });
   }
 
   function editorPath(
@@ -174,9 +215,16 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     nextSection: TransformEditorSection = editorSection,
   ) {
     const params = new URLSearchParams(searchParams);
-    params.delete("workspace");
-    params.delete("chip");
-    params.delete("input_chip");
+    if (!newWorkspaceChip) {
+      params.delete("workspace");
+      params.delete("chip");
+      params.delete("input_chip");
+      params.delete("new_chip");
+      params.delete("dataset");
+      params.delete("chip_name");
+      params.delete("x");
+      params.delete("y");
+    }
     if (nextSection === "clean") params.delete("section");
     else params.set("section", nextSection);
     const base = workspaceId && chipId
@@ -259,6 +307,23 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   }, [messages]);
 
   useEffect(() => {
+    if (!newWorkspaceChip || draftInitializedRef.current || datasets.length === 0) return;
+    const draftDatasetId = searchParams.get("dataset")?.trim();
+    const dataset = datasets.find((item) => item.id === draftDatasetId);
+    if (!dataset) return;
+    draftInitializedRef.current = true;
+    setDatasetId(dataset.id);
+    setName(defaultTransformName(dataset.filename));
+    if (KIND_ORDER.includes(dataset.kind as (typeof KIND_ORDER)[number])) {
+      setExpandedKinds((current) => {
+        const next = new Set(current);
+        next.add(dataset.kind as (typeof KIND_ORDER)[number]);
+        return next;
+      });
+    }
+  }, [datasets, newWorkspaceChip, searchParams]);
+
+  useEffect(() => {
     if (!workspaceId || !chipId) {
       setInputSlot(null);
       return;
@@ -266,25 +331,8 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     let cancelled = false;
     void (async () => {
       try {
-        let slot = await chipApi.getInputSlot(workspaceId, chipId);
-        let dataset = datasetFromSlot(slot);
-        if (!dataset) {
-          const chip = await chipApi.get(chipId);
-          const datasetId =
-            typeof chip.config.input_dataset_id === "string"
-              ? chip.config.input_dataset_id.trim()
-              : "";
-          if (datasetId) {
-            const file = await datasetApi.get(datasetId);
-            slot = {
-              mode: "materialized",
-              dataset_id: file.id,
-              source_chip_name: file.filename,
-              dataset: file as unknown as Record<string, unknown>,
-            };
-            dataset = file;
-          }
-        }
+        const slot = await chipApi.getInputSlot(workspaceId, chipId);
+        const dataset = datasetFromSlot(slot);
         if (cancelled) return;
         setInputSlot(slot);
         if (!dataset) return;
@@ -296,9 +344,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
           return [...current, dataset];
         });
         setDatasetId(dataset.id);
-        setName((current) =>
-          current || defaultTransformName(slot.source_chip_name || dataset.filename),
-        );
+        setName(defaultTransformName(slot.source_chip_name || dataset.filename));
       } catch (err) {
         if (!cancelled) toastError(messages.errors.workspace, err);
       }
@@ -312,7 +358,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     if (!id) {
       setTransformId(undefined);
       setSteps([]);
-      setCombineDraft(null);
+      setCombineDraft(emptyCombineDraft());
       setAggregateGroupBy([]);
       setAggregations([]);
       setRightPreview(null);
@@ -331,7 +377,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     setDatasetId(undefined);
     setName("");
     setSteps([]);
-    setCombineDraft(null);
+    setCombineDraft(emptyCombineDraft());
     setAggregateGroupBy([]);
     setAggregations([]);
     setRightPreview(null);
@@ -341,7 +387,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
       .then((row) => {
         if (cancelled) return;
         setTransformId(row.id);
-        setDatasetId(row.dataset_id);
+        if (!workspaceMode) setDatasetId(row.dataset_id);
         setName(row.name);
         const cleanOperation = row.spec?.operations?.find((operation) => operation.type === "clean");
         const combineOperation = row.spec?.operations?.find(
@@ -370,7 +416,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                   mode: "union",
                   union_dataset_ids: combineOperation.dataset_ids,
                 })
-              : combineDraftFromSpec(row.spec?.combine),
+              : combineDraftFromSpec(row.spec?.combine) ?? emptyCombineDraft(),
         );
         setAggregateGroupBy(
           aggregateOperation?.type === "aggregate" ? aggregateOperation.group_by : [],
@@ -473,25 +519,30 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     if (!detailOpen || !datasetId) return;
     const dataset = datasets.find((item) => item.id === datasetId) ?? null;
     if (dataset?.status === "planned") {
-      setSourcePreview({
+      const schemaPreview: FramePreview = {
         columns: dataset.columns,
         rows: [],
         sampled_rows: 0,
         row_count: 0,
         truncated: false,
+      };
+      setSourcePreview(schemaPreview);
+      setResultPreview({
+        ...schemaPreview,
+        columns: resultSchemaColumns,
       });
-      setResultPreview(null);
       setDetailLoading(false);
       return;
     }
     const spec = buildSpec();
     const previewCombine = canPreviewCombine(combineDraft, datasetId);
     const previewSteps = usableSteps(steps, baseColumns).length > 0;
+    const previewResult = finalizedPreviewOpen || previewCombine || previewSteps || usableAggregations.length > 0;
     let cancelled = false;
     setDetailLoading(true);
     void Promise.allSettled([
       datasetApi.inspect(datasetId, 200, true),
-      previewCombine || previewSteps
+      previewResult
         ? datasetApi.preview(datasetId, spec, 200, true)
         : Promise.resolve(null),
     ])
@@ -509,7 +560,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         }
         if (previewed.status === "fulfilled") {
           setResultPreview(previewed.value);
-        } else if (previewed.status === "rejected" && (previewCombine || previewSteps)) {
+        } else if (previewed.status === "rejected" && previewResult) {
           setResultPreview(null);
           toastError(messages.errors.previewTransform, previewed.reason);
         } else {
@@ -531,7 +582,9 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     combineDraft,
     aggregateGroupBy,
     aggregations,
+    finalizedPreviewOpen,
     selected?.status,
+    resultSchemaColumns,
   ]);
 
   const grouped = useMemo(() => {
@@ -578,7 +631,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
   function resetRecipe() {
     setSteps([]);
-    setCombineDraft(null);
+    setCombineDraft(emptyCombineDraft());
     setAggregateGroupBy([]);
     setAggregations([]);
     setRightPreview(null);
@@ -586,51 +639,21 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     changeSection("clean");
   }
 
-  function moveToNextTransform() {
-    const currentIndex = TRANSFORM_SECTIONS.indexOf(editorSection);
-    const next = TRANSFORM_SECTIONS[currentIndex + 1];
-    if (next) changeSection(next);
+  function returnToWorkspace() {
+    if (!workspaceId) return;
+    navigate(`/workspace/${workspaceId}`, {
+      state: navigationState?.canvasDraft
+        ? { canvasDraft: navigationState.canvasDraft }
+        : undefined,
+    });
   }
 
-  async function saveTransformDefinition() {
-    if (!datasetId) return;
+  async function saveTransformDefinition(
+    options: { returnToWorkspace?: boolean } = {},
+  ): Promise<string | undefined> {
+    if (!datasetId) return undefined;
+    const returnToWorkspace = options.returnToWorkspace ?? true;
     setBusy(true);
-    try {
-      const title = name.trim() || selected?.filename || messages.transform.untitled;
-      if (transformId) {
-        await transformApi.update(transformId, {
-          name: title,
-          dataset_id: datasetId,
-          spec: buildSpec(),
-          ...(chipId ? { input_chip_id: chipId } : {}),
-        });
-      } else {
-        const row = await transformApi.create({
-          name: title,
-          dataset_id: datasetId,
-          spec: buildSpec(),
-          ...(chipId ? { input_chip_id: chipId } : {}),
-        });
-        setTransformId(row.id);
-        setName(row.name);
-        navigate(editorPath(row.id), { replace: true });
-      }
-      if (workspaceMode && workspaceId) {
-        toastSuccess(messages.transform.saveToWorkspace);
-        navigate(`/workspace/${workspaceId}/chips/${chipId}`);
-        return;
-      }
-      toastSuccess(messages.query.taskRegistered);
-    } catch (err) {
-      toastError(messages.errors.saveTransform, err);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onRegisterChip() {
-    if (!datasetId || !registerChipName.trim()) return;
-    setRegisterBusy(true);
     try {
       const title = name.trim() || selected?.filename || messages.transform.untitled;
       let savedTransformId = transformId;
@@ -651,37 +674,196 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         savedTransformId = row.id;
         setTransformId(row.id);
         setName(row.name);
-        navigate(editorPath(row.id), { replace: true });
+        navigate(editorPath(row.id), { replace: true, state: location.state });
       }
-      await chipApi.register({
+      if (workspaceMode && workspaceId && returnToWorkspace) {
+        toastSuccess(messages.transform.saveToWorkspace);
+        navigate(`/workspace/${workspaceId}/chips/${chipId}`);
+      }
+      return savedTransformId;
+    } catch (err) {
+      toastError(messages.errors.saveTransform, err);
+      return undefined;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRegisterChip() {
+    if (!datasetId || !registerChipName.trim()) return;
+    setRegisterBusy(true);
+    let createdTransformId: string | undefined;
+    let registeredChipId: string | undefined;
+    try {
+      const title = name.trim() || selected?.filename || messages.transform.untitled;
+      let savedTransformId = transformId;
+      if (savedTransformId) {
+        await transformApi.update(savedTransformId, {
+          name: title,
+          dataset_id: datasetId,
+          spec: buildSpec(),
+          ...(chipId ? { input_chip_id: chipId } : {}),
+        });
+      } else {
+        const row = await transformApi.create({
+          name: title,
+          dataset_id: datasetId,
+          spec: buildSpec(),
+          ...(chipId ? { input_chip_id: chipId } : {}),
+        });
+        savedTransformId = row.id;
+        createdTransformId = row.id;
+        if (!newWorkspaceChip) {
+          setTransformId(row.id);
+          setName(row.name);
+          navigate(editorPath(row.id), { replace: true, state: location.state });
+        }
+      }
+      const registered = await chipApi.register({
         name: registerChipName.trim(),
         kind: "transform",
         transform_id: savedTransformId,
+        ...(newWorkspaceChip && workspaceId
+          ? { workspace_id: workspaceId, place_on_workspace: true, run_after: false }
+          : {}),
       });
+      registeredChipId = registered.id;
+      if (newWorkspaceChip && workspaceId) {
+        const [workspace, chipResponse] = await Promise.all([
+          workspaceApi.get(workspaceId),
+          chipApi.list(workspaceId),
+        ]);
+        const x = Number(searchParams.get("x"));
+        const y = Number(searchParams.get("y"));
+        await workspaceApi.save(workspaceId, {
+          layout: {
+            ...workspace.layout,
+            nodes: {
+              ...(workspace.layout.nodes ?? {}),
+              [registered.id]: {
+                x: Number.isFinite(x) ? x : 80,
+                y: Number.isFinite(y) ? y : 80,
+              },
+            },
+          },
+          chips: chipResponse.chips.map((chip) => chip.id),
+          edges: (workspace.edges ?? []).map((edge) => ({
+            id: edge.id,
+            from_chip_id: edge.from_chip_id,
+            to_chip_id: edge.to_chip_id,
+            kind: edge.kind,
+            from_port: edge.from_port,
+            to_port: edge.to_port,
+          })),
+        });
+      }
       setRegisterOpen(false);
       toastSuccess(messages.query.taskRegistered);
+      if (newWorkspaceChip && workspaceId) {
+        navigate(`/workspace/${workspaceId}/chips/${registered.id}`);
+      }
     } catch (err) {
+      if (newWorkspaceChip) {
+        if (registeredChipId) {
+          await chipApi.remove(registeredChipId).catch(() => undefined);
+        }
+        if (createdTransformId) {
+          await transformApi.delete(createdTransformId).catch(() => undefined);
+        }
+      }
       toastError(messages.errors.saveTransform, err);
     } finally {
       setRegisterBusy(false);
     }
   }
 
-  function openRegister() {
+  async function openRegister() {
     if (workspaceMode) {
       void saveTransformDefinition();
       return;
     }
-    setRegisterChipName(name.trim() || selected?.filename || messages.transform.untitled);
+    if (newWorkspaceChip) {
+      setRegisterChipName(
+        searchParams.get("chip_name")?.trim()
+        || messages.workspace.defaultTransformChipName(1),
+      );
+    } else {
+      try {
+        const response = await chipApi.listCatalog();
+        setRegisterChipName(
+          nextSequencedChipName(
+            response.chips,
+            messages.workspace.defaultTransformChipName,
+            (chip) => chip.kind === "transform",
+          ),
+        );
+      } catch (err) {
+        setRegisterChipName(messages.workspace.defaultTransformChipName(1));
+        toastError(messages.workspace.loadError, err);
+      }
+    }
     setRegisterOpen(true);
   }
 
-  function confirmRecipe() {
-    if (workspaceMode || transformId) {
-      void saveTransformDefinition();
-      return;
+  async function confirmRecipe() {
+    const confirmed = await showConfirm(
+      messages.transform.confirmRecipeTitle,
+      messages.transform.confirmRecipeMessage,
+    );
+    if (!confirmed) return;
+    if (!workspaceMode && !newWorkspaceChip) {
+      const savedTransformId = await saveTransformDefinition({ returnToWorkspace: false });
+      if (!savedTransformId) return;
     }
-    openRegister();
+    toastSuccess(messages.transform.recipeProcessed);
+    setDetailTab("result");
+    setFinalizedPreviewOpen(true);
+    setDetailOpen(true);
+    setDetailTick((tick) => tick + 1);
+  }
+
+  async function exportResult() {
+    let exportTransformId = transformId;
+    if (workspaceMode) {
+      exportTransformId = await saveTransformDefinition({ returnToWorkspace: false });
+    }
+    if (!exportTransformId) return;
+    setBusy(true);
+    try {
+      const run = await transformApi.run(exportTransformId);
+      navigate(`/jobs/${run.id}`);
+    } catch (err) {
+      toastError(messages.errors.runJob, err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyToWorkspaceChip() {
+    const savedTransformId = await saveTransformDefinition({ returnToWorkspace: false });
+    if (!savedTransformId) return;
+    setDetailOpen(false);
+    setFinalizedPreviewOpen(false);
+    toastSuccess(messages.transform.saveToWorkspace);
+    if (workspaceId) {
+      navigate(`/workspace/${workspaceId}`, {
+        state: navigationState?.canvasDraft
+          ? { canvasDraft: navigationState.canvasDraft }
+          : undefined,
+      });
+    }
+  }
+
+  async function closeFinalizedPreview() {
+    if (workspaceMode) {
+      const confirmed = await showConfirm(
+        messages.transform.cancelTransformTitle,
+        messages.transform.cancelTransformMessage,
+      );
+      if (!confirmed) return;
+    }
+    setDetailOpen(false);
+    setFinalizedPreviewOpen(false);
   }
 
   function updateStep(index: number, next: TransformStep) {
@@ -690,6 +872,27 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
   const activePreview = detailTab === "result" ? resultPreview : sourcePreview;
   const previewHeaders = activePreview?.columns.map((column) => column.name) ?? [];
+  const sectionLabel = editorSection === "combine"
+    ? t.sectionCombine
+    : editorSection === "aggregate"
+      ? t.sectionAggregate
+      : t.sectionClean;
+  const SectionIcon = editorSection === "combine"
+    ? Workflow
+    : editorSection === "aggregate"
+      ? ListChecks
+      : Filter;
+  const appliedSections = [
+    steps.length > 0
+      ? { key: "clean", label: t.sectionClean, icon: Filter }
+      : null,
+    hasCombineDraft
+      ? { key: "combine", label: t.sectionCombine, icon: Workflow }
+      : null,
+    aggregations.length > 0
+      ? { key: "aggregate", label: t.sectionAggregate, icon: ListChecks }
+      : null,
+  ].filter((section): section is NonNullable<typeof section> => section !== null);
 
   return (
     <PageShell>
@@ -700,6 +903,21 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         description={t.description}
         actions={
           <>
+            {workspaceMode ? (
+              <>
+                <Button
+                  type="button"
+                  variant="quiet"
+                  className="gap-2"
+                  disabled={busy}
+                  onClick={returnToWorkspace}
+                >
+                  <ArrowLeft className="size-3.5" aria-hidden="true" />
+                  {messages.transform.returnToWorkspace}
+                </Button>
+                <span className="w-3" aria-hidden="true" />
+              </>
+            ) : null}
             <Button
               type="button"
               variant="quiet"
@@ -710,24 +928,43 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               <RotateCcw className="size-3.5" aria-hidden="true" />
               {messages.transform.reset}
             </Button>
-            <Button
-              type="button"
-              className="gap-2"
-              disabled={!datasetId || busy || editorSection === TRANSFORM_SECTIONS.at(-1)}
-              onClick={moveToNextTransform}
-            >
-              <ChevronRight className="size-3.5" aria-hidden="true" />
-              {messages.transform.nextTransform}
-            </Button>
+            <div className="w-44" title={t.sectionSelect}>
+              <Select
+                value={editorSection}
+                disabled={!datasetId || busy}
+                options={TRANSFORM_SECTIONS.map((section) => {
+                  const Icon = section === "combine"
+                    ? Workflow
+                    : section === "aggregate"
+                      ? ListChecks
+                      : Filter;
+                  const label = section === "combine"
+                    ? t.sectionCombine
+                    : section === "aggregate"
+                      ? t.sectionAggregate
+                      : t.sectionClean;
+                  return {
+                    value: section,
+                    label: (
+                      <span className="flex items-center gap-2">
+                        <Icon className="size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
+                        <span>{label}</span>
+                      </span>
+                    ),
+                  };
+                })}
+                onChange={(value) => changeSection(value as TransformEditorSection)}
+              />
+            </div>
             <Button
               variant="primary"
               type="button"
-              className="gap-2"
+              className="ml-5 gap-2"
               disabled={!datasetId || busy}
-              onClick={confirmRecipe}
+              onClick={() => void confirmRecipe()}
             >
               <BookmarkPlus className="size-3.5" aria-hidden="true" />
-              {busy ? messages.common.saving : messages.common.confirm}
+              {busy ? messages.common.saving : t.confirmRecipe}
             </Button>
           </>
         }
@@ -893,11 +1130,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                               onClick={() => {
                                 const selecting = datasetId !== item.id;
                                 setDatasetId(selecting ? item.id : undefined);
-                                if (selecting && !transformId) {
-                                  setName((current) =>
-                                    current || defaultTransformName(item.filename),
-                                  );
-                                }
+                                setName(selecting ? defaultTransformName(item.filename) : "");
                               }}
                             >
                               <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
@@ -935,24 +1168,18 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
           <section className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
             <PaneHeader
-              title={
-                editorSection === "combine"
-                  ? t.combineSetup
-                  : editorSection === "aggregate"
-                    ? t.aggregateTitle
-                    : messages.transform.setup
-              }
+              title={messages.transform.setup}
               meta={
                 editorSection === "combine"
                   ? combineDraft
                     ? combineModeLabel
-                    : t.combineInactive
+                    : undefined
                   : editorSection === "aggregate"
                     ? messages.common.count(aggregations.length)
                     : messages.common.count(steps.length)
               }
               afterMeta={
-                <div className="flex items-center gap-2">
+                <div className="ml-4 flex items-center gap-2">
                   <Button
                     type="button"
                     variant="secondary"
@@ -1034,11 +1261,40 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                       )
                     : null}
                 </div>
-                ) : null
-              }
+                ) : null}
                 </div>
               }
+              actions={
+                <>
+                  <div
+                    className="flex items-center gap-1.5"
+                    aria-label={t.appliedTransforms}
+                    title={t.appliedTransforms}
+                  >
+                    {appliedSections.length > 0 ? appliedSections.map((section) => {
+                      const Icon = section.icon;
+                      return (
+                        <span
+                          key={section.key}
+                          className="flex h-6 items-center gap-1 rounded-full border border-accent/30 bg-accent-subtle px-2 text-[10px] font-semibold text-accent"
+                        >
+                          <Icon className="size-3" aria-hidden="true" />
+                          {section.label}
+                        </span>
+                      );
+                    }) : (
+                      <span className="text-[10px] text-text-tertiary">{t.noAppliedTransforms}</span>
+                    )}
+                  </div>
+                </>
+              }
             />
+            <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-raised px-4">
+              <span className="grid size-7 place-items-center rounded-md border border-border bg-surface text-accent">
+                <SectionIcon className="size-4" aria-hidden="true" />
+              </span>
+              <span className="text-sm font-semibold text-text">{sectionLabel}</span>
+            </div>
             {!selected ? (
               <div className="flex min-h-0 flex-1 items-center justify-center px-4">
                 <p className="text-sm text-text-tertiary">{messages.transform.pickFile}</p>
@@ -1189,21 +1445,6 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                       </div>
                     </section>
                   </div>
-                ) : editorSection === "combine" && !combineDraft ? (
-                  <div className="scroll-pane min-h-0 flex-1 overflow-auto p-4">
-                    <div className="max-w-xl rounded-lg border border-border bg-raised p-4">
-                      <p className="text-sm font-medium text-text">{t.combineInactive}</p>
-                      <p className="mt-1 text-sm leading-6 text-text-secondary">{t.combineIdleHint}</p>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        className="mt-3"
-                        onClick={() => setCombineDraft(emptyCombineDraft())}
-                      >
-                        {t.combineEnable}
-                      </Button>
-                    </div>
-                  </div>
                 ) : editorSection === "combine" && combineDraft ? (
                   <CombineSetup
                     messages={messages}
@@ -1213,7 +1454,6 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                     leftColumns={cleanColumns}
                     commonJoinKeys={commonJoinKeys}
                     onChange={setCombineDraft}
-                    onDisable={() => setCombineDraft(null)}
                   />
                 ) : (
                 <div className="flex min-h-0 flex-1 flex-col">
@@ -1297,13 +1537,13 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
       <AppDialog
         open={detailOpen}
-        title={selected?.filename ?? messages.transform.previewSteps}
+        title={finalizedPreviewOpen ? messages.transform.resultDialogTitle : (selected?.filename ?? messages.transform.previewSteps)}
         icon={<FileSpreadsheet className="size-4 text-accent" aria-hidden="true" />}
-        className="h-[min(42rem,88vh)] w-[min(72rem,94vw)]"
-        minWidth={520}
+        className={finalizedPreviewOpen ? "h-[90vh] w-[96vw] max-w-[90rem]" : "h-[min(42rem,88vh)] w-[min(72rem,94vw)]"}
+        minWidth={finalizedPreviewOpen ? 560 : 520}
         minHeight={360}
-        onClose={() => setDetailOpen(false)}
-        headerExtra={
+        onClose={finalizedPreviewOpen ? () => void closeFinalizedPreview() : () => setDetailOpen(false)}
+        headerExtra={finalizedPreviewOpen ? undefined : (
           <div className="flex gap-1">
             <Button
               type="button"
@@ -1320,12 +1560,36 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               {messages.transform.resultPreview}
             </Button>
           </div>
-        }
-        footer={
+        )}
+        footer={finalizedPreviewOpen ? (
+          <>
+            {!newWorkspaceChip ? (
+              <Button
+                variant="primary"
+                type="button"
+                className="gap-2"
+                disabled={busy}
+                onClick={() => void exportResult()}
+              >
+                <Download className="size-3.5" aria-hidden="true" />
+                {busy ? t.exporting : t.resultFile}
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              className="gap-2"
+              disabled={busy}
+              onClick={workspaceMode ? () => void applyToWorkspaceChip() : openRegister}
+            >
+              <BookmarkPlus className="size-3.5" aria-hidden="true" />
+              {workspaceMode ? t.applyToChip : t.register}
+            </Button>
+          </>
+        ) : (
           <Button type="button" variant="secondary" onClick={() => setDetailOpen(false)}>
             {messages.common.close}
           </Button>
-        }
+        )}
       >
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {activePreview ? (
@@ -1368,7 +1632,9 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               <PreviewGrid
                 preview={activePreview}
                 empty={
-                  detailTab === "result"
+                  selected?.status === "planned"
+                    ? messages.transform.schemaOnlyHint
+                    : detailTab === "result"
                     ? editorSection === "combine" && !canPreviewCombine(combineDraft, datasetId)
                       ? t.combinePreviewHint
                       : messages.transform.previewHint
@@ -1400,7 +1666,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               disabled={registerBusy || !registerChipName.trim()}
               onClick={() => void onRegisterChip()}
             >
-              {registerBusy ? messages.common.saving : messages.common.save}
+              {registerBusy ? messages.common.saving : messages.transform.register}
             </Button>
           </>
         }

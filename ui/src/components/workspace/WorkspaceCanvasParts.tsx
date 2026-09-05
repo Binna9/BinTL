@@ -1,6 +1,6 @@
 import { useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AppWindow, ChevronDown, DatabaseZap, Folder, FolderOpen, Layers, Pencil, Settings2, Spline, Workflow, type LucideIcon } from "lucide-react";
+import { AppWindow, ChevronDown, DatabaseZap, FileOutput, Folder, FolderOpen, Layers, Pencil, Settings2, Spline, Workflow, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
@@ -167,6 +167,7 @@ export function ChipLinkHandle({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onLostPointerCapture,
 }: {
   side: PortSide;
   label: string;
@@ -175,6 +176,7 @@ export function ChipLinkHandle({
   onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerCancel?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onLostPointerCapture?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
@@ -185,6 +187,7 @@ export function ChipLinkHandle({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onLostPointerCapture}
     >
       <svg viewBox="0 0 18 14" aria-hidden="true">
         <path
@@ -424,6 +427,7 @@ export function WorkspaceLayers({
 }) {
   const extracts = chips.filter((chip) => chip.kind === "extract");
   const transforms = chips.filter((chip) => chip.kind === "transform");
+  const loads = chips.filter((chip) => chip.kind === "load");
   const allChipIds = chips.map((chip) => chip.id);
   const allEdgeIds = edges.map((edge) => edge.id);
   const allLayersSelected = (allChipIds.length + allEdgeIds.length) > 0
@@ -503,6 +507,15 @@ export function WorkspaceLayers({
             />
           ))
         )}
+      </LayerGroup>
+      <LayerGroup title={messages.workspace.layerLoads(loads.length)}>
+        {loads.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : loads.map((chip) => (
+          <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={FileOutput}
+            iconClassName="text-warning" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
+            editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
+        ))}
       </LayerGroup>
       <LayerGroup title={messages.workspace.layerEdges(edges.length)}>
         {edges.length === 0 ? (
@@ -604,7 +617,7 @@ export function WorkspaceMinimap({
               key={chip.id}
               className={cn(
                 "workspace-minimap-chip",
-                chip.kind === "extract" ? "is-extract" : "is-transform",
+                chip.kind === "extract" ? "is-extract" : chip.kind === "load" ? "is-load" : "is-transform",
               )}
               style={{
                 left: point.x * scale,
@@ -623,4 +636,3 @@ export function WorkspaceMinimap({
     </div>
   );
 }
-

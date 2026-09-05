@@ -90,6 +90,32 @@ pub struct TransformRow {
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct LoadDefinitionRow {
+    pub id: String,
+    pub owner_user_id: String,
+    pub name: String,
+    pub destination_type: String,
+    pub spec_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct LoadResultRow {
+    pub chip_run_id: String,
+    pub destination: String,
+    pub write_mode: String,
+    pub input_rows: Option<i64>,
+    pub loaded_rows: i64,
+    pub rejected_rows: i64,
+    pub input_bytes: Option<i64>,
+    pub duration_ms: i64,
+    pub artifact_path: Option<String>,
+    pub validation_status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct WorkspaceRow {
     pub id: String,
     pub name: String,
@@ -190,6 +216,15 @@ pub struct RegisterTransformChip {
     pub owner_user_id: String,
     pub workspace_id: Option<String>,
     pub transform_id: String,
+    pub place_on_workspace: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegisterLoadChip {
+    pub name: String,
+    pub owner_user_id: String,
+    pub workspace_id: Option<String>,
+    pub load_definition_id: String,
     pub place_on_workspace: bool,
 }
 
