@@ -19,7 +19,7 @@ pub async fn sync_workspace_planned_inputs(
             Some(chip) => chip,
             None => continue,
         };
-        if to_chip.kind != "transform" && to_chip.kind != "load" {
+        if to_chip.kind != "transform" && to_chip.kind != "load" && to_chip.kind != "validation" {
             continue;
         }
         let _ = ensure_planned_input_for_transform(
@@ -59,7 +59,11 @@ pub async fn ensure_planned_input_for_transform(
             transform_chip_id,
             upstream_chip_id,
             schema.source_extract_definition_id.as_deref(),
-            if upstream.kind == "transform" { "transform" } else { schema.kind.as_str() },
+            if upstream.kind == "transform" {
+                "transform"
+            } else {
+                schema.kind.as_str()
+            },
             &format!("{}.planned", upstream_name),
             &columns_json,
             &schema.delimiter,
@@ -90,7 +94,7 @@ async fn planned_schema_for_chip(
     producer_chip_id: &str,
 ) -> Result<PlannedSchema, AppError> {
     let edges = state.store.list_chip_edges(workspace_id).await?;
-    let mut transforms = Vec::new();
+    let mut transform_recipes = Vec::new();
     let mut current_id = producer_chip_id.to_string();
     let mut depth = 0usize;
     let mut schema = loop {
@@ -103,41 +107,59 @@ async fn planned_schema_for_chip(
             .latest_chip_output_for_workspace(workspace_id, &current_id)
             .await?
         {
-            let dataset = state.store.get_dataset(&dataset_id).await?
+            let dataset = state
+                .store
+                .get_dataset(&dataset_id)
+                .await?
                 .ok_or_else(|| AppError::not_found("dataset not found"))?;
             break schema_from_dataset(&dataset);
         }
-        let chip = state.store.get_chip(&current_id).await?
+        let chip = state
+            .store
+            .get_chip(&current_id)
+            .await?
             .ok_or_else(|| AppError::not_found("chip not found"))?;
         match chip.kind.as_str() {
             "extract" => break schema_from_extract(state, &chip).await?,
             "transform" => {
-                transforms.push(chip);
-                if let Some(edge) = edges.iter().find(|edge| {
-                    edge.kind == "data" && edge.to_chip_id == current_id
-                }) {
+                transform_recipes.push(chip);
+                if let Some(edge) = edges
+                    .iter()
+                    .find(|edge| edge.kind == "data" && edge.to_chip_id == current_id)
+                {
                     current_id = edge.from_chip_id.clone();
                     continue;
                 }
-                let config_raw = state.store.resolve_chip_config_json(transforms.last().unwrap())
-                    .await.map_err(|error| AppError::bad(error.to_string()))?;
+                let config_raw = state
+                    .store
+                    .resolve_chip_config_json(transform_recipes.last().unwrap())
+                    .await
+                    .map_err(|error| AppError::bad(error.to_string()))?;
                 let config: Value = serde_json::from_str(&config_raw)
                     .map_err(|error| AppError::bad(error.to_string()))?;
-                let dataset_id = config.get("input_dataset_id").and_then(Value::as_str)
+                let dataset_id = config
+                    .get("input_dataset_id")
+                    .and_then(Value::as_str)
                     .filter(|id| !id.trim().is_empty())
                     .ok_or_else(|| AppError::bad("upstream transform input is not connected"))?;
-                let dataset = state.store.get_dataset(dataset_id).await?
+                let dataset = state
+                    .store
+                    .get_dataset(dataset_id)
+                    .await?
                     .ok_or_else(|| AppError::not_found("input dataset not found"))?;
                 break schema_from_dataset(&dataset);
             }
             _ => return Err(AppError::bad("upstream chip must produce data")),
         }
     };
-    for chip in transforms.iter().rev() {
-        let config_raw = state.store.resolve_chip_config_json(chip).await
+    for chip in transform_recipes.iter().rev() {
+        let config_raw = state
+            .store
+            .resolve_chip_config_json(chip)
+            .await
             .map_err(|error| AppError::bad(error.to_string()))?;
-        let config: Value = serde_json::from_str(&config_raw)
-            .map_err(|error| AppError::bad(error.to_string()))?;
+        let config: Value =
+            serde_json::from_str(&config_raw).map_err(|error| AppError::bad(error.to_string()))?;
         apply_transform_schema(state, &mut schema.columns, config.get("spec")).await?;
     }
     Ok(schema)
@@ -146,8 +168,11 @@ async fn planned_schema_for_chip(
 fn schema_from_dataset(dataset: &storage::DatasetRow) -> PlannedSchema {
     PlannedSchema {
         kind: dataset.kind.clone(),
-        columns: dataset.columns_json.as_deref()
-            .and_then(|raw| serde_json::from_str(raw).ok()).unwrap_or_default(),
+        columns: dataset
+            .columns_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default(),
         delimiter: dataset.delimiter.clone().unwrap_or_else(|| ",".into()),
         header: dataset.has_header.unwrap_or(1) != 0,
         source_extract_definition_id: dataset.source_extract_definition_id.clone(),
@@ -158,23 +183,44 @@ async fn schema_from_extract(
     state: &AppState,
     chip: &storage::ChipRow,
 ) -> Result<PlannedSchema, AppError> {
-    let config_raw = state.store.resolve_chip_config_json(chip).await
+    let config_raw = state
+        .store
+        .resolve_chip_config_json(chip)
+        .await
         .map_err(|error| AppError::bad(error.to_string()))?;
-    let config: Value = serde_json::from_str(&config_raw)
-        .map_err(|error| AppError::bad(error.to_string()))?;
-    let connection_id = config.get("connection_id").and_then(Value::as_str)
+    let config: Value =
+        serde_json::from_str(&config_raw).map_err(|error| AppError::bad(error.to_string()))?;
+    let connection_id = config
+        .get("connection_id")
+        .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| AppError::bad("extract chip is not configured"))?;
-    let source = config.get("source").cloned()
+    let source = config
+        .get("source")
+        .cloned()
         .ok_or_else(|| AppError::bad("extract source required"))?;
     let live = state.store.live_connection(connection_id).await?;
     Ok(PlannedSchema {
-        kind: if source.get("type").and_then(Value::as_str) == Some("http") { "api".into() } else { "database".into() },
+        kind: if source.get("type").and_then(Value::as_str) == Some("http") {
+            "api".into()
+        } else {
+            "database".into()
+        },
         columns: introspect_extract_source(&live, &source).await?,
-        delimiter: config.get("delimiter").and_then(Value::as_str).unwrap_or(",").into(),
-        header: config.get("header").and_then(Value::as_bool).unwrap_or(true),
-        source_extract_definition_id: state.store.get_chip_binding(&chip.id).await?
-            .filter(|binding| binding.ref_kind == "extract_definition")
+        delimiter: config
+            .get("delimiter")
+            .and_then(Value::as_str)
+            .unwrap_or(",")
+            .into(),
+        header: config
+            .get("header")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        source_extract_definition_id: state
+            .store
+            .get_chip_binding(&chip.id)
+            .await?
+            .filter(|binding| binding.ref_kind == "extract_recipe")
             .map(|binding| binding.ref_id),
     })
 }
@@ -184,14 +230,29 @@ async fn apply_transform_schema(
     columns: &mut Vec<Value>,
     spec: Option<&Value>,
 ) -> Result<(), AppError> {
-    let Some(spec) = spec else { return Ok(()); };
+    let Some(spec) = spec else {
+        return Ok(());
+    };
     if spec.get("version").and_then(Value::as_u64) == Some(3) {
-        for operation in spec.get("operations").and_then(Value::as_array).into_iter().flatten() {
+        for operation in spec
+            .get("operations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             match operation.get("type").and_then(Value::as_str) {
                 Some("clean") => apply_clean_steps(columns, operation.get("steps")),
-                Some("join") => append_dataset_columns(state, columns, operation.get("right_dataset_id")).await?,
+                Some("join") => {
+                    append_dataset_columns(state, columns, operation.get("right_dataset_id"))
+                        .await?
+                }
                 Some("union") => {
-                    for id in operation.get("dataset_ids").and_then(Value::as_array).into_iter().flatten() {
+                    for id in operation
+                        .get("dataset_ids")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
                         append_dataset_columns(state, columns, Some(id)).await?;
                     }
                 }
@@ -204,7 +265,12 @@ async fn apply_transform_schema(
             if combine.get("mode").and_then(Value::as_str) == Some("join") {
                 append_dataset_columns(state, columns, combine.get("right_dataset_id")).await?;
             } else {
-                for id in combine.get("union_dataset_ids").and_then(Value::as_array).into_iter().flatten() {
+                for id in combine
+                    .get("union_dataset_ids")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     append_dataset_columns(state, columns, Some(id)).await?;
                 }
             }
@@ -253,11 +319,18 @@ async fn append_dataset_columns(
     columns: &mut Vec<Value>,
     dataset_id: Option<&Value>,
 ) -> Result<(), AppError> {
-    let Some(id) = dataset_id.and_then(Value::as_str) else { return Ok(()); };
-    let Some(dataset) = state.store.get_dataset(id).await? else { return Ok(()); };
+    let Some(id) = dataset_id.and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Some(dataset) = state.store.get_dataset(id).await? else {
+        return Ok(());
+    };
     let extra = schema_from_dataset(&dataset).columns;
     for column in extra {
-        if !columns.iter().any(|current| column_name(current) == column_name(&column)) {
+        if !columns
+            .iter()
+            .any(|current| column_name(current) == column_name(&column))
+        {
             columns.push(column);
         }
     }
@@ -267,15 +340,37 @@ async fn append_dataset_columns(
 fn apply_aggregate_schema(columns: &mut Vec<Value>, operation: &Value) {
     let original = columns.clone();
     let groups = string_set(operation.get("group_by"));
-    let mut next = original.iter().filter(|column| groups.contains(column_name(column)))
-        .cloned().collect::<Vec<_>>();
-    for aggregation in operation.get("aggregations").and_then(Value::as_array).into_iter().flatten() {
-        let Some(alias) = aggregation.get("alias").and_then(Value::as_str) else { continue };
-        let source = aggregation.get("column").and_then(Value::as_str).unwrap_or("");
-        let function = aggregation.get("function").and_then(Value::as_str).unwrap_or("");
-        let dtype = if function == "count" { "Int64" } else {
-            original.iter().find(|column| column_name(column) == source)
-                .and_then(|column| column.get("dtype")).and_then(Value::as_str).unwrap_or("Float64")
+    let mut next = original
+        .iter()
+        .filter(|column| groups.contains(column_name(column)))
+        .cloned()
+        .collect::<Vec<_>>();
+    for aggregation in operation
+        .get("aggregations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(alias) = aggregation.get("alias").and_then(Value::as_str) else {
+            continue;
+        };
+        let source = aggregation
+            .get("column")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let function = aggregation
+            .get("function")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let dtype = if function == "count" {
+            "Int64"
+        } else {
+            original
+                .iter()
+                .find(|column| column_name(column) == source)
+                .and_then(|column| column.get("dtype"))
+                .and_then(Value::as_str)
+                .unwrap_or("Float64")
         };
         next.push(json!({ "name": alias, "dtype": dtype }));
     }
@@ -283,7 +378,12 @@ fn apply_aggregate_schema(columns: &mut Vec<Value>, operation: &Value) {
 }
 
 fn string_set(value: Option<&Value>) -> std::collections::HashSet<&str> {
-    value.and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect()
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
 }
 
 fn column_name(column: &Value) -> &str {
@@ -360,15 +460,29 @@ async fn chip_input_display_name(
         if let Some(binding) = store.get_chip_binding(&chip.id).await? {
             if binding.ref_kind == "transform" {
                 if let Some(transform) = store.get_transform(&binding.ref_id).await? {
-                    return Ok(storage::chip_slot::display_filename(&transform.name, "transform", ","));
+                    return Ok(storage::chip_slot::display_filename(
+                        &transform.name,
+                        "transform",
+                        ",",
+                    ));
                 }
             }
         }
         if let Some(transform) = store.get_transform_for_chip(&chip.id).await? {
-            return Ok(storage::chip_slot::display_filename(&transform.name, "transform", ","));
+            return Ok(storage::chip_slot::display_filename(
+                &transform.name,
+                "transform",
+                ",",
+            ));
         }
-        if let Some(name) = crate::chip::inferred_transform_output_name(store, chip, workspace_id).await? {
-            return Ok(storage::chip_slot::display_filename(&name, "transform", ","));
+        if let Some(name) =
+            crate::chip::inferred_transform_output_name(store, chip, workspace_id).await?
+        {
+            return Ok(storage::chip_slot::display_filename(
+                &name,
+                "transform",
+                ",",
+            ));
         }
     }
     Ok(chip.name.clone())

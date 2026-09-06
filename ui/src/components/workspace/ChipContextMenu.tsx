@@ -119,11 +119,13 @@ export function ChipContextMenu({
       onSelect: () => onProperties(chip),
     },
   ];
-  if (chip.kind === "transform" || chip.kind === "load") {
+  if (chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation") {
     items.push({
       id: "edit",
       label: chip.kind === "load"
         ? messages.workspace.chipMenuEditLoad
+        : chip.kind === "validation"
+          ? messages.workspace.chipMenuEditValidation
         : messages.workspace.chipMenuEditSteps,
       icon: Pencil,
       onSelect: () => onEdit(chip),

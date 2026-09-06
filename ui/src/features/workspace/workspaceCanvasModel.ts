@@ -8,7 +8,8 @@ export const TOOL_KIND = "application/x-bintl-tool";
 export function chipKindLabel(kind: ChipKind, messages: Messages) {
   if (kind === "extract") return messages.workspace.extract;
   if (kind === "transform") return messages.workspace.transform;
-  return messages.workspace.load;
+  if (kind === "load") return messages.workspace.load;
+  return messages.workspace.validation;
 }
 
 export function chipRunOrder(chips: Chip[], edges: ChipEdge[]): Chip[] | null {
@@ -352,11 +353,11 @@ export function wireTone(kind: ChipEdgeKind): "is-data" | "is-success" | "is-err
   return "is-data";
 }
 
-/** Data wires carry a dataset: extract/transform → transform/load only. */
+/** Data wires carry a materialized dataset into transform, load, or validation. */
 export function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
   return (
     (fromKind === "extract" || fromKind === "transform")
-    && (toKind === "transform" || toKind === "load")
+    && (toKind === "transform" || toKind === "load" || toKind === "validation")
   );
 }
 

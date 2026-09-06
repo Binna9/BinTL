@@ -304,11 +304,11 @@ pub(super) async fn list_extracts(
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let extracts = state
+    let extract_runs = state
         .store
         .list_extracts(limit, Some(&user.scope(q.workspace_id)))
         .await?;
-    Ok(Json(json!({ "extracts": extracts })))
+    Ok(Json(json!({ "extracts": extract_runs })))
 }
 
 pub(super) async fn get_extract(

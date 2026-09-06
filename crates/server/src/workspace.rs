@@ -18,9 +18,14 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/api/workspaces/{id}",
-            get(get_workspace).patch(update_workspace).delete(delete_workspace),
+            get(get_workspace)
+                .patch(update_workspace)
+                .delete(delete_workspace),
         )
-        .route("/api/workspaces/{id}/save", axum::routing::put(save_workspace))
+        .route(
+            "/api/workspaces/{id}/save",
+            axum::routing::put(save_workspace),
+        )
         .route(
             "/api/workspace-folders",
             get(list_folders).post(create_folder),
@@ -156,9 +161,7 @@ async fn update_workspace(
             body.name.as_deref(),
             body.description.as_deref(),
             layout_json.as_deref(),
-            body.folder_id
-                .as_ref()
-                .map(|value| value.as_deref()),
+            body.folder_id.as_ref().map(|value| value.as_deref()),
         )
         .await?;
     Ok(Json(workspace_json(&workspace, None)?))

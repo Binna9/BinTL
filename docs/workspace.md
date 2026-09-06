@@ -38,15 +38,14 @@ user
 ## 저장 모델
 
 - `workspace_folders`: 이름, `parent_id`, `owner_user_id`.
-- `workspaces`: 이름, 설명, 캔버스 배치, **version**, `owner_user_id`, `folder_id`.
+- `workspaces`: 이름, 설명, 뷰포트, **version**, `owner_user_id`, `folder_id`.
 - `workspace_revisions`: 저장할 때마다 layout+chips+edges 스냅샷. 초기화는 마지막 저장본으로 되돌린다.
-- `chips`: 재사용할 최소 작업 단위. `kind`, `config_json`, `revision`을 가진다.
-- `chip_edges`: 칩과 칩을 잇는 선. `data`는 산출 dataset을 넘기고, `then`은 순서만, `on_error`는 실패 경로다.
-- `chip_runs`: 한 번의 실행. 실행 당시 설정을 `config_snapshot_json`으로 고정한다.
-- `datasets`: 업로드, DB 추출, 변환 결과 파일의 카탈로그. 작업 공간과 생산한
-  `task_run`을 추적한다.
-- `extracts`, `jobs`, `transforms`: 기존 화면과 API 호환을 위해 유지하는 실행/정의
-  레코드다. 새 작업 실행은 이 구현을 재사용한다.
+- `chips`: `extracts`, `transforms`, `loads` 중 하나를 참조하는 작업 관리 단위다.
+- `workspace_chips`: 칩의 캔버스 배치와 좌표를 저장한다.
+- `workspace_edges`: 배치 사이 연결선이다. `data`는 upstream 출력 계약과 실제 파일을 전달한다.
+- `workspace_chip_outputs`: 예상 파일명·스키마와 최신 실제 `data_files` 포인터다.
+- `executions`, `execution_steps`: 단독 페이지와 캔버스 실행을 같은 모델로 기록한다.
+- `data_files`: 실제로 생성된 파일만 저장하며 실행 전 가짜 파일은 만들지 않는다.
 
 기존 데이터는 마이그레이션 시 기본 Workspace에 배정되고, 부트스트랩 admin의 홈이 된다.
 

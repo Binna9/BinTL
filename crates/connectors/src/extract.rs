@@ -151,7 +151,9 @@ pub async fn extract_table(
     let q = qualified(family, &parsed);
     let cols = list_columns(c, table).await?;
     if cols.is_empty() {
-        return Err(ConnectError::Invalid(format!("no columns for table {table}")));
+        return Err(ConnectError::Invalid(format!(
+            "no columns for table {table}"
+        )));
     }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -322,6 +324,9 @@ mod tests {
             with_sequence_header(true, vec!["name".into()]),
             vec!["#", "name"]
         );
-        assert_eq!(with_sequence_header(false, vec!["name".into()]), vec!["name"]);
+        assert_eq!(
+            with_sequence_header(false, vec!["name".into()]),
+            vec!["name"]
+        );
     }
 }

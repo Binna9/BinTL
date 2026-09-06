@@ -29,9 +29,9 @@ pub fn decrypt(key: &[u8; 32], packed: &str) -> Result<String, StorageError> {
         .map_err(|_| StorageError::Invalid("bad password_cipher".into()))?;
     let cipher = ChaCha20Poly1305::new(key.into());
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let pt = cipher
-        .decrypt(nonce, ct.as_ref())
-        .map_err(|_| StorageError::Invalid("cannot decrypt password (session_secret mismatch?)".into()))?;
+    let pt = cipher.decrypt(nonce, ct.as_ref()).map_err(|_| {
+        StorageError::Invalid("cannot decrypt password (session_secret mismatch?)".into())
+    })?;
     String::from_utf8(pt).map_err(|_| StorageError::Invalid("password not utf-8".into()))
 }
 

@@ -1,7 +1,7 @@
+use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
-use chrono::{SecondsFormat, Utc};
 
 use crate::{StorageError, Store};
 
@@ -43,7 +43,9 @@ impl Store {
         let needle = query.trim();
         let limit = limit.clamp(1, 50);
         if needle.is_empty() {
-            return self.browse_search_documents(user_id, can_see_all, limit.max(24)).await;
+            return self
+                .browse_search_documents(user_id, can_see_all, limit.max(24))
+                .await;
         }
         let pattern = like_pattern(needle);
         let can_all = i64::from(can_see_all);
@@ -156,7 +158,9 @@ impl Store {
     ) -> Result<Vec<String>, StorageError> {
         let needle = query.trim();
         if needle.is_empty() {
-            return self.list_recent_searches(user_id, MAX_RECENT_SEARCHES).await;
+            return self
+                .list_recent_searches(user_id, MAX_RECENT_SEARCHES)
+                .await;
         }
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let id = Uuid::new_v4().to_string();
@@ -196,7 +200,8 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        self.list_recent_searches(user_id, MAX_RECENT_SEARCHES).await
+        self.list_recent_searches(user_id, MAX_RECENT_SEARCHES)
+            .await
     }
 
     pub async fn delete_search_document(
@@ -247,7 +252,9 @@ impl Store {
 
     pub async fn sync_search_workspace_folder(&self, folder_id: &str) -> Result<(), StorageError> {
         let Some(folder) = self.get_folder(folder_id).await? else {
-            return self.delete_search_document("workspace_folder", folder_id).await;
+            return self
+                .delete_search_document("workspace_folder", folder_id)
+                .await;
         };
         let path = self.folder_path_label(folder_id).await?;
         self.upsert_search_document(SearchDocInput {
@@ -325,7 +332,7 @@ impl Store {
 
     pub async fn sync_search_dataset(&self, dataset_id: &str) -> Result<(), StorageError> {
         let Some(dataset) = self.get_dataset(dataset_id).await? else {
-            return self.delete_search_document("dataset", dataset_id).await;
+            return self.delete_search_document("data_file", dataset_id).await;
         };
         let subtitle = match dataset.kind.as_str() {
             "upload" => "파일 · 업로드",
@@ -340,7 +347,7 @@ impl Store {
             "/transform/clean".into()
         };
         self.upsert_search_document(SearchDocInput {
-            entity_type: "dataset",
+            entity_type: "data_file",
             entity_id: dataset.id.clone(),
             title: dataset.filename.clone(),
             subtitle: subtitle.into(),
@@ -360,7 +367,9 @@ impl Store {
 
     pub async fn sync_search_connection(&self, connection_id: &str) -> Result<(), StorageError> {
         let Some(connection) = self.get_connection(connection_id).await? else {
-            return self.delete_search_document("connection", connection_id).await;
+            return self
+                .delete_search_document("connection", connection_id)
+                .await;
         };
         self.upsert_search_document(SearchDocInput {
             entity_type: "connection",
@@ -416,7 +425,7 @@ impl Store {
                 extract.sql_text.as_deref().unwrap_or(""),
                 extract.kind.as_str(),
             ]),
-            route: "/extracts".into(),
+            route: "/extract_runs".into(),
             scope: "workspace",
             workspace_id: Some(extract.workspace_id.clone()),
             owner_user_id: None,
@@ -449,6 +458,25 @@ impl Store {
         .await
     }
 
+    pub async fn sync_search_load(&self, load_id: &str) -> Result<(), StorageError> {
+        let Some(load) = self.get_load_definition(load_id).await? else {
+            return self.delete_search_document("load", load_id).await;
+        };
+        self.upsert_search_document(SearchDocInput {
+            entity_type: "load",
+            entity_id: load.id.clone(),
+            title: load.name.clone(),
+            subtitle: "적재 정의".into(),
+            keywords: join_keywords([&load.name, &load.destination_type, &load.spec_json]),
+            route: "/load".into(),
+            scope: "user",
+            workspace_id: None,
+            owner_user_id: Some(load.owner_user_id.clone()),
+            updated_at: load.updated_at.clone(),
+        })
+        .await
+    }
+
     async fn folder_path_label(&self, folder_id: &str) -> Result<String, StorageError> {
         let mut segments = Vec::new();
         let mut cursor = Some(folder_id.to_string());
@@ -468,7 +496,7 @@ impl Store {
             return Ok(String::new());
         };
         match binding.ref_kind.as_str() {
-            "extract_definition" => {
+            "extract_recipe" => {
                 let Some(def) = self.get_extract_definition(&binding.ref_id).await? else {
                     return Ok(String::new());
                 };
@@ -485,11 +513,15 @@ impl Store {
                 };
                 Ok(transform.name)
             }
-            "load_definition" => {
+            "load_recipe" => {
                 let Some(definition) = self.get_load_definition(&binding.ref_id).await? else {
                     return Ok(String::new());
                 };
-                Ok(join_keywords([&definition.name, &definition.destination_type, &definition.spec_json]))
+                Ok(join_keywords([
+                    &definition.name,
+                    &definition.destination_type,
+                    &definition.spec_json,
+                ]))
             }
             _ => Ok(String::new()),
         }
@@ -515,7 +547,11 @@ fn like_pattern(raw: &str) -> String {
     format!("%{}%", escape_like(raw).to_lowercase())
 }
 
-pub(crate) async fn sync_search_best_effort(_store: &Store, label: &str, sync: impl std::future::Future<Output = Result<(), StorageError>>) {
+pub(crate) async fn sync_search_best_effort(
+    _store: &Store,
+    label: &str,
+    sync: impl std::future::Future<Output = Result<(), StorageError>>,
+) {
     if let Err(error) = sync.await {
         tracing::warn!(%error, target = label, "search index sync failed");
     }
@@ -536,7 +572,9 @@ mod tests {
     #[tokio::test]
     async fn recent_searches_dedupe_and_cap() {
         let (store, user_id) = test_store().await;
-        for query in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota"] {
+        for query in [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota",
+        ] {
             store.record_recent_search(&user_id, query).await.unwrap();
         }
         let recent = store.list_recent_searches(&user_id, 8).await.unwrap();

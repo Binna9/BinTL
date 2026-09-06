@@ -13,6 +13,7 @@ import {
   Puzzle,
   Upload,
   Workflow,
+  ShieldCheck,
 } from "lucide-react";
 import { MenuSidebar, type MenuItem } from "@/components/ui/menu";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -110,6 +111,17 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       label: messages.nav.load,
       icon: <Upload className={iconClassName} />,
       isActive: (pathname) => pathname === "/load" || /^\/workspace\/[^/]+\/chips\/[^/]+\/load(?:\/[^/]+)?$/.test(pathname),
+    },
+    {
+      to: "/validation",
+      label: messages.nav.validation,
+      icon: <ShieldCheck className={iconClassName} />,
+      isActive: (pathname) => pathname.startsWith("/validation") || /^\/workspace\/[^/]+\/chips\/[^/]+\/validation$/.test(pathname),
+      children: [
+        { to: "/validation", label: messages.validation.runTitle, icon: <ShieldCheck className={iconClassName} />, end: true },
+        { to: "/validation/rules", label: messages.validation.rulesTitle, icon: <ListChecks className={iconClassName} /> },
+        { to: "/validation/results", label: messages.validation.resultsTitle, icon: <History className={iconClassName} /> },
+      ],
     },
     {
       to: "/history",

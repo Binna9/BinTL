@@ -67,7 +67,9 @@ pub struct TableName {
 pub fn parse_table(raw: &str) -> Result<TableName, ConnectError> {
     let parts: Vec<&str> = raw.split('.').collect();
     if parts.is_empty() || parts.len() > 2 {
-        return Err(ConnectError::Invalid("table must be name or schema.name".into()));
+        return Err(ConnectError::Invalid(
+            "table must be name or schema.name".into(),
+        ));
     }
     for p in &parts {
         if p.is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
@@ -127,7 +129,11 @@ pub(crate) fn quote_ident(family: &str, ident: &str) -> String {
 
 pub(crate) fn qualified(family: &str, t: &TableName) -> String {
     match &t.schema {
-        Some(s) => format!("{}.{}", quote_ident(family, s), quote_ident(family, &t.table)),
+        Some(s) => format!(
+            "{}.{}",
+            quote_ident(family, s),
+            quote_ident(family, &t.table)
+        ),
         None => quote_ident(family, &t.table),
     }
 }
@@ -311,7 +317,12 @@ pub async fn list_tables(c: &LiveConnection) -> Result<Vec<String>, ConnectError
             let rows = stream.into_first_result().await?;
             Ok(rows
                 .iter()
-                .filter_map(|r| r.try_get::<&str, usize>(0).ok().flatten().map(str::to_string))
+                .filter_map(|r| {
+                    r.try_get::<&str, usize>(0)
+                        .ok()
+                        .flatten()
+                        .map(str::to_string)
+                })
                 .collect())
         }
         other => Err(ConnectError::Invalid(format!("unsupported family {other}"))),
@@ -404,11 +415,7 @@ pub(crate) fn stringify_ms(row: &tiberius::Row, i: usize) -> String {
 
 fn open_load_csv(path: &Path) -> Result<(csv::Reader<std::fs::File>, Vec<String>), ConnectError> {
     let mut rdr = csv::Reader::from_path(path)?;
-    let headers: Vec<String> = rdr
-        .headers()?
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let headers: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
     let mut seen = std::collections::HashSet::new();
     for h in &headers {
         if h.trim().is_empty() || h.chars().any(char::is_control) || !seen.insert(h) {
@@ -430,14 +437,24 @@ fn read_csv_batch(
     Ok(rows)
 }
 
-fn create_table_sql(family: &str, q: &str, raw_table: &str, cols: &[String], unique_keys: &[String]) -> String {
+fn create_table_sql(
+    family: &str,
+    q: &str,
+    raw_table: &str,
+    cols: &[String],
+    unique_keys: &[String],
+) -> String {
     let mut defs = cols
         .iter()
         .map(|c| format!("{} TEXT", quote_ident(family, c)))
         .collect::<Vec<_>>()
         .join(", ");
     if !unique_keys.is_empty() {
-        let keys = unique_keys.iter().map(|key| quote_ident(family, key)).collect::<Vec<_>>().join(", ");
+        let keys = unique_keys
+            .iter()
+            .map(|key| quote_ident(family, key))
+            .collect::<Vec<_>>()
+            .join(", ");
         defs.push_str(&format!(", UNIQUE ({keys})"));
     }
     match family {
@@ -466,7 +483,10 @@ pub async fn load_table(
     mode: &str,
     conflict_keys: &[String],
 ) -> Result<u64, ConnectError> {
-    if !matches!(mode, "append" | "truncate" | "upsert" | "recreate" | "replace") {
+    if !matches!(
+        mode,
+        "append" | "truncate" | "upsert" | "recreate" | "replace"
+    ) {
         return Err(ConnectError::Invalid("unsupported load mode".into()));
     }
     let family = driver_family(&c.driver)?;
@@ -478,40 +498,65 @@ pub async fn load_table(
     }
     if mode == "upsert" {
         if conflict_keys.is_empty() || conflict_keys.iter().any(|key| !cols.contains(key)) {
-            return Err(ConnectError::Invalid("upsert keys must exist in the input columns".into()));
+            return Err(ConnectError::Invalid(
+                "upsert keys must exist in the input columns".into(),
+            ));
         }
         if c.driver == "redshift" || family == "mssql" {
-            return Err(ConnectError::Invalid("upsert is not yet supported for this driver".into()));
+            return Err(ConnectError::Invalid(
+                "upsert is not yet supported for this driver".into(),
+            ));
         }
     }
-    let create = create_table_sql(family, &q, table, &cols, if mode == "upsert" { conflict_keys } else { &[] });
+    let create = create_table_sql(
+        family,
+        &q,
+        table,
+        &cols,
+        if mode == "upsert" { conflict_keys } else { &[] },
+    );
     let mut n = 0u64;
     match family {
         "postgres" => {
             let pool = pg_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "recreate" { sqlx::query(&format!("DROP TABLE IF EXISTS {q}")).execute(&pool).await?; sqlx::query(&create).execute(&pool).await?; }
+            if mode == "recreate" {
+                sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
+                    .execute(&pool)
+                    .await?;
+                sqlx::query(&create).execute(&pool).await?;
+            }
             if matches!(mode, "replace" | "truncate") {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
             loop {
                 let rows = read_csv_batch(&mut reader, 2_000)?;
-                if rows.is_empty() { break; }
+                if rows.is_empty() {
+                    break;
+                }
                 n += rows.len() as u64;
-                insert_sqlx::<Postgres>(&pool, family, &q, &cols, &rows, mode, conflict_keys).await?;
+                insert_sqlx::<Postgres>(&pool, family, &q, &cols, &rows, mode, conflict_keys)
+                    .await?;
             }
             pool.close().await;
         }
         "mysql" => {
             let pool = my_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "recreate" { sqlx::query(&format!("DROP TABLE IF EXISTS {q}")).execute(&pool).await?; sqlx::query(&create).execute(&pool).await?; }
+            if mode == "recreate" {
+                sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
+                    .execute(&pool)
+                    .await?;
+                sqlx::query(&create).execute(&pool).await?;
+            }
             if matches!(mode, "replace" | "truncate") {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
             loop {
                 let rows = read_csv_batch(&mut reader, 2_000)?;
-                if rows.is_empty() { break; }
+                if rows.is_empty() {
+                    break;
+                }
                 n += rows.len() as u64;
                 insert_sqlx::<MySql>(&pool, family, &q, &cols, &rows, mode, conflict_keys).await?;
             }
@@ -520,13 +565,20 @@ pub async fn load_table(
         "sqlite" => {
             let pool = sqlite_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "recreate" { sqlx::query(&format!("DROP TABLE IF EXISTS {q}")).execute(&pool).await?; sqlx::query(&create).execute(&pool).await?; }
+            if mode == "recreate" {
+                sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
+                    .execute(&pool)
+                    .await?;
+                sqlx::query(&create).execute(&pool).await?;
+            }
             if matches!(mode, "replace" | "truncate") {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
             loop {
                 let rows = read_csv_batch(&mut reader, 2_000)?;
-                if rows.is_empty() { break; }
+                if rows.is_empty() {
+                    break;
+                }
                 n += rows.len() as u64;
                 insert_sqlx::<Sqlite>(&pool, family, &q, &cols, &rows, mode, conflict_keys).await?;
             }
@@ -535,7 +587,10 @@ pub async fn load_table(
         "mssql" => {
             let mut client = mssql_client(c).await?;
             client.simple_query(create.clone()).await?;
-            if mode == "recreate" { client.simple_query(format!("DROP TABLE {q}")).await.ok(); client.simple_query(create.clone()).await?; }
+            if mode == "recreate" {
+                client.simple_query(format!("DROP TABLE {q}")).await.ok();
+                client.simple_query(create.clone()).await?;
+            }
             if matches!(mode, "replace" | "truncate") {
                 client.simple_query(clear_sql(family, &q)).await?;
             }
@@ -545,20 +600,22 @@ pub async fn load_table(
                 .collect::<Vec<_>>()
                 .join(", ");
             loop {
-              let rows = read_csv_batch(&mut reader, 500)?;
-              if rows.is_empty() { break; }
-              n += rows.len() as u64;
-              for row in &rows {
-                let placeholders = (1..=cols.len())
-                    .map(|i| format!("@P{i}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let sql = format!("INSERT INTO {q} ({col_sql}) VALUES ({placeholders})");
-                let binds: Vec<&str> = row.iter().map(String::as_str).collect();
-                let args: Vec<&dyn tiberius::ToSql> =
-                    binds.iter().map(|s| s as &dyn tiberius::ToSql).collect();
-                client.execute(sql, &args).await?;
-              }
+                let rows = read_csv_batch(&mut reader, 500)?;
+                if rows.is_empty() {
+                    break;
+                }
+                n += rows.len() as u64;
+                for row in &rows {
+                    let placeholders = (1..=cols.len())
+                        .map(|i| format!("@P{i}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let sql = format!("INSERT INTO {q} ({col_sql}) VALUES ({placeholders})");
+                    let binds: Vec<&str> = row.iter().map(String::as_str).collect();
+                    let args: Vec<&dyn tiberius::ToSql> =
+                        binds.iter().map(|s| s as &dyn tiberius::ToSql).collect();
+                    client.execute(sql, &args).await?;
+                }
             }
         }
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
@@ -607,24 +664,48 @@ where
             sql.push(')');
         }
         if mode == "upsert" {
-            let update_cols = cols.iter().filter(|col| !conflict_keys.contains(col)).collect::<Vec<_>>();
+            let update_cols = cols
+                .iter()
+                .filter(|col| !conflict_keys.contains(col))
+                .collect::<Vec<_>>();
             if family == "mysql" {
-                let assignments = update_cols.iter().map(|col| {
-                    let quoted = quote_ident(family, col);
-                    format!("{quoted} = VALUES({quoted})")
-                }).collect::<Vec<_>>().join(", ");
+                let assignments = update_cols
+                    .iter()
+                    .map(|col| {
+                        let quoted = quote_ident(family, col);
+                        format!("{quoted} = VALUES({quoted})")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let fallback = quote_ident(family, &conflict_keys[0]);
-                sql.push_str(&format!(" ON DUPLICATE KEY UPDATE {}", if assignments.is_empty() { format!("{fallback} = {fallback}") } else { assignments }));
+                sql.push_str(&format!(
+                    " ON DUPLICATE KEY UPDATE {}",
+                    if assignments.is_empty() {
+                        format!("{fallback} = {fallback}")
+                    } else {
+                        assignments
+                    }
+                ));
             } else {
-                let keys = conflict_keys.iter().map(|key| quote_ident(family, key)).collect::<Vec<_>>().join(", ");
+                let keys = conflict_keys
+                    .iter()
+                    .map(|key| quote_ident(family, key))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 if update_cols.is_empty() {
                     sql.push_str(&format!(" ON CONFLICT ({keys}) DO NOTHING"));
                 } else {
-                    let assignments = update_cols.iter().map(|col| {
-                        let quoted = quote_ident(family, col);
-                        format!("{quoted} = EXCLUDED.{quoted}")
-                    }).collect::<Vec<_>>().join(", ");
-                    sql.push_str(&format!(" ON CONFLICT ({keys}) DO UPDATE SET {assignments}"));
+                    let assignments = update_cols
+                        .iter()
+                        .map(|col| {
+                            let quoted = quote_ident(family, col);
+                            format!("{quoted} = EXCLUDED.{quoted}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    sql.push_str(&format!(
+                        " ON CONFLICT ({keys}) DO UPDATE SET {assignments}"
+                    ));
                 }
             }
         }

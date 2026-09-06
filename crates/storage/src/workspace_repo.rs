@@ -56,7 +56,7 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO workspaces
-             (id, name, description, layout_json, version, created_at, updated_at, owner_user_id, folder_id)
+             (id, name, description, viewport_json, version, created_at, updated_at, owner_user_id, folder_id)
              VALUES (?, ?, ?, '{}', 1, ?, ?, ?, ?)",
         )
         .bind(&id)
@@ -127,7 +127,7 @@ impl Store {
         }
         sqlx::query(
             "UPDATE workspaces
-             SET name = ?, description = ?, layout_json = ?, folder_id = ?, updated_at = ?
+             SET name = ?, description = ?, viewport_json = ?, folder_id = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(name)
@@ -158,51 +158,13 @@ impl Store {
         if found.is_none() {
             return Err(StorageError::NotFound("workspace not found".into()));
         }
-        // Catalog extract defs may still point at this workspace (no ON DELETE).
-        sqlx::query("UPDATE extract_definitions SET workspace_id = NULL WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE transforms SET workspace_id = ? WHERE workspace_id = ?")
+        sqlx::query("UPDATE executions SET workspace_id = ? WHERE workspace_id = ?")
             .bind(DEFAULT_WORKSPACE_ID)
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE extracts SET workspace_id = ? WHERE workspace_id = ?")
+        sqlx::query("UPDATE data_files SET workspace_id = ? WHERE workspace_id = ?")
             .bind(DEFAULT_WORKSPACE_ID)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE jobs SET workspace_id = ? WHERE workspace_id = ?")
-            .bind(DEFAULT_WORKSPACE_ID)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "UPDATE datasets SET producer_chip_run_id = NULL
-             WHERE producer_chip_run_id IN (SELECT id FROM chip_runs WHERE workspace_id = ?)",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query("UPDATE datasets SET workspace_id = ? WHERE workspace_id = ?")
-            .bind(DEFAULT_WORKSPACE_ID)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM chip_edges WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM chip_runs WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM workspace_revisions WHERE workspace_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -479,24 +441,66 @@ impl Store {
             .ok_or_else(|| StorageError::NotFound(format!("chip {chip_id} not found")))?;
             saved_chips.push(chip);
         }
-        sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
+        sqlx::query("DELETE FROM workspace_edges WHERE workspace_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        if saved_chips.is_empty() {
+            sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            let marks = std::iter::repeat("?")
+                .take(saved_chips.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "DELETE FROM workspace_chips WHERE workspace_id = ? AND chip_id NOT IN ({marks})"
+            );
+            let mut delete = sqlx::query(&sql).bind(id);
+            for chip in &saved_chips {
+                delete = delete.bind(&chip.id);
+            }
+            delete.execute(&mut *tx).await?;
+        }
         for chip in &saved_chips {
+            let position = serde_json::from_str::<serde_json::Value>(layout_json)
+                .ok()
+                .and_then(|layout| {
+                    layout
+                        .get("nodes")
+                        .and_then(|nodes| nodes.get(&chip.id))
+                        .cloned()
+                });
+            let x = position
+                .as_ref()
+                .and_then(|node| node.get("x"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let y = position
+                .as_ref()
+                .and_then(|node| node.get("y"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             sqlx::query(
-                "INSERT INTO workspace_chips (workspace_id, chip_id, created_at)
-                 VALUES (?, ?, ?)",
+                "INSERT INTO workspace_chips (id, workspace_id, chip_id, x, y, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET x=excluded.x, y=excluded.y, updated_at=excluded.updated_at",
             )
+            .bind(workspace_chip_id(id, &chip.id))
             .bind(id)
             .bind(&chip.id)
+            .bind(x)
+            .bind(y)
+            .bind(&now)
             .bind(&now)
             .execute(&mut *tx)
             .await?;
         }
         let saved_edges = replace_workspace_edges(&mut tx, id, edges, &saved_chips, &now).await?;
         sqlx::query(
-            "UPDATE workspaces SET layout_json = ?, version = ?, updated_at = ? WHERE id = ?",
+            "UPDATE workspaces SET viewport_json = ?, version = ?, updated_at = ? WHERE id = ?",
         )
         .bind(layout_json)
         .bind(version)
@@ -561,4 +565,8 @@ impl Store {
         }
         Ok(())
     }
+}
+
+pub(crate) fn workspace_chip_id(workspace_id: &str, chip_id: &str) -> String {
+    format!("{workspace_id}:{chip_id}")
 }

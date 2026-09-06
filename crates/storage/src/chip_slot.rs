@@ -2,10 +2,16 @@ use crate::{resolve_upload_filename, safe_filename, StorageError};
 
 pub const REL_CHIP_OUTPUTS: &str = "chip_outputs";
 
-pub fn stored_rel(workspace_id: &str, chip_id: &str, filename: &str) -> Result<String, StorageError> {
+pub fn stored_rel(
+    workspace_id: &str,
+    chip_id: &str,
+    filename: &str,
+) -> Result<String, StorageError> {
     let filename = safe_filename(filename);
     if filename.is_empty() {
-        return Err(StorageError::Invalid("chip output filename required".into()));
+        return Err(StorageError::Invalid(
+            "chip output filename required".into(),
+        ));
     }
     Ok(format!(
         "{REL_CHIP_OUTPUTS}/{workspace_id}/{chip_id}/{filename}"
@@ -39,17 +45,9 @@ pub fn slot_file_name(kind: &str, delimiter: &str) -> String {
     }
 }
 
-pub fn standalone_export_filename(
-    requested: Option<&str>,
-    table: &str,
-    delimiter: &str,
-) -> String {
+pub fn standalone_export_filename(requested: Option<&str>, table: &str, delimiter: &str) -> String {
     let ext = extract_ext(delimiter);
-    let fallback = format!(
-        "{}.{}",
-        safe_filename(&table.replace('.', "_")),
-        ext
-    );
+    let fallback = format!("{}.{}", safe_filename(&table.replace('.', "_")), ext);
     resolve_upload_filename(&fallback, requested)
 }
 

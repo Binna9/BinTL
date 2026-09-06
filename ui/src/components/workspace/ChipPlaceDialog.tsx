@@ -13,6 +13,7 @@ import {
   Layers3,
   Plus,
   Search,
+  ShieldCheck,
   Upload,
   Workflow,
 } from "lucide-react";
@@ -25,7 +26,7 @@ import { selectableClass } from "@/lib/selectable";
 import type { Chip } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
-export type ChipPlaceKind = "extract" | "transform" | "load";
+export type ChipPlaceKind = "extract" | "transform" | "load" | "validation";
 
 export type TransformPlaceDraft = {
   name: string;
@@ -702,14 +703,23 @@ function TransformNewPanel({
   );
 }
 
-function LoadCatalogPanel({ chips, canvasChipIds, messages, busy, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
-  chips: Chip[]; canvasChipIds: Set<string>; messages: Messages; busy?: boolean;
-  onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty: () => void; onRegister: () => void;
+function LoadCatalogPanel({ chips, canvasChipIds, defaultName, messages, busy, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
+  chips: Chip[]; canvasChipIds: Set<string>; defaultName: string; messages: Messages; busy?: boolean;
+  onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty: (name: string) => void; onRegister: () => void;
   dragHandleRef: RefObject<HTMLDivElement | null>;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
+  const [namingEmpty, setNamingEmpty] = useState(false);
+  const [emptyName, setEmptyName] = useState(defaultName);
+
+  useEffect(() => {
+    setNamingEmpty(false);
+    setEmptyName(defaultName);
+  }, [defaultName]);
+
   return (
-    <div className="chip-place-main">
+    <>
+      <div className="chip-place-main">
       <PlacePanelHeader
         icon={<FileOutput className="size-4" aria-hidden="true" />}
         iconClassName="bg-warning-subtle text-warning"
@@ -724,7 +734,10 @@ function LoadCatalogPanel({ chips, canvasChipIds, messages, busy, onClose, onPla
           variant="secondary"
           className="h-10 gap-1.5 text-[12px]"
           disabled={busy}
-          onClick={onPlaceEmpty}
+          onClick={() => {
+            setEmptyName(defaultName);
+            setNamingEmpty(true);
+          }}
         >
           <Layers3 className="size-3.5" aria-hidden="true" />
           {messages.workspace.placeLoadEmptyChip}
@@ -763,7 +776,52 @@ function LoadCatalogPanel({ chips, canvasChipIds, messages, busy, onClose, onPla
         onCancel={onClose}
         onSubmit={() => onPlace(selected)}
       />
-    </div>
+      </div>
+      <AppDialog
+        open={namingEmpty}
+        title={messages.workspace.nameChipTitle}
+        zIndex={110}
+        className="w-[min(24rem,92vw)]"
+        onClose={() => setNamingEmpty(false)}
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setNamingEmpty(false)}>
+              {messages.common.cancel}
+            </Button>
+            <Button type="button" variant="primary" disabled={busy || !emptyName.trim()} onClick={() => {
+              const trimmed = emptyName.trim();
+              if (!trimmed) return;
+              setNamingEmpty(false);
+              onPlaceEmpty(trimmed);
+            }}>
+              {messages.workspace.nameChipConfirm}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3 p-4">
+          <p className="text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
+          <label className="flex min-w-0 flex-col gap-1.5">
+            <span className="text-xs font-medium text-text-secondary">{messages.workspace.chipName}</span>
+            <input
+              className="field-control text-sm"
+              value={emptyName}
+              autoFocus
+              disabled={busy}
+              onChange={(event) => setEmptyName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                const trimmed = emptyName.trim();
+                if (!trimmed || busy) return;
+                setNamingEmpty(false);
+                onPlaceEmpty(trimmed);
+              }}
+            />
+          </label>
+        </div>
+      </AppDialog>
+    </>
   );
 }
 
@@ -775,12 +833,14 @@ export function ChipPlaceDialog({
   canvasChipIds,
   defaultTransformName,
   defaultLoadName,
+  defaultValidationName,
   messages,
   busy,
   onClose,
   onPlaceCatalog,
   onPlaceNewTransform,
   onPlaceNewLoad,
+  onPlaceNewValidation,
 }: {
   open: boolean;
   kind: ChipPlaceKind;
@@ -789,18 +849,21 @@ export function ChipPlaceDialog({
   canvasChipIds: Set<string>;
   defaultTransformName: string;
   defaultLoadName: string;
+  defaultValidationName: string;
   messages: Messages;
   busy?: boolean;
   onClose: () => void;
   onPlaceCatalog: (chipIds: string[]) => void;
   onPlaceNewTransform: (draft: TransformPlaceDraft) => void;
   onPlaceNewLoad: (name: string) => void;
+  onPlaceNewValidation: (name: string) => void;
 }) {
   const navigate = useNavigate();
   const dragHandleRef = useRef<HTMLDivElement>(null);
   const dialogTitle = kind === "extract"
     ? messages.workspace.placeExtractTitle
-    : kind === "transform" ? messages.workspace.placeTransformTitle : messages.workspace.placeLoadTitle;
+    : kind === "transform" ? messages.workspace.placeTransformTitle
+      : kind === "load" ? messages.workspace.placeLoadTitle : messages.workspace.placeValidationTitle;
 
   function goDbRegister() {
     onClose();
@@ -852,18 +915,44 @@ export function ChipPlaceDialog({
           canvasChipIds={canvasChipIds}
           dragHandleRef={dragHandleRef}
         />
-      ) : (
+      ) : kind === "load" ? (
         <LoadCatalogPanel
           chips={catalogChips}
           canvasChipIds={canvasChipIds}
+          defaultName={defaultLoadName}
           messages={messages}
           busy={busy}
           onClose={onClose}
           onPlace={onPlaceCatalog}
-          onPlaceEmpty={() => onPlaceNewLoad(defaultLoadName)}
+          onPlaceEmpty={onPlaceNewLoad}
           onRegister={() => { onClose(); navigate("/load"); }}
           dragHandleRef={dragHandleRef}
         />
+      ) : (
+        <div className="flex h-full min-h-0 flex-1 flex-col">
+          <div ref={dragHandleRef} className="chip-place-head cursor-move">
+            <span className="grid size-9 place-items-center rounded-xl bg-accent-subtle text-accent">
+              <ShieldCheck className="size-4.5" aria-hidden="true" />
+            </span>
+            <div>
+              <h2 className="text-sm font-bold text-text">{messages.workspace.placeValidationTitle}</h2>
+              <p className="mt-0.5 text-xs text-text-tertiary">{messages.workspace.validationPlaceHint}</p>
+            </div>
+          </div>
+          <div className="flex flex-1 items-center justify-center p-6">
+            <p className="max-w-xs text-center text-sm leading-6 text-text-secondary">
+              {messages.workspace.validationConfigureHint}
+            </p>
+          </div>
+          <PlaceDialogFooter
+            cancelLabel={messages.common.cancel}
+            submitLabel={messages.workspace.pickChipPlace}
+            canSubmit
+            busy={busy}
+            onCancel={onClose}
+            onSubmit={() => onPlaceNewValidation(defaultValidationName)}
+          />
+        </div>
       )}
     </AppDialog>
   );

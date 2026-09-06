@@ -2146,6 +2146,11 @@ a {
   background: var(--color-warning-subtle);
 }
 
+.workspace-node-icon.is-validation {
+  color: var(--theme-accent);
+  background: var(--theme-accent-subtle);
+}
+
 .workspace-node-icon svg {
   width: 0.95rem;
   height: 0.95rem;

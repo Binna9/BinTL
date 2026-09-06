@@ -63,14 +63,18 @@ pub struct CombineSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RecipeOperation {
-    Clean { steps: Vec<Step> },
+    Clean {
+        steps: Vec<Step>,
+    },
     Join {
         right_dataset_id: String,
         on: Vec<String>,
         #[serde(default)]
         how: Option<String>,
     },
-    Union { dataset_ids: Vec<String> },
+    Union {
+        dataset_ids: Vec<String>,
+    },
     Aggregate {
         #[serde(default)]
         group_by: Vec<String>,
@@ -235,7 +239,8 @@ impl TransformSpec {
     }
 
     pub fn parse_json(json: &str) -> Result<Self, EngineError> {
-        let spec: Self = serde_json::from_str(json).map_err(|e| EngineError::Spec(e.to_string()))?;
+        let spec: Self =
+            serde_json::from_str(json).map_err(|e| EngineError::Spec(e.to_string()))?;
         spec.validate()?;
         Ok(spec)
     }
@@ -296,7 +301,11 @@ fn validate_operation(operation: &RecipeOperation) -> Result<(), EngineError> {
             }
             Ok(())
         }
-        RecipeOperation::Join { right_dataset_id, on, how } => {
+        RecipeOperation::Join {
+            right_dataset_id,
+            on,
+            how,
+        } => {
             let combine = CombineSpec {
                 mode: "join".into(),
                 right_dataset_id: Some(right_dataset_id.clone()),
@@ -324,7 +333,10 @@ fn validate_operation(operation: &RecipeOperation) -> Result<(), EngineError> {
                         "aggregate column and alias are required".into(),
                     ));
                 }
-                if !matches!(aggregation.function.as_str(), "sum" | "count" | "mean" | "min" | "max") {
+                if !matches!(
+                    aggregation.function.as_str(),
+                    "sum" | "count" | "mean" | "min" | "max"
+                ) {
                     return Err(EngineError::Spec(format!(
                         "unsupported aggregate function `{}`",
                         aggregation.function
@@ -351,9 +363,7 @@ fn validate_combine(combine: &CombineSpec) -> Result<(), EngineError> {
             }
             if let Some(how) = combine.how.as_deref() {
                 if how != "left" && how != "inner" {
-                    return Err(EngineError::Spec(
-                        "join how must be left or inner".into(),
-                    ));
+                    return Err(EngineError::Spec("join how must be left or inner".into()));
                 }
             }
         }
@@ -417,6 +427,36 @@ pub struct FramePreview {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationSpec {
+    #[serde(default)]
+    pub keys: Vec<String>,
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default = "validation_true")]
+    pub compare_row_count: bool,
+    #[serde(default = "validation_true")]
+    pub compare_schema: bool,
+}
+
+fn validation_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationReport {
+    pub passed: bool,
+    pub source_rows: usize,
+    pub target_rows: usize,
+    pub missing_keys: usize,
+    pub extra_keys: usize,
+    pub duplicate_source_keys: usize,
+    pub duplicate_target_keys: usize,
+    pub mismatched_rows: usize,
+    pub schema_matches: bool,
+    pub samples: Vec<String>,
+}
+
 /// Engine knows files and a spec. It does not know HTTP, SQLite, or the UI.
 pub trait Engine: Send + Sync {
     fn transform(
@@ -447,6 +487,141 @@ impl Engine for PolarsEngine {
 }
 
 impl PolarsEngine {
+    pub fn validate_files(
+        &self,
+        source: &Path,
+        target: &Path,
+        source_spec: &TransformSpec,
+        target_spec: &TransformSpec,
+        spec: &ValidationSpec,
+    ) -> Result<ValidationReport, EngineError> {
+        use std::collections::HashMap;
+        let source_df = read_any(source, source_spec, None)?;
+        let target_df = read_any(target, target_spec, None)?;
+        let source_names: Vec<String> = source_df
+            .get_column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let target_names: Vec<String> = target_df
+            .get_column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let schema_matches = source_names == target_names;
+        for key in &spec.keys {
+            if !source_names.contains(key) || !target_names.contains(key) {
+                return Err(EngineError::Spec(format!(
+                    "validation key `{key}` is missing"
+                )));
+            }
+        }
+        let compare_columns = if spec.columns.is_empty() {
+            source_names
+                .iter()
+                .filter(|name| !spec.keys.contains(name))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            spec.columns.clone()
+        };
+        for column in &compare_columns {
+            if !source_names.contains(column) || !target_names.contains(column) {
+                return Err(EngineError::Spec(format!(
+                    "validation column `{column}` is missing"
+                )));
+            }
+        }
+        let row_values = |frame: &DataFrame,
+                          row: usize,
+                          columns: &[String]|
+         -> Result<Vec<String>, EngineError> {
+            columns
+                .iter()
+                .map(|name| {
+                    frame
+                        .column(name)
+                        .map_err(EngineError::from)?
+                        .get(row)
+                        .map(|value| value.to_string())
+                        .map_err(EngineError::from)
+                })
+                .collect()
+        };
+        let mut source_map = HashMap::<Vec<String>, Vec<String>>::new();
+        let mut target_map = HashMap::<Vec<String>, Vec<String>>::new();
+        let mut duplicate_source_keys = 0;
+        let mut duplicate_target_keys = 0;
+        if !spec.keys.is_empty() {
+            for row in 0..source_df.height() {
+                let key = row_values(&source_df, row, &spec.keys)?;
+                if source_map
+                    .insert(key, row_values(&source_df, row, &compare_columns)?)
+                    .is_some()
+                {
+                    duplicate_source_keys += 1;
+                }
+            }
+            for row in 0..target_df.height() {
+                let key = row_values(&target_df, row, &spec.keys)?;
+                if target_map
+                    .insert(key, row_values(&target_df, row, &compare_columns)?)
+                    .is_some()
+                {
+                    duplicate_target_keys += 1;
+                }
+            }
+        }
+        let missing = source_map
+            .keys()
+            .filter(|key| !target_map.contains_key(*key))
+            .collect::<Vec<_>>();
+        let extra = target_map
+            .keys()
+            .filter(|key| !source_map.contains_key(*key))
+            .collect::<Vec<_>>();
+        let mismatched = source_map
+            .iter()
+            .filter(|(key, value)| target_map.get(*key).is_some_and(|other| other != *value))
+            .collect::<Vec<_>>();
+        let mut samples = missing
+            .iter()
+            .take(20)
+            .map(|key| format!("missing: {}", key.join(" | ")))
+            .collect::<Vec<_>>();
+        samples.extend(
+            extra
+                .iter()
+                .take(20)
+                .map(|key| format!("extra: {}", key.join(" | "))),
+        );
+        samples.extend(
+            mismatched
+                .iter()
+                .take(20)
+                .map(|(key, _)| format!("mismatch: {}", key.join(" | "))),
+        );
+        let passed = (!spec.compare_row_count || source_df.height() == target_df.height())
+            && (!spec.compare_schema || schema_matches)
+            && missing.is_empty()
+            && extra.is_empty()
+            && mismatched.is_empty()
+            && duplicate_source_keys == 0
+            && duplicate_target_keys == 0;
+        Ok(ValidationReport {
+            passed,
+            source_rows: source_df.height(),
+            target_rows: target_df.height(),
+            missing_keys: missing.len(),
+            extra_keys: extra.len(),
+            duplicate_source_keys,
+            duplicate_target_keys,
+            mismatched_rows: mismatched.len(),
+            schema_matches,
+            samples,
+        })
+    }
+
     pub fn export_csv(parquet: &Path, csv: &Path) -> Result<(), EngineError> {
         let mut df = {
             let file = fs::File::open(parquet)?;
@@ -504,15 +679,18 @@ fn execute_recipe(
     for operation in &spec.operations {
         frame = match operation {
             RecipeOperation::Clean { steps } => apply_steps(frame, steps)?,
-            RecipeOperation::Join { right_dataset_id, on, how } => {
-                join_frame(frame, spec, right_dataset_id, on, how.as_deref(), n_rows)?
-            }
+            RecipeOperation::Join {
+                right_dataset_id,
+                on,
+                how,
+            } => join_frame(frame, spec, right_dataset_id, on, how.as_deref(), n_rows)?,
             RecipeOperation::Union { dataset_ids } => {
                 union_frames(frame, spec, dataset_ids, n_rows)?
             }
-            RecipeOperation::Aggregate { group_by, aggregations } => {
-                aggregate_frame(frame, group_by, aggregations)?
-            }
+            RecipeOperation::Aggregate {
+                group_by,
+                aggregations,
+            } => aggregate_frame(frame, group_by, aggregations)?,
         };
     }
     Ok(frame)
@@ -542,7 +720,10 @@ fn aggregate_frame(
         return Ok(lazy.select(expressions).collect()?);
     }
     let group_expressions: Vec<Expr> = group_by.iter().map(|column| col(column)).collect();
-    Ok(lazy.group_by(group_expressions).agg(expressions).collect()?)
+    Ok(lazy
+        .group_by(group_expressions)
+        .agg(expressions)
+        .collect()?)
 }
 
 fn apply_steps(df: DataFrame, steps: &[Step]) -> Result<DataFrame, EngineError> {
@@ -561,9 +742,10 @@ fn join_frame(
     how: Option<&str>,
     n_rows: Option<usize>,
 ) -> Result<DataFrame, EngineError> {
-    let path = spec.resolved_paths.get(right_id).ok_or_else(|| {
-        EngineError::Spec(format!("missing path for join dataset `{right_id}`"))
-    })?;
+    let path = spec
+        .resolved_paths
+        .get(right_id)
+        .ok_or_else(|| EngineError::Spec(format!("missing path for join dataset `{right_id}`")))?;
     let right = read_any(Path::new(path), spec, n_rows)?;
     let join_type = match how.unwrap_or("left") {
         "inner" => JoinType::Inner,
@@ -573,7 +755,12 @@ fn join_frame(
     let on_cols: Vec<Expr> = on.iter().map(|column| col(column)).collect();
     Ok(left
         .lazy()
-        .join(right.lazy(), on_cols.clone(), on_cols, JoinArgs::new(join_type))
+        .join(
+            right.lazy(),
+            on_cols.clone(),
+            on_cols,
+            JoinArgs::new(join_type),
+        )
         .collect()?)
 }
 
@@ -585,9 +772,10 @@ fn union_frames(
 ) -> Result<DataFrame, EngineError> {
     let mut frames = vec![first];
     for id in dataset_ids {
-        let path = spec.resolved_paths.get(id).ok_or_else(|| {
-            EngineError::Spec(format!("missing path for union dataset `{id}`"))
-        })?;
+        let path = spec
+            .resolved_paths
+            .get(id)
+            .ok_or_else(|| EngineError::Spec(format!("missing path for union dataset `{id}`")))?;
         frames.push(read_any(Path::new(path), spec, n_rows)?);
     }
     let lazy: Vec<LazyFrame> = frames.into_iter().map(|frame| frame.lazy()).collect();
@@ -634,9 +822,10 @@ fn load_union(
     let combine = spec.combine.as_ref().expect("union");
     let mut dfs = vec![left];
     for id in &combine.union_dataset_ids {
-        let path = spec.resolved_paths.get(id).ok_or_else(|| {
-            EngineError::Spec(format!("missing path for union dataset `{id}`"))
-        })?;
+        let path = spec
+            .resolved_paths
+            .get(id)
+            .ok_or_else(|| EngineError::Spec(format!("missing path for union dataset `{id}`")))?;
         dfs.push(read_any(Path::new(path), spec, n_rows)?);
     }
     if dfs.len() == 1 {
@@ -668,9 +857,10 @@ fn load_join(
     if combine.on.is_empty() {
         return Err(EngineError::Spec("join needs on columns".into()));
     }
-    let path = spec.resolved_paths.get(right_id).ok_or_else(|| {
-        EngineError::Spec(format!("missing path for join dataset `{right_id}`"))
-    })?;
+    let path = spec
+        .resolved_paths
+        .get(right_id)
+        .ok_or_else(|| EngineError::Spec(format!("missing path for join dataset `{right_id}`")))?;
     let right = read_any(Path::new(path), spec, n_rows)?;
     let join_type = match combine.how.as_deref().unwrap_or("left") {
         "inner" => JoinType::Inner,
@@ -793,9 +983,9 @@ fn parse_filter(schema: &Schema, raw: &str) -> Result<Expr, EngineError> {
             if !is_col_name(left) {
                 return Err(EngineError::Spec(format!("bad filter column `{left}`")));
             }
-            let dtype = schema.get(left).ok_or_else(|| {
-                EngineError::Spec(format!("unknown filter column `{left}`"))
-            })?;
+            let dtype = schema
+                .get(left)
+                .ok_or_else(|| EngineError::Spec(format!("unknown filter column `{left}`")))?;
             let lhs = col(left);
             let rhs = parse_lit_for_dtype(right, dtype)?;
             return Ok(match op {
@@ -853,15 +1043,15 @@ fn parse_lit_for_dtype(raw: &str, dtype: &DataType) -> Result<Expr, EngineError>
         };
     }
     if is_integer_dtype(dtype) {
-        let n: i64 = unquoted.parse().map_err(|_| {
-            EngineError::Spec(format!("bad integer `{trimmed}` for {dtype}"))
-        })?;
+        let n: i64 = unquoted
+            .parse()
+            .map_err(|_| EngineError::Spec(format!("bad integer `{trimmed}` for {dtype}")))?;
         return Ok(lit(n).cast(dtype.clone()));
     }
     if is_float_dtype(dtype) {
-        let n: f64 = unquoted.parse().map_err(|_| {
-            EngineError::Spec(format!("bad float `{trimmed}` for {dtype}"))
-        })?;
+        let n: f64 = unquoted
+            .parse()
+            .map_err(|_| EngineError::Spec(format!("bad float `{trimmed}` for {dtype}")))?;
         return Ok(lit(n).cast(dtype.clone()));
     }
     Ok(lit(unquoted.to_string()))
@@ -970,11 +1160,7 @@ fn count_delimited_rows(path: &Path, has_header: bool) -> Result<u64, EngineErro
 fn dataframe_to_preview(df: DataFrame, row_count: Option<u64>, limit: usize) -> FramePreview {
     let height = df.height();
     let truncated = height > limit;
-    let df = if truncated {
-        df.slice(0, limit)
-    } else {
-        df
-    };
+    let df = if truncated { df.slice(0, limit) } else { df };
     let columns: Vec<PreviewColumn> = df
         .get_columns()
         .iter()
@@ -1068,6 +1254,59 @@ mod tests {
             .finish()
             .unwrap();
         assert_eq!(back.height(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validation_reports_missing_extra_and_changed_rows() {
+        let dir = tmp("validation");
+        let source = dir.join("source.csv");
+        let target = dir.join("target.csv");
+        fs::write(
+            &source,
+            "id,name,amount\n1,alpha,10\n2,beta,20\n3,gamma,30\n",
+        )
+        .unwrap();
+        fs::write(
+            &target,
+            "id,name,amount\n1,alpha,10\n2,beta,25\n4,delta,40\n",
+        )
+        .unwrap();
+
+        let report = PolarsEngine
+            .validate_files(
+                &source,
+                &target,
+                &TransformSpec::identity(),
+                &TransformSpec::identity(),
+                &ValidationSpec {
+                    keys: vec!["id".into()],
+                    columns: vec!["name".into(), "amount".into()],
+                    compare_row_count: true,
+                    compare_schema: true,
+                },
+            )
+            .unwrap();
+
+        assert!(!report.passed);
+        assert_eq!(report.source_rows, 3);
+        assert_eq!(report.target_rows, 3);
+        assert_eq!(report.missing_keys, 1);
+        assert_eq!(report.extra_keys, 1);
+        assert_eq!(report.mismatched_rows, 1);
+        assert!(report.schema_matches);
+        assert!(report
+            .samples
+            .iter()
+            .any(|sample| sample.starts_with("missing:")));
+        assert!(report
+            .samples
+            .iter()
+            .any(|sample| sample.starts_with("extra:")));
+        assert!(report
+            .samples
+            .iter()
+            .any(|sample| sample.starts_with("mismatch:")));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1232,10 +1471,8 @@ mod tests {
             }"#,
         )
         .unwrap();
-        spec.resolved_paths.insert(
-            "right".into(),
-            right.to_string_lossy().into_owned(),
-        );
+        spec.resolved_paths
+            .insert("right".into(), right.to_string_lossy().into_owned());
         PolarsEngine.transform(&left, &out, &spec).unwrap();
         let back = ParquetReader::new(fs::File::open(&out).unwrap())
             .finish()
@@ -1264,7 +1501,8 @@ mod tests {
             }"#,
         )
         .unwrap();
-        spec.resolved_paths.insert("b".into(), b.to_string_lossy().into_owned());
+        spec.resolved_paths
+            .insert("b".into(), b.to_string_lossy().into_owned());
         PolarsEngine.transform(&a, &out, &spec).unwrap();
         let back = ParquetReader::new(fs::File::open(&out).unwrap())
             .finish()
@@ -1298,10 +1536,8 @@ mod tests {
             }"#,
         )
         .unwrap();
-        spec.resolved_paths.insert(
-            "right".into(),
-            right.to_string_lossy().into_owned(),
-        );
+        spec.resolved_paths
+            .insert("right".into(), right.to_string_lossy().into_owned());
         let preview = PolarsEngine.preview(&left, &spec, 10).unwrap();
         assert_eq!(
             preview
@@ -1337,7 +1573,11 @@ mod tests {
         let preview = PolarsEngine.preview(&input, &spec, 10).unwrap();
         assert_eq!(preview.rows.len(), 2);
         assert_eq!(
-            preview.columns.iter().map(|column| column.name.as_str()).collect::<Vec<_>>(),
+            preview
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["team", "total"]
         );
         let _ = fs::remove_dir_all(&dir);

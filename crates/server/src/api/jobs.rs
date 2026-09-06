@@ -135,11 +135,11 @@ pub(super) async fn list_jobs(
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let jobs = state
+    let transform_runs = state
         .store
         .list_jobs(limit, Some(&user.scope(q.workspace_id)))
         .await?;
-    Ok(Json(json!({ "jobs": jobs })))
+    Ok(Json(json!({ "jobs": transform_runs })))
 }
 
 pub(super) async fn get_job(
@@ -164,8 +164,8 @@ pub(super) async fn run_job(
         return Err(AppError::conflict("job already running"));
     }
     state
-        .job_tx
-        .try_send(id.clone())
+        .execution_tx
+        .try_send(crate::state::ExecutionTask::Job(id.clone()))
         .map_err(|_| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "job queue full"))?;
     Ok(Json(json!({ "ok": true, "id": id, "status": "queued" })))
 }

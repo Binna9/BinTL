@@ -14,6 +14,12 @@ export class HttpError extends Error {
   }
 }
 
+export function isChipNameConflict(error: unknown): boolean {
+  return error instanceof HttpError
+    && error.status === 409
+    && error.message === "chip name already exists";
+}
+
 export type HttpRequestInit = RequestInit & {
   /** When true, does not show the global loading overlay. */
   silent?: boolean;

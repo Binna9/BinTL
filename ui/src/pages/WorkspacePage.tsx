@@ -1,6 +1,6 @@
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, Spline, Workflow, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Spline, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -24,6 +24,7 @@ import { layout } from "@/lib/layout";
 import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { datasetApi } from "@/services/transform/datasetApi";
 import { chipApi } from "@/services/chips/chipApi";
+import { isChipNameConflict } from "@/services/httpClient";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { Dataset } from "@/types/dataset";
 import type { Chip, ChipEdge, ChipEdgeKind, ChipRun } from "@/types/chip";
@@ -194,10 +195,10 @@ export function WorkspacePage() {
   linkingRef.current = linking;
 
   const [pendingPlace, setPendingPlace] = useState<{
-    kind: "extract" | "transform" | "load";
+    kind: "extract" | "transform" | "load" | "validation";
     point: Point;
   } | null>(null);
-  const lastPlaceKindRef = useRef<"extract" | "transform" | "load">("extract");
+  const lastPlaceKindRef = useRef<"extract" | "transform" | "load" | "validation">("extract");
   const [chipMenu, setChipMenu] = useState<ChipContextMenuState | null>(null);
   const [infoChip, setInfoChip] = useState<Chip | null>(null);
   const [propsChip, setPropsChip] = useState<Chip | null>(null);
@@ -631,6 +632,9 @@ export function WorkspacePage() {
 
   function chipEditorPath(chip: Chip) {
     if (!workspaceId) return "/workspace";
+    if (chip.kind === "validation") {
+      return `/workspace/${workspaceId}/chips/${chip.id}/validation`;
+    }
     const editor = chip.kind === "load" ? "load" : "transform";
     const bindingKind = chip.kind === "load" ? "load_definition" : "transform";
     const bound = chip.binding?.ref_kind === bindingKind ? chip.binding.ref_id : undefined;
@@ -639,7 +643,7 @@ export function WorkspacePage() {
   }
 
   function openChipEditor(chip: Chip) {
-    if (chip.kind !== "transform" && chip.kind !== "load") return;
+    if (chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation") return;
     if (!workspaceId || currentWorkspaceRef.current !== workspaceId) return;
     void (async () => {
       const originalChipId = chip.id;
@@ -845,7 +849,7 @@ export function WorkspacePage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [workspaceId, chips, edges]);
 
-  function placeTool(toolKind: "extract" | "transform" | "load", point: Point) {
+  function placeTool(toolKind: "extract" | "transform" | "load" | "validation", point: Point) {
     if (!workspaceId) return;
     lastPlaceKindRef.current = toolKind;
     setPendingPlace({ kind: toolKind, point });
@@ -942,6 +946,30 @@ export function WorkspacePage() {
       name,
       kind: "load",
       config: {},
+      revision: 0,
+      active: true,
+      created_at: now,
+      updated_at: now,
+    };
+    placeCatalogChips([chip], pendingPlace.point);
+    setPendingPlace(null);
+  }
+
+  function placeNewValidationChip(name: string) {
+    if (!pendingPlace) return;
+    const now = new Date().toISOString();
+    const chip: Chip = {
+      id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+      owner_user_id: "",
+      name,
+      kind: "validation",
+      config: {
+        source_data_file_id: "",
+        keys: [],
+        columns: [],
+        compare_row_count: true,
+        compare_schema: true,
+      },
       revision: 0,
       active: true,
       created_at: now,
@@ -1095,6 +1123,19 @@ export function WorkspacePage() {
     try {
       const currentChips = chipsRef.current;
       const draftChips = currentChips.filter((chip) => isDraftChipId(chip.id));
+      const usedNames = new Set(
+        catalogChips
+          .filter((chip) => !draftChips.some((draft) => draft.id === chip.id))
+          .map((chip) => chip.name.trim().toLocaleLowerCase()),
+      );
+      for (const draft of draftChips) {
+        const normalized = draft.name.trim().toLocaleLowerCase();
+        if (usedNames.has(normalized)) {
+          toastError(messages.workspace.duplicateChipName);
+          return false;
+        }
+        usedNames.add(normalized);
+      }
       const idMap = new Map<string, string>();
       savedDraftIdMapRef.current = idMap;
       let chipsToSave = [...currentChips];
@@ -1179,7 +1220,8 @@ export function WorkspacePage() {
       return true;
     } catch (reason) {
       if (currentWorkspaceRef.current === requestWorkspaceId) {
-        toastError(messages.workspace.saveChipError, reason);
+        if (isChipNameConflict(reason)) toastError(messages.workspace.duplicateChipName);
+        else toastError(messages.workspace.saveChipError, reason);
       }
       return false;
     } finally {
@@ -1286,7 +1328,7 @@ export function WorkspacePage() {
   };
   resetCanvasRef.current = resetCanvas;
 
-  function onToolDragStart(kindValue: "extract" | "transform" | "load", event: DragEvent<HTMLButtonElement>) {
+  function onToolDragStart(kindValue: "extract" | "transform" | "load" | "validation", event: DragEvent<HTMLButtonElement>) {
     event.dataTransfer.setData(TOOL_KIND, kindValue);
     event.dataTransfer.effectAllowed = "copy";
     const ghost = document.createElement("div");
@@ -1311,7 +1353,7 @@ export function WorkspacePage() {
     const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
     const point = { x: grab.x - NODE_W / 2, y: grab.y - NODE_H / 2 };
     const toolKind = event.dataTransfer.getData(TOOL_KIND);
-    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load") return;
+    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load" && toolKind !== "validation") return;
     placeTool(toolKind, point);
   }
 
@@ -1699,6 +1741,12 @@ export function WorkspacePage() {
       hint: messages.workspace.loadHint,
       icon: FileOutput,
     },
+    {
+      kind: "validation" as const,
+      label: messages.workspace.validation,
+      hint: messages.workspace.validationHint,
+      icon: ShieldCheck,
+    },
   ];
   const edgeTools = [
     {
@@ -2032,7 +2080,9 @@ export function WorkspacePage() {
         {chips.map((chip) => {
           const point = positions[chip.id] ?? fallbackPoint(0);
           const latest = latestByChip.get(chip.id);
-          const Icon = chip.kind === "transform" ? Workflow : chip.kind === "load" ? FileOutput : DatabaseZap;
+          const Icon = chip.kind === "transform" ? Workflow
+            : chip.kind === "load" ? FileOutput
+              : chip.kind === "validation" ? ShieldCheck : DatabaseZap;
           return (
             <div
               key={chip.id}
@@ -2139,7 +2189,9 @@ export function WorkspacePage() {
               </button>
               <span className={cn(
                 "workspace-node-icon",
-                chip.kind === "extract" ? "is-extract" : chip.kind === "load" ? "is-load" : "is-transform",
+                chip.kind === "extract" ? "is-extract"
+                  : chip.kind === "load" ? "is-load"
+                    : chip.kind === "validation" ? "is-validation" : "is-transform",
               )}>
                 <Icon aria-hidden="true" />
               </span>
@@ -2247,12 +2299,16 @@ export function WorkspacePage() {
         defaultLoadName={messages.workspace.defaultLoadChipName(
           chips.filter((item) => item.kind === "load").length + 1,
         )}
+        defaultValidationName={messages.workspace.defaultValidationChipName(
+          chips.filter((item) => item.kind === "validation").length + 1,
+        )}
         messages={messages}
         busy={busy}
         onClose={cancelPlaceChip}
         onPlaceCatalog={confirmCatalogChips}
         onPlaceNewTransform={(draft) => placeNewTransformChip(draft)}
         onPlaceNewLoad={placeNewLoadChip}
+        onPlaceNewValidation={placeNewValidationChip}
       />
 
       <ChipContextMenu

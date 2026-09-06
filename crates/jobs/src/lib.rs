@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use connectors::{extract_table, load_table, parse_db_source, ConnectError, ExtractOptions};
 use engine::{Engine, EngineError, PolarsEngine, TransformSpec};
 use storage::Store;
-use tokio::sync::{mpsc, Semaphore};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobStatus {
@@ -54,31 +51,6 @@ pub fn transition(from: JobStatus, to: JobStatus) -> Result<JobStatus, InvalidTr
         | (Queued, Canceled) => Ok(to),
         _ => Err(InvalidTransition { from, to }),
     }
-}
-
-pub fn spawn_worker(
-    store: Store,
-    mut rx: mpsc::Receiver<String>,
-    sem: Arc<Semaphore>,
-) -> tokio::task::JoinHandle<()> {
-    let engine = PolarsEngine;
-    tokio::spawn(async move {
-        while let Some(job_id) = rx.recv().await {
-            let permit = match sem.clone().acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => break,
-            };
-            let store = store.clone();
-            tokio::task::spawn(async move {
-                let _permit = permit;
-                if let Err(err) = run_one(&store, engine, &job_id).await {
-                    tracing::error!(job_id, %err, "job failed");
-                    let _ = store.append_log(&job_id, "error", &err.to_string()).await;
-                    let _ = store.fail_chip_run_for_job(&job_id, &err.to_string()).await;
-                }
-            });
-        }
-    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -207,6 +179,12 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
     store.append_log(job_id, "info", "job succeeded").await?;
     store.complete_chip_run_for_job(job_id, &output_rel).await?;
     Ok(())
+}
+
+pub async fn execute(store: &Store, job_id: &str) -> Result<(), String> {
+    run_one(store, PolarsEngine, job_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

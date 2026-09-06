@@ -2,20 +2,21 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod api;
 mod access;
+mod api;
 mod auth;
+mod chip;
 mod config;
 mod error;
 mod extract;
 mod load;
+mod planned_input;
 mod search;
 mod state;
-mod chip;
-mod planned_input;
 mod transform;
 mod ui;
 mod users;
+mod validation;
 mod workspace;
 
 use std::sync::Arc;
@@ -30,7 +31,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
-use crate::state::AppState;
+use crate::state::{AppState, ExecutionTask};
 
 #[derive(Parser)]
 #[command(name = "bintl", about = "BinTL ETL console")]
@@ -69,20 +70,40 @@ async fn main() {
         });
 
     let execution_permits = Arc::new(Semaphore::new(config.max_concurrent_jobs.max(1)));
-    let (job_tx, job_rx) = mpsc::channel::<String>(64);
-    let _worker = jobs::spawn_worker(store.clone(), job_rx, execution_permits.clone());
-    let (chip_tx, chip_rx) = mpsc::channel::<String>(64);
-    let _chip_worker = chip::spawn_worker(
-        store.clone(),
-        chip_rx,
-        job_tx.clone(),
-        execution_permits,
-    );
+    let (execution_tx, mut execution_rx) = mpsc::channel::<ExecutionTask>(64);
+    let worker_store = store.clone();
+    let worker_tx = execution_tx.clone();
+    let _worker = tokio::spawn(async move {
+        while let Some(task) = execution_rx.recv().await {
+            let Ok(permit) = execution_permits.clone().acquire_owned().await else {
+                break;
+            };
+            let store = worker_store.clone();
+            let tx = worker_tx.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                match task {
+                    ExecutionTask::Job(id) => {
+                        if let Err(error) = jobs::execute(&store, &id).await {
+                            tracing::error!(execution_step_id = id, %error, "transform execution failed");
+                            let _ = store.append_log(&id, "error", &error).await;
+                            let _ = store.fail_chip_run_for_job(&id, &error).await;
+                        }
+                    }
+                    ExecutionTask::Chip(id) => {
+                        if let Err(error) = chip::run_one(&store, &tx, &id).await {
+                            tracing::error!(execution_step_id = id, %error, "chip execution failed");
+                            let _ = store.set_chip_run_failed(&id, &error).await;
+                        }
+                    }
+                }
+            });
+        }
+    });
 
     let state = AppState {
         store,
-        job_tx,
-        chip_tx,
+        execution_tx,
         config: Arc::new(config),
     };
 

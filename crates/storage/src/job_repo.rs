@@ -9,19 +9,25 @@ impl Store {
         workspace_id: &str,
     ) -> Result<JobRow, StorageError> {
         self.require_workspace(workspace_id).await?;
+        let execution_id = Uuid::new_v4().to_string();
         let id = Uuid::new_v4().to_string();
         let created_at = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO executions (id, workspace_id, source, status, created_at) VALUES (?, ?, 'transform_page', 'queued', ?)")
+            .bind(&execution_id).bind(workspace_id).bind(&created_at).execute(&mut *tx).await?;
         sqlx::query(
-            "INSERT INTO jobs (id, status, source_path, spec_json, created_at, workspace_id)
-             VALUES (?, 'queued', ?, ?, ?, ?)",
+            "INSERT INTO execution_steps (id, execution_id, kind, definition_revision,
+                     definition_snapshot_json, source_path, status, queued_at)
+                     VALUES (?, ?, 'transform', 1, ?, ?, 'queued', ?)",
         )
         .bind(&id)
-        .bind(source_path)
+        .bind(&execution_id)
         .bind(spec_json)
+        .bind(source_path)
         .bind(&created_at)
-        .bind(workspace_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         self.get_job(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("job disappeared after insert".into()))
@@ -36,29 +42,27 @@ impl Store {
         workspace_id: &str,
     ) -> Result<JobRow, StorageError> {
         self.require_workspace(workspace_id).await?;
+        let execution_id = Uuid::new_v4().to_string();
         let id = Uuid::new_v4().to_string();
         let created_at = now_rfc3339();
-        sqlx::query(
-            "INSERT INTO jobs
-             (id, status, source_path, spec_json, created_at, kind, transform_id, dataset_id, workspace_id)
-             VALUES (?, 'queued', ?, ?, ?, 'transform', ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(source_path)
-        .bind(spec_json)
-        .bind(&created_at)
-        .bind(transform_id)
-        .bind(dataset_id)
-        .bind(workspace_id)
-        .execute(&self.pool)
-        .await?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO executions (id, workspace_id, source, trigger_id, status, created_at) VALUES (?, ?, 'transform_page', ?, 'queued', ?)")
+            .bind(&execution_id).bind(workspace_id).bind(transform_id).bind(&created_at).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO execution_steps (id, execution_id, kind, transform_id, definition_revision,
+                     definition_snapshot_json, source_path, status, queued_at)
+                     VALUES (?, ?, 'transform', ?, 1, ?, ?, 'queued', ?)")
+            .bind(&id).bind(&execution_id).bind(transform_id).bind(spec_json).bind(source_path).bind(&created_at)
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO execution_inputs (execution_step_id, port_name, data_file_id, ordinal) VALUES (?, 'in', ?, 0)")
+            .bind(&id).bind(dataset_id).execute(&mut *tx).await?;
+        tx.commit().await?;
         self.get_job(&id)
             .await?
             .ok_or_else(|| StorageError::NotFound("job disappeared after insert".into()))
     }
 
     pub async fn get_job(&self, id: &str) -> Result<Option<JobRow>, StorageError> {
-        let row = sqlx::query_as::<_, JobRow>(&format!("SELECT {JOB_COLS} FROM jobs WHERE id = ?"))
+        let row = sqlx::query_as::<_, JobRow>(&format!("SELECT {JOB_COLS} FROM execution_steps s INNER JOIN executions e ON e.id = s.execution_id WHERE s.id = ?"))
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -71,11 +75,11 @@ impl Store {
         scope: Option<&DataScope>,
     ) -> Result<Vec<JobRow>, StorageError> {
         let (extra, binds) = match scope {
-            Some(scope) => Self::workspace_scope_sql(scope, "workspace_id"),
+            Some(scope) => Self::workspace_scope_sql(scope, "e.workspace_id"),
             None => (String::new(), Vec::new()),
         };
         let sql = format!(
-            "SELECT {JOB_COLS} FROM jobs WHERE 1=1 {extra} ORDER BY created_at DESC LIMIT ?"
+            "SELECT {JOB_COLS} FROM execution_steps s INNER JOIN executions e ON e.id = s.execution_id WHERE s.kind = 'transform' {extra} ORDER BY s.queued_at DESC LIMIT ?"
         );
         let mut query = sqlx::query_as::<_, JobRow>(&sql);
         for value in &binds {
@@ -87,8 +91,7 @@ impl Store {
 
     pub async fn set_job_running(&self, id: &str, output_path: &str) -> Result<(), StorageError> {
         sqlx::query(
-            "UPDATE jobs SET status = ?, started_at = ?, output_path = ?, error_message = NULL
-             WHERE id = ?",
+            "UPDATE execution_steps SET status = ?, started_at = ?, output_path = ?, error_message = NULL WHERE id = ?",
         )
         .bind("running")
         .bind(now_rfc3339())
@@ -100,7 +103,7 @@ impl Store {
     }
 
     pub async fn set_job_succeeded(&self, id: &str) -> Result<(), StorageError> {
-        sqlx::query("UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?")
+        sqlx::query("UPDATE execution_steps SET status = ?, finished_at = ? WHERE id = ?")
             .bind("succeeded")
             .bind(now_rfc3339())
             .bind(id)
@@ -141,7 +144,7 @@ impl Store {
     }
 
     pub async fn set_job_failed(&self, id: &str, error: &str) -> Result<(), StorageError> {
-        sqlx::query("UPDATE jobs SET status = ?, finished_at = ?, error_message = ? WHERE id = ?")
+        sqlx::query("UPDATE execution_steps SET status = ?, finished_at = ?, error_message = ? WHERE id = ?")
             .bind("failed")
             .bind(now_rfc3339())
             .bind(error)
@@ -157,11 +160,13 @@ impl Store {
         level: &str,
         message: &str,
     ) -> Result<(), StorageError> {
-        sqlx::query("INSERT INTO job_logs (job_id, ts, level, message) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT INTO execution_logs (execution_step_id, sequence, level, event_type, message, created_at)
+                     SELECT ?, COALESCE(MAX(sequence), 0) + 1, ?, 'message', ?, ? FROM execution_logs WHERE execution_step_id = ?")
             .bind(job_id)
-            .bind(now_rfc3339())
             .bind(level)
             .bind(message)
+            .bind(now_rfc3339())
+            .bind(job_id)
             .execute(&self.pool)
             .await?;
         if let Ok(log) = ProcessLog::create(&self.data_dir, LOG_JOBS, job_id) {
@@ -184,8 +189,8 @@ impl Store {
 
     pub async fn list_logs(&self, job_id: &str) -> Result<Vec<JobLogRow>, StorageError> {
         let rows = sqlx::query_as::<_, JobLogRow>(
-            "SELECT id, job_id, ts, level, message FROM job_logs
-             WHERE job_id = ? ORDER BY id ASC",
+            "SELECT id, execution_step_id AS job_id, created_at AS ts, level, message FROM execution_logs
+             WHERE execution_step_id = ? ORDER BY sequence ASC",
         )
         .bind(job_id)
         .fetch_all(&self.pool)

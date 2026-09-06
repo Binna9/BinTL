@@ -1,7 +1,7 @@
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use storage::{
-    ChipRow, DatasetRow, DataScope, ExtractRow, JobRow, TransformRow, UserRow, WorkspaceFolderRow,
+    ChipRow, DataScope, DatasetRow, ExtractRow, JobRow, TransformRow, UserRow, WorkspaceFolderRow,
     WorkspaceRow,
 };
 
@@ -36,7 +36,10 @@ impl CurrentUser {
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = AppError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         parts
             .extensions
             .get::<CurrentUser>()

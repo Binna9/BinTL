@@ -1,9 +1,10 @@
-pub mod chip_slot;
 mod chip_definition_repo;
 mod chip_run_repo;
+pub mod chip_slot;
 mod connection_repo;
 mod dataset_repo;
 mod delete_guard;
+mod execution_repo;
 mod extract_repo;
 mod file_repo;
 mod identity;
@@ -15,11 +16,12 @@ mod process_log;
 mod search;
 mod secret;
 mod transform_repo;
+mod validation_repo;
 mod workspace_repo;
 
 pub use identity::{
-    DataScope, PermissionRow, RoleWithPermissions, UserRow, PERM_CONNECTION_WRITE, PERM_USER_MANAGE,
-    PERM_WORKSPACE_ALL,
+    DataScope, PermissionRow, RoleWithPermissions, UserRow, PERM_CONNECTION_WRITE,
+    PERM_USER_MANAGE, PERM_WORKSPACE_ALL,
 };
 pub use models::*;
 pub use process_log::{
@@ -35,8 +37,6 @@ use chrono::{SecondsFormat, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use uuid::Uuid;
-
-use models::{CHIP_COLS, CHIP_EDGE_COLS, JOB_COLS};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -54,11 +54,11 @@ pub enum StorageError {
     Conflict(String),
 }
 
-/// Relative dirs under `data_dir`. Transform inputs live under `extracts/`
+/// Relative dirs under `data_dir`. Transform inputs live under `extract_runs/`
 /// by source kind; `outputs/` is convert/load results.
-pub const REL_UPLOADS: &str = "extracts/uploads";
-pub const REL_DATABASES: &str = "extracts/databases";
-pub const REL_API: &str = "extracts/api";
+pub const REL_UPLOADS: &str = "extract_runs/uploads";
+pub const REL_DATABASES: &str = "extract_runs/databases";
+pub const REL_API: &str = "extract_runs/api";
 pub const REL_OUTPUTS: &str = "outputs";
 pub const REL_LOGS: &str = "logs";
 pub const REL_STAGING: &str = "staging";
@@ -87,15 +87,12 @@ impl Store {
             .await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
-        rewrite_legacy_stored_paths(&pool).await?;
         let store = Self {
             pool,
             data_dir,
             secret_key: secret::key_from_secret(session_secret),
         };
-        store.backfill_datasets().await?;
         store.backfill_workspace_revisions().await?;
-        store.backfill_chip_bindings().await?;
         Ok(store)
     }
 
@@ -118,103 +115,6 @@ impl Store {
         } else {
             self.data_dir.join(p)
         }
-    }
-
-    pub async fn backfill_datasets(&self) -> Result<(), StorageError> {
-        let extracts = sqlx::query_as::<_, ExtractBackfillRow>(
-            "SELECT id, delimiter, header, stored_path, filename, row_count
-             FROM extracts
-             WHERE status = 'succeeded' AND stored_path IS NOT NULL AND filename IS NOT NULL",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        for row in extracts {
-            let stored_path = row.stored_path.unwrap_or_default();
-            let filename = row.filename.unwrap_or_default();
-            if stored_path.is_empty() || filename.is_empty() {
-                continue;
-            }
-            let abs = self.resolve(&stored_path);
-            if !abs.is_file() {
-                continue;
-            }
-            let size = tokio::fs::metadata(&abs).await.ok().map(|m| m.len() as i64);
-            self.upsert_dataset(&DatasetUpsert {
-                id: row.id.clone(),
-                kind: "database".into(),
-                extract_id: Some(row.id),
-                filename,
-                stored_path,
-                size_bytes: size,
-                delimiter: Some(row.delimiter),
-                has_header: Some(row.header != 0),
-                row_count: row.row_count,
-                workspace_id: None,
-            })
-            .await?;
-        }
-
-        let uploads = self.list_upload_dirs().await?;
-        for file in uploads {
-            self.upsert_dataset(&DatasetUpsert {
-                id: file.id,
-                kind: "upload".into(),
-                extract_id: None,
-                filename: file.filename,
-                stored_path: file.stored_path,
-                size_bytes: Some(file.size as i64),
-                delimiter: None,
-                has_header: None,
-                row_count: None,
-                workspace_id: None,
-            })
-            .await?;
-        }
-
-        let jobs = sqlx::query_as::<_, JobRow>(&format!(
-            "SELECT {JOB_COLS} FROM jobs
-             WHERE status = 'succeeded' AND kind = 'transform' AND output_path IS NOT NULL"
-        ))
-        .fetch_all(&self.pool)
-        .await?;
-        for job in jobs {
-            let Some(stored_path) = job.output_path.filter(|path| !path.is_empty()) else {
-                continue;
-            };
-            let linked: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM chip_runs WHERE legacy_job_id = ?",
-            )
-            .bind(&job.id)
-            .fetch_one(&self.pool)
-            .await?;
-            if linked > 0 {
-                continue;
-            }
-            let abs = self.resolve(&stored_path);
-            if !abs.is_file() {
-                continue;
-            }
-            let filename = abs
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("result.parquet")
-                .to_string();
-            let size = tokio::fs::metadata(&abs).await.ok().map(|meta| meta.len() as i64);
-            self.upsert_dataset(&DatasetUpsert {
-                id: job.id,
-                kind: "transform".into(),
-                extract_id: None,
-                filename,
-                stored_path,
-                size_bytes: size,
-                delimiter: None,
-                has_header: None,
-                row_count: None,
-                workspace_id: Some(job.workspace_id),
-            })
-            .await?;
-        }
-        Ok(())
     }
 
     pub fn extract_file_rel(
@@ -256,143 +156,25 @@ impl Store {
         })
     }
 
-    pub async fn backfill_chip_bindings(&self) -> Result<(), StorageError> {
-        let chips = sqlx::query_as::<_, ChipRow>(&format!(
-            "SELECT {CHIP_COLS} FROM chips
-             WHERE config_json IS NOT NULL AND TRIM(config_json) != ''
-             AND id NOT IN (SELECT chip_id FROM chip_bindings)"
-        ))
-        .fetch_all(&self.pool)
-        .await?;
-        for chip in chips {
-            let Some(raw) = chip.config_json.as_deref() else {
-                continue;
-            };
-            let value: serde_json::Value = match serde_json::from_str(raw) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let binding = match chip.kind.as_str() {
-                "extract" => {
-                    let connection_id = value
-                        .get("connection_id")
-                        .and_then(|item| item.as_str())
-                        .unwrap_or("")
-                        .trim();
-                    if connection_id.is_empty() {
-                        continue;
-                    }
-                    let source = value.get("source").cloned().unwrap_or_else(|| {
-                        serde_json::json!({ "type": "table", "table": "", "database": null })
-                    });
-                    let delimiter = value
-                        .get("delimiter")
-                        .and_then(|item| item.as_str())
-                        .unwrap_or(",");
-                    let header = value
-                        .get("header")
-                        .and_then(|item| item.as_bool())
-                        .unwrap_or(true);
-                    let workspace_id = sqlx::query_scalar::<_, String>(
-                        "SELECT workspace_id FROM workspace_chips WHERE chip_id = ? LIMIT 1",
-                    )
-                    .bind(&chip.id)
-                    .fetch_optional(&self.pool)
-                    .await?
-                    .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string());
-                    let extract_id = Uuid::new_v4().to_string();
-                    let now = now_rfc3339();
-                    let source_json = serde_json::to_string(&source)
-                        .map_err(|error| StorageError::Invalid(error.to_string()))?;
-                    sqlx::query(
-                        "INSERT INTO extract_definitions
-                         (id, name, kind, connection_id, source_json, delimiter, header,
-                          add_sequence, workspace_id, created_at, updated_at)
-                         VALUES (?, ?, 'database', ?, ?, ?, ?, 0, ?, ?, ?)",
-                    )
-                    .bind(&extract_id)
-                    .bind(&chip.name)
-                    .bind(connection_id)
-                    .bind(&source_json)
-                    .bind(delimiter)
-                    .bind(i64::from(header))
-                    .bind(&workspace_id)
-                    .bind(&now)
-                    .bind(&now)
-                    .execute(&self.pool)
-                    .await?;
-                    ("extract_definition", extract_id)
-                }
-                "transform" => {
-                    let spec = value.get("spec").cloned().unwrap_or_else(|| {
-                        serde_json::json!({ "version": 2, "steps": [], "sink": "parquet" })
-                    });
-                    let dataset_id = value
-                        .get("input_dataset_id")
-                        .and_then(|item| item.as_str())
-                        .unwrap_or("")
-                        .trim();
-                    if dataset_id.is_empty() {
-                        continue;
-                    }
-                    let spec_json = serde_json::to_string(&spec)
-                        .map_err(|error| StorageError::Invalid(error.to_string()))?;
-                    let transform = self
-                        .insert_transform(&chip.name, dataset_id, &spec_json, None)
-                        .await?;
-                    ("transform", transform.id)
-                }
-                _ => continue,
-            };
-            sqlx::query(
-                "INSERT OR IGNORE INTO chip_bindings (chip_id, ref_kind, ref_id)
-                 VALUES (?, ?, ?)",
+    pub async fn chip_workspace_hint(&self, chip_id: &str) -> Result<Option<String>, StorageError> {
+        Ok(
+            sqlx::query_scalar(
+                "SELECT workspace_id FROM workspace_chips WHERE chip_id = ? LIMIT 1",
             )
-            .bind(&chip.id)
-            .bind(binding.0)
-            .bind(&binding.1)
-            .execute(&self.pool)
-            .await?;
-            sqlx::query("UPDATE chips SET config_json = NULL WHERE id = ?")
-                .bind(&chip.id)
-                .execute(&self.pool)
-                .await?;
-        }
-        Ok(())
-    }
-
-    pub async fn chip_workspace_hint(
-        &self,
-        chip_id: &str,
-    ) -> Result<Option<String>, StorageError> {
-        Ok(sqlx::query_scalar(
-            "SELECT workspace_id FROM workspace_chips WHERE chip_id = ? LIMIT 1",
+            .bind(chip_id)
+            .fetch_optional(&self.pool)
+            .await?,
         )
-        .bind(chip_id)
-        .fetch_optional(&self.pool)
-        .await?)
     }
 
     pub async fn bump_definition_revision(&self, chip_id: &str) -> Result<(), StorageError> {
-        sqlx::query(
-            "UPDATE chips SET revision = revision + 1, updated_at = ? WHERE id = ?",
-        )
-        .bind(now_rfc3339())
-        .bind(chip_id)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE chips SET revision = revision + 1, updated_at = ? WHERE id = ?")
+            .bind(now_rfc3339())
+            .bind(chip_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
-}
-
-#[derive(sqlx::FromRow)]
-struct ExtractBackfillRow {
-    id: String,
-    delimiter: String,
-    header: i64,
-    stored_path: Option<String>,
-    filename: Option<String>,
-    row_count: Option<i64>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -438,7 +220,7 @@ async fn ensure_data_layout(data_dir: &Path) -> Result<(), StorageError> {
     tokio::fs::create_dir_all(data_dir.join(REL_OUTPUTS)).await?;
     tokio::fs::create_dir_all(data_dir.join(REL_STAGING)).await?;
     for kind in EXTRACT_KINDS {
-        tokio::fs::create_dir_all(data_dir.join("extracts").join(kind)).await?;
+        tokio::fs::create_dir_all(data_dir.join("extract_runs").join(kind)).await?;
     }
     for area in LOG_AREAS {
         tokio::fs::create_dir_all(data_dir.join(REL_LOGS).join(area)).await?;
@@ -447,14 +229,14 @@ async fn ensure_data_layout(data_dir: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
-/// Move `data/uploads/` and leftover `data/extracts/{uuid}/` into the kinded tree.
+/// Move `data/uploads/` and leftover `data/extract_runs/{uuid}/` into the kinded tree.
 async fn migrate_legacy_extract_dirs(data_dir: &Path) -> Result<(), StorageError> {
-    let extracts = data_dir.join("extracts");
-    let databases = extracts.join("databases");
-    let uploads_new = extracts.join("uploads");
+    let extract_runs = data_dir.join("extract_runs");
+    let databases = extract_runs.join("databases");
+    let uploads_new = extract_runs.join("uploads");
 
-    if extracts.is_dir() {
-        let mut rd = tokio::fs::read_dir(&extracts).await?;
+    if extract_runs.is_dir() {
+        let mut rd = tokio::fs::read_dir(&extract_runs).await?;
         while let Some(entry) = rd.next_entry().await? {
             if !entry.file_type().await?.is_dir() {
                 continue;
@@ -487,60 +269,19 @@ async fn migrate_legacy_extract_dirs(data_dir: &Path) -> Result<(), StorageError
     Ok(())
 }
 
-async fn rewrite_legacy_stored_paths(pool: &SqlitePool) -> Result<(), StorageError> {
-    sqlx::query(
-        "UPDATE extracts
-         SET stored_path = 'extracts/databases/' || substr(stored_path, 10)
-         WHERE stored_path LIKE 'extracts/%'
-           AND stored_path NOT LIKE 'extracts/uploads/%'
-           AND stored_path NOT LIKE 'extracts/databases/%'
-           AND stored_path NOT LIKE 'extracts/api/%'",
+async fn link_child_step(pool: &SqlitePool, id: &str, value: &str) -> Result<(), StorageError> {
+    let result = sqlx::query(
+        "UPDATE execution_steps
+        SET result_json=json_set(COALESCE(result_json, '{}'), '$.child_step_id', ?)
+        WHERE id=? AND status='running'",
     )
+    .bind(value)
+    .bind(id)
     .execute(pool)
     .await?;
-    sqlx::query(
-        "UPDATE jobs
-         SET source_path = 'extracts/uploads/' || substr(source_path, 9)
-         WHERE source_path LIKE 'uploads/%'",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "UPDATE jobs
-         SET source_path = 'extracts/databases/' || substr(source_path, 10)
-         WHERE source_path LIKE 'extracts/%'
-           AND source_path NOT LIKE 'extracts/uploads/%'
-           AND source_path NOT LIKE 'extracts/databases/%'
-           AND source_path NOT LIKE 'extracts/api/%'",
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-async fn update_running_chip_ref(
-    pool: &SqlitePool,
-    id: &str,
-    column: &str,
-    value: &str,
-) -> Result<(), StorageError> {
-    let sql = match column {
-        "legacy_extract_id" => {
-            "UPDATE chip_runs SET legacy_extract_id = ? WHERE id = ? AND status = 'running'"
-        }
-        "legacy_job_id" => {
-            "UPDATE chip_runs SET legacy_job_id = ? WHERE id = ? AND status = 'running'"
-        }
-        _ => {
-            return Err(StorageError::Invalid(
-                "invalid legacy chip reference".into(),
-            ))
-        }
-    };
-    let result = sqlx::query(sql).bind(value).bind(id).execute(pool).await?;
     if result.rows_affected() == 0 {
         return Err(StorageError::Invalid(
-            "legacy reference requires a running chip run".into(),
+            "child execution link requires a running chip step".into(),
         ));
     }
     Ok(())
@@ -557,9 +298,7 @@ fn required_text<'a>(value: &'a str, field: &str) -> Result<&'a str, StorageErro
 fn map_folder_sql(error: sqlx::Error) -> StorageError {
     if let sqlx::Error::Database(db) = &error {
         if db.is_unique_violation() {
-            return StorageError::Conflict(
-                "folder name already exists under this parent".into(),
-            );
+            return StorageError::Conflict("folder name already exists under this parent".into());
         }
     }
     error.into()
@@ -570,9 +309,9 @@ fn trimmed_optional(value: Option<&str>) -> Option<&str> {
 }
 
 fn validate_chip_kind(kind: &str) -> Result<(), StorageError> {
-    if !matches!(kind, "extract" | "transform" | "load") {
+    if !matches!(kind, "extract" | "transform" | "load" | "validation") {
         return Err(StorageError::Invalid(
-            "chip kind must be extract, transform, or load".into(),
+            "chip kind must be extract, transform, load, or validation".into(),
         ));
     }
     Ok(())
@@ -608,8 +347,8 @@ fn workspace_snapshot_json(
     chips: &[ChipRow],
     edges: &[ChipEdgeRow],
 ) -> Result<String, StorageError> {
-    let layout: serde_json::Value = serde_json::from_str(layout_json)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let layout: serde_json::Value =
+        serde_json::from_str(layout_json).unwrap_or_else(|_| serde_json::json!({}));
     let chips = chips
         .iter()
         .map(|chip| {
@@ -695,9 +434,7 @@ async fn replace_workspace_edges(
         };
         let key = (from_id.to_string(), to_id.to_string(), edge.kind.clone());
         if !seen.insert(key) {
-            return Err(StorageError::Invalid(
-                "duplicate chip edge".into(),
-            ));
+            return Err(StorageError::Invalid("duplicate chip edge".into()));
         }
         let id = if edge.id.trim().is_empty() {
             Uuid::new_v4().to_string()
@@ -719,22 +456,24 @@ async fn replace_workspace_edges(
             .iter()
             .map(|(_, from, to, _, _, _)| (from.as_str(), to.as_str())),
     ) {
-        return Err(StorageError::Invalid("chip edges cannot form a cycle".into()));
+        return Err(StorageError::Invalid(
+            "chip edges cannot form a cycle".into(),
+        ));
     }
-    sqlx::query("DELETE FROM chip_edges WHERE workspace_id = ?")
+    sqlx::query("DELETE FROM workspace_edges WHERE workspace_id = ?")
         .bind(workspace_id)
         .execute(&mut **tx)
         .await?;
     for (id, from_id, to_id, kind, from_port, to_port) in &pairs {
         sqlx::query(
-            "INSERT INTO chip_edges
-             (id, workspace_id, from_chip_id, to_chip_id, kind, from_port, to_port, created_at)
+            "INSERT INTO workspace_edges
+             (id, workspace_id, from_workspace_chip_id, to_workspace_chip_id, kind, from_port, to_port, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(workspace_id)
-        .bind(from_id)
-        .bind(to_id)
+        .bind(workspace_repo::workspace_chip_id(workspace_id, from_id))
+        .bind(workspace_repo::workspace_chip_id(workspace_id, to_id))
         .bind(kind)
         .bind(from_port)
         .bind(to_port)
@@ -743,8 +482,12 @@ async fn replace_workspace_edges(
         .await?;
     }
     Ok(sqlx::query_as::<_, ChipEdgeRow>(&format!(
-        "SELECT {CHIP_EDGE_COLS} FROM chip_edges
-         WHERE workspace_id = ? ORDER BY created_at ASC"
+        "SELECT we.id, we.workspace_id, from_wc.chip_id AS from_chip_id,
+                to_wc.chip_id AS to_chip_id, we.kind, we.from_port, we.to_port, we.created_at
+         FROM workspace_edges we
+         JOIN workspace_chips from_wc ON from_wc.id = we.from_workspace_chip_id
+         JOIN workspace_chips to_wc ON to_wc.id = we.to_workspace_chip_id
+         WHERE we.workspace_id = ? ORDER BY we.created_at ASC"
     ))
     .bind(workspace_id)
     .fetch_all(&mut **tx)
@@ -804,7 +547,10 @@ where
         state.insert(node, 2);
         false
     }
-    graph.keys().copied().any(|node| visit(node, &graph, &mut state))
+    graph
+        .keys()
+        .copied()
+        .any(|node| visit(node, &graph, &mut state))
 }
 
 fn reject_sensitive_config(value: &serde_json::Value) -> Result<(), StorageError> {
@@ -840,14 +586,7 @@ fn reject_sensitive_config(value: &serde_json::Value) -> Result<(), StorageError
 fn supported_driver(driver: &str) -> bool {
     matches!(
         driver,
-        "postgres"
-            | "redshift"
-            | "cockroach"
-            | "mysql"
-            | "mariadb"
-            | "mssql"
-            | "sqlite"
-            | "http"
+        "postgres" | "redshift" | "cockroach" | "mysql" | "mariadb" | "mssql" | "sqlite" | "http"
     )
 }
 
@@ -919,19 +658,19 @@ mod tests {
     fn extract_paths_are_kinded() {
         assert_eq!(
             upload_rel("abc", "sales.csv"),
-            "extracts/uploads/abc/sales.csv"
+            "extract_runs/uploads/abc/sales.csv"
         );
         let (name, rel) = Store::extract_file_rel("database", "abc", "public.users", ",").unwrap();
         assert_eq!(name, "public_users.csv");
-        assert_eq!(rel, "extracts/databases/abc/public_users.csv");
+        assert_eq!(rel, "extract_runs/databases/abc/public_users.csv");
         assert_eq!(
             job_db_extract_rel("job-1"),
-            "extracts/databases/job-1/extract.csv"
+            "extract_runs/databases/job-1/extract.csv"
         );
         let (_, tsv) = Store::extract_file_rel("database", "id", "t", "tab").unwrap();
-        assert_eq!(tsv, "extracts/databases/id/t.tsv");
+        assert_eq!(tsv, "extract_runs/databases/id/t.tsv");
         let (_, api) = Store::extract_file_rel("api", "id", "orders", ",").unwrap();
-        assert_eq!(api, "extracts/api/id/orders.csv");
+        assert_eq!(api, "extract_runs/api/id/orders.csv");
     }
 
     #[test]
@@ -1019,12 +758,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(merged.id, canonical.id);
-        assert!(store.get_dataset("legacy-extract-id").await.unwrap().is_none());
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM datasets WHERE stored_path = ?")
-            .bind(path)
-            .fetch_one(&store.pool)
+        assert!(store
+            .get_dataset("legacy-extract-id")
             .await
-            .unwrap();
+            .unwrap()
+            .is_none());
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM data_files WHERE stored_path = ?")
+                .bind(path)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
         assert_eq!(count, 1);
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
@@ -1084,13 +828,7 @@ mod tests {
             .unwrap();
         let config_raw = store.resolve_chip_config_json(&task).await.unwrap();
         let run = store
-            .create_chip_run(
-                &task.id,
-                &workspace.id,
-                task.revision,
-                &config_raw,
-                None,
-            )
+            .create_chip_run(&task.id, &workspace.id, task.revision, &config_raw, None)
             .await
             .unwrap();
         store
@@ -1113,6 +851,38 @@ mod tests {
             store.get_chip_run(&run.id).await.unwrap().unwrap().status,
             "failed"
         );
+        let step = store.get_execution_step(&run.id).await.unwrap().unwrap();
+        assert_eq!(
+            store
+                .get_execution(&step.execution_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "failed"
+        );
+
+        store.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn chip_names_are_unique_per_owner_across_etl_kinds() {
+        let (root, store, admin) = test_store().await;
+        let workspace = store
+            .insert_workspace("Names", None, &admin.id, None)
+            .await
+            .unwrap();
+        store
+            .insert_chip(&admin.id, &workspace.id, "Daily ETL", "extract", "{}")
+            .await
+            .unwrap();
+
+        let duplicate = store
+            .insert_chip(&admin.id, &workspace.id, "  daily etl  ", "load", "{}")
+            .await
+            .unwrap_err();
+        assert!(matches!(duplicate, StorageError::Conflict(_)));
 
         store.pool.close().await;
         std::fs::remove_dir_all(root).unwrap();
@@ -1155,8 +925,8 @@ mod tests {
                     from_chip_id: extract.id.clone(),
                     to_chip_id: transform.id.clone(),
                     kind: "data".into(),
-                    from_port: "out".into(),
-                    to_port: "in".into(),
+                    from_port: "right".into(),
+                    to_port: "left".into(),
                 }],
             )
             .await
@@ -1164,6 +934,44 @@ mod tests {
         assert_eq!(chips.len(), 2);
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].kind, "data");
+
+        let placement_id = workspace_repo::workspace_chip_id(&workspace.id, &extract.id);
+        sqlx::query(
+            "INSERT INTO workspace_chip_outputs
+            (workspace_chip_id, port_name, expected_filename, definition_revision, updated_at)
+            VALUES (?, 'out', 'users.csv', 1, ?)",
+        )
+        .bind(&placement_id)
+        .bind(now_rfc3339())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let planned = store
+            .find_planned_input_dataset(&workspace.id, &transform.id)
+            .await
+            .unwrap()
+            .expect("visual edge sides must resolve the logical output contract");
+        assert_eq!(planned.filename, "users.csv");
+        store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[extract.id.clone(), transform.id.clone()],
+                &[WorkspaceSaveEdge {
+                    id: Uuid::new_v4().to_string(),
+                    from_chip_id: extract.id.clone(),
+                    to_chip_id: transform.id.clone(),
+                    kind: "data".into(),
+                    from_port: "out".into(),
+                    to_port: "in".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        let expected: String = sqlx::query_scalar(
+            "SELECT expected_filename FROM workspace_chip_outputs WHERE workspace_chip_id=? AND port_name='out'")
+            .bind(&placement_id).fetch_one(&store.pool).await.unwrap();
+        assert_eq!(expected, "users.csv");
 
         let cycle = store
             .save_workspace(
@@ -1231,14 +1039,8 @@ mod tests {
             .await
             .unwrap();
 
-        let admin_files = store
-            .list_uploads(Some(&admin_scope))
-            .await
-            .unwrap();
-        let analyst_files = store
-            .list_uploads(Some(&analyst_scope))
-            .await
-            .unwrap();
+        let admin_files = store.list_uploads(Some(&admin_scope)).await.unwrap();
+        let analyst_files = store.list_uploads(Some(&analyst_scope)).await.unwrap();
         assert!(admin_files.iter().any(|file| file.filename == "a.csv"));
         assert!(admin_files.iter().any(|file| file.filename == "b.csv"));
         assert_eq!(analyst_files.len(), 1);
@@ -1299,7 +1101,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_workspace_clears_extract_definition_fk() {
+    async fn transform_definition_accepts_workspace_input_contract_without_fake_file() {
+        let (root, store, admin) = test_store().await;
+        let workspace = store
+            .insert_workspace("Contract flow", None, &admin.id, None)
+            .await
+            .unwrap();
+        let source = store
+            .insert_chip(&admin.id, &workspace.id, "Source", "extract", "{}")
+            .await
+            .unwrap();
+        let consumer = store
+            .insert_chip(&admin.id, &workspace.id, "Transform", "transform", "{}")
+            .await
+            .unwrap();
+        store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[source.id.clone(), consumer.id.clone()],
+                &[WorkspaceSaveEdge {
+                    id: Uuid::new_v4().to_string(),
+                    from_chip_id: source.id.clone(),
+                    to_chip_id: consumer.id.clone(),
+                    kind: "data".into(),
+                    from_port: "out".into(),
+                    to_port: "in".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        let contract = store
+            .upsert_planned_input_dataset(
+                &workspace.id,
+                &consumer.id,
+                &source.id,
+                None,
+                "database",
+                "source.csv",
+                r#"[{"name":"id","dtype":"Int64"}]"#,
+                ",",
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(contract.id.starts_with("contract:"));
+        let transform = store
+            .insert_transform(
+                "Clean",
+                &contract.id,
+                r#"{"version":2,"steps":[],"sink":"parquet"}"#,
+                Some(&consumer.id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(transform.dataset_id, contract.id);
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT default_input_file_id FROM transforms WHERE id=?")
+                .bind(&transform.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert!(stored.is_none());
+        let fake_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM data_files WHERE stored_path LIKE '__planned__/%'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(fake_count, 0);
+        store.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_keeps_independent_extract_definition() {
         let (root, store, admin) = test_store().await;
         let ws = store
             .insert_workspace("delete-me", None, &admin.id, None)
@@ -1321,14 +1197,14 @@ mod tests {
         let extract_id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO extract_definitions
-             (id, name, kind, connection_id, source_json, delimiter, header, add_sequence,
-              workspace_id, created_at, updated_at)
-             VALUES (?, 'def', 'database', ?, '{}', ',', 1, 0, ?, ?, ?)",
+            "INSERT INTO extracts
+             (id, owner_user_id, name, source_type, connection_id, source_json, output_format,
+              output_filename, delimiter, has_header, add_sequence, revision, active, created_at, updated_at)
+             VALUES (?, ?, 'def', 'database', ?, '{}', 'csv', 'def.csv', ',', 1, 0, 1, 1, ?, ?)",
         )
         .bind(&extract_id)
+        .bind(&admin.id)
         .bind(&conn.id)
-        .bind(&ws.id)
         .bind(&now)
         .bind(&now)
         .execute(&store.pool)
@@ -1336,14 +1212,12 @@ mod tests {
         .unwrap();
 
         store.delete_workspace(&ws.id).await.unwrap();
-        let left: Option<String> = sqlx::query_scalar(
-            "SELECT workspace_id FROM extract_definitions WHERE id = ?",
-        )
-        .bind(&extract_id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-        assert!(left.is_none());
+        let left: String = sqlx::query_scalar("SELECT id FROM extracts WHERE id = ?")
+            .bind(&extract_id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(left, extract_id);
         assert!(store.get_workspace(&ws.id).await.unwrap().is_none());
 
         store.pool.close().await;

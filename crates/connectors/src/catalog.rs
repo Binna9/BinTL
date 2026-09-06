@@ -79,7 +79,12 @@ pub async fn list_databases(c: &LiveConnection) -> Result<Vec<CatalogItem>, Conn
             let rows = stream.into_first_result().await?;
             let mut out: Vec<CatalogItem> = rows
                 .iter()
-                .filter_map(|r| r.try_get::<&str, usize>(0).ok().flatten().map(str::to_string))
+                .filter_map(|r| {
+                    r.try_get::<&str, usize>(0)
+                        .ok()
+                        .flatten()
+                        .map(str::to_string)
+                })
                 .map(|name| item_db(&name, &c.database))
                 .collect();
             if out.iter().all(|d| d.current != Some(true)) && !c.database.is_empty() {
@@ -138,7 +143,12 @@ pub async fn list_schemas(
             let rows = stream.into_first_result().await?;
             Ok(rows
                 .iter()
-                .filter_map(|r| r.try_get::<&str, usize>(0).ok().flatten().map(str::to_string))
+                .filter_map(|r| {
+                    r.try_get::<&str, usize>(0)
+                        .ok()
+                        .flatten()
+                        .map(str::to_string)
+                })
                 .map(|name| CatalogItem {
                     name,
                     kind: "schema",

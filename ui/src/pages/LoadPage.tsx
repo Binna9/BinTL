@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { BookmarkPlus, ChevronRight, Database, Eye, FileOutput, FileSpreadsheet, RotateCcw, Search } from "lucide-react";
+import { BookmarkPlus, ChevronRight, Database, Eye, FileOutput, FileSpreadsheet, Play, RotateCcw, Search } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { CatalogTree } from "@/components/connections/CatalogTree";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
@@ -12,13 +12,14 @@ import { FormField } from "@/components/ui/form-field";
 import { Select } from "@/components/ui/select";
 import { PreviewGrid } from "@/components/transform/TransformEditorParts";
 import { useLanguage } from "@/i18n/LanguageProvider";
-import { toastError, toastSuccess } from "@/lib/notifications";
+import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { cn } from "@/lib/cn";
 import { nextSequencedChipName } from "@/lib/chipSequence";
 import { selectableClass } from "@/lib/selectable";
 import { layout } from "@/lib/layout";
 import { connectionApi } from "@/services/connections/connectionApi";
 import { chipApi } from "@/services/chips/chipApi";
+import { isChipNameConflict } from "@/services/httpClient";
 import { loadApi } from "@/services/load/loadApi";
 import { datasetApi } from "@/services/transform/datasetApi";
 import { datasetFromSlot, KIND_APPEARANCE, KIND_ORDER } from "@/features/transform/transformEditorModel";
@@ -42,6 +43,7 @@ export function LoadPage() {
     upload: "", database: "", transform: "", api: "",
   });
   const [inputDatasetId, setInputDatasetId] = useState("");
+  const [userSelectedInput, setUserSelectedInput] = useState(false);
   const [preview, setPreview] = useState<FramePreview | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [connections, setConnections] = useState<DataConnection[]>([]);
@@ -129,11 +131,29 @@ export function LoadPage() {
       if (!workspaceMode && createdDefinitionId) {
         await loadApi.remove(createdDefinitionId).catch(() => undefined);
       }
-      toastError(workspaceMode ? t.applyError : t.registerError, error);
+      if (isChipNameConflict(error)) toastError(messages.workspace.duplicateChipName);
+      else toastError(workspaceMode ? t.applyError : t.registerError, error);
     } finally { setBusy(false); }
   }
 
   const canSave = Boolean(inputDatasetId && (destinationType === "database" ? connectionId && table.trim() && (writeMode !== "upsert" || conflictKeys.length > 0) : filename.trim()));
+  const selectedInput = datasets.find((item) => item.id === inputDatasetId);
+  const canRun = canSave && selectedInput?.status !== "planned" && Boolean(selectedInput?.available);
+
+  async function runLoad() {
+    if (!canRun || busy) return;
+    const confirmed = await showConfirm(t.runTitle, t.runMessage, { confirmLabel: messages.common.run });
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      const result = await loadApi.run(spec);
+      toastSuccess(t.runCompleted(result.loaded_rows));
+    } catch (error) {
+      toastError(t.runError, error);
+    } finally {
+      setBusy(false);
+    }
+  }
   const inputDatasets = workspaceMode
     ? datasets.filter((item) => item.id === inputDatasetId)
     : datasets;
@@ -177,14 +197,15 @@ export function LoadPage() {
       if (dataset) {
         setDatasets((current) => current.some((item) => item.id === dataset.id) ? current : [...current, dataset]);
         setInputDatasetId(dataset.id);
-        if (KIND_ORDER.includes(dataset.kind as (typeof KIND_ORDER)[number])) {
-          setExpandedKinds(new Set([dataset.kind as (typeof KIND_ORDER)[number]]));
-        }
-      }
-      if (!routeId) {
-        const chip = response.chips.find((item) => item.id === editorChipId);
-        if (chip) setName(chip.name);
-      }
+    setUserSelectedInput(false); // prefilled from chip slot — not a user selection
+    if (KIND_ORDER.includes(dataset.kind as (typeof KIND_ORDER)[number])) {
+      setExpandedKinds(new Set([dataset.kind as (typeof KIND_ORDER)[number]]));
+    }
+  }
+  if (!routeId) {
+    const chip = response.chips.find((item) => item.id === editorChipId);
+    if (chip) setName(chip.name);
+  }
     }).catch((error) => toastError(t.loadError, error));
   }, [editorChipId, routeId, workspaceId]);
 
@@ -267,7 +288,7 @@ export function LoadPage() {
               <div className="relative isolate mx-auto flex min-h-full w-full max-w-[90rem] overflow-hidden rounded-[1.6rem] border border-border/70 bg-gradient-to-br from-surface via-surface to-accent-subtle/40 p-2.5 shadow-[0_18px_48px_rgba(15,23,42,0.09),inset_0_1px_0_rgba(255,255,255,0.75)] ring-1 ring-white/40 dark:shadow-[0_20px_52px_rgba(0,0,0,0.28)] dark:ring-white/5">
                 <span className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-accent/45 to-transparent" aria-hidden="true" />
                 <span className="pointer-events-none absolute -right-20 -top-24 size-64 rounded-full bg-accent/5 blur-3xl" aria-hidden="true" />
-                <div className="relative z-[1] grid min-h-[32rem] w-full flex-1 gap-2.5 lg:grid-cols-[minmax(18rem,0.82fr)_minmax(25rem,1.18fr)]">
+                <div className="relative z-[1] grid min-h-[32rem] w-full flex-1 gap-2.5 lg:grid-cols-[minmax(16.5rem,0.72fr)_minmax(26rem,1.28fr)]">
                 <section className="flex min-h-[32rem] flex-col overflow-hidden rounded-xl border border-border/80 bg-surface/95 shadow-[0_6px_18px_rgba(15,23,42,0.06)]">
                   <PaneHeader
                     title={messages.transform.catalog}
@@ -349,7 +370,7 @@ export function LoadPage() {
                                     selectableClass(inputDatasetId === dataset.id),
                                   )}
                                   disabled={workspaceMode}
-                                  onClick={() => setInputDatasetId(dataset.id)}
+                                  onClick={() => { setInputDatasetId(dataset.id); setUserSelectedInput(true); }}
                                 >
                                   <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
                                   <span className="min-w-0 flex-1">
@@ -378,7 +399,16 @@ export function LoadPage() {
                 </section>
 
                 <section className="overflow-hidden rounded-xl border border-border/80 bg-surface/95 shadow-[0_6px_18px_rgba(15,23,42,0.06)]">
-                  <PaneHeader title={t.destinationSettings} description={t.destinationSettingsHint} />
+                  <PaneHeader
+                    title={t.destinationSettings}
+                    description={t.destinationSettingsHint}
+                    actions={(!workspaceMode || userSelectedInput) ? (
+                        <Button type="button" variant="primary" className="gap-1.5" disabled={!canRun || busy} onClick={() => void runLoad()}>
+                          <Play className="size-3.5" aria-hidden="true" />
+                          {busy ? messages.common.running : messages.common.run}
+                        </Button>
+                      ) : null }
+                  />
                   <div className="grid gap-5 p-5">
                     {destinationType === "database" && !connectionId ? <p className="text-xs text-text-tertiary">{t.connectionFirst}</p> : null}
                     {destinationType === "database" ? <>

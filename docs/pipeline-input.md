@@ -1,41 +1,20 @@
-# 파이프라인 입력 모델 (Planned Input)
+# 캔버스 데이터 입력 계약
 
-## 문제
+캔버스의 data 연결선은 실제 파일과 실행 전 스키마 계약을 같은 ID로 위조하지 않는다.
 
-워크스페이스 캔버스는 Extract → Transform → Load **의도**를 그리지만, 변환 등록·실행은 **실제 파일(`datasets`)** 이 있어야만 가능했다.
+## 설계 상태
 
-## 방향
+- `workspace_edges(kind='data')`가 upstream과 downstream을 연결한다.
+- `workspace_chip_outputs.expected_filename`과 `schema_id`가 실행 전 출력 계약이다.
+- `data_schemas.columns_json`은 0행 결과도 컬럼을 보존한다.
+- 이 단계에는 `data_files` 행이나 `__planned__` 가짜 경로를 만들지 않는다.
 
-**의도와 실행을 분리**한다.
+## 실행 상태
 
-| 단계 | 입력 | 산출 |
-|------|------|------|
-| 설계 | `chip_edges` (data), `extract_definitions` | `datasets.status = planned` (스키마만) |
-| 실행 | upstream 성공 산출 또는 lazy extract | `datasets.status = materialized` |
+1. downstream 실행 시 data 연결선의 upstream 배치를 찾는다.
+2. `workspace_chip_outputs.current_data_file_id`가 있으면 실제 입력으로 사용한다.
+3. 없으면 upstream을 먼저 실행하거나 입력 미생성 상태를 명확히 반환한다.
+4. 성공 출력은 `data_files`에 등록하고 `execution_outputs`와 출력 슬롯을 같은 트랜잭션에서 갱신한다.
+5. 연결선을 끊으면 downstream은 더 이상 해당 슬롯을 입력으로 해석하지 않는다. 실제 과거 파일과 실행 이력은 보존한다.
 
-### 핵심 엔티티
-
-- **`datasets` (planned)** — `stored_path = __planned__/{id}`, `columns_json`은 추출 정의 introspect
-- **`consumer_chip_id`** — 이 슬롯을 쓰는 변환 칩
-- **`source_chip_id`** — upstream 추출 칩
-- **`transforms.input_chip_id`** — 논리 입력 (선택, planned dataset과 함께 저장)
-
-### 동기화 시점
-
-1. 워크스페이스 **저장** 시 `data` 엣지(추출/변환→변환/적재)마다 planned dataset upsert
-2. `GET /api/workspaces/:id/chips/:chip_id/input-slot` — 변환·적재 칩의 예정 입력 조회
-3. 변환 페이지는 planned dataset으로 **컬럼 기반 spec 작성** (파일 없이), 적재 페이지는 같은 데이터 파일 패널에서 예정 입력 스키마를 확인하고 적재 대상을 미리 설정
-
-### 실행 시
-
-Transform 칩 Run:
-
-1. upstream `chip_output_slots` / succeeded run 있으면 그 dataset 사용
-2. 없으면 upstream Extract를 **동기 실행** 후 산출 materialize
-3. Transform job 실행
-
-## 왜 이 방향인가
-
-- **카탈로그 등록 UX** 유지: `transforms.dataset_id` FK 그대로 (planned dataset이 대상)
-- **캔버스 edge**가 단일 진실 공급원 — 별도 예약 테이블 최소화
-- **Polars 엔진**은 변경 최소 — preview만 planned일 때 columns_json 기반
+단독 변환·적재 페이지에서는 각각 `transforms.default_input_file_id`, `loads.default_input_file_id`를 사용한다. 캔버스 data 연결은 이 기본값보다 우선한다.

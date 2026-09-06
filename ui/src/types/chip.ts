@@ -1,4 +1,4 @@
-export type ChipKind = "extract" | "transform" | "load";
+export type ChipKind = "extract" | "transform" | "load" | "validation";
 export type ChipEdgeKind = "data" | "on_success" | "on_error" | "always";
 export type ChipConfig = Record<string, unknown>;
 

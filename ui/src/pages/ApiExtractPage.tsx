@@ -26,6 +26,7 @@ import { toastError, toastSuccess } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extract/extractApi";
 import { chipApi } from "@/services/chips/chipApi";
+import { isChipNameConflict } from "@/services/httpClient";
 import type { ExtractRecord, HttpKv, HttpPreviewResponse, HttpSource } from "@/types/extract";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
@@ -296,7 +297,8 @@ export function ApiExtractPage() {
       setIsRegisterOpen(false);
       toastSuccess(messages.query.taskRegisteredNamed(registerName.trim()));
     } catch (err) {
-      toastError(messages.workspace.saveChipError, err);
+      if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
+      else toastError(messages.workspace.saveChipError, err);
     } finally {
       setRegisterBusy(false);
     }

@@ -23,24 +23,137 @@ pub(crate) struct LoadConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum LoadDestination {
-    Database { connection_id: String, #[serde(default)] database: Option<String>, table: String },
-    File { format: String, filename: String },
+    Database {
+        connection_id: String,
+        #[serde(default)]
+        database: Option<String>,
+        table: String,
+    },
+    File {
+        format: String,
+        filename: String,
+    },
 }
 
-fn default_write_mode() -> String { "append".into() }
+fn default_write_mode() -> String {
+    "append".into()
+}
 
 #[derive(Deserialize)]
-struct SaveLoadBody { name: String, spec: Value, #[serde(default)] input_chip_id: Option<String> }
+struct SaveLoadBody {
+    name: String,
+    spec: Value,
+    #[serde(default)]
+    input_chip_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RunLoadBody {
+    spec: Value,
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/loads", get(list_loads).post(create_load))
-        .route("/api/loads/{id}", get(get_load).put(update_load).delete(delete_load))
+        .route("/api/loads/run", axum::routing::post(run_load))
+        .route(
+            "/api/loads/{id}",
+            get(get_load).put(update_load).delete(delete_load),
+        )
 }
 
-pub(crate) async fn validate_load_config(store: &storage::Store, value: Value) -> Result<LoadConfig, AppError> {
-    let config: LoadConfig = serde_json::from_value(value).map_err(|e| AppError::bad(e.to_string()))?;
-    if !matches!(config.write_mode.as_str(), "append" | "truncate" | "upsert" | "recreate" | "replace") {
+async fn run_load(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<RunLoadBody>,
+) -> Result<Json<Value>, AppError> {
+    let config = validate_load_config(&state.store, body.spec).await?;
+    let dataset_id = config
+        .input_dataset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::bad("input_dataset_id required"))?;
+    let dataset = crate::access::require_dataset(&state.store, &user, dataset_id).await?;
+    if dataset.status != "materialized" || !state.store.resolve(&dataset.stored_path).is_file() {
+        return Err(AppError::bad("input dataset is not materialized"));
+    }
+    let snapshot = serde_json::to_string(&config).map_err(|e| AppError::bad(e.to_string()))?;
+    let step = state
+        .store
+        .create_standalone_load_step(
+            &dataset.workspace_id,
+            Some(user.id()),
+            &snapshot,
+            &dataset.id,
+        )
+        .await?;
+    let run_id = step.id;
+    state
+        .store
+        .set_execution_step_running(&run_id, None)
+        .await?;
+    let scope_id = format!("standalone/{run_id}");
+    let result = match crate::chip::execute_load_config(
+        &state.store,
+        &config,
+        &dataset,
+        &dataset.workspace_id,
+        &scope_id,
+        &run_id,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = state
+                .store
+                .finish_execution_step(&run_id, "failed", None, Some(&error))
+                .await;
+            return Err(AppError::bad(error));
+        }
+    };
+    state
+        .store
+        .insert_load_result(
+            &run_id,
+            &result.destination,
+            &config.write_mode,
+            dataset.row_count,
+            result.loaded_rows,
+            result.input_bytes,
+            result.duration_ms,
+            result.artifact_path.as_deref(),
+        )
+        .await?;
+    state
+        .store
+        .finish_execution_step(&run_id, "succeeded", None, None)
+        .await?;
+    Ok(Json(json!({
+        "ok": true,
+        "destination": result.destination,
+        "loaded_rows": result.loaded_rows,
+        "input_bytes": result.input_bytes,
+        "duration_ms": result.duration_ms,
+        "artifact_path": result.artifact_path,
+    })))
+}
+
+fn is_planned_input_contract(dataset_id: &str) -> bool {
+    dataset_id.starts_with("contract:")
+}
+
+pub(crate) async fn validate_load_config(
+    store: &storage::Store,
+    value: Value,
+) -> Result<LoadConfig, AppError> {
+    let config: LoadConfig =
+        serde_json::from_value(value).map_err(|e| AppError::bad(e.to_string()))?;
+    if !matches!(
+        config.write_mode.as_str(),
+        "append" | "truncate" | "upsert" | "recreate" | "replace"
+    ) {
         return Err(AppError::bad("unsupported write_mode"));
     }
     if config.write_mode == "upsert" && config.conflict_keys.is_empty() {
@@ -49,66 +162,150 @@ pub(crate) async fn validate_load_config(store: &storage::Store, value: Value) -
     for key in &config.conflict_keys {
         connectors::parse_ident(key).map_err(|e| AppError::bad(e.to_string()))?;
     }
-    if let Some(dataset_id) = config.input_dataset_id.as_deref().filter(|value| !value.trim().is_empty()) {
-        store.get_dataset(dataset_id).await?
-            .ok_or_else(|| AppError::not_found("input dataset not found"))?;
+    if let Some(dataset_id) = config
+        .input_dataset_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if !is_planned_input_contract(dataset_id) {
+            store
+                .get_dataset(dataset_id)
+                .await?
+                .ok_or_else(|| AppError::not_found("input dataset not found"))?;
+        }
     }
     match &config.destination {
-        LoadDestination::Database { connection_id, database, table } => {
-            let connection = store.get_connection(connection_id).await?
+        LoadDestination::Database {
+            connection_id,
+            database,
+            table,
+        } => {
+            let connection = store
+                .get_connection(connection_id)
+                .await?
                 .ok_or_else(|| AppError::not_found("connection not found"))?;
-            if connection.driver == "http" { return Err(AppError::bad("http connection cannot be a database load target")); }
+            if connection.driver == "http" {
+                return Err(AppError::bad(
+                    "http connection cannot be a database load target",
+                ));
+            }
             connectors::parse_table(table).map_err(|e| AppError::bad(e.to_string()))?;
             if let Some(database) = database.as_deref().filter(|value| !value.trim().is_empty()) {
                 connectors::parse_ident(database).map_err(|e| AppError::bad(e.to_string()))?;
             }
         }
         LoadDestination::File { format, filename } => {
-            if !matches!(format.as_str(), "csv" | "parquet") { return Err(AppError::bad("file format must be csv or parquet")); }
+            if !matches!(format.as_str(), "csv" | "parquet") {
+                return Err(AppError::bad("file format must be csv or parquet"));
+            }
             let trimmed = filename.trim();
-            if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains('\\') || matches!(trimmed, "." | "..") {
+            if trimmed.is_empty()
+                || trimmed.contains('/')
+                || trimmed.contains('\\')
+                || matches!(trimmed, "." | "..")
+            {
                 return Err(AppError::bad("invalid output filename"));
             }
-            if !matches!(config.write_mode.as_str(), "replace" | "recreate") { return Err(AppError::bad("file loads use replace mode")); }
+            if !matches!(config.write_mode.as_str(), "replace" | "recreate") {
+                return Err(AppError::bad("file loads use replace mode"));
+            }
         }
     }
     Ok(config)
 }
 
 fn load_json(row: &LoadDefinitionRow) -> Result<Value, AppError> {
-    let spec: Value = serde_json::from_str(&row.spec_json).map_err(|e| AppError::bad(e.to_string()))?;
-    Ok(json!({ "id": row.id, "owner_user_id": row.owner_user_id, "name": row.name,
+    let spec: Value =
+        serde_json::from_str(&row.spec_json).map_err(|e| AppError::bad(e.to_string()))?;
+    Ok(
+        json!({ "id": row.id, "owner_user_id": row.owner_user_id, "name": row.name,
         "destination_type": row.destination_type, "spec": spec,
-        "created_at": row.created_at, "updated_at": row.updated_at }))
+        "created_at": row.created_at, "updated_at": row.updated_at }),
+    )
 }
 
-async fn list_loads(State(state): State<AppState>, user: CurrentUser) -> Result<Json<Value>, AppError> {
-    let rows = state.store.list_load_definitions(user.id(), user.can_see_all_workspaces()).await?;
-    Ok(Json(json!({ "loads": rows.iter().map(load_json).collect::<Result<Vec<_>, _>>()? })))
+#[cfg(test)]
+mod tests {
+    use super::is_planned_input_contract;
+
+    #[test]
+    fn planned_input_contracts_are_detected() {
+        assert!(is_planned_input_contract("contract:workspace:test-chip"));
+        assert!(!is_planned_input_contract("dataset-123"));
+        assert!(!is_planned_input_contract(""));
+    }
 }
 
-async fn get_load(State(state): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> Result<Json<Value>, AppError> {
-    Ok(Json(load_json(&require_load(&state.store, &user, &id).await?)?))
+async fn list_loads(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<Json<Value>, AppError> {
+    let rows = state
+        .store
+        .list_load_definitions(user.id(), user.can_see_all_workspaces())
+        .await?;
+    Ok(Json(
+        json!({ "loads": rows.iter().map(load_json).collect::<Result<Vec<_>, _>>()? }),
+    ))
 }
 
-async fn create_load(State(state): State<AppState>, user: CurrentUser, Json(body): Json<SaveLoadBody>) -> Result<Json<Value>, AppError> {
-    let input_chip_id = validate_input_chip(&state.store, &user, body.input_chip_id.as_deref()).await?;
+async fn get_load(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(load_json(
+        &require_load(&state.store, &user, &id).await?,
+    )?))
+}
+
+async fn create_load(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<SaveLoadBody>,
+) -> Result<Json<Value>, AppError> {
+    let input_chip_id =
+        validate_input_chip(&state.store, &user, body.input_chip_id.as_deref()).await?;
     let config = validate_load_config(&state.store, body.spec).await?;
-    let kind = if matches!(config.destination, LoadDestination::Database { .. }) { "database" } else { "file" };
+    let kind = if matches!(config.destination, LoadDestination::Database { .. }) {
+        "database"
+    } else {
+        "file"
+    };
     let raw = serde_json::to_string(&config).map_err(|e| AppError::bad(e.to_string()))?;
-    let row = state.store.insert_load_definition(user.id(), &body.name, kind, &raw).await?;
-    if let Some(chip_id) = input_chip_id { state.store.bind_chip_to_load(&chip_id, &row.id).await?; }
+    let row = state
+        .store
+        .insert_load_definition(user.id(), &body.name, kind, &raw)
+        .await?;
+    if let Some(chip_id) = input_chip_id {
+        state.store.bind_chip_to_load(&chip_id, &row.id).await?;
+    }
     Ok(Json(load_json(&row)?))
 }
 
-async fn update_load(State(state): State<AppState>, user: CurrentUser, Path(id): Path<String>, Json(body): Json<SaveLoadBody>) -> Result<Json<Value>, AppError> {
+async fn update_load(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<SaveLoadBody>,
+) -> Result<Json<Value>, AppError> {
     require_load(&state.store, &user, &id).await?;
-    let input_chip_id = validate_input_chip(&state.store, &user, body.input_chip_id.as_deref()).await?;
+    let input_chip_id =
+        validate_input_chip(&state.store, &user, body.input_chip_id.as_deref()).await?;
     let config = validate_load_config(&state.store, body.spec).await?;
-    let kind = if matches!(config.destination, LoadDestination::Database { .. }) { "database" } else { "file" };
+    let kind = if matches!(config.destination, LoadDestination::Database { .. }) {
+        "database"
+    } else {
+        "file"
+    };
     let raw = serde_json::to_string(&config).map_err(|e| AppError::bad(e.to_string()))?;
-    let row = state.store.update_load_definition(&id, &body.name, kind, &raw).await?;
-    if let Some(chip_id) = input_chip_id { state.store.bind_chip_to_load(&chip_id, &row.id).await?; }
+    let row = state
+        .store
+        .update_load_definition(&id, &body.name, kind, &raw)
+        .await?;
+    if let Some(chip_id) = input_chip_id {
+        state.store.bind_chip_to_load(&chip_id, &row.id).await?;
+    }
     Ok(Json(load_json(&row)?))
 }
 
@@ -117,20 +314,37 @@ async fn validate_input_chip(
     user: &CurrentUser,
     chip_id: Option<&str>,
 ) -> Result<Option<String>, AppError> {
-    let Some(chip_id) = chip_id.map(str::trim).filter(|value| !value.is_empty()) else { return Ok(None); };
+    let Some(chip_id) = chip_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
     let chip = crate::access::require_chip(store, user, chip_id).await?;
-    if chip.kind != "load" { return Err(AppError::bad("input_chip_id must reference a load chip")); }
+    if chip.kind != "load" {
+        return Err(AppError::bad("input_chip_id must reference a load chip"));
+    }
     Ok(Some(chip_id.to_string()))
 }
 
-async fn delete_load(State(state): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> Result<Json<Value>, AppError> {
+async fn delete_load(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
     require_load(&state.store, &user, &id).await?;
     state.store.delete_load_definition(&id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
-pub(crate) async fn require_load(store: &storage::Store, user: &CurrentUser, id: &str) -> Result<LoadDefinitionRow, AppError> {
-    let row = store.get_load_definition(id).await?.ok_or_else(|| AppError::not_found("load definition not found"))?;
-    if !user.can_see_all_workspaces() && row.owner_user_id != user.id() { return Err(AppError::not_found("load definition not found")); }
+pub(crate) async fn require_load(
+    store: &storage::Store,
+    user: &CurrentUser,
+    id: &str,
+) -> Result<LoadDefinitionRow, AppError> {
+    let row = store
+        .get_load_definition(id)
+        .await?
+        .ok_or_else(|| AppError::not_found("load definition not found"))?;
+    if !user.can_see_all_workspaces() && row.owner_user_id != user.id() {
+        return Err(AppError::not_found("load definition not found"));
+    }
     Ok(row)
 }

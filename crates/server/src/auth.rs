@@ -71,10 +71,7 @@ fn cookie_value(header: &str, name: &str) -> Option<String> {
     })
 }
 
-async fn load_session_user(
-    state: &AppState,
-    cookie_header: &str,
-) -> Result<UserRow, AppError> {
+async fn load_session_user(state: &AppState, cookie_header: &str) -> Result<UserRow, AppError> {
     if state.config.skip_auth {
         return state
             .store
@@ -83,7 +80,8 @@ async fn load_session_user(
             .map_err(AppError::from);
     }
     let token = cookie_value(cookie_header, COOKIE_NAME).ok_or_else(AppError::unauthorized)?;
-    let user_id = verify(&state.config.session_secret, &token).ok_or_else(AppError::unauthorized)?;
+    let user_id =
+        verify(&state.config.session_secret, &token).ok_or_else(AppError::unauthorized)?;
     let user = state
         .store
         .get_user(&user_id)

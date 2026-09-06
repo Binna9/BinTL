@@ -4,8 +4,8 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use engine::{FramePreview, PolarsEngine, PreviewColumn, TransformSpec};
 use connectors::sniff_delimiter;
+use engine::{FramePreview, PolarsEngine, PreviewColumn, TransformSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use storage::{DatasetRow, Store, TransformRow};
@@ -76,21 +76,19 @@ fn normalize_columns(raw: &str) -> Value {
         .ok()
         .and_then(|value| value.as_array().cloned())
         .map(|columns| {
-            json!(
-                columns
-                    .iter()
-                    .map(|column| {
-                        json!({
-                            "name": column.get("name").and_then(Value::as_str).unwrap_or(""),
-                            "dtype": column
-                                .get("dtype")
-                                .or_else(|| column.get("type"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("String"),
-                        })
+            json!(columns
+                .iter()
+                .map(|column| {
+                    json!({
+                        "name": column.get("name").and_then(Value::as_str).unwrap_or(""),
+                        "dtype": column
+                            .get("dtype")
+                            .or_else(|| column.get("type"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("String"),
                     })
-                    .collect::<Vec<_>>()
-            )
+                })
+                .collect::<Vec<_>>())
         })
         .unwrap_or_else(|| json!([]))
 }
@@ -237,10 +235,7 @@ async fn hydrate_v2_spec(
     let Some(combine) = value.get("combine") else {
         return Ok(spec);
     };
-    let mode = combine
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let mode = combine.get("mode").and_then(|v| v.as_str()).unwrap_or("");
     match mode {
         "join" => {
             let right_id = combine
@@ -252,10 +247,8 @@ async fn hydrate_v2_spec(
             if !path.is_file() {
                 return Err(AppError::not_found("right dataset file missing"));
             }
-            spec.resolved_paths.insert(
-                right_id.to_string(),
-                path.to_string_lossy().into_owned(),
-            );
+            spec.resolved_paths
+                .insert(right_id.to_string(), path.to_string_lossy().into_owned());
         }
         "union" => {
             let ids = combine
@@ -273,10 +266,8 @@ async fn hydrate_v2_spec(
                         "union dataset `{id}` file missing"
                     )));
                 }
-                spec.resolved_paths.insert(
-                    id.to_string(),
-                    path.to_string_lossy().into_owned(),
-                );
+                spec.resolved_paths
+                    .insert(id.to_string(), path.to_string_lossy().into_owned());
             }
         }
         other => return Err(AppError::bad(format!("unknown combine mode `{other}`"))),
@@ -293,7 +284,9 @@ async fn hydrate_recipe_dataset(
     let dataset = access::require_dataset(&state.store, user, id).await?;
     let path = state.store.resolve(&dataset.stored_path);
     if !path.is_file() {
-        return Err(AppError::not_found(format!("recipe dataset `{id}` file missing")));
+        return Err(AppError::not_found(format!(
+            "recipe dataset `{id}` file missing"
+        )));
     }
     spec.resolved_paths
         .insert(id.to_string(), path.to_string_lossy().into_owned());
@@ -345,12 +338,12 @@ async fn list_datasets(
         .store
         .list_datasets(Some(&user.scope(q.workspace_id)))
         .await?;
-    let datasets: Vec<Value> = rows
+    let data_resources: Vec<Value> = rows
         .iter()
         .filter(|row| row.status != "planned")
         .map(|row| dataset_json(&state.store, row))
         .collect();
-    Ok(Json(json!({ "datasets": datasets })))
+    Ok(Json(json!({ "datasets": data_resources })))
 }
 
 async fn get_dataset(
@@ -418,23 +411,27 @@ async fn inspect_dataset(
         return Err(AppError::not_found("dataset file missing"));
     }
     let limit = clamp_limit(q.limit);
-    let inferred_delim = row.delimiter.clone().or_else(|| {
-        std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| sniff_delimiter(&bytes))
-    }).or_else(|| {
-        match path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "tsv" => Some("tab".into()),
-            "csv" | "txt" => Some(",".into()),
-            _ => None,
-        }
-    });
+    let inferred_delim = row
+        .delimiter
+        .clone()
+        .or_else(|| {
+            std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| sniff_delimiter(&bytes))
+        })
+        .or_else(|| {
+            match path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "tsv" => Some("tab".into()),
+                "csv" | "txt" => Some(",".into()),
+                _ => None,
+            }
+        });
     let inferred_header = row.has_header.map(|h| h != 0).or(Some(true));
     let spec = read_spec_for(&row).with_read(inferred_delim.clone(), inferred_header);
     let preview = tokio::task::spawn_blocking(move || PolarsEngine.inspect(&path, &spec, limit))
@@ -503,8 +500,8 @@ async fn list_transforms(
         .store
         .list_transforms(Some(&user.scope(q.workspace_id)))
         .await?;
-    let transforms: Vec<Value> = rows.iter().map(transform_json).collect();
-    Ok(Json(json!({ "transforms": transforms })))
+    let transform_recipes: Vec<Value> = rows.iter().map(transform_json).collect();
+    Ok(Json(json!({ "transforms": transform_recipes })))
 }
 
 async fn get_transform(
@@ -525,7 +522,13 @@ async fn create_transform(
     user: CurrentUser,
     Json(body): Json<CreateTransformBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let dataset = access::require_dataset(&state.store, &user, &body.dataset_id).await?;
+    let dataset = require_transform_input(
+        &state.store,
+        &user,
+        &body.dataset_id,
+        body.input_chip_id.as_deref(),
+    )
+    .await?;
     let spec = if let Some(value) = &body.spec {
         parse_v2_spec(value, &dataset)?
     } else {
@@ -564,7 +567,16 @@ async fn update_transform(
         .dataset_id
         .as_deref()
         .unwrap_or(current.dataset_id.as_str());
-    let dataset = access::require_dataset(&state.store, &user, dataset_id).await?;
+    let dataset = require_transform_input(
+        &state.store,
+        &user,
+        dataset_id,
+        body.input_chip_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or(current.input_chip_id.as_deref()),
+    )
+    .await?;
     let spec_json = if let Some(value) = &body.spec {
         Some(spec_to_json(&parse_v2_spec(value, &dataset)?)?)
     } else {
@@ -591,6 +603,41 @@ async fn update_transform(
     Ok(Json(transform_json(&row)))
 }
 
+async fn require_transform_input(
+    store: &storage::Store,
+    user: &CurrentUser,
+    dataset_id: &str,
+    input_chip_id: Option<&str>,
+) -> Result<storage::DatasetRow, AppError> {
+    if let Some(dataset) = store.get_dataset(dataset_id).await? {
+        access::require_workspace(store, user, &dataset.workspace_id).await?;
+        return Ok(dataset);
+    }
+    let mut parts = dataset_id.splitn(3, ':');
+    if parts.next() != Some("contract") {
+        return Err(AppError::not_found("dataset not found"));
+    }
+    let workspace_id = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::bad("invalid input contract"))?;
+    let consumer_chip_id = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::bad("invalid input contract"))?;
+    if input_chip_id.map(str::trim) != Some(consumer_chip_id) {
+        return Err(AppError::bad(
+            "input contract does not match transform chip",
+        ));
+    }
+    access::require_workspace(store, user, workspace_id).await?;
+    store
+        .find_planned_input_dataset(workspace_id, consumer_chip_id)
+        .await?
+        .filter(|dataset| dataset.id == dataset_id)
+        .ok_or_else(|| AppError::not_found("input contract not found"))
+}
+
 async fn run_transform(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -606,8 +653,7 @@ async fn run_transform(
     if !state.store.resolve(&dataset.stored_path).is_file() {
         return Err(AppError::not_found("dataset file missing"));
     }
-    let spec_value: Value =
-        serde_json::from_str(&transform.spec_json).unwrap_or(json!({}));
+    let spec_value: Value = serde_json::from_str(&transform.spec_json).unwrap_or(json!({}));
     let spec = hydrate_v2_spec(&state, &user, &spec_value, &dataset).await?;
     let job = state
         .store
@@ -620,8 +666,8 @@ async fn run_transform(
         )
         .await?;
     state
-        .job_tx
-        .try_send(job.id.clone())
+        .execution_tx
+        .try_send(crate::state::ExecutionTask::Job(job.id.clone()))
         .map_err(|_| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "job queue full"))?;
     Ok(Json(json!({
         "ok": true,

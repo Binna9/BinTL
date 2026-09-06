@@ -38,7 +38,7 @@ import { nextSequencedChipName } from "@/lib/chipSequence";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
 import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
-import { HttpError } from "@/services/httpClient";
+import { HttpError, isChipNameConflict } from "@/services/httpClient";
 import { selectableClass } from "@/lib/selectable";
 import {
   canPreviewCombine,
@@ -772,7 +772,8 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
           await transformApi.delete(createdTransformId).catch(() => undefined);
         }
       }
-      toastError(messages.errors.saveTransform, err);
+      if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
+      else toastError(messages.errors.saveTransform, err);
     } finally {
       setRegisterBusy(false);
     }

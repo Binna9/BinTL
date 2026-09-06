@@ -70,7 +70,10 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
 
   useEffect(() => {
     let cancelled = false;
-    const datasetId = transform?.inputDatasetId ?? "";
+    const validationSourceId = chip.kind === "validation" && typeof chip.config.source_data_file_id === "string"
+      ? chip.config.source_data_file_id
+      : "";
+    const datasetId = transform?.inputDatasetId ?? validationSourceId;
     if (!datasetId) {
       setDatasetName("");
       return;
@@ -88,7 +91,7 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
     return () => {
       cancelled = true;
     };
-  }, [transform?.inputDatasetId]);
+  }, [chip.config.source_data_file_id, chip.kind, transform?.inputDatasetId]);
 
   if (chip.kind === "load" && load) {
     return <dl className="grid gap-4">
@@ -102,6 +105,21 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
         <DetailRow label={messages.load.filename}>{load.filename}</DetailRow>
       </>}
       <DetailRow label={messages.load.writeMode}>{load.writeMode === "append" ? messages.load.append : messages.load.replace}</DetailRow>
+    </dl>;
+  }
+
+  if (chip.kind === "validation") {
+    const keys = Array.isArray(chip.config.keys)
+      ? chip.config.keys.filter((value): value is string => typeof value === "string")
+      : [];
+    const columns = Array.isArray(chip.config.columns)
+      ? chip.config.columns.filter((value): value is string => typeof value === "string")
+      : [];
+    return <dl className="grid gap-4">
+      <DetailRow label={messages.validation.source}>{datasetName || messages.chips.detailUnset}</DetailRow>
+      <DetailRow label={messages.validation.target}>{inputFileName || messages.validation.targetFromCanvas}</DetailRow>
+      <DetailRow label={messages.validation.keys}>{keys.join(", ") || messages.chips.detailUnset}</DetailRow>
+      <DetailRow label={messages.validation.columns}>{columns.join(", ") || messages.validation.columnsHint}</DetailRow>
     </dl>;
   }
 

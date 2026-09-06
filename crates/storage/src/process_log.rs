@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use chrono::{SecondsFormat, Utc};
 
 /// Page / pipeline folders under `data/logs/`.
-pub const LOG_EXTRACTS: &str = "extracts";
-pub const LOG_JOBS: &str = "jobs";
+pub const LOG_EXTRACTS: &str = "extract_runs";
+pub const LOG_JOBS: &str = "transform_runs";
 pub const LOG_QUERY: &str = "query";
 pub const LOG_FILES: &str = "files";
 pub const LOG_CONNECTIONS: &str = "connections";
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn rejects_path_escape() {
-        assert!(ProcessLog::create(Path::new("/tmp"), "extracts", "../x").is_err());
+        assert!(ProcessLog::create(Path::new("/tmp"), "extract_runs", "../x").is_err());
         assert!(ProcessLog::create(Path::new("/tmp"), "nope", "abc").is_err());
     }
 }

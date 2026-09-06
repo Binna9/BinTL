@@ -76,14 +76,14 @@ Workspace 캔버스 계산은 `features/workspace/workspaceCanvasModel.ts`, Tran
 ## Core domain flow
 
 ```text
-Connection -> Extract definition -> Extract run -> Dataset
-Dataset -> Transform definition -> Job -> Dataset
-Workspace -> Chip -> Chip run -> output Dataset slot
-Chip edge(data) -> planned/materialized input Dataset
+Connection -> extracts -> execution_steps -> data_files
+data_files -> transforms -> execution_steps -> data_files
+data_files -> loads -> execution_steps
+Workspace -> workspace_chips -> workspace_edges / workspace_chip_outputs
 ```
 
-기존 `extracts`/`jobs` 실행 모델과 `chip_runs` 모델은 아직 함께 사용한다. 이 구조를 수정할 때는
-HTTP 응답 호환성을 먼저 유지하고, 실행 레코드 통합은 별도 마이그레이션으로 진행한다.
+모든 실행 요청은 단일 execution 큐를 통과하고 `executions`/`execution_steps`에 기록한다.
+`/api/datasets`, `/api/jobs`는 UI 호환 경로일 뿐 물리 테이블명이 아니다.
 
 ## Change checklist
 

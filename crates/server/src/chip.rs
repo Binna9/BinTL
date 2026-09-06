@@ -3,20 +3,21 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use connectors::{
-    load_table, normalize_sql, parse_delimiter, parse_http_spec, parse_ident, parse_table, sql_kind, HttpKv,
-    HttpRequestSpec, SqlKind,
+    load_table, normalize_sql, parse_delimiter, parse_http_spec, parse_ident, parse_table,
+    sql_kind, HttpKv, HttpRequestSpec, SqlKind,
 };
-use engine::{Engine, PolarsEngine, TransformSpec};
-use serde::Deserialize;
+use engine::{Engine, PolarsEngine, TransformSpec, ValidationSpec};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
 use std::time::Duration;
-use storage::{ChipRow, ChipRunRow, RegisterExtractChip, RegisterLoadChip, RegisterTransformChip, Store};
-use tokio::sync::{mpsc, Semaphore};
+use storage::{
+    ChipRow, ChipRunRow, RegisterExtractChip, RegisterLoadChip, RegisterTransformChip, Store,
+};
+use tokio::sync::mpsc;
 
 use crate::access::{self, CurrentUser};
 use crate::error::AppError;
-use crate::state::AppState;
+use crate::state::{AppState, ExecutionTask};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -37,31 +38,6 @@ pub fn routes() -> Router<AppState> {
             "/api/workspaces/{id}/chips/{chip_id}/input-slot",
             get(get_input_slot),
         )
-}
-
-pub fn spawn_worker(
-    store: Store,
-    mut chip_rx: mpsc::Receiver<String>,
-    job_tx: mpsc::Sender<String>,
-    semaphore: Arc<Semaphore>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        while let Some(run_id) = chip_rx.recv().await {
-            let permit = match semaphore.clone().acquire_owned().await {
-                Ok(permit) => permit,
-                Err(_) => break,
-            };
-            let store = store.clone();
-            let job_tx = job_tx.clone();
-            tokio::spawn(async move {
-                let _permit = permit;
-                if let Err(error) = run_one(&store, &job_tx, &run_id).await {
-                    tracing::error!(run_id, %error, "chip run failed");
-                    let _ = store.set_chip_run_failed(&run_id, &error).await;
-                }
-            });
-        }
-    })
 }
 
 #[derive(Deserialize)]
@@ -182,6 +158,25 @@ struct TransformConfig {
     spec: Value,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct ValidationConfig {
+    #[serde(default)]
+    validation_rule_id: Option<String>,
+    source_data_file_id: String,
+    #[serde(default)]
+    keys: Vec<String>,
+    #[serde(default)]
+    columns: Vec<String>,
+    #[serde(default = "validation_true")]
+    compare_row_count: bool,
+    #[serde(default = "validation_true")]
+    compare_schema: bool,
+}
+
+fn validation_true() -> bool {
+    true
+}
+
 async fn list_catalog(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -282,16 +277,29 @@ async fn register_chip(
                 .await?
         }
         "load" => {
-            let load_definition_id = body.load_definition_id.as_deref().map(str::trim)
-                .filter(|value| !value.is_empty()).ok_or_else(|| AppError::bad("load_definition_id required"))?;
+            let load_definition_id = body
+                .load_definition_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::bad("load_definition_id required"))?;
             crate::load::require_load(&state.store, &user, load_definition_id).await?;
-            state.store.register_load_chip(&RegisterLoadChip {
-                name: name.to_string(), owner_user_id: user.id().to_string(),
-                workspace_id: body.workspace_id.clone(), load_definition_id: load_definition_id.to_string(),
-                place_on_workspace: body.place_on_workspace,
-            }).await?
+            state
+                .store
+                .register_load_chip(&RegisterLoadChip {
+                    name: name.to_string(),
+                    owner_user_id: user.id().to_string(),
+                    workspace_id: body.workspace_id.clone(),
+                    load_definition_id: load_definition_id.to_string(),
+                    place_on_workspace: body.place_on_workspace,
+                })
+                .await?
         }
-        _ => return Err(AppError::bad("chip kind must be extract, transform, or load")),
+        _ => {
+            return Err(AppError::bad(
+                "chip kind must be extract, transform, or load",
+            ))
+        }
     };
     let chip_json = chip_json(&state.store, &chip).await?;
     let should_run = body.run_after.unwrap_or(body.place_on_workspace);
@@ -441,6 +449,9 @@ async fn queue_chip_run(
             queue_transform_chip_run(state, user, chip, workspace_id, requested_input).await
         }
         "load" => queue_load_chip_run(state, user, chip, workspace_id, requested_input).await,
+        "validation" => {
+            queue_validation_chip_run(state, user, chip, workspace_id, requested_input).await
+        }
         _ => {
             access::require_workspace(&state.store, user, workspace_id).await?;
             if chip.active == 0 {
@@ -451,23 +462,85 @@ async fn queue_chip_run(
     }
 }
 
-async fn queue_load_chip_run(
-    state: &AppState, user: &CurrentUser, chip: &ChipRow, workspace_id: &str,
+async fn queue_validation_chip_run(
+    state: &AppState,
+    user: &CurrentUser,
+    chip: &ChipRow,
+    workspace_id: &str,
     requested_input: Option<String>,
 ) -> Result<ChipRunRow, AppError> {
     access::require_workspace(&state.store, user, workspace_id).await?;
-    if chip.active == 0 { return Err(AppError::conflict("chip is inactive")); }
-    let config_raw = state.store.resolve_chip_config_json(chip).await
+    if chip.active == 0 {
+        return Err(AppError::conflict("chip is inactive"));
+    }
+    let config_raw = state
+        .store
+        .resolve_chip_config_json(chip)
+        .await
         .map_err(|error| AppError::bad(error.to_string()))?;
-    let value: Value = serde_json::from_str(&config_raw).map_err(|e| AppError::bad(e.to_string()))?;
+    let raw: Value = serde_json::from_str(&config_raw)
+        .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
+    let config = validate_validation_config(&state.store, workspace_id, raw).await?;
+    if config.source_data_file_id.is_empty()
+        || (config.keys.is_empty() && config.validation_rule_id.as_deref().unwrap_or("").is_empty())
+    {
+        return Err(AppError::bad(
+            "configure the validation chip before running",
+        ));
+    }
+    access::require_dataset(&state.store, user, &config.source_data_file_id).await?;
+    let target_id = crate::planned_input::resolve_materialized_transform_input(
+        state,
+        user,
+        workspace_id,
+        &chip.id,
+        requested_input,
+        None,
+    )
+    .await?;
+    if target_id == config.source_data_file_id {
+        return Err(AppError::bad("source and target data files must differ"));
+    }
+    enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&target_id)).await
+}
+
+async fn queue_load_chip_run(
+    state: &AppState,
+    user: &CurrentUser,
+    chip: &ChipRow,
+    workspace_id: &str,
+    requested_input: Option<String>,
+) -> Result<ChipRunRow, AppError> {
+    access::require_workspace(&state.store, user, workspace_id).await?;
+    if chip.active == 0 {
+        return Err(AppError::conflict("chip is inactive"));
+    }
+    let config_raw = state
+        .store
+        .resolve_chip_config_json(chip)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let value: Value =
+        serde_json::from_str(&config_raw).map_err(|e| AppError::bad(e.to_string()))?;
     reject_forbidden_config(&value)?;
     crate::load::validate_load_config(&state.store, value).await?;
     let dataset_id = crate::planned_input::resolve_materialized_transform_input(
-        state, user, workspace_id, &chip.id, requested_input, None,
-    ).await?;
-    let dataset = state.store.get_dataset(&dataset_id).await?
+        state,
+        user,
+        workspace_id,
+        &chip.id,
+        requested_input,
+        None,
+    )
+    .await?;
+    let dataset = state
+        .store
+        .get_dataset(&dataset_id)
+        .await?
         .ok_or_else(|| AppError::not_found("input dataset not found"))?;
-    if !state.store.resolve(&dataset.stored_path).is_file() { return Err(AppError::not_found("input dataset file missing")); }
+    if !state.store.resolve(&dataset.stored_path).is_file() {
+        return Err(AppError::not_found("input dataset file missing"));
+    }
     enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&dataset_id)).await
 }
 
@@ -574,7 +647,11 @@ async fn enqueue_chip_run(
             input_dataset_id,
         )
         .await?;
-    if state.chip_tx.try_send(run.id.clone()).is_err() {
+    if state
+        .execution_tx
+        .try_send(ExecutionTask::Chip(run.id.clone()))
+        .is_err()
+    {
         let _ = state
             .store
             .set_chip_run_failed(&run.id, "chip queue full")
@@ -674,6 +751,30 @@ async fn get_run_logs(
             ),
             None => run.error_message.unwrap_or_default(),
         }
+    } else if run.kind == "validation" {
+        match state.store.chip_run_result_json(&run.id).await? {
+            Some(raw) => match serde_json::from_str::<engine::ValidationReport>(&raw) {
+                Ok(report) => format!(
+                    "validation {}\nsource rows: {}\ntarget rows: {}\nmissing keys: {}\nextra keys: {}\nmismatched rows: {}\nsource duplicate keys: {}\ntarget duplicate keys: {}\nschema matches: {}{}",
+                    if report.passed { "passed" } else { "failed" },
+                    report.source_rows,
+                    report.target_rows,
+                    report.missing_keys,
+                    report.extra_keys,
+                    report.mismatched_rows,
+                    report.duplicate_source_keys,
+                    report.duplicate_target_keys,
+                    report.schema_matches,
+                    if report.samples.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n\nsamples:\n{}", report.samples.join("\n"))
+                    },
+                ),
+                Err(_) => raw,
+            },
+            None => run.error_message.unwrap_or_default(),
+        }
     } else {
         String::new()
     };
@@ -765,6 +866,56 @@ async fn chip_json_for_workspace(
 ) -> Result<Value, AppError> {
     let mut value = chip_json(store, row).await?;
     value["output"] = chip_output_json(store, row, workspace_id).await?;
+
+    // For load chips, include input dataset info when available so UI popups can show it.
+    if row.kind == "load" {
+        // Try to read input_dataset_id from the chip's inline config
+        let config_raw = store
+            .resolve_chip_config_json(row)
+            .await
+            .map_err(|error| AppError::bad(error.to_string()))?;
+        let config: Value = serde_json::from_str(&config_raw).unwrap_or(json!({}));
+        let mut input_info: Option<Value> = None;
+        if let Some(id) = config
+            .get("input_dataset_id")
+            .and_then(Value::as_str)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(dataset) = store.get_dataset(id).await? {
+                input_info = Some(crate::transform::dataset_json_public(store, &dataset));
+            } else {
+                input_info = Some(json!({ "dataset_id": id, "missing": true }));
+            }
+        } else {
+            // If not inline, check bound load definition (if any)
+            if let Some(binding) = store.get_chip_binding(&row.id).await? {
+                if binding.ref_kind == "load" {
+                    if let Some(def) = store.get_load_definition(&binding.ref_id).await? {
+                        // def.spec_json is a JSON string containing input_dataset_id
+                        if let Ok(spec_val) = serde_json::from_str::<Value>(&def.spec_json) {
+                            if let Some(id) = spec_val
+                                .get("input_dataset_id")
+                                .and_then(Value::as_str)
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                            {
+                                if let Some(dataset) = store.get_dataset(id).await? {
+                                    input_info = Some(crate::transform::dataset_json_public(store, &dataset));
+                                } else {
+                                    input_info = Some(json!({ "dataset_id": id, "missing": true }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(info) = input_info {
+            value["input"] = info;
+        }
+    }
+
     Ok(value)
 }
 
@@ -835,8 +986,12 @@ pub(crate) async fn inferred_transform_output_name(
         .into_iter()
         .find(|edge| edge.kind == "data" && edge.to_chip_id == row.id)
         .map(|edge| edge.from_chip_id);
-    let Some(source_id) = source_id else { return Ok(None) };
-    let Some(source) = store.get_chip(&source_id).await? else { return Ok(None) };
+    let Some(source_id) = source_id else {
+        return Ok(None);
+    };
+    let Some(source) = store.get_chip(&source_id).await? else {
+        return Ok(None);
+    };
     let source_name = if source.kind == "transform" {
         match store.get_chip_binding(&source.id).await? {
             Some(binding) if binding.ref_kind == "transform" => store
@@ -899,12 +1054,68 @@ pub(crate) async fn validate_config(
             .await
             .and_then(normalized_transform_config),
         "load" if config.as_object().is_some_and(|value| value.is_empty()) => Ok(config),
-        "load" => crate::load::validate_load_config(store, config).await
-            .and_then(|value| serde_json::to_value(value).map_err(|e| AppError::bad(e.to_string()))),
+        "load" => crate::load::validate_load_config(store, config)
+            .await
+            .and_then(|value| {
+                serde_json::to_value(value).map_err(|e| AppError::bad(e.to_string()))
+            }),
+        "validation" => validate_validation_config(store, workspace_id, config)
+            .await
+            .and_then(|value| {
+                serde_json::to_value(value).map_err(|e| AppError::bad(e.to_string()))
+            }),
         _ => Err(AppError::bad(
-            "chip kind must be extract, transform, or load",
+            "chip kind must be extract, transform, load, or validation",
         )),
     }
+}
+
+async fn validate_validation_config(
+    store: &Store,
+    workspace_id: &str,
+    config: Value,
+) -> Result<ValidationConfig, AppError> {
+    let mut config: ValidationConfig =
+        serde_json::from_value(config).map_err(|error| AppError::bad(error.to_string()))?;
+    config.source_data_file_id = config.source_data_file_id.trim().to_string();
+    config.validation_rule_id = config.validation_rule_id
+        .map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    config.keys = config
+        .keys
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    config.columns = config
+        .columns
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    if config.source_data_file_id.is_empty() && config.keys.is_empty() && config.validation_rule_id.is_none() {
+        return Ok(config);
+    }
+    if config.source_data_file_id.is_empty() {
+        return Err(AppError::bad("source_data_file_id required"));
+    }
+    if config.keys.is_empty() && config.validation_rule_id.is_none() {
+        return Err(AppError::bad("at least one validation key required"));
+    }
+    if let Some(rule_id) = config.validation_rule_id.as_deref() {
+        let rule = store.get_validation_rule(rule_id).await?
+            .ok_or_else(|| AppError::not_found("validation rule not found"))?;
+        if rule.active == 0 { return Err(AppError::bad("validation rule is inactive")); }
+    }
+    let source = store
+        .get_dataset(&config.source_data_file_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("validation source data file not found"))?;
+    if source.workspace_id != workspace_id {
+        return Err(AppError::bad(
+            "validation source belongs to another workspace",
+        ));
+    }
+    Ok(config)
 }
 
 async fn validate_extract_config(store: &Store, config: Value) -> Result<Value, AppError> {
@@ -1031,12 +1242,14 @@ async fn validate_transform_config(
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     if let Some(dataset_id) = input_dataset_id.as_deref() {
-        let dataset = store
-            .get_dataset(dataset_id)
-            .await?
-            .ok_or_else(|| AppError::not_found("input dataset not found"))?;
-        if dataset.workspace_id != workspace_id {
-            return Err(AppError::bad("input dataset belongs to another workspace"));
+        if !dataset_id.starts_with("contract:") {
+            let dataset = store
+                .get_dataset(dataset_id)
+                .await?
+                .ok_or_else(|| AppError::not_found("input dataset not found"))?;
+            if dataset.workspace_id != workspace_id {
+                return Err(AppError::bad("input dataset belongs to another workspace"));
+            }
         }
     }
     Ok(TransformConfig {
@@ -1098,7 +1311,11 @@ fn reject_forbidden_config(value: &Value) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn run_one(store: &Store, job_tx: &mpsc::Sender<String>, run_id: &str) -> Result<(), String> {
+pub(crate) async fn run_one(
+    store: &Store,
+    execution_tx: &mpsc::Sender<ExecutionTask>,
+    run_id: &str,
+) -> Result<(), String> {
     let run = store
         .get_chip_run(run_id)
         .await
@@ -1107,83 +1324,283 @@ async fn run_one(store: &Store, job_tx: &mpsc::Sender<String>, run_id: &str) -> 
     if run.status != "queued" {
         return Ok(());
     }
-    store
-        .set_chip_run_running(run_id)
-        .await
-        .map_err(|error| error.to_string())?;
     match run.kind.as_str() {
         "extract" => run_extract(store, &run).await,
-        "transform" => run_transform(store, job_tx, &run).await,
-        "load" => run_load(store, &run).await,
+        "transform" => {
+            store
+                .set_chip_run_running(run_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            run_transform(store, execution_tx, &run).await
+        }
+        "load" => {
+            store
+                .set_chip_run_running(run_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            run_load(store, &run).await
+        }
+        "validation" => {
+            store
+                .set_chip_run_running(run_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            run_validation(store, &run).await
+        }
         kind => Err(format!("unsupported chip kind {kind}")),
     }
+}
+
+async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
+    let mut config: ValidationConfig = serde_json::from_str(&run.config_snapshot_json)
+        .map_err(|error| format!("invalid validation config snapshot: {error}"))?;
+    if let Some(rule_id) = config.validation_rule_id.as_deref() {
+        let rule = store.get_validation_rule(rule_id).await.map_err(|e| e.to_string())?
+            .ok_or_else(|| "validation rule not found".to_string())?;
+        if rule.active == 0 { return Err("validation rule is inactive".into()); }
+        config.keys = serde_json::from_str(&rule.keys_json).map_err(|e| e.to_string())?;
+        config.columns = serde_json::from_str(&rule.columns_json).map_err(|e| e.to_string())?;
+        config.compare_row_count = rule.compare_row_count != 0;
+        config.compare_schema = rule.compare_schema != 0;
+    }
+    let target_id = run
+        .input_dataset_id
+        .as_deref()
+        .ok_or_else(|| "validation target input missing".to_string())?;
+    let source = store
+        .get_dataset(&config.source_data_file_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "validation source data file not found".to_string())?;
+    let target = store
+        .get_dataset(target_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "validation target data file not found".to_string())?;
+    let source_path = store.resolve(&source.stored_path);
+    let target_path = store.resolve(&target.stored_path);
+    let source_read = TransformSpec::identity()
+        .with_read(source.delimiter, source.has_header.map(|value| value != 0));
+    let target_read = TransformSpec::identity()
+        .with_read(target.delimiter, target.has_header.map(|value| value != 0));
+    let spec = ValidationSpec {
+        keys: config.keys,
+        columns: config.columns,
+        compare_row_count: config.compare_row_count,
+        compare_schema: config.compare_schema,
+    };
+    let report = tokio::task::spawn_blocking(move || {
+        PolarsEngine.validate_files(
+            &source_path,
+            &target_path,
+            &source_read,
+            &target_read,
+            &spec,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    let result_json = serde_json::to_string(&report).map_err(|error| error.to_string())?;
+    store
+        .finish_validation_chip_run(
+            &run.id,
+            report.passed,
+            &result_json,
+            report.source_rows as i64,
+            report.target_rows as i64,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let chip = store.get_chip(&run.chip_id).await.map_err(|e| e.to_string())?
+        .ok_or_else(|| "validation chip not found".to_string())?;
+    store.insert_validation_result(&chip.owner_user_id, &run.workspace_id,
+        config.validation_rule_id.as_deref(), Some(&run.id), &config.source_data_file_id,
+        target_id, report.passed, &result_json).await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     let config: crate::load::LoadConfig = serde_json::from_str(&run.config_snapshot_json)
         .map_err(|error| format!("invalid load config snapshot: {error}"))?;
-    let dataset_id = run.input_dataset_id.as_deref().ok_or_else(|| "load input_dataset_id missing".to_string())?;
-    let dataset = store.get_dataset(dataset_id).await.map_err(|e| e.to_string())?
+    let dataset_id = run
+        .input_dataset_id
+        .as_deref()
+        .ok_or_else(|| "load input_dataset_id missing".to_string())?;
+    let dataset = store
+        .get_dataset(dataset_id)
+        .await
+        .map_err(|e| e.to_string())?
         .ok_or_else(|| "input dataset not found".to_string())?;
+    let result = execute_load_config(
+        store,
+        &config,
+        &dataset,
+        &run.workspace_id,
+        &run.chip_id,
+        &run.id,
+    )
+    .await?;
+    store
+        .insert_load_result(
+            &run.id,
+            &result.destination,
+            &config.write_mode,
+            dataset.row_count,
+            result.loaded_rows,
+            result.input_bytes,
+            result.duration_ms,
+            result.artifact_path.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    store
+        .set_load_chip_run_succeeded(&run.id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) struct LoadExecution {
+    pub destination: String,
+    pub loaded_rows: i64,
+    pub input_bytes: Option<i64>,
+    pub duration_ms: i64,
+    pub artifact_path: Option<String>,
+}
+
+pub(crate) async fn execute_load_config(
+    store: &Store,
+    config: &crate::load::LoadConfig,
+    dataset: &storage::DatasetRow,
+    workspace_id: &str,
+    scope_id: &str,
+    run_id: &str,
+) -> Result<LoadExecution, String> {
     let input = store.resolve(&dataset.stored_path);
     let input_bytes = std::fs::metadata(&input).ok().map(|m| m.len() as i64);
     let started = std::time::Instant::now();
-
-    let (destination, loaded_rows, artifact_path) = match config.destination {
-        crate::load::LoadDestination::Database { connection_id, database, table } => {
-            let csv = prepare_load_csv(store, run, &dataset).await?;
-            let base = store.live_connection(&connection_id).await.map_err(|e| e.to_string())?;
+    let (destination, loaded_rows, artifact_path) = match &config.destination {
+        crate::load::LoadDestination::Database {
+            connection_id,
+            database,
+            table,
+        } => {
+            let csv = prepare_load_csv(store, run_id, dataset).await?;
+            let base = store
+                .live_connection(connection_id)
+                .await
+                .map_err(|e| e.to_string())?;
             let live = connectors::with_database(&base, database.as_deref());
-            let loaded = load_table(&live, &table, &csv, &config.write_mode, &config.conflict_keys).await.map_err(|e| e.to_string())? as i64;
+            let loaded = load_table(
+                &live,
+                table,
+                &csv,
+                &config.write_mode,
+                &config.conflict_keys,
+            )
+            .await
+            .map_err(|e| e.to_string())? as i64;
             (format!("{}:{}", live.name, table), loaded, None)
         }
         crate::load::LoadDestination::File { format, filename } => {
-            let rel = format!("loads/{}/{}/{}", run.workspace_id, run.chip_id, filename);
+            let rel = format!("loads/{workspace_id}/{scope_id}/{filename}");
             let output = store.resolve(&rel);
-            if let Some(parent) = output.parent() { tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?; }
+            if let Some(parent) = output.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             if format == "csv" {
-                let csv = prepare_load_csv(store, run, &dataset).await?;
-                tokio::fs::copy(csv, &output).await.map_err(|e| e.to_string())?;
-            } else if input.extension().and_then(|v| v.to_str()).map(|v| v.eq_ignore_ascii_case("parquet")).unwrap_or(false) {
-                tokio::fs::copy(&input, &output).await.map_err(|e| e.to_string())?;
+                let csv = prepare_load_csv(store, run_id, dataset).await?;
+                tokio::fs::copy(csv, &output)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            } else if input
+                .extension()
+                .and_then(|v| v.to_str())
+                .map(|v| v.eq_ignore_ascii_case("parquet"))
+                .unwrap_or(false)
+            {
+                tokio::fs::copy(&input, &output)
+                    .await
+                    .map_err(|e| e.to_string())?;
             } else {
                 let input = input.clone();
                 let output = output.clone();
                 let delimiter = dataset.delimiter.clone();
                 let header = dataset.has_header.map(|v| v != 0);
-                tokio::task::spawn_blocking(move || PolarsEngine.transform(&input, &output, &TransformSpec::identity().with_read(delimiter, header)))
-                    .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+                tokio::task::spawn_blocking(move || {
+                    PolarsEngine.transform(
+                        &input,
+                        &output,
+                        &TransformSpec::identity().with_read(delimiter, header),
+                    )
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
             }
             (rel.clone(), dataset.row_count.unwrap_or(0), Some(rel))
         }
     };
-    store.insert_load_result(&run.id, &destination, &config.write_mode, dataset.row_count, loaded_rows,
-        input_bytes, started.elapsed().as_millis() as i64, artifact_path.as_deref()).await.map_err(|e| e.to_string())?;
-    store.set_load_chip_run_succeeded(&run.id).await.map_err(|e| e.to_string())
+    Ok(LoadExecution {
+        destination,
+        loaded_rows,
+        input_bytes,
+        duration_ms: started.elapsed().as_millis() as i64,
+        artifact_path,
+    })
 }
 
-async fn prepare_load_csv(store: &Store, run: &ChipRunRow, dataset: &storage::DatasetRow) -> Result<std::path::PathBuf, String> {
+async fn prepare_load_csv(
+    store: &Store,
+    run_id: &str,
+    dataset: &storage::DatasetRow,
+) -> Result<std::path::PathBuf, String> {
     let input = store.resolve(&dataset.stored_path);
-    let canonical = store.resolve(&format!("staging/load-{}.csv", run.id));
-    if let Some(parent) = canonical.parent() { tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?; }
-    if input.extension().and_then(|v| v.to_str()).map(|v| v.eq_ignore_ascii_case("parquet")).unwrap_or(false) {
+    let canonical = store.resolve(&format!("staging/load-{run_id}.csv"));
+    if let Some(parent) = canonical.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if input
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(|v| v.eq_ignore_ascii_case("parquet"))
+        .unwrap_or(false)
+    {
         let source = input.clone();
         let target = canonical.clone();
         tokio::task::spawn_blocking(move || PolarsEngine::export_csv(&source, &target))
-            .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
-    } else if dataset.delimiter.as_deref().unwrap_or(",") == "," && dataset.has_header.unwrap_or(1) != 0 {
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+    } else if dataset.delimiter.as_deref().unwrap_or(",") == ","
+        && dataset.has_header.unwrap_or(1) != 0
+    {
         return Ok(input);
     } else {
-        let parquet = store.resolve(&format!("staging/load-{}.parquet", run.id));
+        let parquet = store.resolve(&format!("staging/load-{run_id}.parquet"));
         let source = input.clone();
         let parquet_target = parquet.clone();
         let delimiter = dataset.delimiter.clone();
         let header = dataset.has_header.map(|v| v != 0);
-        tokio::task::spawn_blocking(move || PolarsEngine.transform(&source, &parquet_target, &TransformSpec::identity().with_read(delimiter, header)))
-            .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+        tokio::task::spawn_blocking(move || {
+            PolarsEngine.transform(
+                &source,
+                &parquet_target,
+                &TransformSpec::identity().with_read(delimiter, header),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
         let target = canonical.clone();
         tokio::task::spawn_blocking(move || PolarsEngine::export_csv(&parquet, &target))
-            .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
     }
     Ok(canonical)
 }
@@ -1251,31 +1668,27 @@ async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {
             ("api", table, Some(raw), None)
         }
     };
-    let extract = store
-        .insert_extract(
-            kind,
-            &config.connection_id,
-            &table,
-            &delimiter,
-            header,
-            false,
-            sql.as_deref(),
-            database.as_deref(),
-            &run.workspace_id,
-            None,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+    let snapshot = json!({
+        "kind": kind,
+        "connection_id": config.connection_id,
+        "table_name": table,
+        "delimiter": delimiter,
+        "header": header,
+        "add_sequence": false,
+        "sql_text": sql,
+        "catalog_database": database,
+        "output_filename": null,
+    });
     store
-        .attach_chip_run_extract(&run.id, &extract.id)
+        .prepare_extract_chip_run(&run.id, &snapshot.to_string())
         .await
         .map_err(|error| error.to_string())?;
-    crate::extract::run(store, &extract.id).await
+    crate::extract::run(store, &run.id).await
 }
 
 async fn run_transform(
     store: &Store,
-    job_tx: &mpsc::Sender<String>,
+    execution_tx: &mpsc::Sender<ExecutionTask>,
     run: &ChipRunRow,
 ) -> Result<(), String> {
     let config: TransformConfig = serde_json::from_str(&run.config_snapshot_json)
@@ -1303,11 +1716,18 @@ async fn run_transform(
         .or_else(|| dataset.has_header.map(|value| value != 0));
     let spec_json = serde_json::to_string(&spec.with_read(delimiter, has_header))
         .map_err(|error| error.to_string())?;
+    let transform_id = store
+        .get_chip_binding(&run.chip_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .filter(|binding| binding.ref_kind == "transform")
+        .map(|binding| binding.ref_id)
+        .ok_or_else(|| "transform chip has no transform definition".to_string())?;
     let job = store
         .insert_transform_job(
             &dataset.stored_path,
             &spec_json,
-            &run.chip_id,
+            &transform_id,
             &dataset.id,
             &run.workspace_id,
         )
@@ -1317,7 +1737,10 @@ async fn run_transform(
         .attach_chip_run_job(&run.id, &job.id)
         .await
         .map_err(|error| error.to_string())?;
-    if job_tx.try_send(job.id.clone()).is_err() {
+    if execution_tx
+        .try_send(ExecutionTask::Job(job.id.clone()))
+        .is_err()
+    {
         let error = "job queue full";
         let _ = store.fail_chip_run_for_job(&job.id, error).await;
         return Err(error.into());

@@ -42,6 +42,7 @@ import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extract/extractApi";
 import { queryApi } from "@/services/query/queryApi";
 import { chipApi } from "@/services/chips/chipApi";
+import { isChipNameConflict } from "@/services/httpClient";
 import type { CatalogSelection } from "@/types/connection";
 import type { ExtractRecord } from "@/types/extract";
 import type { QueryResult } from "@/types/query";
@@ -485,7 +486,8 @@ export function QueryPage() {
       setIsRegisterOpen(false);
       toastSuccess(messages.query.taskRegisteredNamed(registerName.trim()));
     } catch (err) {
-      toastError(messages.workspace.saveChipError, err);
+      if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
+      else toastError(messages.workspace.saveChipError, err);
     } finally {
       setRegisterBusy(false);
     }

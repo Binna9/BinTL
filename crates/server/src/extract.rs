@@ -104,8 +104,8 @@ async fn resolve_extract_dest(
     {
         let filename =
             chip_slot::standalone_export_filename(Some(requested), &row.table_name, &row.delimiter);
-        let rel = Store::extract_named_rel(&row.kind, &row.id, &filename)
-            .map_err(|e| e.to_string())?;
+        let rel =
+            Store::extract_named_rel(&row.kind, &row.id, &filename).map_err(|e| e.to_string())?;
         return Ok((filename, rel));
     }
     Store::extract_file_rel(&row.kind, &row.id, &row.table_name, &row.delimiter)

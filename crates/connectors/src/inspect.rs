@@ -252,7 +252,11 @@ pub async fn list_columns(
                         .flatten()
                         .map(str::to_string),
                     max_length: r.try_get::<i32, usize>(5).ok().flatten().map(|v| v as i64),
-                    numeric_precision: r.try_get::<u8, usize>(6).ok().flatten().map(|v| v as i64)
+                    numeric_precision: r
+                        .try_get::<u8, usize>(6)
+                        .ok()
+                        .flatten()
+                        .map(|v| v as i64)
                         .or_else(|| r.try_get::<i32, usize>(6).ok().flatten().map(|v| v as i64)),
                     numeric_scale: r.try_get::<i32, usize>(7).ok().flatten().map(|v| v as i64),
                     primary_key: r
@@ -286,7 +290,9 @@ pub async fn preview_table(
     let limit = limit.clamp(1, 200);
     let cols = list_columns(c, table).await?;
     if cols.is_empty() {
-        return Err(ConnectError::Invalid(format!("no columns for table {table}")));
+        return Err(ConnectError::Invalid(format!(
+            "no columns for table {table}"
+        )));
     }
     let names: Vec<String> = cols.into_iter().map(|c| c.name).collect();
     let family = driver_family(&c.driver)?;
@@ -398,9 +404,19 @@ where
         .ok()
         .flatten()
         .or_else(|| row.try_get::<i64, _>(i).ok())
-        .or_else(|| row.try_get::<Option<i32>, _>(i).ok().flatten().map(|v| v as i64))
+        .or_else(|| {
+            row.try_get::<Option<i32>, _>(i)
+                .ok()
+                .flatten()
+                .map(|v| v as i64)
+        })
         .or_else(|| row.try_get::<i32, _>(i).ok().map(|v| v as i64))
-        .or_else(|| row.try_get::<Option<i16>, _>(i).ok().flatten().map(|v| v as i64))
+        .or_else(|| {
+            row.try_get::<Option<i16>, _>(i)
+                .ok()
+                .flatten()
+                .map(|v| v as i64)
+        })
 }
 
 fn sqlx_opt_string<'r, R: Row>(row: &'r R, i: usize) -> Option<String>
@@ -434,8 +450,9 @@ where
         .or_else(|_| row.try_get::<i64, _>(i).map(|v| v != 0))
         .or_else(|_| row.try_get::<i32, _>(i).map(|v| v != 0))
         .or_else(|_| {
-            row.try_get::<String, _>(i)
-                .map(|s| s.eq_ignore_ascii_case("YES") || s == "1" || s.eq_ignore_ascii_case("true"))
+            row.try_get::<String, _>(i).map(|s| {
+                s.eq_ignore_ascii_case("YES") || s == "1" || s.eq_ignore_ascii_case("true")
+            })
         })
         .unwrap_or(false)
 }

@@ -28,6 +28,9 @@ const WorkspacePage = lazy(() => import("@/pages/WorkspacePage").then((module) =
 const ChipsPage = lazy(() => import("@/pages/ChipsPage").then((module) => ({ default: module.ChipsPage })));
 const SearchPage = lazy(() => import("@/pages/SearchPage").then((module) => ({ default: module.SearchPage })));
 const WorkspaceRunsPage = lazy(() => import("@/pages/WorkspaceRunsPage").then((module) => ({ default: module.WorkspaceRunsPage })));
+const ValidationPage = lazy(() => import("@/pages/ValidationPage").then((module) => ({ default: module.ValidationPage })));
+const ValidationRulesPage = lazy(() => import("@/pages/ValidationRulesPage").then((module) => ({ default: module.ValidationRulesPage })));
+const ValidationResultsPage = lazy(() => import("@/pages/ValidationResultsPage").then((module) => ({ default: module.ValidationResultsPage })));
 
 function ConsoleShell() {
   const loc = useRenderLocation();
@@ -93,6 +96,10 @@ function ConsoleShell() {
               <Route path="/workspace/:workspaceId/chips/:editorChipId/load" element={<LoadPage />} />
               <Route path="/workspace/:workspaceId/chips/:editorChipId/load/:id" element={<LoadPage />} />
               <Route path="/load" element={<LoadPage />} />
+              <Route path="/validation" element={<ValidationPage />} />
+              <Route path="/validation/rules" element={<ValidationRulesPage />} />
+              <Route path="/validation/results" element={<ValidationResultsPage />} />
+              <Route path="/workspace/:workspaceId/chips/:editorChipId/validation" element={<ValidationPage />} />
               <Route path="/history" element={<HistoryPage />} />
               <Route path="/jobs" element={<Navigate to="/history" replace />} />
               <Route path="/jobs/:id" element={<JobRunPage />} />
