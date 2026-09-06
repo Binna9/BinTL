@@ -1,6 +1,6 @@
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Spline, Workflow, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Spline, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -79,6 +79,7 @@ import {
   WorkspaceLayers,
   WorkspaceMinimap,
 } from "@/components/workspace/WorkspaceCanvasParts";
+import { LogDialog } from "@/components/LogDialog";
 
 function canvasWorkspaceId(pathname: string): string | null {
   const match = pathname.match(/^\/workspace\/([^/]+)(?:\/chips\/[^/]+)?\/?$/);
@@ -201,7 +202,10 @@ export function WorkspacePage() {
   const lastPlaceKindRef = useRef<"extract" | "transform" | "load" | "validation">("extract");
   const [chipMenu, setChipMenu] = useState<ChipContextMenuState | null>(null);
   const [infoChip, setInfoChip] = useState<Chip | null>(null);
+  const [logChipId, setLogChipId] = useState<string | null>(null);
+  const [logText, setLogText] = useState("");
   const [propsChip, setPropsChip] = useState<Chip | null>(null);
+  const activeLogChip = logChipId ? chips.find((chip) => chip.id === logChipId) ?? null : null;
   const [propsName, setPropsName] = useState("");
   const [propsBusy, setPropsBusy] = useState(false);
   positionsRef.current = positions;
@@ -636,7 +640,7 @@ export function WorkspacePage() {
       return `/workspace/${workspaceId}/chips/${chip.id}/validation`;
     }
     const editor = chip.kind === "load" ? "load" : "transform";
-    const bindingKind = chip.kind === "load" ? "load_definition" : "transform";
+    const bindingKind = chip.kind === "load" ? "load_recipe" : "transform";
     const bound = chip.binding?.ref_kind === bindingKind ? chip.binding.ref_id : undefined;
     const base = `/workspace/${workspaceId}/chips/${chip.id}/${editor}`;
     return bound ? `${base}/${bound}` : base;
@@ -740,6 +744,24 @@ export function WorkspacePage() {
       toastError(messages.workspace.runChipError, reason);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function openChipRunLog(chip: Chip) {
+    const run = [...runs]
+      .filter((item) => item.chip_id === chip.id)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    if (!run) {
+      setLogChipId(chip.id);
+      setLogText(messages.empty.logs);
+      return;
+    }
+    try {
+      const response = await chipApi.getRunLogs(run.id);
+      setLogChipId(chip.id);
+      setLogText(response.text || messages.empty.logs);
+    } catch (reason) {
+      toastError(messages.workspace.runLogError, reason);
     }
   }
 
@@ -2296,12 +2318,17 @@ export function WorkspacePage() {
           messages.workspace.defaultTransformChipName,
           (chip) => chip.kind === "transform",
         )}
-        defaultLoadName={messages.workspace.defaultLoadChipName(
-          chips.filter((item) => item.kind === "load").length + 1,
+        defaultLoadName={nextSequencedChipName(
+          [...catalogChips, ...chips],
+          messages.workspace.defaultLoadChipName,
+          (chip) => chip.kind === "load",
         )}
-        defaultValidationName={messages.workspace.defaultValidationChipName(
-          chips.filter((item) => item.kind === "validation").length + 1,
+        defaultValidationName={nextSequencedChipName(
+          [...catalogChips, ...chips],
+          messages.workspace.defaultValidationChipName,
+          (chip) => chip.kind === "validation",
         )}
+        occupiedNames={[...catalogChips, ...chips].map((chip) => chip.name)}
         messages={messages}
         busy={busy}
         onClose={cancelPlaceChip}
@@ -2317,10 +2344,22 @@ export function WorkspacePage() {
         busy={busy}
         onClose={() => setChipMenu(null)}
         onRun={(chip) => void runSingleChip(chip)}
+        onOpenLog={(chip) => void openChipRunLog(chip)}
         onInfo={setInfoChip}
         onProperties={openChipProperties}
         onEdit={openChipEditor}
         onDelete={(chip) => void deleteCanvasChip(chip)}
+      />
+
+      <LogDialog
+        open={Boolean(logChipId)}
+        title={`${messages.workspace.runLog} · ${activeLogChip?.name ?? (logChipId ? logChipId.slice(0, 8) : "")}`}
+        text={logText}
+        icon={<History className="size-4 text-accent" aria-hidden="true" />}
+        onClose={() => {
+          setLogChipId(null);
+          setLogText("");
+        }}
       />
 
       <AppDialog
@@ -2328,7 +2367,10 @@ export function WorkspacePage() {
         title={infoChip?.name ?? ""}
         icon={
           <Puzzle
-            className={cn("size-4", infoChip?.kind === "transform" ? "text-success" : "text-accent")}
+                      className={cn(
+                        "size-4",
+                        infoChip?.kind === "transform" ? "text-success" : infoChip?.kind === "load" ? "text-warning" : "text-accent",
+                      )}
             aria-hidden="true"
           />
         }

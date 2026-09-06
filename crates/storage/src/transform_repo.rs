@@ -36,7 +36,7 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| StorageError::Invalid("transform owner is unavailable".into()))?;
-        let output_filename = format!("transform-{id}.parquet");
+        let output_filename = chip_slot::display_filename(name, "transform", ",");
         sqlx::query(
             "INSERT INTO transforms
              (id, owner_user_id, name, default_input_file_id, spec_json, output_format,
@@ -92,13 +92,17 @@ impl Store {
             return Err(StorageError::NotFound("dataset not found".into()));
         }
         let now = now_rfc3339();
+        // The recipe name is also the user-facing transform output filename.
+        // Keep the persisted output contract in sync whenever that name changes.
+        let output_filename = chip_slot::display_filename(name, "transform", ",");
         sqlx::query(
             "UPDATE transforms SET name = ?, default_input_file_id = ?, spec_json = ?,
-             revision = revision + 1, updated_at = ? WHERE id = ?",
+             output_filename_template = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
         )
         .bind(name)
         .bind(dataset.as_ref().map(|row| row.id.as_str()))
         .bind(spec_json)
+        .bind(output_filename)
         .bind(&now)
         .bind(id)
         .execute(&self.pool)
@@ -126,7 +130,7 @@ impl Store {
                 "only transform chips can bind a transform definition".into(),
             ));
         }
-        let _ = self
+        let transform = self
             .get_transform(transform_id)
             .await?
             .ok_or_else(|| StorageError::NotFound("transform not found".into()))?;
@@ -135,6 +139,23 @@ impl Store {
              WHERE id = ? AND kind = 'transform'",
         )
         .bind(transform_id)
+        .bind(now_rfc3339())
+        .bind(chip_id)
+        .execute(&self.pool)
+        .await?;
+        // Blank transform chips receive a provisional `<chip name>.parquet`
+        // contract when placed. Once a recipe is bound, its configured output
+        // filename becomes the contract consumed by detail views and downstream
+        // transform/load chips.
+        sqlx::query(
+            "UPDATE workspace_chip_outputs
+             SET expected_filename = ?, definition_revision = ?, updated_at = ?
+             WHERE workspace_chip_id IN (
+               SELECT id FROM workspace_chips WHERE chip_id = ?
+             ) AND port_name = 'out'",
+        )
+        .bind(chip_slot::display_filename(&transform.name, "transform", ","))
+        .bind(chip.revision + 1)
         .bind(now_rfc3339())
         .bind(chip_id)
         .execute(&self.pool)

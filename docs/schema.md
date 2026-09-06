@@ -11,7 +11,7 @@
 - 0행 결과도 `data_schemas`에 컬럼 스키마를 보존할 수 있다.
 - 폴더 최상위는 `parent_id IS NULL`이며 `root` 레코드는 만들지 않는다.
 
-## 전체 25개 테이블
+## 전체 27개 테이블
 
 | 영역 | 테이블 | 역할 |
 | --- | --- | --- |
@@ -19,6 +19,7 @@
 | 연결 | `connections` | DB/API 접속 정의 |
 | 워크스페이스 | `workspace_folders`, `workspaces`, `workspace_chips`, `workspace_edges`, `workspace_revisions`, `workspace_chip_outputs` | 폴더, 캔버스, 연결, 이력, 출력 계약 |
 | ETL 정의 | `extracts`, `transforms`, `loads` | 독립 정의와 revision |
+| 검증 | `validation_rules`, `validation_results` | 재사용 규칙과 실행 결과 |
 | 작업 | `chips` | 종류별 ETL 정의를 참조하는 칩 |
 | 실행 | `executions`, `execution_steps`, `execution_inputs`, `execution_outputs`, `execution_logs` | 통합 실행과 데이터 계보 |
 | 데이터 | `data_files`, `data_schemas` | 실제 파일과 컬럼 스키마 |
@@ -36,6 +37,7 @@ executions -> execution_steps
 execution_steps -> execution_inputs  -> data_files
 execution_steps -> execution_outputs -> data_files
 execution_steps -> execution_logs
+validation_rules -> validation_results -> data_files(source, target)
 ```
 
 `transforms.default_input_file_id`와 `loads.default_input_file_id`는 단독 페이지의 기본 입력이다. 캔버스에서는 data 연결로 받은 upstream의 최신 출력이 이를 우선한다.
@@ -44,19 +46,18 @@ execution_steps -> execution_logs
 
 `execution_steps.definition_snapshot_json`과 `definition_revision`은 실행 당시 정의를 고정한다. 외부 UI API의 `/api/datasets`, `/api/jobs` 명칭은 전환 기간 동안 유지할 수 있지만 물리 DB에는 구형 `datasets`, `jobs`, `*_runs`, `*_recipes`, `data_resources` 테이블을 만들지 않는다.
 
-## 데이터 검증 확장 방향
+## 데이터 검증
 
-현재 1차 구현은 `POST /api/validations/run`으로 두 `data_files`를 즉시 비교한다. 행 수, 컬럼 구성, 복합 키 누락·추가·중복, 지정 컬럼 값 불일치를 하나의 결과로 반환한다. 캔버스의 `validation` 칩도 같은 엔진을 사용하며, 초기 단계에서는 비교 설정을 `chips.config_json`에 저장한다.
+`POST /api/validations/run`은 두 `data_files`를 즉시 비교한다. 행 수, 컬럼 구성, 복합 키 누락·추가·중복, 지정 컬럼 값 불일치를 하나의 결과로 반환한다. `validation_rules`는 이름, 설명, 복합 키, 비교 컬럼, 행 수·스키마 검사 여부, 활성 상태와 revision을 저장하고 독립 실행과 캔버스 칩에서 재사용한다.
 
-검증 칩의 data 입력은 upstream 추출·변환 칩의 최신 출력(target)이고, 편집 화면에서 고른 데이터 파일은 비교 기준(source)이다. 실행 시 target은 `execution_inputs`에 기록되며, 검증 결과 요약은 `execution_steps.result_json`에 저장된다. 검증은 새 데이터를 생산하지 않으므로 `execution_outputs`와 `workspace_chip_outputs`를 만들지 않는다. 차이가 발견되면 검증 단계는 `failed`가 되어 `on_error` 제어선으로 분기할 수 있다.
+검증 칩의 data 입력은 upstream 추출·변환 칩의 최신 출력(target)이고, 편집 화면에서 고른 데이터 파일은 비교 기준(source)이다. 칩은 `config_json.validation_rule_id`로 저장 규칙을 참조하며 기존 수동 `keys`, `columns` 설정도 호환한다. 실행 시 target은 `execution_inputs`에 기록되고 결과 요약은 `execution_steps.result_json`과 `validation_results`에 함께 저장된다. 검증은 새 데이터를 생산하지 않으므로 `execution_outputs`와 `workspace_chip_outputs`를 만들지 않는다. 차이가 발견되면 검증 단계는 `failed`가 되어 `on_error` 제어선으로 분기할 수 있다.
 
-재사용 가능한 검증 규칙 관리 기능을 추가할 때는 다음 정규화를 한 묶음으로 진행한다.
+추후 대용량 운영 검증 단계에서는 다음 보강을 진행한다.
 
-- `validations`: 비교 기준 파일 또는 추출 정의, 복합 키, 비교 컬럼, 행 수·스키마 검사 옵션과 revision을 저장한다.
-- `validation_results`: 실행 단계별 검증 요약과 샘플 차이를 저장한다. 대량 불일치 전체를 JSON에 넣지 않고 별도 산출 파일로 연결할 수 있게 한다.
-- `chips.validation_id`와 `execution_steps.validation_id`를 추가하고 현재 `config_json` 설정을 `validations`로 승격한다.
+- 대량 불일치 전체를 `report_json`에 넣지 않고 별도 산출 파일로 연결한다.
+- `chips.validation_rule_id`와 `execution_steps.validation_rule_id`를 물리 FK로 추가해 현재 JSON 참조를 강화한다.
 - data 연결로 받은 upstream 최신 출력은 검증 대상(target)이 되고, 검증 페이지에서 고른 데이터 파일 또는 추출 칩 결과는 비교 기준(source)이 된다.
 - 실행 당시 두 입력은 모두 `execution_inputs`에 `source`, `target` 포트로 기록하여 현재 target 중심 계보를 보강한다.
 - 검증은 데이터를 생산하지 않으므로 `execution_outputs`나 `workspace_chip_outputs`를 만들지 않는다. 이후 제어 연결은 검증 단계의 성공/실패 상태를 사용한다.
 
-독립 검증과 캔버스 검증 칩은 현재 동작하지만, 규칙 카탈로그·revision·대량 불일치 산출 파일은 위 정규화 단계에서 추가한다.
+독립 실행, 규칙 CRUD, 결과 이력, 캔버스 검증 칩은 현재 같은 검증 엔진과 규칙을 사용한다.

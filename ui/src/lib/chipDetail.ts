@@ -10,6 +10,7 @@ export type ExtractConfigView = {
   method: string;
   path: string;
   recordsPath: string;
+  outputFilename: string;
   delimiter: string;
   header: boolean;
 };
@@ -20,6 +21,7 @@ export type TransformConfigView = {
 };
 
 export type LoadConfigView = {
+  inputDatasetId: string;
   destinationType: "database" | "file";
   connectionId: string;
   table: string;
@@ -60,6 +62,7 @@ export function parseExtractConfig(config: ChipConfig): ExtractConfigView | null
     method: textValue(source, "method", "GET"),
     path: textValue(source, "path"),
     recordsPath: textValue(source, "records_path"),
+    outputFilename: textValue(config, "output_filename"),
     delimiter: textValue(config, "delimiter", ","),
     header: boolValue(config, "header", true),
   };
@@ -97,6 +100,7 @@ export function parseLoadConfig(config: ChipConfig): LoadConfigView | null {
   const type = textValue(destination, "type");
   if (type !== "database" && type !== "file") return null;
   return {
+    inputDatasetId: textValue(config, "input_dataset_id"),
     destinationType: type,
     connectionId: textValue(destination, "connection_id"),
     table: textValue(destination, "table"),

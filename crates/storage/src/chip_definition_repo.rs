@@ -109,6 +109,7 @@ impl Store {
     ) -> Result<Option<ExtractDefinitionRow>, StorageError> {
         Ok(sqlx::query_as::<_, ExtractDefinitionRow>(&format!(
             "SELECT e.id, e.name, e.source_type AS kind, e.connection_id, e.source_json,
+                    e.output_filename,
                     COALESCE(e.delimiter, ',') AS delimiter, COALESCE(e.has_header, 1) AS header,
                     e.add_sequence,
                     COALESCE((SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id = wc.chip_id WHERE c.extract_id = e.id LIMIT 1), 'default') AS workspace_id,
@@ -146,6 +147,7 @@ impl Store {
                 Ok(serde_json::json!({
                     "connection_id": row.connection_id,
                     "source": source,
+                    "output_filename": row.output_filename,
                     "delimiter": row.delimiter,
                     "header": row.header != 0,
                 })
@@ -222,7 +224,15 @@ impl Store {
         .bind(&input.kind)
         .bind(&input.connection_id)
         .bind(&input.source_json)
-        .bind(format!("extract-{extract_id}.csv"))
+        .bind(
+            input
+                .output_filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|filename| !filename.is_empty())
+                .map(crate::csv_output_filename)
+                .unwrap_or_else(|| chip_slot::display_filename(name, "extract", &input.delimiter)),
+        )
         .bind(&input.delimiter)
         .bind(i64::from(input.header))
         .bind(i64::from(input.add_sequence))

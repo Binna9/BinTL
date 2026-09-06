@@ -498,6 +498,29 @@ impl Store {
             .execute(&mut *tx)
             .await?;
         }
+        // A workspace placement owns a stable output contract. It is created
+        // before the first run so downstream chips can consume its filename and
+        // schema without requiring a materialized data_files row.
+        sqlx::query(
+            "INSERT INTO workspace_chip_outputs
+             (workspace_chip_id, port_name, expected_filename, definition_revision, updated_at)
+             SELECT wc.id, 'out',
+                    CASE c.kind
+                      WHEN 'extract' THEN COALESCE(e.output_filename, c.name || '.csv')
+                      WHEN 'transform' THEN COALESCE(t.output_filename_template, c.name || '.parquet')
+                    END,
+                    c.revision, ?
+             FROM workspace_chips wc
+             INNER JOIN chips c ON c.id = wc.chip_id
+             LEFT JOIN extracts e ON e.id = c.extract_id
+             LEFT JOIN transforms t ON t.id = c.transform_id
+             WHERE wc.workspace_id = ? AND c.kind IN ('extract', 'transform')
+             ON CONFLICT(workspace_chip_id, port_name) DO NOTHING",
+        )
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         let saved_edges = replace_workspace_edges(&mut tx, id, edges, &saved_chips, &now).await?;
         sqlx::query(
             "UPDATE workspaces SET viewport_json = ?, version = ?, updated_at = ? WHERE id = ?",

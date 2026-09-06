@@ -1,6 +1,27 @@
 use crate::*;
 
 impl Store {
+    async fn materialized_load_default_input(
+        &self,
+        spec: &serde_json::Value,
+    ) -> Result<Option<String>, StorageError> {
+        let Some(input_id) = spec
+            .get("input_dataset_id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        // Canvas contracts are schema-only references.  More importantly, keep
+        // this FK nullable unless the id resolves to a real data_files row: the
+        // workspace edge is authoritative for graph-derived input.
+        if input_id.starts_with("contract:") || self.get_dataset(input_id).await?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(input_id.to_string()))
+    }
+
     pub async fn bind_chip_to_load(
         &self,
         chip_id: &str,
@@ -52,7 +73,7 @@ impl Store {
         let now = now_rfc3339();
         let spec: serde_json::Value = serde_json::from_str(spec_json)
             .map_err(|error| StorageError::Invalid(error.to_string()))?;
-        let input_id = spec.get("input_dataset_id").and_then(|v| v.as_str());
+        let input_id = self.materialized_load_default_input(&spec).await?;
         let connection_id = spec
             .pointer("/destination/connection_id")
             .and_then(|v| v.as_str());
@@ -114,6 +135,7 @@ impl Store {
         require_config_json(spec_json)?;
         let spec: serde_json::Value = serde_json::from_str(spec_json)
             .map_err(|error| StorageError::Invalid(error.to_string()))?;
+        let input_id = self.materialized_load_default_input(&spec).await?;
         let destination = spec
             .get("destination")
             .ok_or_else(|| StorageError::Invalid("load destination required".into()))?
@@ -124,7 +146,7 @@ impl Store {
              conflict_keys_json = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
         )
         .bind(name.trim())
-        .bind(spec.get("input_dataset_id").and_then(|v| v.as_str()))
+        .bind(input_id)
         .bind(destination_type)
         .bind(
             spec.pointer("/destination/connection_id")

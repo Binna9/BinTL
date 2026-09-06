@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pencil, Puzzle, RefreshCw, Trash2 } from "lucide-react";
+import { ListFilter, Pencil, Puzzle, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { AppDialog } from "@/components/AppDialog";
@@ -7,6 +7,7 @@ import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/panel";
+import { Select } from "@/components/ui/select";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
@@ -18,7 +19,8 @@ import type { Chip, ChipKind } from "@/types/chip";
 function kindLabel(kind: ChipKind, messages: ReturnType<typeof useLanguage>["messages"]) {
   if (kind === "extract") return messages.workspace.extract;
   if (kind === "transform") return messages.workspace.transform;
-  return messages.workspace.load;
+  if (kind === "load") return messages.workspace.load;
+  return messages.workspace.validation;
 }
 
 export function ChipsPage() {
@@ -29,9 +31,20 @@ export function ChipsPage() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
   const [detail, setDetail] = useState<Chip | null>(null);
+  const [nameQuery, setNameQuery] = useState("");
+  const [kindFilter, setKindFilter] = useState<"all" | ChipKind>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const allSelected = chips.length > 0 && selected.length === chips.length;
+  const visibleChips = useMemo(() => {
+    const query = nameQuery.trim().toLocaleLowerCase();
+    return chips.filter((chip) =>
+      (kindFilter === "all" || chip.kind === kindFilter)
+      && (statusFilter === "all" || (statusFilter === "active" ? chip.active : !chip.active))
+      && (!query || chip.name.toLocaleLowerCase().includes(query)),
+    );
+  }, [chips, kindFilter, nameQuery, statusFilter]);
+  const allSelected = visibleChips.length > 0 && visibleChips.every((chip) => selectedSet.has(chip.id));
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -67,7 +80,12 @@ export function ChipsPage() {
   }
 
   function toggleAll() {
-    setSelected(allSelected ? [] : chips.map((chip) => chip.id));
+    setSelected((current) => {
+      const visibleIds = new Set(visibleChips.map((chip) => chip.id));
+      return allSelected
+        ? current.filter((id) => !visibleIds.has(id))
+        : [...new Set([...current, ...visibleIds])];
+    });
   }
 
   async function toggleActive(chip: Chip) {
@@ -131,14 +149,14 @@ export function ChipsPage() {
                 className="field-control"
                 type="checkbox"
                 checked={allSelected}
-                disabled={chips.length === 0 || loading || busy}
+                disabled={visibleChips.length === 0 || loading || busy}
                 onChange={toggleAll}
                 aria-label={messages.chips.selectAll}
               />
               <span>{messages.workspace.chipCatalog}</span>
             </label>
             <span className="text-xs text-text-tertiary">
-              {messages.common.cases(chips.length)} · {messages.chips.active} {activeCount}
+              {messages.chips.showing(visibleChips.length, chips.length)} · {messages.chips.active} {activeCount}
             </span>
           </ToolbarGroup>
           <ToolbarGroup>
@@ -153,6 +171,50 @@ export function ChipsPage() {
             </Button>
           </ToolbarGroup>
         </Toolbar>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-raised/45 px-3 py-2.5">
+          <div className="group flex h-8 w-[min(17rem,100%)] min-w-[11rem] items-center overflow-hidden rounded-lg border border-border bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+            <span className="grid h-full w-8 shrink-0 place-items-center border-r border-border bg-subtle text-text-tertiary group-focus-within:text-accent">
+              <Search className="size-3.5" aria-hidden="true" />
+            </span>
+            <input
+              type="search"
+              className="min-w-0 flex-1 bg-transparent px-2.5 text-[13px] text-text outline-none placeholder:text-text-tertiary"
+              value={nameQuery}
+              placeholder={messages.chips.searchPlaceholder}
+              aria-label={messages.chips.searchByName}
+              onChange={(event) => setNameQuery(event.target.value)}
+            />
+          </div>
+          <div className="ml-3 flex items-center gap-1.5 text-xs text-text-secondary">
+            <ListFilter className="size-3.5 text-text-tertiary" aria-hidden="true" />
+            <span className="sr-only">{messages.chips.kindFilter}</span>
+            <Select
+              className="h-8 min-w-[7.5rem]"
+              value={kindFilter}
+              onChange={(value) => setKindFilter(value as "all" | ChipKind)}
+              options={[
+                { value: "all", label: messages.chips.allKinds },
+                { value: "extract", label: kindLabel("extract", messages) },
+                { value: "transform", label: kindLabel("transform", messages) },
+                { value: "load", label: kindLabel("load", messages) },
+                { value: "validation", label: kindLabel("validation", messages) },
+              ]}
+            />
+          </div>
+          <div className="flex items-center text-xs text-text-secondary">
+            <span className="sr-only">{messages.chips.statusFilter}</span>
+            <Select
+              className="h-8 min-w-[6.5rem]"
+              value={statusFilter}
+              onChange={(value) => setStatusFilter(value as "all" | "active" | "inactive")}
+              options={[
+                { value: "all", label: messages.chips.allStatuses },
+                { value: "active", label: messages.chips.active },
+                { value: "inactive", label: messages.chips.inactive },
+              ]}
+            />
+          </div>
+        </div>
         <DataGrid
           className="min-h-0 flex-1"
           headers={[...messages.chips.headers]}
@@ -162,8 +224,10 @@ export function ChipsPage() {
             <EmptyGridRow cols={6} text={messages.common.loading} />
           ) : chips.length === 0 ? (
             <EmptyGridRow cols={6} text={messages.workspace.noWorkspaces} />
+          ) : visibleChips.length === 0 ? (
+            <EmptyGridRow cols={6} text={messages.chips.filterEmpty} />
           ) : (
-            chips.map((chip) => (
+            visibleChips.map((chip) => (
               <GridRow key={chip.id} selected={selectedSet.has(chip.id)}>
                 <GridCell>
                   <input
@@ -213,7 +277,10 @@ export function ChipsPage() {
         title={detail?.name ?? ""}
         icon={
           <Puzzle
-            className={cn("size-4", detail?.kind === "transform" ? "text-success" : "text-accent")}
+            className={cn(
+              "size-4",
+              detail?.kind === "transform" ? "text-success" : detail?.kind === "load" ? "text-warning" : "text-accent",
+            )}
             aria-hidden="true"
           />
         }

@@ -1600,6 +1600,10 @@ a {
   --card-tone: #f59e0b;
 }
 
+.search-page-card[data-tone="search-tone-warning"] {
+  --card-tone: #e5b95d;
+}
+
 .search-page-card[data-tone="search-tone-cyan"] {
   --card-tone: #06b6d4;
 }
@@ -1633,6 +1637,10 @@ a {
 
 .search-tone-amber {
   color: #f59e0b;
+}
+
+.search-tone-warning {
+  color: #e5b95d;
 }
 
 .search-tone-cyan {
@@ -2142,13 +2150,14 @@ a {
 }
 
 .workspace-node-icon.is-load {
-  color: var(--color-warning);
-  background: var(--color-warning-subtle);
+  /* Make load icons use the brighter warning yellow, but no background — icon-only like extracts */
+  color: #e5b95d; /* lighter warning yellow for icon stroke */
+  background: transparent; /* remove background so only the icon color shows */
 }
 
 .workspace-node-icon.is-validation {
-  color: var(--theme-accent);
-  background: var(--theme-accent-subtle);
+  color: #8b5cf6;
+  background: transparent;
 }
 
 .workspace-node-icon svg {
@@ -2208,7 +2217,8 @@ a {
 }
 
 .workspace-minimap-chip.is-load {
-  background: var(--theme-warning);
+  /* Use the brighter warning tone to match workspace icons in the minimap */
+  background: #e5b95d;
 }
 
 .workspace-minimap-view {

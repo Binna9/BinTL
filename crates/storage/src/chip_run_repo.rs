@@ -2,6 +2,38 @@ use crate::models::*;
 use crate::*;
 
 impl Store {
+    pub async fn output_contract_filename(
+        &self,
+        workspace_id: &str,
+        chip_id: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let filename: Option<String> = sqlx::query_scalar(
+            "SELECT COALESCE(
+                     CASE c.kind WHEN 'extract' THEN e.output_filename
+                                 WHEN 'transform' THEN t.output_filename_template END,
+                     o.expected_filename)
+             FROM workspace_chips wc
+             INNER JOIN chips c ON c.id = wc.chip_id
+             LEFT JOIN workspace_chip_outputs o ON o.workspace_chip_id = wc.id AND o.port_name = 'out'
+             LEFT JOIN extracts e ON e.id = c.extract_id
+             LEFT JOIN transforms t ON t.id = c.transform_id
+             WHERE wc.workspace_id = ? AND wc.chip_id = ? LIMIT 1",
+        )
+        .bind(workspace_id)
+        .bind(chip_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        // Older workspace contracts accidentally appended `.planned` while a
+        // downstream input was unresolved. It is metadata, not part of a file name.
+        Ok(filename.map(|name| {
+            let mut clean = name;
+            while clean.to_ascii_lowercase().ends_with(".planned") {
+                clean.truncate(clean.len() - ".planned".len());
+            }
+            clean
+        }))
+    }
+
     pub async fn create_chip_run(
         &self,
         chip_id: &str,
@@ -161,7 +193,8 @@ impl Store {
     pub async fn latest_chip_output(&self, chip_id: &str) -> Result<Option<String>, StorageError> {
         Ok(sqlx::query_scalar(
             "SELECT o.data_file_id FROM execution_steps s INNER JOIN execution_outputs o ON o.execution_step_id = s.id
-             WHERE s.chip_id = ? AND s.status = 'succeeded'
+             INNER JOIN data_files d ON d.id = o.data_file_id
+             WHERE s.chip_id = ? AND s.status = 'succeeded' AND d.deleted_at IS NULL
              ORDER BY COALESCE(s.finished_at, s.queued_at) DESC
              LIMIT 1",
         )
@@ -191,7 +224,9 @@ impl Store {
         Ok(sqlx::query_scalar(
             "SELECT o.data_file_id FROM execution_steps s INNER JOIN executions e ON e.id = s.execution_id
              INNER JOIN execution_outputs o ON o.execution_step_id = s.id
+             INNER JOIN data_files d ON d.id = o.data_file_id
              WHERE s.chip_id = ? AND e.workspace_id = ? AND s.status = 'succeeded'
+               AND d.deleted_at IS NULL
              ORDER BY COALESCE(s.finished_at, s.queued_at) DESC
              LIMIT 1",
         )

@@ -44,10 +44,12 @@ export function ValidationPage() {
         ]);
         if (cancelled) return;
         const config = chip.config;
-        setRuleId(typeof config.validation_rule_id === "string" ? config.validation_rule_id : "");
+        const savedRuleId = typeof config.validation_rule_id === "string" ? config.validation_rule_id : "";
+        const savedRule = ruleResult.rules.find((rule) => rule.id === savedRuleId);
+        setRuleId(savedRuleId);
         setSourceId(typeof config.source_data_file_id === "string" ? config.source_data_file_id : "");
-        setKeys(Array.isArray(config.keys) ? config.keys.filter((v): v is string => typeof v === "string").join(", ") : "");
-        setColumns(Array.isArray(config.columns) ? config.columns.filter((v): v is string => typeof v === "string").join(", ") : "");
+        setKeys(savedRule ? savedRule.keys.join(", ") : Array.isArray(config.keys) ? config.keys.filter((v): v is string => typeof v === "string").join(", ") : "");
+        setColumns(savedRule ? savedRule.columns.join(", ") : Array.isArray(config.columns) ? config.columns.filter((v): v is string => typeof v === "string").join(", ") : "");
         setTargetId(slot.mode === "materialized" ? slot.dataset_id ?? "" : "");
       } catch (error) {
         toastError(t.loadError, error);
@@ -100,7 +102,7 @@ export function ValidationPage() {
             <FormField label={t.source}><Select value={sourceId} options={options} placeholder={t.pickDataset} onChange={setSourceId} /></FormField>
             <FormField label={t.target} hint={editingChip ? t.targetFromCanvas : undefined}><Select value={targetId} options={options} placeholder={editingChip ? t.waitingForInput : t.pickDataset} disabled={editingChip} onChange={setTargetId} /></FormField>
           </div>
-          <FormField label={t.rule}><Select value={ruleId} options={rules.map((rule) => ({ value: rule.id, label: `${rule.name} · v${rule.revision}` }))} placeholder={t.customRule} onChange={setRuleId} /></FormField>
+          <FormField label={t.rule}><Select value={ruleId} options={rules.map((rule) => ({ value: rule.id, label: `${rule.name} · v${rule.revision}` }))} placeholder={t.customRule} onChange={(id) => { setRuleId(id); const rule = rules.find((item) => item.id === id); if (rule) { setKeys(rule.keys.join(", ")); setColumns(rule.columns.join(", ")); } }} /></FormField>
           <FormField label={t.keys} hint={ruleId ? t.ruleOverrides : t.keysHint}><input disabled={Boolean(ruleId)} className="field-control technical" value={keys} onChange={(e) => setKeys(e.target.value)} /></FormField>
           <FormField label={t.columns} hint={ruleId ? t.ruleOverrides : t.columnsHint}><input disabled={Boolean(ruleId)} className="field-control technical" value={columns} onChange={(e) => setColumns(e.target.value)} /></FormField>
           <div className="flex justify-end gap-2">

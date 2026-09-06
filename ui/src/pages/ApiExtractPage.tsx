@@ -158,8 +158,17 @@ export function ApiExtractPage() {
   const [extractRow, setExtractRow] = useState<ExtractRecord | null>(null);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [registerName, setRegisterName] = useState("");
+  const [registerOutputName, setRegisterOutputName] = useState("");
   const [registerBusy, setRegisterBusy] = useState(false);
   const browseInitialized = useRef(false);
+  const suggestedOutputName = useMemo(() => {
+    const operation = graphqlOperationName.trim();
+    if (operation) return operation;
+    const endpoint = path.trim().replace(/[?#].*$/, "").split("/").filter(Boolean).at(-1);
+    if (endpoint) return endpoint;
+    const connectionName = httpConnections.find((connection) => connection.id === browseId)?.name?.trim();
+    return connectionName || "api";
+  }, [browseId, graphqlOperationName, httpConnections, path]);
 
   useEffect(() => {
     if (browseInitialized.current || !httpConnections[0]) return;
@@ -287,6 +296,7 @@ export function ApiExtractPage() {
       await chipApi.register({
         name: registerName.trim(),
         kind: "extract",
+        output_filename: registerOutputName.trim() || suggestedOutputName,
         extract: {
           connection_id: browseId,
           source: buildSource(),
@@ -330,18 +340,23 @@ export function ApiExtractPage() {
     setExtractRow(null);
     setIsRegisterOpen(false);
     setRegisterName("");
+    setRegisterOutputName("");
   }
 
   async function openRegister() {
     try {
       const response = await chipApi.listCatalog();
-      setRegisterName(nextSequencedChipName(
+      const nextName = nextSequencedChipName(
         response.chips,
         messages.apiExtract.defaultChipName,
         (chip) => chip.kind === "extract" && extractSourceType(chip) === "http",
-      ));
+      );
+      setRegisterName(nextName);
+      setRegisterOutputName(suggestedOutputName);
     } catch (err) {
-      setRegisterName(messages.apiExtract.defaultChipName(1));
+      const nextName = messages.apiExtract.defaultChipName(1);
+      setRegisterName(nextName);
+      setRegisterOutputName(suggestedOutputName);
       toastError(messages.workspace.loadError, err);
     }
     setIsRegisterOpen(true);
@@ -675,6 +690,14 @@ export function ApiExtractPage() {
               autoFocus
               placeholder={messages.query.namePlaceholder}
               onChange={(event) => setRegisterName(event.target.value)}
+            />
+          </FormField>
+          <FormField label={messages.workspace.dataFileName}>
+            <input
+              className="field-control"
+              value={registerOutputName}
+              placeholder={suggestedOutputName}
+              onChange={(event) => setRegisterOutputName(event.target.value)}
             />
           </FormField>
           <dl className="space-y-2 border-t border-border/60 pt-3 text-[11px] text-text-tertiary">

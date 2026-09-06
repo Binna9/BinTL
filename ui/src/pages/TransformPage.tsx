@@ -441,7 +441,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
       setSourceMissing(false);
       return;
     }
-    if (selected?.status === "planned") {
+    if (selected?.status === "connected") {
       setSourceMissing(false);
       if (selected.columns.length > 0) {
         setSourcePreview({
@@ -518,7 +518,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   useEffect(() => {
     if (!detailOpen || !datasetId) return;
     const dataset = datasets.find((item) => item.id === datasetId) ?? null;
-    if (dataset?.status === "planned") {
+    if (dataset?.status === "connected") {
       const schemaPreview: FramePreview = {
         columns: dataset.columns,
         rows: [],
@@ -1013,18 +1013,14 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                           {inputSlot?.source_chip_name
                             || selected?.filename
                             || messages.transform.untitled}
-                          {inputSlot?.mode === "planned" || selected?.status === "planned" ? (
-                            <span className="ml-1 text-[11px] font-normal text-accent">
-                              ({messages.transform.plannedInput})
-                            </span>
-                          ) : selected && !selected.available ? (
+                          {selected && !selected.available && inputSlot?.mode !== "connected" ? (
                             <span className="ml-1 text-[11px] font-normal text-warning">
                               ({messages.transform.sourceUnavailable})
                             </span>
                           ) : null}
                         </span>
                         <span className="mt-0.5 block text-[11px] leading-4 text-text-tertiary">
-                          {inputSlot?.mode === "planned"
+                          {inputSlot?.mode === "connected"
                             ? messages.transform.schemaOnlyHint
                             : selected?.row_count != null
                               ? messages.common.rows(selected.row_count)
@@ -1145,11 +1141,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                               <span className="min-w-0 flex-1">
                                 <span className="block break-all text-[13px] font-medium leading-4">
                                   {item.filename}
-                                  {item.status === "planned" ? (
-                                    <span className="ml-1 text-[11px] font-normal text-accent">
-                                      ({messages.transform.plannedInput})
-                                    </span>
-                                  ) : !item.available ? (
+                                  {!item.available && item.status !== "connected" ? (
                                     <span className="ml-1 text-[11px] font-normal text-warning">
                                       ({messages.transform.sourceUnavailable})
                                     </span>
@@ -1640,7 +1632,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               <PreviewGrid
                 preview={activePreview}
                 empty={
-                  selected?.status === "planned"
+                  selected?.status === "connected"
                     ? messages.transform.schemaOnlyHint
                     : detailTab === "result"
                     ? editorSection === "combine" && !canPreviewCombine(combineDraft, datasetId)

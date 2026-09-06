@@ -2,6 +2,7 @@ import {
   AppWindow,
   Cable,
   DatabaseZap,
+  FileOutput,
   FileSpreadsheet,
   FolderTree,
   Puzzle,
@@ -23,7 +24,7 @@ export const SEARCH_ENTITY_META: Record<SearchEntityType, SearchEntityMeta> = {
   connection: { icon: Cable, tone: "search-tone-amber" },
   extract: { icon: DatabaseZap, tone: "search-tone-cyan" },
   transform: { icon: Workflow, tone: "search-tone-indigo" },
-  load: { icon: DatabaseZap, tone: "search-tone-cyan" },
+  load: { icon: FileOutput, tone: "search-tone-warning" },
 };
 
 export const SEARCH_GROUP_ORDER: SearchEntityType[] = [

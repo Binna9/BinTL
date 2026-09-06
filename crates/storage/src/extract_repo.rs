@@ -110,6 +110,15 @@ impl Store {
             .ok_or_else(|| StorageError::NotFound("extract not found".into()))?;
         let mut tx = self.pool.begin().await?;
         sqlx::query(
+            "UPDATE workspace_chip_outputs SET current_data_file_id = NULL, updated_at = ?
+             WHERE current_data_file_id IN
+             (SELECT data_file_id FROM execution_outputs WHERE execution_step_id = ?)",
+        )
+        .bind(now_rfc3339())
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
             "UPDATE data_files SET deleted_at = ?, updated_at = ? WHERE id IN
             (SELECT data_file_id FROM execution_outputs WHERE execution_step_id = ?)",
         )
@@ -201,11 +210,22 @@ impl Store {
         let linked = self.linked_chip_run_for_extract(id).await?;
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
-        let file_id = Uuid::new_v4().to_string();
+        let mut file_id = Uuid::new_v4().to_string();
+        // Use upsert keyed by stored_path to avoid UNIQUE constraint failures when multiple
+        // extract runs produce the same stored_path concurrently.
         sqlx::query(
             "INSERT INTO data_files (id, workspace_id, kind, format, filename, stored_path,
             size_bytes, row_count, delimiter, has_header, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(stored_path) DO UPDATE SET
+                kind = excluded.kind,
+                filename = excluded.filename,
+                size_bytes = excluded.size_bytes,
+                delimiter = COALESCE(excluded.delimiter, data_files.delimiter),
+                has_header = COALESCE(excluded.has_header, data_files.has_header),
+                row_count = COALESCE(excluded.row_count, data_files.row_count),
+                workspace_id = excluded.workspace_id,
+                updated_at = excluded.updated_at",
         )
         .bind(&file_id)
         .bind(&row.workspace_id)
@@ -225,6 +245,11 @@ impl Store {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
+        // Re-fetch canonical id for the stored_path (in case of conflict)
+        file_id = sqlx::query_scalar("SELECT id FROM data_files WHERE stored_path=?")
+            .bind(stored_path)
+            .fetch_one(&mut *tx)
+            .await?;
         sqlx::query("INSERT INTO execution_outputs (execution_step_id, port_name, data_file_id) VALUES (?, 'out', ?)")
             .bind(id).bind(&file_id).execute(&mut *tx).await?;
         let result_json =

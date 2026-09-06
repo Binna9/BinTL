@@ -78,11 +78,12 @@ function CatalogChipPanel({
     if (!needle) return options;
     return options.filter((chip) => chip.name.toLowerCase().includes(needle));
   }, [options, query]);
-  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : FileOutput;
-  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : "text-warning";
+  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : kind === "validation" ? ShieldCheck : FileOutput;
+  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : kind === "validation" ? "text-violet-600 dark:text-violet-400" : "text-warning";
   const emptyHint = kind === "extract"
     ? messages.workspace.emptyCatalogExtract
-    : kind === "transform" ? messages.workspace.emptyCatalogTransform : messages.workspace.emptyCatalogLoad;
+    : kind === "transform" ? messages.workspace.emptyCatalogTransform
+      : kind === "validation" ? messages.workspace.emptyCatalogValidation : messages.workspace.emptyCatalogLoad;
 
   if (options.length === 0) {
     return (
@@ -168,7 +169,7 @@ function PlaceDialogFooter({
       <Button type="button" variant="secondary" onClick={onCancel}>
         {cancelLabel}
       </Button>
-      <Button type="button" variant="primary" disabled={busy || !canSubmit} onClick={onSubmit}>
+      <Button type="button" variant="secondary" disabled={busy || !canSubmit} onClick={onSubmit}>
         {submitLabel}
       </Button>
     </div>
@@ -334,11 +335,7 @@ function DatasetPickerPanel({
                           <span className="min-w-0 flex-1">
                             <span className="block break-all text-[12px] font-medium leading-4">
                               {item.filename}
-                              {item.status === "planned" ? (
-                                <span className="ml-1 text-[10px] font-normal text-accent">
-                                  ({messages.transform.plannedInput})
-                                </span>
-                              ) : !item.available ? (
+                              {!item.available && item.status !== "connected" ? (
                                 <span className="ml-1 text-[10px] font-normal text-warning">
                                   ({messages.transform.sourceUnavailable})
                                 </span>
@@ -703,8 +700,10 @@ function TransformNewPanel({
   );
 }
 
-function LoadCatalogPanel({ chips, canvasChipIds, defaultName, messages, busy, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
-  chips: Chip[]; canvasChipIds: Set<string>; defaultName: string; messages: Messages; busy?: boolean;
+function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, chips, canvasChipIds, defaultName, occupiedNames, messages, busy, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
+  kind?: "load" | "validation"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
+  emptyChipLabel?: string; catalogHint?: string; registerLabel?: string;
+  chips: Chip[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
   onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty: (name: string) => void; onRegister: () => void;
   dragHandleRef: RefObject<HTMLDivElement | null>;
 }) {
@@ -716,15 +715,16 @@ function LoadCatalogPanel({ chips, canvasChipIds, defaultName, messages, busy, o
     setNamingEmpty(false);
     setEmptyName(defaultName);
   }, [defaultName]);
+  const nameTaken = occupiedNames.some((name) => name.trim().toLocaleLowerCase() === emptyName.trim().toLocaleLowerCase());
 
   return (
     <>
       <div className="chip-place-main">
       <PlacePanelHeader
-        icon={<FileOutput className="size-4" aria-hidden="true" />}
-        iconClassName="bg-warning-subtle text-warning"
-        title={messages.workspace.placeLoadTitle}
-        hint={messages.workspace.placeLoadSimpleHint}
+        icon={icon ?? <FileOutput className="size-4" aria-hidden="true" />}
+        iconClassName={iconClassName ?? "bg-warning-subtle text-warning"}
+        title={title ?? messages.workspace.placeLoadTitle}
+        hint={simpleHint ?? messages.workspace.placeLoadSimpleHint}
         dragHandleRef={dragHandleRef}
       />
 
@@ -740,7 +740,7 @@ function LoadCatalogPanel({ chips, canvasChipIds, defaultName, messages, busy, o
           }}
         >
           <Layers3 className="size-3.5" aria-hidden="true" />
-          {messages.workspace.placeLoadEmptyChip}
+          {emptyChipLabel ?? messages.workspace.placeLoadEmptyChip}
         </Button>
         <Button
           type="button"
@@ -750,16 +750,16 @@ function LoadCatalogPanel({ chips, canvasChipIds, defaultName, messages, busy, o
           onClick={onRegister}
         >
           <Plus className="size-3.5" aria-hidden="true" />
-          {messages.workspace.registerLoadFirst}
+          {registerLabel ?? messages.workspace.registerLoadFirst}
         </Button>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-2 pt-4">
         <p className="shrink-0 text-[11px] text-text-tertiary">
-          {messages.workspace.placeLoadCatalogHint}
+          {catalogHint ?? messages.workspace.placeLoadCatalogHint}
         </p>
         <CatalogChipPanel
-          kind="load"
+          kind={kind}
           chips={chips}
           canvasChipIds={canvasChipIds}
           messages={messages}
@@ -788,7 +788,7 @@ function LoadCatalogPanel({ chips, canvasChipIds, defaultName, messages, busy, o
             <Button type="button" variant="secondary" onClick={() => setNamingEmpty(false)}>
               {messages.common.cancel}
             </Button>
-            <Button type="button" variant="primary" disabled={busy || !emptyName.trim()} onClick={() => {
+            <Button type="button" variant="primary" disabled={busy || !emptyName.trim() || nameTaken} onClick={() => {
               const trimmed = emptyName.trim();
               if (!trimmed) return;
               setNamingEmpty(false);
@@ -813,11 +813,12 @@ function LoadCatalogPanel({ chips, canvasChipIds, defaultName, messages, busy, o
                 if (event.key !== "Enter") return;
                 event.preventDefault();
                 const trimmed = emptyName.trim();
-                if (!trimmed || busy) return;
+                if (!trimmed || busy || nameTaken) return;
                 setNamingEmpty(false);
                 onPlaceEmpty(trimmed);
               }}
             />
+            {nameTaken ? <span className="text-xs text-danger">{messages.workspace.duplicateChipName}</span> : null}
           </label>
         </div>
       </AppDialog>
@@ -834,6 +835,7 @@ export function ChipPlaceDialog({
   defaultTransformName,
   defaultLoadName,
   defaultValidationName,
+  occupiedNames,
   messages,
   busy,
   onClose,
@@ -850,6 +852,7 @@ export function ChipPlaceDialog({
   defaultTransformName: string;
   defaultLoadName: string;
   defaultValidationName: string;
+  occupiedNames: string[];
   messages: Messages;
   busy?: boolean;
   onClose: () => void;
@@ -920,6 +923,7 @@ export function ChipPlaceDialog({
           chips={catalogChips}
           canvasChipIds={canvasChipIds}
           defaultName={defaultLoadName}
+          occupiedNames={occupiedNames}
           messages={messages}
           busy={busy}
           onClose={onClose}
@@ -929,30 +933,27 @@ export function ChipPlaceDialog({
           dragHandleRef={dragHandleRef}
         />
       ) : (
-        <div className="flex h-full min-h-0 flex-1 flex-col">
-          <div ref={dragHandleRef} className="chip-place-head cursor-move">
-            <span className="grid size-9 place-items-center rounded-xl bg-accent-subtle text-accent">
-              <ShieldCheck className="size-4.5" aria-hidden="true" />
-            </span>
-            <div>
-              <h2 className="text-sm font-bold text-text">{messages.workspace.placeValidationTitle}</h2>
-              <p className="mt-0.5 text-xs text-text-tertiary">{messages.workspace.validationPlaceHint}</p>
-            </div>
-          </div>
-          <div className="flex flex-1 items-center justify-center p-6">
-            <p className="max-w-xs text-center text-sm leading-6 text-text-secondary">
-              {messages.workspace.validationConfigureHint}
-            </p>
-          </div>
-          <PlaceDialogFooter
-            cancelLabel={messages.common.cancel}
-            submitLabel={messages.workspace.pickChipPlace}
-            canSubmit
-            busy={busy}
-            onCancel={onClose}
-            onSubmit={() => onPlaceNewValidation(defaultValidationName)}
-          />
-        </div>
+        <LoadCatalogPanel
+          kind="validation"
+          icon={<ShieldCheck className="size-4" aria-hidden="true" />}
+          iconClassName="bg-violet-500/10 text-violet-600 dark:text-violet-400"
+          title={messages.workspace.placeValidationTitle}
+          simpleHint={messages.workspace.validationPlaceHint}
+          emptyChipLabel={messages.workspace.placeValidationEmptyChip}
+          catalogHint={messages.workspace.placeValidationCatalogHint}
+          registerLabel={messages.workspace.registerValidationFirst}
+          chips={catalogChips}
+          canvasChipIds={canvasChipIds}
+          defaultName={defaultValidationName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceCatalog}
+          onPlaceEmpty={onPlaceNewValidation}
+          onRegister={() => { onClose(); navigate("/validation/rules"); }}
+          dragHandleRef={dragHandleRef}
+        />
       )}
     </AppDialog>
   );

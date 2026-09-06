@@ -93,7 +93,11 @@ async fn resolve_extract_dest(
         let slot_file = chip_slot::slot_file_name("extract", &row.delimiter);
         let rel = chip_slot::stored_rel(&link.workspace_id, &link.chip_id, &slot_file)
             .map_err(|e| e.to_string())?;
-        let filename = chip_slot::display_filename(&chip.name, "extract", &row.delimiter);
+        let filename = store
+            .output_contract_filename(&link.workspace_id, &link.chip_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| chip_slot::display_filename(&chip.name, "extract", &row.delimiter));
         return Ok((filename, rel));
     }
     if let Some(requested) = row

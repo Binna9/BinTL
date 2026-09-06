@@ -10,7 +10,7 @@ export function isDraftChipId(id: string): boolean {
 }
 
 export interface ChipBinding {
-  ref_kind: "extract_definition" | "transform" | "load_definition";
+  ref_kind: "extract_recipe" | "transform" | "load_recipe";
   ref_id: string;
 }
 
@@ -95,6 +95,7 @@ export interface RegisterChipRequest {
   extract?: ChipConfig;
   transform_id?: string;
   load_definition_id?: string;
+  output_filename?: string;
 }
 
 export interface RunChipRequest {
@@ -110,7 +111,7 @@ export interface RunChipResponse {
 }
 
 export interface ChipInputSlotResponse {
-  mode: "unwired" | "planned" | "materialized";
+  mode: "unwired" | "connected" | "materialized";
   dataset_id?: string;
   source_chip_id?: string;
   source_chip_name?: string;
@@ -118,12 +119,4 @@ export interface ChipInputSlotResponse {
   status?: string;
   columns?: { name: string; dtype?: string; type?: string }[];
   dataset?: Record<string, unknown>;
-  planned?: {
-    dataset_id: string;
-    status: string;
-    source_chip_id: string;
-    consumer_chip_id: string;
-    kind?: string;
-    columns: { name: string; dtype?: string; type?: string }[];
-  };
 }

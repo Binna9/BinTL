@@ -140,6 +140,7 @@ export function QueryPage() {
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [registerName, setRegisterName] = useState("");
+  const [registerOutputName, setRegisterOutputName] = useState("");
   const [registerBusy, setRegisterBusy] = useState(false);
   const [exportName, setExportName] = useState("");
   const [extractId, setExtractId] = useState("");
@@ -448,13 +449,16 @@ export function QueryPage() {
   async function openRegister() {
     try {
       const response = await chipApi.listCatalog();
-      setRegisterName(nextSequencedChipName(
+      const nextName = nextSequencedChipName(
         response.chips,
         messages.query.defaultChipName,
         (chip) => chip.kind === "extract" && extractSourceType(chip) !== "http",
-      ));
+      );
+      setRegisterName(nextName);
+      setRegisterOutputName(selected?.qualified?.trim() || "query");
     } catch (err) {
       setRegisterName(messages.query.defaultChipName(1));
+      setRegisterOutputName(selected?.qualified?.trim() || "query");
       toastError(messages.workspace.loadError, err);
     }
     setIsRegisterOpen(true);
@@ -472,6 +476,7 @@ export function QueryPage() {
       await chipApi.register({
         name: registerName.trim(),
         kind: "extract",
+        output_filename: registerOutputName.trim() || selected?.qualified?.trim() || "query",
         extract: {
           connection_id: browseId,
           source: {
@@ -990,6 +995,14 @@ export function QueryPage() {
               autoFocus
               placeholder={messages.query.namePlaceholder}
               onChange={(event) => setRegisterName(event.target.value)}
+            />
+          </FormField>
+          <FormField label={messages.workspace.dataFileName}>
+            <input
+              className="field-control"
+              value={registerOutputName}
+              placeholder={selected?.qualified?.trim() || "query"}
+              onChange={(event) => setRegisterOutputName(event.target.value)}
             />
           </FormField>
           <dl className="space-y-2 border-t border-border/60 pt-3 text-[11px] text-text-tertiary">

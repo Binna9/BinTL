@@ -79,6 +79,8 @@ struct RegisterChipBody {
     transform_id: Option<String>,
     #[serde(default)]
     load_definition_id: Option<String>,
+    #[serde(default)]
+    output_filename: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,6 +255,7 @@ async fn register_chip(
                     delimiter,
                     header,
                     add_sequence: false,
+                    output_filename: body.output_filename.clone(),
                     place_on_workspace: body.place_on_workspace,
                 })
                 .await?
@@ -482,7 +485,12 @@ async fn queue_validation_chip_run(
         .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
     let config = validate_validation_config(&state.store, workspace_id, raw).await?;
     if config.source_data_file_id.is_empty()
-        || (config.keys.is_empty() && config.validation_rule_id.as_deref().unwrap_or("").is_empty())
+        || (config.keys.is_empty()
+            && config
+                .validation_rule_id
+                .as_deref()
+                .unwrap_or("")
+                .is_empty())
     {
         return Err(AppError::bad(
             "configure the validation chip before running",
@@ -901,7 +909,9 @@ async fn chip_json_for_workspace(
                                 .filter(|s| !s.is_empty())
                             {
                                 if let Some(dataset) = store.get_dataset(id).await? {
-                                    input_info = Some(crate::transform::dataset_json_public(store, &dataset));
+                                    input_info = Some(crate::transform::dataset_json_public(
+                                        store, &dataset,
+                                    ));
                                 } else {
                                     input_info = Some(json!({ "dataset_id": id, "missing": true }));
                                 }
@@ -952,7 +962,12 @@ async fn chip_output_json(
     } else {
         row.name.clone()
     };
-    let filename = storage::chip_slot::display_filename(&output_name, &row.kind, delimiter);
+    let filename = store
+        .output_contract_filename(workspace_id, &row.id)
+        .await?
+        .unwrap_or_else(|| {
+            storage::chip_slot::display_filename(&output_name, &row.kind, delimiter)
+        });
     if let Some(dataset_id) = store
         .latest_chip_output_for_workspace(workspace_id, &row.id)
         .await?
@@ -1078,8 +1093,10 @@ async fn validate_validation_config(
     let mut config: ValidationConfig =
         serde_json::from_value(config).map_err(|error| AppError::bad(error.to_string()))?;
     config.source_data_file_id = config.source_data_file_id.trim().to_string();
-    config.validation_rule_id = config.validation_rule_id
-        .map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    config.validation_rule_id = config
+        .validation_rule_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     config.keys = config
         .keys
         .into_iter()
@@ -1092,7 +1109,10 @@ async fn validate_validation_config(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .collect();
-    if config.source_data_file_id.is_empty() && config.keys.is_empty() && config.validation_rule_id.is_none() {
+    if config.source_data_file_id.is_empty()
+        && config.keys.is_empty()
+        && config.validation_rule_id.is_none()
+    {
         return Ok(config);
     }
     if config.source_data_file_id.is_empty() {
@@ -1102,9 +1122,13 @@ async fn validate_validation_config(
         return Err(AppError::bad("at least one validation key required"));
     }
     if let Some(rule_id) = config.validation_rule_id.as_deref() {
-        let rule = store.get_validation_rule(rule_id).await?
+        let rule = store
+            .get_validation_rule(rule_id)
+            .await?
             .ok_or_else(|| AppError::not_found("validation rule not found"))?;
-        if rule.active == 0 { return Err(AppError::bad("validation rule is inactive")); }
+        if rule.active == 0 {
+            return Err(AppError::bad("validation rule is inactive"));
+        }
     }
     let source = store
         .get_dataset(&config.source_data_file_id)
@@ -1355,9 +1379,14 @@ async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     let mut config: ValidationConfig = serde_json::from_str(&run.config_snapshot_json)
         .map_err(|error| format!("invalid validation config snapshot: {error}"))?;
     if let Some(rule_id) = config.validation_rule_id.as_deref() {
-        let rule = store.get_validation_rule(rule_id).await.map_err(|e| e.to_string())?
+        let rule = store
+            .get_validation_rule(rule_id)
+            .await
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| "validation rule not found".to_string())?;
-        if rule.active == 0 { return Err("validation rule is inactive".into()); }
+        if rule.active == 0 {
+            return Err("validation rule is inactive".into());
+        }
         config.keys = serde_json::from_str(&rule.keys_json).map_err(|e| e.to_string())?;
         config.columns = serde_json::from_str(&rule.columns_json).map_err(|e| e.to_string())?;
         config.compare_row_count = rule.compare_row_count != 0;
@@ -1412,11 +1441,24 @@ async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         )
         .await
         .map_err(|error| error.to_string())?;
-    let chip = store.get_chip(&run.chip_id).await.map_err(|e| e.to_string())?
+    let chip = store
+        .get_chip(&run.chip_id)
+        .await
+        .map_err(|e| e.to_string())?
         .ok_or_else(|| "validation chip not found".to_string())?;
-    store.insert_validation_result(&chip.owner_user_id, &run.workspace_id,
-        config.validation_rule_id.as_deref(), Some(&run.id), &config.source_data_file_id,
-        target_id, report.passed, &result_json).await.map_err(|e| e.to_string())?;
+    store
+        .insert_validation_result(
+            &chip.owner_user_id,
+            &run.workspace_id,
+            config.validation_rule_id.as_deref(),
+            Some(&run.id),
+            &config.source_data_file_id,
+            target_id,
+            report.passed,
+            &result_json,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

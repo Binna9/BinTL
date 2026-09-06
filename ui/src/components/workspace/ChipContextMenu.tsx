@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  FileText,
   Info,
   Pencil,
   Play,
@@ -50,6 +51,7 @@ export function ChipContextMenu({
   busy,
   onClose,
   onRun,
+  onOpenLog,
   onInfo,
   onProperties,
   onEdit,
@@ -60,6 +62,7 @@ export function ChipContextMenu({
   busy?: boolean;
   onClose: () => void;
   onRun: (chip: Chip) => void;
+  onOpenLog: (chip: Chip) => void;
   onInfo: (chip: Chip) => void;
   onProperties: (chip: Chip) => void;
   onEdit: (chip: Chip) => void;
@@ -105,6 +108,12 @@ export function ChipContextMenu({
       icon: Play,
       disabled: busy,
       onSelect: () => onRun(chip),
+    },
+    {
+      id: "logs",
+      label: messages.workspace.runLog,
+      icon: FileText,
+      onSelect: () => onOpenLog(chip),
     },
     {
       id: "info",

@@ -64,7 +64,9 @@ pub async fn ensure_planned_input_for_transform(
             } else {
                 schema.kind.as_str()
             },
-            &format!("{}.planned", upstream_name),
+            // Planned is a state, never part of a data contract's filename.
+            // Downstream chips must receive the exact upstream output name.
+            &upstream_name,
             &columns_json,
             &schema.delimiter,
             schema.header,
@@ -443,11 +445,12 @@ pub async fn get_transform_input_slot(
     )
     .await?;
     Ok(json!({
-        "mode": "planned",
+        "mode": "connected",
         "source_chip_id": edge.from_chip_id,
         "source_chip_name": source_name,
         "source_chip_kind": source_kind,
-        "planned": planned,
+        "dataset_id": planned["dataset_id"],
+        "columns": planned["columns"],
     }))
 }
 
@@ -456,6 +459,12 @@ async fn chip_input_display_name(
     chip: &storage::ChipRow,
     workspace_id: &str,
 ) -> Result<String, AppError> {
+    if let Some(filename) = store
+        .output_contract_filename(workspace_id, &chip.id)
+        .await?
+    {
+        return Ok(filename);
+    }
     if chip.kind == "transform" {
         if let Some(binding) = store.get_chip_binding(&chip.id).await? {
             if binding.ref_kind == "transform" {

@@ -618,6 +618,20 @@ pub fn resolve_upload_filename(original: &str, requested: Option<&str>) -> Strin
     name
 }
 
+/// Creates a CSV output name from an identifier instead of treating dots in it
+/// (for example `public.orders`) as a file extension.
+pub fn csv_output_filename(identifier: &str) -> String {
+    let name = safe_filename(identifier.trim());
+    if name.is_empty() {
+        return "extract.csv".into();
+    }
+    if name.to_ascii_lowercase().ends_with(".csv") {
+        name
+    } else {
+        safe_filename(&format!("{name}.csv"))
+    }
+}
+
 pub(crate) fn safe_filename(name: &str) -> String {
     let base = Path::new(name)
         .file_name()
@@ -682,6 +696,12 @@ mod tests {
         );
         assert_eq!(resolve_upload_filename("a.csv", Some("  ")), "a.csv");
         assert_eq!(resolve_upload_filename("a.csv", Some("../x.csv")), "x.csv");
+    }
+
+    #[test]
+    fn csv_output_filename_keeps_dotted_identifiers() {
+        assert_eq!(csv_output_filename("public.orders"), "public.orders.csv");
+        assert_eq!(csv_output_filename("orders.csv"), "orders.csv");
     }
 
     #[test]
@@ -939,7 +959,9 @@ mod tests {
         sqlx::query(
             "INSERT INTO workspace_chip_outputs
             (workspace_chip_id, port_name, expected_filename, definition_revision, updated_at)
-            VALUES (?, 'out', 'users.csv', 1, ?)",
+            VALUES (?, 'out', 'users.csv', 1, ?)
+            ON CONFLICT(workspace_chip_id, port_name) DO UPDATE SET
+            expected_filename=excluded.expected_filename, updated_at=excluded.updated_at",
         )
         .bind(&placement_id)
         .bind(now_rfc3339())

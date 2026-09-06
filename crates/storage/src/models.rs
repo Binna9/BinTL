@@ -276,6 +276,7 @@ pub struct ExtractDefinitionRow {
     pub kind: String,
     pub connection_id: String,
     pub source_json: String,
+    pub output_filename: String,
     pub delimiter: String,
     pub header: i64,
     pub add_sequence: i64,
@@ -325,6 +326,7 @@ pub struct RegisterExtractChip {
     pub delimiter: String,
     pub header: bool,
     pub add_sequence: bool,
+    pub output_filename: Option<String>,
     pub place_on_workspace: bool,
 }
 

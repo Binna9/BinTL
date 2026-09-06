@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { BookmarkPlus, ChevronRight, Database, Eye, FileOutput, FileSpreadsheet, Play, RotateCcw, Search } from "lucide-react";
+import { ArrowLeft, BookmarkPlus, ChevronRight, Database, Eye, FileOutput, FileSpreadsheet, Play, RotateCcw, Search } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { CatalogTree } from "@/components/connections/CatalogTree";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
@@ -82,12 +82,28 @@ export function LoadPage() {
     if (!workspaceMode) setInputDatasetId("");
   }
 
+  function returnToWorkspace() {
+    if (!workspaceId) return;
+    navigate(`/workspace/${workspaceId}`, { state: location.state });
+  }
+
   function edit(load: LoadDefinition) {
     setEditingId(load.id); setName(load.name); setDestinationType(load.destination_type); setWriteMode(load.spec.write_mode === "replace" ? "truncate" : load.spec.write_mode); setConflictKeys(load.spec.conflict_keys ?? []);
     if (!workspaceMode) setInputDatasetId(load.spec.input_dataset_id ?? "");
     if (load.spec.destination.type === "database") {
-      setConnectionId(load.spec.destination.connection_id); setDatabase(load.spec.destination.database ?? ""); setTable(load.spec.destination.table); setSelectedTable(null);
-    } else { setFormat(load.spec.destination.format); setFilename(load.spec.destination.filename); }
+      setConnectionId(load.spec.destination.connection_id);
+      setDatabase(load.spec.destination.database ?? "");
+      setTable(load.spec.destination.table);
+      setSelectedTable({
+        database: load.spec.destination.database ?? "",
+        schema: null,
+        table: load.spec.destination.table,
+        qualified: load.spec.destination.table,
+      });
+    } else {
+      setFormat(load.spec.destination.format);
+      setFilename(load.spec.destination.filename);
+    }
   }
 
   async function save() {
@@ -138,7 +154,7 @@ export function LoadPage() {
 
   const canSave = Boolean(inputDatasetId && (destinationType === "database" ? connectionId && table.trim() && (writeMode !== "upsert" || conflictKeys.length > 0) : filename.trim()));
   const selectedInput = datasets.find((item) => item.id === inputDatasetId);
-  const canRun = canSave && selectedInput?.status !== "planned" && Boolean(selectedInput?.available);
+  const canRun = canSave && Boolean(selectedInput?.available);
 
   async function runLoad() {
     if (!canRun || busy) return;
@@ -202,19 +218,37 @@ export function LoadPage() {
       setExpandedKinds(new Set([dataset.kind as (typeof KIND_ORDER)[number]]));
     }
   }
-  if (!routeId) {
-    const chip = response.chips.find((item) => item.id === editorChipId);
-    if (chip) setName(chip.name);
-  }
+      if (!routeId) {
+        const chip = response.chips.find((item) => item.id === editorChipId);
+        if (chip?.binding?.ref_kind !== "load_recipe") setName(chip?.name ?? "");
+      }
     }).catch((error) => toastError(t.loadError, error));
   }, [editorChipId, routeId, workspaceId]);
 
+  // Canvas links open `/load` when a chip has not yet been bound. Once a load
+  // definition is saved, its binding is the authoritative saved editor state.
+  // Restore it even when an older canvas URL does not include the definition id.
   useEffect(() => {
-    if (!inputDatasetId) { setPreview(null); return; }
+    if (!workspaceId || !editorChipId || routeId || loads.length === 0) return;
+    void chipApi.list(workspaceId).then((response) => {
+      const chip = response.chips.find((item) => item.id === editorChipId);
+      if (chip?.binding?.ref_kind !== "load_recipe") return;
+      const savedLoad = loads.find((item) => item.id === chip.binding?.ref_id);
+      if (savedLoad) edit(savedLoad);
+    }).catch((error) => toastError(t.loadError, error));
+  }, [editorChipId, loads, routeId, workspaceId]);
+
+  useEffect(() => {
+    const input = datasets.find((item) => item.id === inputDatasetId);
+    // A connected upstream output has no physical data_files row until its chip runs.
+    if (!inputDatasetId || inputDatasetId.startsWith("contract:") || input?.status === "connected") {
+      setPreview(null);
+      return;
+    }
     void datasetApi.inspect(inputDatasetId, 100, true)
       .then((response) => setPreview(response.preview))
       .catch((error) => toastError(t.loadError, error));
-  }, [inputDatasetId]);
+  }, [datasets, inputDatasetId, t.loadError]);
 
   return (
     <PageShell>
@@ -225,11 +259,20 @@ export function LoadPage() {
         description={t.description}
         actions={
           <>
+            {workspaceMode ? (
+              <>
+                <Button variant="quiet" className="gap-2" disabled={busy} onClick={returnToWorkspace}>
+                  <ArrowLeft className="size-3.5" aria-hidden="true" />
+                  {t.returnToWorkspace}
+                </Button>
+                <span className="w-3" aria-hidden="true" />
+              </>
+            ) : null}
             <Button variant="quiet" onClick={reset}>
               <RotateCcw className="size-3.5" />
               {t.reset}
             </Button>
-            <Button variant="primary" disabled={busy || !canSave} onClick={() => void save()}>
+            <Button variant="secondary" disabled={busy || !canSave} onClick={() => void save()}>
               <BookmarkPlus className="size-3.5" />
               {busy ? messages.common.saving : workspaceMode ? t.applyToChip : t.registerChip}
             </Button>
@@ -376,10 +419,9 @@ export function LoadPage() {
                                   <span className="min-w-0 flex-1">
                                     <span className="block break-all text-[13px] font-medium leading-4">
                                       {dataset.filename}
-                                      {dataset.status === "planned" ? <span className="ml-1 text-[11px] font-normal text-accent">({messages.transform.plannedInput})</span> : null}
                                     </span>
                                     <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
-                                      {dataset.status === "planned"
+                                      {dataset.status === "connected"
                                         ? messages.transform.schemaOnlyHint
                                         : dataset.origin?.connection_name
                                           ? `${dataset.origin.connection_name} · ${dataset.origin.table_name}`

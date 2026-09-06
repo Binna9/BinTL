@@ -29,40 +29,25 @@ export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
     const dataset = slot.dataset as unknown as Dataset;
     return dataset;
   }
-  if (slot.mode === "planned" && slot.planned) {
+  if (slot.mode === "connected" && slot.dataset_id) {
     const raw = slot.dataset as Dataset | undefined;
-    if (!raw) {
-      return {
-        id: slot.planned.dataset_id,
-        kind: slot.planned.kind ?? (slot.source_chip_kind === "transform" ? "transform" : "database"),
-        filename: slot.source_chip_name || "planned input",
-        stored_path: "",
-        size_bytes: null,
-        delimiter: ",",
-        has_header: true,
-        columns: normalizeSlotColumns(slot.planned.columns),
-        row_count: null,
-        inspected_at: null,
-        created_at: "",
-        updated_at: "",
-        workspace_id: "",
-        producer_chip_run_id: null,
-        status: "planned",
-        source_chip_id: slot.planned.source_chip_id,
-        consumer_chip_id: slot.planned.consumer_chip_id,
-        available: false,
-        origin: null,
-      };
-    }
+    if (!raw) return {
+      id: slot.dataset_id,
+      kind: slot.source_chip_kind === "transform" ? "transform" : "database",
+      filename: slot.source_chip_name || "input",
+      stored_path: "", size_bytes: null, delimiter: ",", has_header: true,
+      columns: normalizeSlotColumns(slot.columns), row_count: null, inspected_at: null,
+      created_at: "", updated_at: "", workspace_id: "", producer_chip_run_id: null,
+      status: "connected", source_chip_id: slot.source_chip_id, consumer_chip_id: undefined,
+      available: false, origin: null,
+    };
     return {
       ...raw,
-      filename: slot.source_chip_kind === "transform" && slot.source_chip_name
-        ? slot.source_chip_name
-        : raw.filename,
-      status: raw.status ?? "planned",
+      filename: slot.source_chip_name || raw.filename,
+      status: raw.status ?? "connected",
       columns: raw.columns?.length
         ? raw.columns
-        : normalizeSlotColumns(slot.planned.columns),
+        : normalizeSlotColumns(slot.columns),
       available: false,
     };
   }
