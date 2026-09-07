@@ -385,8 +385,12 @@ pub(super) async fn extract_logs(
     access::require_extract(&state.store, &user, &id).await?;
     let text = state
         .store
-        .read_process_log(storage::LOG_EXTRACTS, &id)
-        .await?;
+        .list_logs(&id)
+        .await?
+        .into_iter()
+        .map(|log| format!("{}  {:<5}  {}", log.ts, log.level, log.message))
+        .collect::<Vec<_>>()
+        .join("\n");
     Ok(Json(json!({ "id": id, "text": text })))
 }
 

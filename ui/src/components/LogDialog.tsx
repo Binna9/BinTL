@@ -8,7 +8,7 @@ export function LogDialog({
   title,
   text,
   icon,
-  defaultOffset = { x: 112, y: 0 },
+  defaultOffset = { x: 0, y: 0 },
   onClose,
 }: {
   open: boolean;

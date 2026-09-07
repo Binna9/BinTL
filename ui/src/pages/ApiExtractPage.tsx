@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { BookmarkPlus, Braces, Clock3, Code2, Eye, FileDown, FileJson2, Globe2, ListFilter, Plus, RotateCcw, Settings2, Trash2 } from "lucide-react";
+import { ArrowLeft, BookmarkPlus, Braces, Clock3, Code2, Eye, FileDown, FileJson2, Globe2, ListFilter, Plus, RotateCcw, Settings2, Trash2 } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   columnWidthsForContent,
   DataGrid,
@@ -124,6 +125,9 @@ function RequestSection({
 
 export function ApiExtractPage() {
   const { messages } = useLanguage();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const returnWorkspaceId = (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
   const { connections } = useConnections();
   const httpConnections = useMemo(
     () => connections.filter((connection) => connection.driver === "http"),
@@ -380,6 +384,17 @@ export function ApiExtractPage() {
         description={messages.apiExtract.description}
         actions={
           <>
+            {returnWorkspaceId ? (
+              <Button
+                type="button"
+                variant="quiet"
+                className="gap-2"
+                onClick={() => navigate(`/workspace/${returnWorkspaceId}`, { state: location.state })}
+              >
+                <ArrowLeft className="size-3.5" aria-hidden="true" />
+                {messages.load.returnToWorkspace}
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="secondary"

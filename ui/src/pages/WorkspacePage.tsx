@@ -14,12 +14,12 @@ import {
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
-import { FormField } from "@/components/ui/form-field";
 import { WorkspaceManageDialog } from "@/components/workspace/WorkspaceManageDialog";
 import { WorkspaceTreePicker } from "@/components/workspace/WorkspaceTreePicker";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { nextSequencedChipName } from "@/lib/chipSequence";
+import { parseExtractConfig } from "@/lib/chipDetail";
 import { layout } from "@/lib/layout";
 import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { datasetApi } from "@/services/transform/datasetApi";
@@ -228,11 +228,15 @@ export function WorkspacePage() {
     messages.workspace.topLevel,
   );
   const workspaceName = selectedWorkspace?.name ?? messages.workspace.selectWorkspace;
-  const infoInputFileName = infoChip
+  const infoInputChip = infoChip
     ? chips.find((chip) => chip.id === edges.find(
         (edge) => edge.kind === "data" && edge.to_chip_id === infoChip.id,
-      )?.from_chip_id)?.output?.filename
+      )?.from_chip_id)
     : undefined;
+  const infoInputFileName = infoInputChip?.output?.filename
+    || (infoInputChip?.kind === "extract"
+      ? parseExtractConfig(infoInputChip.config)?.outputFilename
+      : undefined);
   const hasActiveRun = runs.some((run) => ACTIVE_STATUSES.has(run.status));
   const canvasWorld = useMemo(() => ({ width: CANVAS_W, height: CANVAS_H }), []);
 
@@ -416,10 +420,28 @@ export function WorkspacePage() {
       ...edges.filter((edge) => !dropIds.has(edge.id)),
       created,
     ];
+    const nextChips = kind === "data" && (to.kind === "transform" || to.kind === "load")
+      ? chips.map((chip) => chip.id === toId
+        ? {
+          ...chip,
+          config: {
+            ...chip.config,
+            // Until the upstream chip runs there is no physical dataset id.
+            // Keep that internal contract out of user-facing chip state; the
+            // edge and upstream filename already describe the planned input.
+            input_dataset_id: from.output?.dataset_id || undefined,
+          },
+        }
+        : chip)
+      : chips;
+    if (nextChips !== chips) {
+      setChips(nextChips);
+      chipsRef.current = nextChips;
+    }
     setEdges(nextEdges);
     setSelectedEdgeIds([created.id]);
     setSelectedChipIds([]);
-    markDirty(chips, positionsRef.current, nextEdges);
+    markDirty(nextChips, positionsRef.current, nextEdges);
   }
 
   useEffect(() => {
@@ -697,13 +719,11 @@ export function WorkspacePage() {
       toastError(messages.workspace.saveFirst);
       return;
     }
-    const order = chipRunOrder(chips, edges);
-    if (!order) {
+    if (!chipRunOrder(chips, edges)) {
       toastError(messages.workspace.runCycleError);
       return;
     }
-    const runnable = order;
-    if (runnable.length === 0) return;
+    if (chips.filter((chip) => chip.active).length === 0) return;
     const confirmed = await showConfirm(
       messages.workspace.runAllConfirmTitle,
       messages.workspace.runAllConfirmMessage,
@@ -712,11 +732,10 @@ export function WorkspacePage() {
     if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
     setBusy(true);
     try {
-      for (const chip of runnable) {
-        if (currentWorkspaceRef.current !== workspaceId) return;
-        await chipApi.run(chip.id, { workspace_id: workspaceId });
-        await waitForChipRun(chip.id);
-      }
+      await chipApi.runWorkspace(workspaceId);
+      if (currentWorkspaceRef.current !== workspaceId) return;
+      const response = await chipApi.listRuns(workspaceId, { silent: true });
+      setRuns(response.runs);
       toastSuccess(messages.workspace.runQueued);
     } catch (reason) {
       toastError(messages.workspace.runChipError, reason);
@@ -2310,6 +2329,14 @@ export function WorkspacePage() {
       <ChipPlaceDialog
         open={Boolean(pendingPlace)}
         kind={pendingPlace?.kind ?? lastPlaceKindRef.current}
+        workspaceId={workspaceId}
+        workspaceReturnState={workspaceId ? {
+          returnWorkspaceId: workspaceId,
+          canvasDraft: {
+            workspaceId,
+            ...cloneCanvas(chips, positions, edges),
+          },
+        } : undefined}
         catalogChips={catalogChips}
         datasets={datasets}
         canvasChipIds={new Set(chips.map((chip) => chip.id))}
@@ -2414,8 +2441,10 @@ export function WorkspacePage() {
       <AppDialog
         open={Boolean(propsChip)}
         title={messages.workspace.chipPropertiesTitle}
+        icon={<Pencil className="size-4 text-accent" aria-hidden="true" />}
         onClose={() => setPropsChip(null)}
-        className="w-[min(24rem,92vw)]"
+        className="w-[min(30rem,92vw)]"
+        minWidth={380}
         footer={
           <>
             <Button type="button" variant="quiet" disabled={propsBusy} onClick={() => setPropsChip(null)}>
@@ -2432,15 +2461,71 @@ export function WorkspacePage() {
           </>
         }
       >
-        <div className="p-1">
-          <FormField label={messages.workspace.chipName}>
-            <input
-              className="field-control text-sm"
-              value={propsName}
-              onChange={(event) => setPropsName(event.target.value)}
-              autoFocus
-            />
-          </FormField>
+        <div className="relative isolate overflow-hidden p-5">
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-accent-subtle/70 to-transparent"
+            aria-hidden="true"
+          />
+          <div className="relative space-y-5">
+            <div className="flex items-center gap-3 rounded-2xl border border-border/80 bg-surface/90 p-3.5 shadow-sm ring-1 ring-white/50 dark:ring-white/5">
+              <span className={cn(
+                "grid size-11 shrink-0 place-items-center rounded-xl ring-1 ring-inset",
+                propsChip?.kind === "transform"
+                  ? "bg-success/10 text-success ring-success/20"
+                  : propsChip?.kind === "load"
+                    ? "bg-warning/10 text-warning ring-warning/20"
+                    : propsChip?.kind === "validation"
+                      ? "bg-violet-500/10 text-violet-600 ring-violet-500/20 dark:text-violet-400"
+                      : "bg-accent-subtle text-accent ring-accent/20",
+              )}>
+                {propsChip?.kind === "transform" ? <Workflow className="size-5" aria-hidden="true" />
+                  : propsChip?.kind === "load" ? <FileOutput className="size-5" aria-hidden="true" />
+                    : propsChip?.kind === "validation" ? <ShieldCheck className="size-5" aria-hidden="true" />
+                      : <DatabaseZap className="size-5" aria-hidden="true" />}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-text-tertiary">
+                  {propsChip ? chipKindLabel(propsChip.kind, messages) : ""}
+                </p>
+                <p className="mt-1 truncate text-sm font-semibold text-text">{propsChip?.name}</p>
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-end justify-between gap-3">
+                <div>
+                  <label htmlFor="workspace-chip-name" className="text-xs font-semibold text-text">
+                    {messages.workspace.chipName}
+                  </label>
+                  <p className="mt-1 text-[11px] leading-4 text-text-tertiary">
+                    {messages.workspace.chipPropertiesHint}
+                  </p>
+                </div>
+                <span className="shrink-0 font-mono text-[10px] tabular-nums text-text-tertiary">
+                  {propsName.length}
+                </span>
+              </div>
+              <div className="group flex h-12 items-center overflow-hidden rounded-xl border border-border-strong bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/10">
+                <span className="grid h-full w-11 shrink-0 place-items-center border-r border-border bg-raised text-text-tertiary transition-colors group-focus-within:text-accent">
+                  <Pencil className="size-4" aria-hidden="true" />
+                </span>
+                <input
+                  id="workspace-chip-name"
+                  className="min-w-0 flex-1 bg-transparent px-3.5 text-[15px] font-semibold text-text outline-none placeholder:text-text-tertiary"
+                  value={propsName}
+                  onChange={(event) => setPropsName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && propsName.trim() && !propsBusy) {
+                      event.preventDefault();
+                      void saveChipProperties();
+                    }
+                  }}
+                  autoFocus
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </AppDialog>
 

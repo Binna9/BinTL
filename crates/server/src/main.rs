@@ -8,9 +8,11 @@ mod auth;
 mod chip;
 mod config;
 mod error;
+mod execution_error;
 mod extract;
 mod load;
 mod planned_input;
+mod schedule;
 mod search;
 mod state;
 mod transform;
@@ -86,14 +88,21 @@ async fn main() {
                     ExecutionTask::Job(id) => {
                         if let Err(error) = jobs::execute(&store, &id).await {
                             tracing::error!(execution_step_id = id, %error, "transform execution failed");
-                            let _ = store.append_log(&id, "error", &error).await;
-                            let _ = store.fail_chip_run_for_job(&id, &error).await;
+                            execution_error::record_transform_job_failure(&store, &id, &error)
+                                .await;
                         }
                     }
                     ExecutionTask::Chip(id) => {
                         if let Err(error) = chip::run_one(&store, &tx, &id).await {
                             tracing::error!(execution_step_id = id, %error, "chip execution failed");
-                            let _ = store.set_chip_run_failed(&id, &error).await;
+                            let kind = store
+                                .get_chip_run(&id)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|run| run.kind)
+                                .unwrap_or_else(|| "internal".into());
+                            execution_error::record_chip_failure(&store, &id, &kind, &error).await;
                         }
                     }
                 }
@@ -106,6 +115,7 @@ async fn main() {
         execution_tx,
         config: Arc::new(config),
     };
+    tokio::spawn(schedule::scheduler_loop(state.clone()));
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list([

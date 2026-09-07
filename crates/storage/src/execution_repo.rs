@@ -230,6 +230,8 @@ impl Store {
         if let Some(raw) = context_json {
             require_config_json(raw)?;
         }
+        let message: String = message.chars().take(8 * 1024).collect();
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO execution_logs
              (execution_step_id, sequence, level, event_type, message, context_json, created_at)
@@ -243,8 +245,17 @@ impl Store {
         .bind(context_json)
         .bind(now_rfc3339())
         .bind(step_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "DELETE FROM execution_logs WHERE execution_step_id = ? AND sequence <=
+             COALESCE((SELECT MAX(sequence) FROM execution_logs WHERE execution_step_id = ?), 0) - 500",
+        )
+        .bind(step_id)
+        .bind(step_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 }

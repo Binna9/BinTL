@@ -154,7 +154,11 @@ impl Store {
                SELECT id FROM workspace_chips WHERE chip_id = ?
              ) AND port_name = 'out'",
         )
-        .bind(chip_slot::display_filename(&transform.name, "transform", ","))
+        .bind(chip_slot::display_filename(
+            &transform.name,
+            "transform",
+            ",",
+        ))
         .bind(chip.revision + 1)
         .bind(now_rfc3339())
         .bind(chip_id)

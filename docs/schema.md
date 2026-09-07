@@ -22,6 +22,8 @@
 | 검증 | `validation_rules`, `validation_results` | 재사용 규칙과 실행 결과 |
 | 작업 | `chips` | 종류별 ETL 정의를 참조하는 칩 |
 | 실행 | `executions`, `execution_steps`, `execution_inputs`, `execution_outputs`, `execution_logs` | 통합 실행과 데이터 계보 |
+
+칩 실행 로그의 단일 원본은 `execution_logs`다. 각 로그는 `execution_step_id`와 순번으로 정렬되며, 실행당 최근 500개 이벤트와 칩당 최근 50개 완료 실행만 유지한다. 자세한 정책은 [logging.md](logging.md)를 참고한다.
 | 데이터 | `data_files`, `data_schemas` | 실제 파일과 컬럼 스키마 |
 | 검색 | `search_documents`, `search_recent_queries` | 검색 인덱스와 최근 검색어 |
 

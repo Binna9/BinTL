@@ -33,6 +33,7 @@ export function LoadPage() {
   const t = messages.load;
   const navigate = useNavigate();
   const location = useLocation();
+  const returnWorkspaceId = (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
   const { workspaceId, editorChipId, id: routeId } = useParams<{ workspaceId: string; editorChipId: string; id: string }>();
   const workspaceMode = Boolean(workspaceId && editorChipId);
   const [loads, setLoads] = useState<LoadDefinition[]>([]);
@@ -83,8 +84,9 @@ export function LoadPage() {
   }
 
   function returnToWorkspace() {
-    if (!workspaceId) return;
-    navigate(`/workspace/${workspaceId}`, { state: location.state });
+    const targetWorkspaceId = workspaceId ?? returnWorkspaceId;
+    if (!targetWorkspaceId) return;
+    navigate(`/workspace/${targetWorkspaceId}`, { state: location.state });
   }
 
   function edit(load: LoadDefinition) {
@@ -138,11 +140,6 @@ export function LoadPage() {
         });
         toastSuccess(t.chipRegistered);
       }
-      if (workspaceMode && workspaceId) {
-        navigate(`/workspace/${workspaceId}`, { state: location.state });
-        return;
-      }
-      navigate("/chips");
     } catch (error) {
       if (!workspaceMode && createdDefinitionId) {
         await loadApi.remove(createdDefinitionId).catch(() => undefined);
@@ -259,7 +256,7 @@ export function LoadPage() {
         description={t.description}
         actions={
           <>
-            {workspaceMode ? (
+            {(workspaceMode || returnWorkspaceId) ? (
               <>
                 <Button variant="quiet" className="gap-2" disabled={busy} onClick={returnToWorkspace}>
                   <ArrowLeft className="size-3.5" aria-hidden="true" />

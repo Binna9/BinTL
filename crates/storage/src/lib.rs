@@ -13,6 +13,7 @@ mod load_repo;
 mod models;
 mod password;
 mod process_log;
+mod schedule_repo;
 mod search;
 mod secret;
 mod transform_repo;

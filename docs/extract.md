@@ -67,7 +67,7 @@
 
 상태: `queued` → `running` → `succeeded` | `failed`
 
-진행 로그: `data/logs/extracts/{id}.log`. 1행, 이후 1만 행마다 기록. `running` 중 `row_count`를 2초마다 갱신해 `/extracts` 목록에서 쓰는 중 행 수를 보여준다. `GET /api/extracts/:id/logs`로 파일 내용을 읽을 수 있다.
+진행 로그는 다른 칩과 동일하게 SQLite `execution_logs`에 저장한다. 실행당 최대 500개 이벤트, 칩당 완료 실행 최대 50개를 유지한다. `running` 중 `row_count`를 2초마다 갱신해 `/extracts` 목록에서 쓰는 중 행 수를 보여준다. `GET /api/extracts/:id/logs`로 해당 실행 로그를 읽을 수 있다.
 
 파일 이름:
 

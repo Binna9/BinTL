@@ -160,17 +160,15 @@ impl Store {
         level: &str,
         message: &str,
     ) -> Result<(), StorageError> {
-        sqlx::query("INSERT INTO execution_logs (execution_step_id, sequence, level, event_type, message, created_at)
-                     SELECT ?, COALESCE(MAX(sequence), 0) + 1, ?, 'message', ?, ? FROM execution_logs WHERE execution_step_id = ?")
-            .bind(job_id)
-            .bind(level)
-            .bind(message)
-            .bind(now_rfc3339())
-            .bind(job_id)
-            .execute(&self.pool)
+        self.append_execution_log(job_id, level, "job", message, None)
             .await?;
-        if let Ok(log) = ProcessLog::create(&self.data_dir, LOG_JOBS, job_id) {
-            log.write(level, "job", message);
+        // Transform chips execute through a child job. Mirror the event onto the
+        // parent chip run so every chip kind is queried through the same run id.
+        if let Some(link) = self.linked_chip_run_for_job(job_id).await? {
+            if link.run_id != job_id {
+                self.append_execution_log(&link.run_id, level, "transform", message, None)
+                    .await?;
+            }
         }
         Ok(())
     }

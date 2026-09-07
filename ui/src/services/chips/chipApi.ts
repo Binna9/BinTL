@@ -9,6 +9,7 @@ import type {
   RegisterChipRequest,
   RunChipRequest,
   RunChipResponse,
+  RunWorkspaceResponse,
   SaveChipRequest,
   UpdateChipRequest,
 } from "@/types/chip";
@@ -39,6 +40,10 @@ export const chipApi = {
     httpRequest<RunChipResponse>(`/api/chips/${id}/run`, {
       method: "POST",
       body: JSON.stringify(request),
+    }),
+  runWorkspace: (workspaceId: string) =>
+    httpRequest<RunWorkspaceResponse>(`/api/workspaces/${workspaceId}/run`, {
+      method: "POST",
     }),
   listRuns: (workspaceId: string, init?: HttpRequestInit) =>
     httpRequest<ChipRunListResponse>(`/api/workspaces/${workspaceId}/runs`, init),

@@ -5,14 +5,19 @@ export function nextSequencedChipName(
   formatName: (index: number) => string,
   include: (chip: Chip) => boolean,
 ): string {
-  const marker = "__INDEX__";
-  const template = formatName(0).replace(/0(?!.*0)/, marker);
-  const [prefix = "", suffix = ""] = template.split(marker);
+  const template = formatName(0);
+  const placeholder = template.match(/^(.*?)(0+)(\D*)$/);
+  const prefix = placeholder?.[1] ?? template;
+  const suffix = placeholder?.[3] ?? "";
+  const normalizedPrefix = prefix.replace(/[\s_-]+/g, "").toLocaleLowerCase();
   let highest = 0;
   for (const chip of chips) {
-    if (!include(chip) || !chip.name.startsWith(prefix) || !chip.name.endsWith(suffix)) continue;
-    const numberPart = chip.name.slice(prefix.length, suffix ? -suffix.length : undefined).trim();
-    if (/^\d+$/.test(numberPart)) highest = Math.max(highest, Number(numberPart));
+    if (!include(chip)) continue;
+    const candidate = chip.name.match(/^(.*?)(\d+)(\D*)$/);
+    if (!candidate) continue;
+    const candidatePrefix = candidate[1].replace(/[\s_-]+/g, "").toLocaleLowerCase();
+    if (candidatePrefix !== normalizedPrefix || candidate[3] !== suffix) continue;
+    highest = Math.max(highest, Number(candidate[2]));
   }
   return formatName(highest + 1);
 }

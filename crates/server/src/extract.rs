@@ -5,7 +5,7 @@ use connectors::{
     extract_http, extract_query, extract_table, parse_delimiter, parse_http_spec, with_database,
     ExtractOptions,
 };
-use storage::{chip_slot, ProcessLog, Store, LOG_EXTRACTS};
+use storage::{chip_slot, ProcessLog, Store};
 
 pub fn spawn(store: Store, id: String) {
     tokio::spawn(async move {
@@ -28,7 +28,12 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
         .set_extract_running(id)
         .await
         .map_err(|e| e.to_string())?;
-    let log = ProcessLog::create(&store.data_dir, LOG_EXTRACTS, id).ok();
+    // Execution logs are stored in SQLite. Keep the legacy callback shape for
+    // extraction progress without creating new per-run files.
+    let log: Option<ProcessLog> = None;
+    let _ = store
+        .append_execution_log(id, "info", "extract_started", "extract started", None)
+        .await;
     if let Some(log) = &log {
         let source = if row.kind == "api" {
             row.sql_text
@@ -59,8 +64,14 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
             log.write("error", "failed", &err);
         }
         let _ = store.set_extract_failed(id, &err).await;
+        let _ = store
+            .append_execution_log(id, "error", "extract_failed", &err, None)
+            .await;
         return Err(err);
     }
+    let _ = store
+        .append_execution_log(id, "info", "extract_succeeded", "extract succeeded", None)
+        .await;
     Ok(())
 }
 

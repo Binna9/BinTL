@@ -130,6 +130,18 @@ impl Store {
                 .bind(&id).bind(file_id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        // Keep execution history bounded per chip. Logs and validation results
+        // cascade with their execution step.
+        sqlx::query(
+            "DELETE FROM executions WHERE id IN (
+               SELECT s.execution_id FROM execution_steps s
+               WHERE s.chip_id = ? AND s.status IN ('succeeded', 'failed', 'canceled')
+               ORDER BY s.queued_at DESC LIMIT -1 OFFSET 50
+             )",
+        )
+        .bind(chip_id)
+        .execute(&self.pool)
+        .await?;
         if result.rows_affected() == 0 {
             return Err(StorageError::Invalid(
                 "chip changed before the run could be queued".into(),
@@ -510,11 +522,22 @@ impl Store {
     }
 
     pub async fn set_chip_run_failed(&self, id: &str, error: &str) -> Result<(), StorageError> {
+        self.set_chip_run_failed_with_code(id, "INTERNAL_UNCLASSIFIED", error)
+            .await
+    }
+
+    pub async fn set_chip_run_failed_with_code(
+        &self,
+        id: &str,
+        error_code: &str,
+        error: &str,
+    ) -> Result<(), StorageError> {
         let result = sqlx::query(
             "UPDATE execution_steps
-             SET status = 'failed', error_message = ?, finished_at = ?
-             WHERE id = ? AND status IN ('queued', 'running')",
+             SET status = 'failed', error_code = ?, error_message = ?, finished_at = COALESCE(finished_at, ?)
+             WHERE id = ? AND status IN ('queued', 'running', 'failed')",
         )
+        .bind(error_code)
         .bind(error)
         .bind(now_rfc3339())
         .bind(id)
@@ -522,7 +545,7 @@ impl Store {
         .await?;
         if result.rows_affected() == 0 {
             return Err(StorageError::Invalid(
-                "only a queued or running chip run can fail".into(),
+                "chip run cannot be marked failed".into(),
             ));
         }
         Ok(())
@@ -540,13 +563,18 @@ impl Store {
         let result = sqlx::query(
             "UPDATE execution_steps
              SET status = ?, result_json = ?, input_rows = ?, output_rows = ?,
-                 error_message = ?, finished_at = ?
+                 error_code = ?, error_message = ?, finished_at = ?
              WHERE id = ? AND status = 'running'",
         )
         .bind(if passed { "succeeded" } else { "failed" })
         .bind(result_json)
         .bind(source_rows)
         .bind(target_rows)
+        .bind(if passed {
+            None
+        } else {
+            Some("VALIDATION_DIFFERENCE_FOUND")
+        })
         .bind(if passed {
             None
         } else {

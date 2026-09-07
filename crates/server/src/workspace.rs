@@ -219,7 +219,7 @@ async fn save_workspace(
     crate::planned_input::sync_workspace_planned_inputs(&state, &id).await?;
     let mut chips = Vec::with_capacity(saved.len());
     for chip in &saved {
-        chips.push(crate::chip::chip_json(&state.store, chip).await?);
+        chips.push(crate::chip::chip_json_for_workspace(&state.store, chip, &id).await?);
     }
     let edges = saved_edges.iter().map(edge_json).collect::<Vec<_>>();
     Ok(Json(json!({

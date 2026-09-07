@@ -219,21 +219,33 @@ impl Store {
         job_id: &str,
         error: &str,
     ) -> Result<(), StorageError> {
+        self.fail_chip_run_for_job_with_code(job_id, "TRANSFORM_ENGINE_FAILED", error)
+            .await
+    }
+
+    pub async fn fail_chip_run_for_job_with_code(
+        &self,
+        job_id: &str,
+        error_code: &str,
+        error: &str,
+    ) -> Result<(), StorageError> {
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "UPDATE execution_steps SET status = 'failed', finished_at = ?, error_message = ? WHERE id = ?",
+            "UPDATE execution_steps SET status = 'failed', finished_at = ?, error_code = ?, error_message = ? WHERE id = ?",
         )
         .bind(&now)
+        .bind(error_code)
         .bind(error)
         .bind(job_id)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
             "UPDATE execution_steps
-             SET status = 'failed', error_message = ?, finished_at = ?
+             SET status = 'failed', error_code = ?, error_message = ?, finished_at = ?
              WHERE json_extract(result_json, '$.child_step_id') = ? AND status IN ('queued', 'running')",
         )
+        .bind(error_code)
         .bind(error)
         .bind(&now)
         .bind(job_id)

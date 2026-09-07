@@ -829,6 +829,8 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
 export function ChipPlaceDialog({
   open,
   kind,
+  workspaceId,
+  workspaceReturnState,
   catalogChips,
   datasets,
   canvasChipIds,
@@ -846,6 +848,8 @@ export function ChipPlaceDialog({
 }: {
   open: boolean;
   kind: ChipPlaceKind;
+  workspaceId?: string;
+  workspaceReturnState?: unknown;
   catalogChips: Chip[];
   datasets: Dataset[];
   canvasChipIds: Set<string>;
@@ -870,12 +874,12 @@ export function ChipPlaceDialog({
 
   function goDbRegister() {
     onClose();
-    navigate("/db");
+    navigate("/db", { state: workspaceReturnState ?? { returnWorkspaceId: workspaceId } });
   }
 
   function goApiRegister() {
     onClose();
-    navigate("/extract/api");
+    navigate("/extract/api", { state: workspaceReturnState ?? { returnWorkspaceId: workspaceId } });
   }
 
   return (
@@ -929,7 +933,10 @@ export function ChipPlaceDialog({
           onClose={onClose}
           onPlace={onPlaceCatalog}
           onPlaceEmpty={onPlaceNewLoad}
-          onRegister={() => { onClose(); navigate("/load"); }}
+          onRegister={() => {
+            onClose();
+            navigate("/load", { state: workspaceReturnState ?? { returnWorkspaceId: workspaceId } });
+          }}
           dragHandleRef={dragHandleRef}
         />
       ) : (

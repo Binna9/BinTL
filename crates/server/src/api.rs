@@ -91,6 +91,7 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
         .merge(crate::validation::routes())
         .merge(crate::users::routes())
         .merge(crate::search::routes())
+        .merge(crate::schedule::routes())
         .layer(DefaultBodyLimit::max(max_upload_bytes))
 }
 

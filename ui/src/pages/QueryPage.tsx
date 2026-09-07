@@ -6,8 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { BookmarkPlus, FileDown, ScrollText, Play, RefreshCw, Table2 } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
+import { ArrowLeft, BookmarkPlus, FileDown, ScrollText, Play, RefreshCw, Table2 } from "lucide-react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { CatalogTree } from "@/components/connections/CatalogTree";
 import { ConnectionInfoPanel } from "@/components/query/ConnectionInfoPanel";
 import {
@@ -106,6 +106,9 @@ function highlightMatch(text: string, query: string): ReactNode {
 
 export function QueryPage() {
   const { messages } = useLanguage();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const returnWorkspaceId = (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
   const [params] = useSearchParams();
   const editorRef = useRef<SqlEditorHandle>(null);
   const sqlRef = useRef("");
@@ -568,6 +571,17 @@ export function QueryPage() {
         eyebrow={messages.query.eyebrow}
         title={messages.query.title}
         description={messages.query.description}
+        actions={returnWorkspaceId ? (
+          <Button
+            type="button"
+            variant="quiet"
+            className="gap-2"
+            onClick={() => navigate(`/workspace/${returnWorkspaceId}`, { state: location.state })}
+          >
+            <ArrowLeft className="size-3.5" aria-hidden="true" />
+            {messages.load.returnToWorkspace}
+          </Button>
+        ) : undefined}
       />
 
       <Panel tall className="overflow-hidden">

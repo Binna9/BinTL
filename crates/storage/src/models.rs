@@ -53,6 +53,29 @@ pub struct ExecutionStepRow {
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct WorkspaceScheduleRow {
+    pub id: String,
+    pub workspace_id: String,
+    pub owner_user_id: String,
+    pub name: String,
+    pub schedule_type: String,
+    pub interval_value: i64,
+    pub interval_unit: String,
+    pub second: Option<i64>,
+    pub hour: Option<i64>,
+    pub minute: Option<i64>,
+    pub day_of_month: Option<i64>,
+    pub month_of_year: Option<i64>,
+    pub timezone: String,
+    pub enabled: i64,
+    pub next_run_at: String,
+    pub last_run_at: Option<String>,
+    pub last_status: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct DataFileRow {
     pub id: String,
     pub workspace_id: String,
@@ -305,6 +328,7 @@ pub struct ChipRunRow {
     pub output_dataset_id: Option<String>,
     pub legacy_extract_id: Option<String>,
     pub legacy_job_id: Option<String>,
+    pub error_code: Option<String>,
     pub error_message: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
@@ -415,7 +439,7 @@ pub(crate) const CHIP_RUN_COLS: &str =
         (SELECT o.data_file_id FROM execution_outputs o WHERE o.execution_step_id = s.id LIMIT 1) AS output_dataset_id,
         CASE WHEN s.kind = 'extract' THEN s.id END AS legacy_extract_id,
         CASE WHEN s.kind = 'transform' THEN s.id END AS legacy_job_id,
-        s.error_message, s.queued_at AS created_at, s.started_at, s.finished_at";
+        s.error_code, s.error_message, s.queued_at AS created_at, s.started_at, s.finished_at";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct JobLogRow {

@@ -363,5 +363,8 @@ export function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
 
 export function chipFixedInputId(chip: Chip): string {
   const value = chip.config.input_dataset_id;
-  return typeof value === "string" ? value.trim() : "";
+  if (typeof value !== "string") return "";
+  const inputId = value.trim();
+  // Contract ids are graph-derived placeholders, not user-selected fixed inputs.
+  return inputId.startsWith("contract:") ? "" : inputId;
 }

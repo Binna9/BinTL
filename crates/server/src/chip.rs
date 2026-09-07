@@ -9,6 +9,7 @@ use connectors::{
 use engine::{Engine, PolarsEngine, TransformSpec, ValidationSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 use storage::{
     ChipRow, ChipRunRow, RegisterExtractChip, RegisterLoadChip, RegisterTransformChip, Store,
@@ -31,6 +32,7 @@ pub fn routes() -> Router<AppState> {
             get(get_chip).patch(update_chip).delete(delete_chip),
         )
         .route("/api/chips/{id}/run", post(run_chip))
+        .route("/api/workspaces/{id}/run", post(run_workspace))
         .route("/api/workspaces/{id}/runs", get(list_runs))
         .route("/api/chip-runs/{id}", get(get_run))
         .route("/api/chip-runs/{id}/logs", get(get_run_logs))
@@ -695,6 +697,99 @@ async fn run_chip(
     })))
 }
 
+fn workspace_run_order(
+    chips: Vec<ChipRow>,
+    edges: &[storage::ChipEdgeRow],
+) -> Result<Vec<ChipRow>, AppError> {
+    let chips = chips
+        .into_iter()
+        .filter(|chip| chip.active != 0)
+        .collect::<Vec<_>>();
+    let mut incoming = chips
+        .iter()
+        .map(|chip| (chip.id.clone(), 0usize))
+        .collect::<HashMap<_, _>>();
+    let mut outgoing = chips
+        .iter()
+        .map(|chip| (chip.id.clone(), Vec::<String>::new()))
+        .collect::<HashMap<_, _>>();
+    for edge in edges {
+        if edge.kind == "on_error"
+            || !incoming.contains_key(&edge.from_chip_id)
+            || !incoming.contains_key(&edge.to_chip_id)
+        {
+            continue;
+        }
+        outgoing
+            .entry(edge.from_chip_id.clone())
+            .or_default()
+            .push(edge.to_chip_id.clone());
+        *incoming.entry(edge.to_chip_id.clone()).or_default() += 1;
+    }
+    let mut ready = chips
+        .iter()
+        .filter(|chip| incoming.get(&chip.id) == Some(&0))
+        .map(|chip| chip.id.clone())
+        .collect::<VecDeque<_>>();
+    let by_id = chips
+        .into_iter()
+        .map(|chip| (chip.id.clone(), chip))
+        .collect::<HashMap<_, _>>();
+    let mut ordered = Vec::with_capacity(by_id.len());
+    while let Some(id) = ready.pop_front() {
+        if let Some(chip) = by_id.get(&id) {
+            ordered.push(chip.clone());
+        }
+        for next in outgoing.get(&id).into_iter().flatten() {
+            let left = incoming.get(next).copied().unwrap_or(1).saturating_sub(1);
+            incoming.insert(next.clone(), left);
+            if left == 0 {
+                ready.push_back(next.clone());
+            }
+        }
+    }
+    if ordered.len() != by_id.len() {
+        return Err(AppError::conflict("workspace chip graph contains a cycle"));
+    }
+    Ok(ordered)
+}
+
+async fn run_workspace(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(workspace_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    access::require_workspace(&state.store, &user, &workspace_id).await?;
+    let run_ids = run_workspace_internal(&state, &user, &workspace_id).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "status": "succeeded",
+        "workspace_id": workspace_id,
+        "run_ids": run_ids,
+    })))
+}
+
+pub(crate) async fn run_workspace_internal(
+    state: &AppState,
+    user: &CurrentUser,
+    workspace_id: &str,
+) -> Result<Vec<String>, AppError> {
+    let chips = state.store.list_chips(&workspace_id).await?;
+    let edges = state.store.list_chip_edges(&workspace_id).await?;
+    let ordered = workspace_run_order(chips, &edges)?;
+    if ordered.is_empty() {
+        return Err(AppError::bad("workspace has no active chips"));
+    }
+
+    let mut run_ids = Vec::with_capacity(ordered.len());
+    for chip in ordered {
+        let run = queue_chip_run(&state, &user, &chip, &workspace_id, None).await?;
+        run_ids.push(run.id.clone());
+        wait_for_chip_run(&state, &run.id).await?;
+    }
+    Ok(run_ids)
+}
+
 async fn list_runs(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -736,16 +831,9 @@ async fn get_run_logs(
         .await?
         .ok_or_else(|| AppError::not_found("chip run not found"))?;
     access::require_workspace(&state.store, &user, &run.workspace_id).await?;
-    let text = if let Some(extract_id) = run.legacy_extract_id {
-        state
-            .store
-            .read_process_log(storage::LOG_EXTRACTS, &extract_id)
-            .await?
-    } else if let Some(job_id) = run.legacy_job_id {
-        state
-            .store
-            .list_logs(&job_id)
-            .await?
+    let stored_logs = state.store.list_logs(&run.id).await?;
+    let text = if !stored_logs.is_empty() {
+        stored_logs
             .into_iter()
             .map(|log| format!("{}  {:<5}  {}", log.ts, log.level, log.message))
             .collect::<Vec<_>>()
@@ -867,13 +955,34 @@ pub(crate) async fn chip_json(store: &Store, row: &ChipRow) -> Result<Value, App
     }))
 }
 
-async fn chip_json_for_workspace(
+pub(crate) async fn chip_json_for_workspace(
     store: &Store,
     row: &ChipRow,
     workspace_id: &str,
 ) -> Result<Value, AppError> {
     let mut value = chip_json(store, row).await?;
     value["output"] = chip_output_json(store, row, workspace_id).await?;
+
+    // A data edge is authoritative for transform/load input. Reflect it in the
+    // workspace payload immediately so the canvas never keeps showing a stale
+    // fixed dataset until the editor happens to be opened and saved.
+    if row.kind == "transform" || row.kind == "load" {
+        let incoming = store
+            .list_chip_edges(workspace_id)
+            .await?
+            .into_iter()
+            .find(|edge| edge.kind == "data" && edge.to_chip_id == row.id);
+        if let Some(edge) = incoming {
+            let dataset_id = match store
+                .latest_chip_output_for_workspace(workspace_id, &edge.from_chip_id)
+                .await?
+            {
+                Some(id) => id,
+                None => format!("contract:{workspace_id}:{}", row.id),
+            };
+            value["config"]["input_dataset_id"] = json!(dataset_id);
+        }
+    }
 
     // For load chips, include input dataset info when available so UI popups can show it.
     if row.kind == "load" {
@@ -1049,6 +1158,7 @@ fn chip_run_json(row: &ChipRunRow) -> Result<Value, AppError> {
         "output_dataset_id": row.output_dataset_id,
         "legacy_extract_id": row.legacy_extract_id,
         "legacy_job_id": row.legacy_job_id,
+        "error_code": row.error_code,
         "error_message": row.error_message,
         "created_at": row.created_at,
         "started_at": row.started_at,
@@ -1348,7 +1458,17 @@ pub(crate) async fn run_one(
     if run.status != "queued" {
         return Ok(());
     }
-    match run.kind.as_str() {
+    store
+        .append_execution_log(
+            run_id,
+            "info",
+            "started",
+            &format!("{} chip started", run.kind),
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let result = match run.kind.as_str() {
         "extract" => run_extract(store, &run).await,
         "transform" => {
             store
@@ -1372,7 +1492,23 @@ pub(crate) async fn run_one(
             run_validation(store, &run).await
         }
         kind => Err(format!("unsupported chip kind {kind}")),
+    };
+    match &result {
+        Ok(()) => {
+            store
+                .append_execution_log(
+                    run_id,
+                    "info",
+                    "completed",
+                    &format!("{} chip completed", run.kind),
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Err(_) => {}
     }
+    result
 }
 
 async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
@@ -1432,6 +1568,19 @@ async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     let result_json = serde_json::to_string(&report).map_err(|error| error.to_string())?;
     store
+        .append_execution_log(
+            &run.id,
+            if report.passed { "info" } else { "warn" },
+            "validation_completed",
+            &format!(
+                "passed={} source_rows={} target_rows={} mismatched_rows={}",
+                report.passed, report.source_rows, report.target_rows, report.mismatched_rows
+            ),
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    store
         .finish_validation_chip_run(
             &run.id,
             report.passed,
@@ -1474,6 +1623,16 @@ async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "input dataset not found".to_string())?;
+    store
+        .append_execution_log(
+            &run.id,
+            "info",
+            "load_started",
+            &format!("loading dataset {}", dataset.filename),
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     let result = execute_load_config(
         store,
         &config,
@@ -1496,6 +1655,19 @@ async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         )
         .await
         .map_err(|e| e.to_string())?;
+    store
+        .append_execution_log(
+            &run.id,
+            "info",
+            "load_completed",
+            &format!(
+                "loaded {} rows to {} in {} ms",
+                result.loaded_rows, result.destination, result.duration_ms
+            ),
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     store
         .set_load_chip_run_succeeded(&run.id)
         .await

@@ -103,7 +103,7 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
       ? chip.config.source_data_file_id
       : "";
     const datasetId = transform?.inputDatasetId ?? load?.inputDatasetId ?? validationSourceId;
-    if (!datasetId) {
+    if (!datasetId || datasetId.startsWith("contract:")) {
       setDatasetName("");
       return;
     }
@@ -124,9 +124,10 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
 
   if (chip.kind === "load") {
     const unset = messages.chips.detailUnset;
+    const visibleInputId = load?.inputDatasetId.startsWith("contract:") ? "" : load?.inputDatasetId;
     return <DetailStack>
       <DetailSection icon={FileInput} title={messages.workspace.inputDataset}>
-        <DetailRow label={messages.workspace.dataFileName}>{inputFileName || datasetName || load?.inputDatasetId || unset}</DetailRow>
+        <DetailRow label={messages.workspace.dataFileName}>{inputFileName || datasetName || visibleInputId || unset}</DetailRow>
         {chip.binding ? <DetailRow label={messages.chips.binding}>{bindingKindLabel(chip.binding.ref_kind, messages)}</DetailRow> : null}
       </DetailSection>
       <DetailSection icon={FileOutput} title={messages.load.destinationType} tone="warning">
@@ -192,7 +193,7 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
           </DetailRow>
           <DetailRow label={messages.common.delimiter}>{extract.delimiter || ","}</DetailRow>
           <DetailRow label={messages.workspace.hasHeader}>
-            {extract.header ? messages.common.yes : messages.common.no}
+            {extract.header ? "Y" : "N"}
           </DetailRow>
         </DetailSection>
         {extract.mode === "http" ? (
@@ -218,10 +219,13 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
   }
 
   if (chip.kind === "transform" && transform) {
+    const visibleInputId = transform.inputDatasetId.startsWith("contract:")
+      ? ""
+      : transform.inputDatasetId;
     return (
       <DetailStack>
         <DetailSection icon={Workflow} title={messages.workspace.transformConfig} tone="success">
-          <DetailRow label={messages.workspace.inputDataset}>{inputFileName || datasetName || transform.inputDatasetId || messages.chips.detailUnset}</DetailRow>
+          <DetailRow label={messages.workspace.inputDataset}>{inputFileName || datasetName || visibleInputId || messages.chips.detailUnset}</DetailRow>
           <DetailRow label={messages.workspace.dataFileName}>{chip.output?.filename || messages.workspace.outputEmpty}</DetailRow>
           {chip.binding ? <DetailRow label={messages.chips.binding}>{bindingKindLabel(chip.binding.ref_kind, messages)}</DetailRow> : null}
         </DetailSection>

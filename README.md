@@ -27,7 +27,7 @@ curl -s localhost:8080/api/health
 
 브라우저: `http://localhost:8080`
 
-`data/`가 없으면 기동 시 만든다 (`etl.db`, `extracts/uploads|databases|api`, `outputs/`, `logs/{extracts,jobs,query,files,connections}`).
+`data/`가 없으면 기동 시 만든다. 칩 실행 로그는 `etl.db`의 `execution_logs`에 제한적으로 보관하고, `logs/`는 쿼리·연결 같은 운영 진단에만 사용한다. 상세 정책은 [docs/logging.md](docs/logging.md)에 있다.
 
 추출(커넥션 → 서버 파일)의 회로·API·화면은 [docs/extract.md](docs/extract.md)에 있다.
 변환(파일 → parquet)의 회로·API·화면은 [docs/transform.md](docs/transform.md)에 있다.

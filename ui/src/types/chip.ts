@@ -54,6 +54,7 @@ export interface ChipRun {
   config_snapshot: ChipConfig;
   input_dataset_id?: string | null;
   output_dataset_id?: string | null;
+  error_code?: string | null;
   error_message?: string | null;
   created_at: string;
   started_at?: string | null;
@@ -108,6 +109,13 @@ export interface RunChipResponse {
   id: string;
   status: string;
   run: ChipRun;
+}
+
+export interface RunWorkspaceResponse {
+  ok: boolean;
+  status: "succeeded";
+  workspace_id: string;
+  run_ids: string[];
 }
 
 export interface ChipInputSlotResponse {
