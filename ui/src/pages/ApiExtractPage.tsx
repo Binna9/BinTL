@@ -41,6 +41,24 @@ function compactKv(rows: HttpKv[]): HttpKv[] {
   return rows.filter((row) => row.name.trim());
 }
 
+function responseTable(response: unknown, recordsPath: string, limit: number) {
+  let selected: unknown = response;
+  const path = recordsPath.trim().replace(/^\$\.?/, "");
+  for (const part of path.split(".").filter(Boolean)) {
+    if (!selected || typeof selected !== "object" || !(part in selected)) {
+      return { columns: [] as string[], rows: [] as string[][], rowCount: 0, error: `records_path not found: ${recordsPath}` };
+    }
+    selected = (selected as Record<string, unknown>)[part];
+  }
+  const items = Array.isArray(selected) ? selected : selected && typeof selected === "object" ? [selected] : null;
+  if (!items) return { columns: [] as string[], rows: [] as string[][], rowCount: 0, error: "레코드 경로는 배열 또는 객체를 가리켜야 합니다." };
+  const columns = Array.from(new Set(items.slice(0, limit).flatMap((item) => item && typeof item === "object" && !Array.isArray(item) ? Object.keys(item) : ["value"])));
+  if (columns.length === 0) columns.push("value");
+  const cell = (value: unknown) => value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  const rows = items.slice(0, limit).map((item) => columns.map((column) => cell(item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>)[column] : item)));
+  return { columns, rows, rowCount: items.length, error: "" };
+}
+
 function KvEditor({
   rows,
   onChange,
@@ -154,8 +172,6 @@ export function ApiExtractPage() {
   const [addSequence, setAddSequence] = useState(false);
   const [exportName, setExportName] = useState("");
   const [preview, setPreview] = useState<HttpPreviewResponse | null>(null);
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [info, setInfo] = useState("");
   const [running, setRunning] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [extractId, setExtractId] = useState<string | null>(null);
@@ -232,7 +248,6 @@ export function ApiExtractPage() {
   async function runPreview() {
     if (!browseId) return;
     setRunning(true);
-    setInfo("");
     try {
       const source = buildSource();
       const next = await extractApi.previewHttp({
@@ -249,18 +264,10 @@ export function ApiExtractPage() {
         graphql_query: source.graphql_query,
         graphql_variables: source.graphql_variables,
         graphql_operation_name: source.graphql_operation_name,
-        records_path: source.records_path,
+        records_path: "",
         limit,
       });
       setPreview(next);
-      setInfo(
-        messages.apiExtract.result(
-          next.row_count,
-          next.truncated,
-          next.status,
-        ),
-      );
-      setPreviewOpen(true);
     } catch (err) {
       setPreview(null);
       toastError(messages.errors.query, err);
@@ -281,7 +288,7 @@ export function ApiExtractPage() {
         delimiter,
         header,
         add_sequence: addSequence,
-        ...(exportName.trim() ? { filename: exportName.trim() } : {}),
+        filename: effectiveOutputName,
       });
       setExtractId(created.id);
       setExtractRow(created);
@@ -310,6 +317,9 @@ export function ApiExtractPage() {
       });
       setIsRegisterOpen(false);
       toastSuccess(messages.query.taskRegisteredNamed(registerName.trim()));
+      if (returnWorkspaceId) {
+        navigate(`/workspace/${returnWorkspaceId}`, { state: location.state });
+      }
     } catch (err) {
       if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
       else toastError(messages.workspace.saveChipError, err);
@@ -338,8 +348,6 @@ export function ApiExtractPage() {
     setAddSequence(false);
     setExportName("");
     setPreview(null);
-    setPreviewOpen(false);
-    setInfo("");
     setExtractId(null);
     setExtractRow(null);
     setIsRegisterOpen(false);
@@ -368,12 +376,24 @@ export function ApiExtractPage() {
 
   const extractBusy = extracting || (extractRow ? isExtractActive(extractRow.status) : false);
   const canRun = Boolean(browseId);
-  const canExtract = canRun && Boolean(preview) && !extractBusy;
+  const effectiveOutputName = useMemo(() => {
+    const requested = exportName.trim() || suggestedOutputName;
+    return /\.csv$/i.test(requested) ? requested : `${requested}.csv`;
+  }, [exportName, suggestedOutputName]);
+  const rawResponse = useMemo(
+    () => preview ? JSON.stringify(preview.response, null, 2) : "",
+    [preview],
+  );
+  const mappedPreview = useMemo(
+    () => preview ? responseTable(preview.response, recordsPath, limit) : null,
+    [limit, preview, recordsPath],
+  );
+  const canExtract = canRun && Boolean(preview) && !mappedPreview?.error && !extractBusy;
   const delimiterOptions = DELIMITER_VALUES.map((value) => ({ value, label: value === "tab" ? "tab" : value }));
   const resultWidths = useMemo(() => {
-    if (!preview?.columns.length) return undefined;
-    return columnWidthsForContent(preview.columns, preview.rows);
-  }, [preview]);
+    if (!mappedPreview?.columns.length) return undefined;
+    return columnWidthsForContent(mappedPreview.columns, mappedPreview.rows);
+  }, [mappedPreview]);
 
   return (
     <PageShell>
@@ -404,15 +424,6 @@ export function ApiExtractPage() {
             >
               <RotateCcw className="size-3.5" aria-hidden="true" />
               {messages.apiExtract.reset}
-            </Button>
-            <Button
-              type="button"
-              className="gap-1.5"
-              disabled={!canRun || running}
-              onClick={() => void runPreview()}
-            >
-              <Eye className="size-3.5" />
-              {running ? messages.apiExtract.calling : messages.apiExtract.previewTitle}
             </Button>
             <Button
               type="button"
@@ -473,7 +484,14 @@ export function ApiExtractPage() {
               title={messages.apiExtract.detailTitle}
               meta={browseId ? httpConnections.find((connection) => connection.id === browseId)?.name : undefined}
             />
-            <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-subtle/25 p-4 md:p-5">
+            <SplitLayout
+              className="min-h-0 flex-1"
+              defaultSizes={[560]}
+              defaultRatio={0.5}
+              minSize={360}
+              insetGutter
+            >
+            <div className="scroll-pane min-h-0 overflow-y-auto bg-subtle/25 p-4 md:p-5">
               <div className="mx-auto flex max-w-5xl flex-col gap-4">
                 <RequestSection
                   title={messages.apiExtract.apiInfo}
@@ -502,24 +520,6 @@ export function ApiExtractPage() {
                         value={path}
                         placeholder="/connect/test"
                         onChange={(event) => setPath(event.target.value)}
-                      />
-                    </FormField>
-                  </div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-2">
-                    <FormField label={messages.apiExtract.recordsPath} example={messages.apiExtract.recordsPathHint}>
-                      <input
-                        className="field-control technical"
-                        value={recordsPath}
-                        placeholder="data.items"
-                        onChange={(event) => setRecordsPath(event.target.value)}
-                      />
-                    </FormField>
-                    <FormField label={messages.query.exportFileName}>
-                      <input
-                        className="field-control technical"
-                        value={exportName}
-                        placeholder={messages.query.exportFileNamePlaceholder}
-                        onChange={(event) => setExportName(event.target.value)}
                       />
                     </FormField>
                   </div>
@@ -590,86 +590,68 @@ export function ApiExtractPage() {
 
               </div>
             </div>
+            <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-border bg-surface">
+              <PaneHeader
+                title={messages.apiExtract.responseTitle}
+                meta={preview ? `HTTP ${preview.status}` : undefined}
+                actions={
+                  <Button type="button" variant="primary" className="gap-1.5" disabled={!canRun || running} onClick={() => void runPreview()}>
+                    <Eye className="size-3.5" />
+                    {running ? messages.apiExtract.calling : messages.apiExtract.call}
+                  </Button>
+                }
+              />
+              <SplitLayout
+                direction="vertical"
+                className="min-h-0 flex-1"
+                defaultSizes={[300]}
+                defaultRatio={0.45}
+                minSize={160}
+                insetGutter
+              >
+                <div className="min-h-0 overflow-auto bg-raised p-4 text-text">
+                  {running ? (
+                    <p className="text-xs text-text-tertiary">{messages.apiExtract.calling}</p>
+                  ) : rawResponse ? (
+                    <pre className="m-0 whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-text">{rawResponse}</pre>
+                  ) : (
+                    <p className="text-xs text-text-tertiary">{messages.apiExtract.responseHint}</p>
+                  )}
+                </div>
+                <div className="flex min-h-0 flex-col overflow-hidden">
+                  <div className="grid gap-2 border-b border-border bg-raised/60 p-3 sm:grid-cols-2">
+                    <FormField label={messages.apiExtract.recordsPath} example={messages.apiExtract.recordsPathHint}>
+                      <input className="field-control technical" value={recordsPath} placeholder="data.items" onChange={(event) => setRecordsPath(event.target.value)} />
+                    </FormField>
+                    <FormField label={messages.query.exportFileName}>
+                      <input className="field-control technical" value={exportName || effectiveOutputName} onChange={(event) => setExportName(event.target.value)} />
+                    </FormField>
+                    <div className="flex items-end gap-2 sm:col-span-2">
+                      <Select editable className="!w-[6.5rem] technical" value={delimiter} options={delimiterOptions} onChange={setDelimiter} />
+                      <label className="flex h-9 items-center gap-1.5 text-xs text-text-secondary"><input className="field-control" type="checkbox" checked={header} onChange={(event) => setHeader(event.target.checked)} />{messages.common.header}</label>
+                      <label className="flex h-9 items-center gap-1.5 text-xs text-text-secondary"><input className="field-control" type="checkbox" checked={addSequence} onChange={(event) => setAddSequence(event.target.checked)} />{messages.common.addSequence}</label>
+                      <Select className="ml-auto !w-[4.75rem] technical" value={String(limit)} options={PREVIEW_LIMITS.map((value) => ({ value: String(value), label: String(value) }))} onChange={(next) => setLimit(Number(next) as (typeof PREVIEW_LIMITS)[number])} />
+                    </div>
+                  </div>
+                  {mappedPreview?.error ? <p className="border-b border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">{mappedPreview.error}</p> : null}
+                  <div className="min-h-0 flex-1 overflow-hidden p-3">
+                    {!mappedPreview?.columns.length ? (
+                      <p className="px-4 py-10 text-center text-xs text-text-tertiary">{messages.apiExtract.selectRecordsHint}</p>
+                    ) : (
+                      <DataGrid className="h-full min-h-48" headers={mappedPreview.columns} columnWidths={resultWidths}>
+                        {mappedPreview.rows.length === 0 ? <EmptyGridRow cols={mappedPreview.columns.length} text={messages.apiExtract.emptyRows} /> : mappedPreview.rows.map((row, rowIndex) => (
+                          <GridRow key={rowIndex}>{row.map((cell, cellIndex) => <GridCell key={cellIndex} mono>{cell}</GridCell>)}</GridRow>
+                        ))}
+                      </DataGrid>
+                    )}
+                  </div>
+                </div>
+              </SplitLayout>
+            </section>
+            </SplitLayout>
           </div>
         </SplitLayout>
       </Panel>
-
-      <AppDialog
-        open={previewOpen}
-        title={messages.apiExtract.previewTitle}
-        icon={<Eye className="size-4 text-accent" aria-hidden="true" />}
-        className="h-[min(42rem,88vh)] w-[min(72rem,94vw)]"
-        minWidth={520}
-        minHeight={360}
-        onClose={() => setPreviewOpen(false)}
-        headerExtra={
-          <div className="flex flex-wrap items-center gap-2">
-            <Select
-              className="!w-[4.75rem] technical"
-              value={String(limit)}
-              options={PREVIEW_LIMITS.map((value) => ({ value: String(value), label: String(value) }))}
-              onChange={(next) => setLimit(Number(next) as (typeof PREVIEW_LIMITS)[number])}
-            />
-            <Select
-              editable
-              className="!w-[6.5rem] technical"
-              value={delimiter}
-              options={delimiterOptions}
-              onChange={setDelimiter}
-            />
-            <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-              <input
-                className="field-control"
-                type="checkbox"
-                checked={header}
-                onChange={(event) => setHeader(event.target.checked)}
-              />
-              {messages.common.header}
-            </label>
-            <label className="flex items-center gap-1.5 text-xs text-text-secondary">
-              <input
-                className="field-control"
-                type="checkbox"
-                checked={addSequence}
-                onChange={(event) => setAddSequence(event.target.checked)}
-              />
-              {messages.common.addSequence}
-            </label>
-          </div>
-        }
-        footer={
-          <Button type="button" variant="secondary" onClick={() => setPreviewOpen(false)}>
-            {messages.common.close}
-          </Button>
-        }
-      >
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {info ? <p className="border-b border-border px-4 py-2 text-xs text-text-secondary">{info}</p> : null}
-          <div className="min-h-0 flex-1 overflow-hidden p-4">
-            {!preview ? (
-              <p className="px-4 py-12 text-center text-[13px] text-text-tertiary">
-                {messages.apiExtract.previewHint}
-              </p>
-            ) : (
-              <DataGrid className="h-full min-h-64" headers={preview.columns} columnWidths={resultWidths}>
-                {preview.rows.length === 0 ? (
-                  <EmptyGridRow cols={preview.columns.length} text={messages.apiExtract.emptyRows} />
-                ) : (
-                  preview.rows.map((row, rowIndex) => (
-                    <GridRow key={rowIndex}>
-                      {row.map((cell, cellIndex) => (
-                        <GridCell key={cellIndex} mono>
-                          {cell}
-                        </GridCell>
-                      ))}
-                    </GridRow>
-                  ))
-                )}
-              </DataGrid>
-            )}
-          </div>
-        </div>
-      </AppDialog>
 
       <AppDialog
         open={isRegisterOpen}

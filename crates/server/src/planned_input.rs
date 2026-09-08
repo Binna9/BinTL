@@ -400,12 +400,21 @@ pub async fn get_transform_input_slot(
 ) -> Result<Value, AppError> {
     crate::access::require_workspace(&state.store, user, workspace_id).await?;
     let chip = crate::access::require_chip(&state.store, user, transform_chip_id).await?;
-    let incoming = state
+    let incoming_edges = state
         .store
         .list_chip_edges(workspace_id)
         .await?
         .into_iter()
-        .find(|edge| edge.to_chip_id == transform_chip_id && edge.kind == "data");
+        .filter(|edge| edge.to_chip_id == transform_chip_id && edge.kind == "data")
+        .collect::<Vec<_>>();
+    let incoming = if chip.kind == "validation" {
+        incoming_edges
+            .iter()
+            .find(|edge| edge.to_port == "target")
+            .or_else(|| incoming_edges.last())
+    } else {
+        incoming_edges.first()
+    };
     let Some(edge) = incoming else {
         if let Some(fixed) = slot_from_fixed_dataset(state, user, &chip).await? {
             return Ok(fixed);

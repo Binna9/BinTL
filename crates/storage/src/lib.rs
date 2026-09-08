@@ -94,6 +94,11 @@ impl Store {
             secret_key: secret::key_from_secret(session_secret),
         };
         store.backfill_workspace_revisions().await?;
+        if let Err(error) = store.reconcile_search_documents().await {
+            // Search is a derived index. A repair failure must not prevent the
+            // authoritative application data from opening.
+            tracing::warn!(%error, "search index reconciliation failed");
+        }
         Ok(store)
     }
 
@@ -425,7 +430,7 @@ async fn replace_workspace_edges(
                 value.to_string()
             }
         };
-        let to_port = {
+        let mut to_port = {
             let value = edge.to_port.trim();
             if value.is_empty() {
                 "in".to_string()
@@ -433,6 +438,21 @@ async fn replace_workspace_edges(
                 value.to_string()
             }
         };
+        if edge.kind == "data" && to.kind == "validation" {
+            if !matches!(to_port.as_str(), "source" | "target") {
+                let source_used = pairs.iter().any(|(_, _, target, edge_kind, _, port)| {
+                    target == to_id && edge_kind == "data" && port == "source"
+                });
+                to_port = if source_used { "target" } else { "source" }.into();
+            }
+            if pairs.iter().any(|(_, _, target, edge_kind, _, port)| {
+                target == to_id && edge_kind == "data" && port == &to_port
+            }) {
+                return Err(StorageError::Invalid(format!(
+                    "validation {to_port} input is already connected"
+                )));
+            }
+        }
         let key = (from_id.to_string(), to_id.to_string(), edge.kind.clone());
         if !seen.insert(key) {
             return Err(StorageError::Invalid("duplicate chip edge".into()));
@@ -503,9 +523,9 @@ fn validate_edge_kind(kind: &str, from_kind: &str, to_kind: &str) -> Result<(), 
                     "data edges must start from extract or transform".into(),
                 ));
             }
-            if !matches!(to_kind, "transform" | "load") {
+            if !matches!(to_kind, "transform" | "load" | "validation") {
                 return Err(StorageError::Invalid(
-                    "data edges must end at transform or load".into(),
+                    "data edges must end at transform, load, or validation".into(),
                 ));
             }
             Ok(())
@@ -733,7 +753,7 @@ mod tests {
             Err(StorageError::NotFound(_))
         ));
         store.pool.close().await;
-        std::fs::remove_dir_all(root).unwrap();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
@@ -910,6 +930,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_registered_chip_removes_orphan_definition_but_keeps_run_history() {
+        let (root, store, admin) = test_store().await;
+        let workspace = store
+            .insert_workspace("Delete chip", None, &admin.id, None)
+            .await
+            .unwrap();
+        let connection = store
+            .insert_connection(NewConnection {
+                name: "delete-chip-connection".into(),
+                driver: "sqlite".into(),
+                host: String::new(),
+                port: 0,
+                database: ":memory:".into(),
+                username: String::new(),
+                password: String::new(),
+                ssl: false,
+            })
+            .await
+            .unwrap();
+        let chip = store
+            .register_extract_chip(&RegisterExtractChip {
+                name: "Delete extract".into(),
+                owner_user_id: admin.id.clone(),
+                workspace_id: Some(workspace.id.clone()),
+                kind: "database".into(),
+                connection_id: connection.id,
+                source_json: r#"{"type":"query","sql":"SELECT 1"}"#.into(),
+                delimiter: ",".into(),
+                header: true,
+                add_sequence: false,
+                output_filename: Some("delete.csv".into()),
+                place_on_workspace: true,
+            })
+            .await
+            .unwrap();
+        let definition_id = store
+            .get_chip_binding(&chip.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .ref_id;
+        let run = store
+            .create_chip_run(
+                &chip.id,
+                &workspace.id,
+                chip.revision,
+                r#"{"source":{"type":"query","sql":"SELECT 1"}}"#,
+                None,
+            )
+            .await
+            .unwrap();
+
+        store.delete_chip(&chip.id).await.unwrap();
+
+        assert!(store.get_chip(&chip.id).await.unwrap().is_none());
+        assert!(store
+            .get_extract_definition(&definition_id)
+            .await
+            .unwrap()
+            .is_none());
+        let historical: (Option<String>, String) = sqlx::query_as(
+            "SELECT chip_id, definition_snapshot_json FROM execution_steps WHERE id = ?",
+        )
+        .bind(&run.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(historical.0.is_none());
+        assert!(historical.1.contains("SELECT 1"));
+
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn save_workspace_stores_chip_edges_and_rejects_cycles() {
         let (root, store, admin) = test_store().await;
         let workspace = store
@@ -996,6 +1091,44 @@ mod tests {
             .bind(&placement_id).fetch_one(&store.pool).await.unwrap();
         assert_eq!(expected, "users.csv");
 
+        let validation = store
+            .insert_chip(&admin.id, &workspace.id, "Compare", "validation", "{}")
+            .await
+            .unwrap();
+        let (_, _, validation_edges) = store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[
+                    extract.id.clone(),
+                    transform.id.clone(),
+                    validation.id.clone(),
+                ],
+                &[
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: validation.id.clone(),
+                        kind: "data".into(),
+                        from_port: "out".into(),
+                        to_port: "source".into(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: transform.id.clone(),
+                        to_chip_id: validation.id.clone(),
+                        kind: "data".into(),
+                        from_port: "out".into(),
+                        to_port: "target".into(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(validation_edges.len(), 2);
+        assert!(validation_edges.iter().any(|edge| edge.to_port == "source"));
+        assert!(validation_edges.iter().any(|edge| edge.to_port == "target"));
+
         let cycle = store
             .save_workspace(
                 &workspace.id,
@@ -1024,7 +1157,7 @@ mod tests {
         assert!(cycle.is_err());
 
         store.pool.close().await;
-        std::fs::remove_dir_all(root).unwrap();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

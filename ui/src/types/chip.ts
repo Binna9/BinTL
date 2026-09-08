@@ -85,6 +85,8 @@ export interface UpdateChipRequest {
   kind?: ChipKind;
   config?: ChipConfig;
   active?: boolean;
+  extract?: ChipConfig;
+  output_filename?: string;
 }
 
 export interface RegisterChipRequest {

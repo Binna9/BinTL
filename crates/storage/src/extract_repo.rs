@@ -93,6 +93,27 @@ impl Store {
              LEFT JOIN connections c ON c.id = json_extract(s.definition_snapshot_json, '$.connection_id')
              WHERE s.kind = 'extract'
                AND NOT (s.chip_id IS NOT NULL AND json_extract(s.result_json, '$.child_step_id') IS NOT NULL)
+               AND (
+                 (s.status != 'succeeded' AND x.source != 'chip')
+                 OR EXISTS (
+                   SELECT 1
+                   FROM execution_outputs visible_output
+                   INNER JOIN data_files visible_file ON visible_file.id = visible_output.data_file_id
+                   WHERE visible_output.execution_step_id = s.id
+                     AND visible_file.deleted_at IS NULL
+                     AND NOT EXISTS (
+                       SELECT 1
+                       FROM execution_outputs newer_output
+                       INNER JOIN execution_steps newer_step ON newer_step.id = newer_output.execution_step_id
+                       WHERE newer_output.data_file_id = visible_output.data_file_id
+                         AND newer_step.kind = 'extract'
+                         AND (
+                           newer_step.queued_at > s.queued_at
+                           OR (newer_step.queued_at = s.queued_at AND newer_step.id > s.id)
+                         )
+                     )
+                 )
+               )
                {extra} ORDER BY s.queued_at DESC LIMIT ?"
         );
         let mut query = sqlx::query_as::<_, ExtractRow>(&sql);
@@ -225,6 +246,7 @@ impl Store {
                 has_header = COALESCE(excluded.has_header, data_files.has_header),
                 row_count = COALESCE(excluded.row_count, data_files.row_count),
                 workspace_id = excluded.workspace_id,
+                deleted_at = NULL,
                 updated_at = excluded.updated_at",
         )
         .bind(&file_id)
@@ -250,6 +272,124 @@ impl Store {
             .bind(stored_path)
             .fetch_one(&mut *tx)
             .await?;
+        // Extract chips own one mutable output slot, just like transform chips.
+        // Older versions wrote one dataset/file per execution, leaving duplicate
+        // filenames in the file catalog. Retire every previous output of this
+        // workspace chip while preserving its execution lineage row.
+        let stale_paths = if let Some(parent) = linked.as_ref() {
+            let paths = sqlx::query_scalar::<_, String>(
+                "SELECT DISTINCT d.stored_path
+                 FROM execution_steps s
+                 INNER JOIN executions e ON e.id = s.execution_id
+                 INNER JOIN execution_outputs o ON o.execution_step_id = s.id
+                 INNER JOIN data_files d ON d.id = o.data_file_id
+                 WHERE s.chip_id = ? AND e.workspace_id = ? AND s.kind = 'extract'
+                   AND d.id != ? AND d.deleted_at IS NULL",
+            )
+            .bind(&parent.chip_id)
+            .bind(&parent.workspace_id)
+            .bind(&file_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE data_files SET deleted_at = ?, updated_at = ?
+                 WHERE id IN (
+                   SELECT DISTINCT o.data_file_id
+                   FROM execution_steps s
+                   INNER JOIN executions e ON e.id = s.execution_id
+                   INNER JOIN execution_outputs o ON o.execution_step_id = s.id
+                   WHERE s.chip_id = ? AND e.workspace_id = ? AND s.kind = 'extract'
+                     AND o.data_file_id != ?
+                 ) AND deleted_at IS NULL",
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(&parent.chip_id)
+            .bind(&parent.workspace_id)
+            .bind(&file_id)
+            .execute(&mut *tx)
+            .await?;
+            paths
+        } else {
+            // The extract page creates a fresh definition/execution for every run.
+            // Treat matching source + output settings as one logical standalone
+            // output slot so reruns keep history without duplicating datasets in
+            // the Files page. Different tables/queries remain independent even
+            // when they use the same display filename.
+            let paths = sqlx::query_scalar::<_, String>(
+                "SELECT DISTINCT d.stored_path
+                 FROM execution_steps previous
+                 INNER JOIN executions previous_execution ON previous_execution.id = previous.execution_id
+                 INNER JOIN execution_outputs o ON o.execution_step_id = previous.id
+                 INNER JOIN data_files d ON d.id = o.data_file_id
+                 WHERE previous.id != ? AND previous.kind = 'extract'
+                   AND previous.chip_id IS NULL
+                   AND previous_execution.workspace_id = ?
+                   AND json_extract(previous.definition_snapshot_json, '$.kind') = ?
+                   AND json_extract(previous.definition_snapshot_json, '$.connection_id') = ?
+                   AND json_extract(previous.definition_snapshot_json, '$.table_name') = ?
+                   AND COALESCE(json_extract(previous.definition_snapshot_json, '$.sql_text'), '') = COALESCE(?, '')
+                   AND COALESCE(json_extract(previous.definition_snapshot_json, '$.catalog_database'), '') = COALESCE(?, '')
+                   AND COALESCE(json_extract(previous.definition_snapshot_json, '$.output_filename'), '') = COALESCE(?, '')
+                   AND COALESCE(json_extract(previous.definition_snapshot_json, '$.delimiter'), ',') = ?
+                   AND COALESCE(json_extract(previous.definition_snapshot_json, '$.header'), 1) = ?
+                   AND COALESCE(json_extract(previous.definition_snapshot_json, '$.add_sequence'), 0) = ?
+                   AND d.id != ? AND d.deleted_at IS NULL",
+            )
+            .bind(id)
+            .bind(&row.workspace_id)
+            .bind(&row.kind)
+            .bind(&row.connection_id)
+            .bind(&row.table_name)
+            .bind(row.sql_text.as_deref())
+            .bind(row.catalog_database.as_deref())
+            .bind(row.output_filename.as_deref())
+            .bind(&row.delimiter)
+            .bind(row.header)
+            .bind(row.add_sequence)
+            .bind(&file_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE data_files SET deleted_at = ?, updated_at = ?
+                 WHERE id IN (
+                   SELECT DISTINCT o.data_file_id
+                   FROM execution_steps previous
+                   INNER JOIN executions previous_execution ON previous_execution.id = previous.execution_id
+                   INNER JOIN execution_outputs o ON o.execution_step_id = previous.id
+                   WHERE previous.id != ? AND previous.kind = 'extract'
+                     AND previous.chip_id IS NULL
+                     AND previous_execution.workspace_id = ?
+                     AND json_extract(previous.definition_snapshot_json, '$.kind') = ?
+                     AND json_extract(previous.definition_snapshot_json, '$.connection_id') = ?
+                     AND json_extract(previous.definition_snapshot_json, '$.table_name') = ?
+                     AND COALESCE(json_extract(previous.definition_snapshot_json, '$.sql_text'), '') = COALESCE(?, '')
+                     AND COALESCE(json_extract(previous.definition_snapshot_json, '$.catalog_database'), '') = COALESCE(?, '')
+                     AND COALESCE(json_extract(previous.definition_snapshot_json, '$.output_filename'), '') = COALESCE(?, '')
+                     AND COALESCE(json_extract(previous.definition_snapshot_json, '$.delimiter'), ',') = ?
+                     AND COALESCE(json_extract(previous.definition_snapshot_json, '$.header'), 1) = ?
+                     AND COALESCE(json_extract(previous.definition_snapshot_json, '$.add_sequence'), 0) = ?
+                     AND o.data_file_id != ?
+                 ) AND deleted_at IS NULL",
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(id)
+            .bind(&row.workspace_id)
+            .bind(&row.kind)
+            .bind(&row.connection_id)
+            .bind(&row.table_name)
+            .bind(row.sql_text.as_deref())
+            .bind(row.catalog_database.as_deref())
+            .bind(row.output_filename.as_deref())
+            .bind(&row.delimiter)
+            .bind(row.header)
+            .bind(row.add_sequence)
+            .bind(&file_id)
+            .execute(&mut *tx)
+            .await?;
+            paths
+        };
         sqlx::query("INSERT INTO execution_outputs (execution_step_id, port_name, data_file_id) VALUES (?, 'out', ?)")
             .bind(id).bind(&file_id).execute(&mut *tx).await?;
         let result_json =
@@ -290,6 +430,18 @@ impl Store {
                 .bind(workspace_chip_id).bind(&file_id).bind(filename).bind(&now).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        for stale_path in stale_paths {
+            let path = self.resolve(&stale_path);
+            if path != self.resolve(stored_path) {
+                match tokio::fs::remove_file(path).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    // The DB state is already correct. A failed physical cleanup
+                    // must not turn a successful extraction into a failed run.
+                    Err(_) => {}
+                }
+            }
+        }
         search::sync_search_best_effort(self, "dataset", self.sync_search_dataset(&file_id)).await;
         Ok(())
     }

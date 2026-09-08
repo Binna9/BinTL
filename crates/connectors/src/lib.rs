@@ -482,6 +482,7 @@ pub async fn load_table(
     csv_path: &Path,
     mode: &str,
     conflict_keys: &[String],
+    null_marker: Option<&str>,
 ) -> Result<u64, ConnectError> {
     if !matches!(
         mode,
@@ -496,6 +497,16 @@ pub async fn load_table(
     if cols.is_empty() {
         return Err(ConnectError::Invalid("csv has no columns".into()));
     }
+    // CSV cannot distinguish an empty field from a database NULL. Preserve empty
+    // strings for textual destination columns, but map them to NULL for known
+    // non-text destination types (integer/date/boolean/etc.). Recreated/new
+    // tables use TEXT columns, so their empty strings must be preserved.
+    let destination_columns = if mode == "recreate" {
+        Vec::new()
+    } else {
+        list_columns(c, table).await?
+    };
+    let column_rules = load_column_rules(&cols, &destination_columns);
     if mode == "upsert" {
         if conflict_keys.is_empty() || conflict_keys.iter().any(|key| !cols.contains(key)) {
             return Err(ConnectError::Invalid(
@@ -534,9 +545,23 @@ pub async fn load_table(
                 if rows.is_empty() {
                     break;
                 }
-                n += rows.len() as u64;
-                insert_sqlx::<Postgres>(&pool, family, &q, &cols, &rows, mode, conflict_keys)
-                    .await?;
+                let row_start = n + 1;
+                let row_end = n + rows.len() as u64;
+                validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                insert_sqlx::<Postgres>(
+                    &pool,
+                    family,
+                    &q,
+                    &cols,
+                    &column_rules,
+                    &rows,
+                    mode,
+                    conflict_keys,
+                    null_marker,
+                )
+                .await
+                .map_err(|error| load_batch_error(row_start, row_end, error))?;
+                n = row_end;
             }
             pool.close().await;
         }
@@ -557,8 +582,23 @@ pub async fn load_table(
                 if rows.is_empty() {
                     break;
                 }
-                n += rows.len() as u64;
-                insert_sqlx::<MySql>(&pool, family, &q, &cols, &rows, mode, conflict_keys).await?;
+                let row_start = n + 1;
+                let row_end = n + rows.len() as u64;
+                validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                insert_sqlx::<MySql>(
+                    &pool,
+                    family,
+                    &q,
+                    &cols,
+                    &column_rules,
+                    &rows,
+                    mode,
+                    conflict_keys,
+                    null_marker,
+                )
+                .await
+                .map_err(|error| load_batch_error(row_start, row_end, error))?;
+                n = row_end;
             }
             pool.close().await;
         }
@@ -579,8 +619,23 @@ pub async fn load_table(
                 if rows.is_empty() {
                     break;
                 }
-                n += rows.len() as u64;
-                insert_sqlx::<Sqlite>(&pool, family, &q, &cols, &rows, mode, conflict_keys).await?;
+                let row_start = n + 1;
+                let row_end = n + rows.len() as u64;
+                validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                insert_sqlx::<Sqlite>(
+                    &pool,
+                    family,
+                    &q,
+                    &cols,
+                    &column_rules,
+                    &rows,
+                    mode,
+                    conflict_keys,
+                    null_marker,
+                )
+                .await
+                .map_err(|error| load_batch_error(row_start, row_end, error))?;
+                n = row_end;
             }
             pool.close().await;
         }
@@ -604,17 +659,38 @@ pub async fn load_table(
                 if rows.is_empty() {
                     break;
                 }
-                n += rows.len() as u64;
+                validate_empty_cells(&rows, &column_rules, n + 1, null_marker)?;
                 for row in &rows {
-                    let placeholders = (1..=cols.len())
-                        .map(|i| format!("@P{i}"))
+                    let row_number = n + 1;
+                    let mut bind_index = 0usize;
+                    let placeholders = row
+                        .iter()
+                        .enumerate()
+                        .map(|(column_index, value)| {
+                            if cell_is_null(value, &column_rules[column_index], null_marker) {
+                                "NULL".to_string()
+                            } else {
+                                bind_index += 1;
+                                format!("@P{bind_index}")
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     let sql = format!("INSERT INTO {q} ({col_sql}) VALUES ({placeholders})");
-                    let binds: Vec<&str> = row.iter().map(String::as_str).collect();
+                    let binds: Vec<&str> = row
+                        .iter()
+                        .enumerate()
+                        .filter(|(column_index, value)| {
+                            !cell_is_null(value, &column_rules[*column_index], null_marker)
+                        })
+                        .map(|(_, value)| value.as_str())
+                        .collect();
                     let args: Vec<&dyn tiberius::ToSql> =
                         binds.iter().map(|s| s as &dyn tiberius::ToSql).collect();
-                    client.execute(sql, &args).await?;
+                    client.execute(sql, &args).await.map_err(|error| {
+                        ConnectError::Invalid(format!("load failed at row {row_number}: {error}"))
+                    })?;
+                    n = row_number;
                 }
             }
         }
@@ -623,14 +699,129 @@ pub async fn load_table(
     Ok(n)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoadColumnRule {
+    name: String,
+    empty_as_null: bool,
+    nullable: bool,
+    data_type: String,
+}
+
+fn load_column_rules(input_columns: &[String], destination: &[ColumnInfo]) -> Vec<LoadColumnRule> {
+    input_columns
+        .iter()
+        .map(|name| {
+            let target = destination
+                .iter()
+                .find(|column| column.name.eq_ignore_ascii_case(name));
+            LoadColumnRule {
+                name: name.clone(),
+                empty_as_null: target
+                    .map(|column| empty_means_null(&column.data_type))
+                    .unwrap_or(false),
+                nullable: target.map(|column| column.nullable).unwrap_or(true),
+                data_type: target
+                    .map(|column| column.data_type.clone())
+                    .unwrap_or_else(|| "TEXT".to_string()),
+            }
+        })
+        .collect()
+}
+
+fn empty_means_null(data_type: &str) -> bool {
+    let normalized = data_type.trim().to_ascii_lowercase();
+    let base = normalized
+        .split(['(', ' ', '['])
+        .next()
+        .unwrap_or(normalized.as_str());
+    matches!(
+        base,
+        "smallint"
+            | "integer"
+            | "bigint"
+            | "int"
+            | "int2"
+            | "int4"
+            | "int8"
+            | "tinyint"
+            | "mediumint"
+            | "serial"
+            | "bigserial"
+            | "decimal"
+            | "numeric"
+            | "real"
+            | "float"
+            | "float4"
+            | "float8"
+            | "double"
+            | "money"
+            | "boolean"
+            | "bool"
+            | "bit"
+            | "date"
+            | "time"
+            | "timetz"
+            | "timestamp"
+            | "timestamptz"
+            | "datetime"
+            | "datetime2"
+            | "smalldatetime"
+            | "interval"
+            | "uuid"
+    )
+}
+
+fn validate_empty_cells(
+    rows: &[Vec<String>],
+    rules: &[LoadColumnRule],
+    row_start: u64,
+    null_marker: Option<&str>,
+) -> Result<(), ConnectError> {
+    for (row_offset, row) in rows.iter().enumerate() {
+        if row.len() != rules.len() {
+            return Err(ConnectError::Invalid(format!(
+                "CSV row {} has {} fields but header has {} columns",
+                row_start + row_offset as u64,
+                row.len(),
+                rules.len()
+            )));
+        }
+        for (column_index, value) in row.iter().enumerate() {
+            let rule = &rules[column_index];
+            if cell_is_null(value, rule, null_marker) && !rule.nullable {
+                return Err(ConnectError::Invalid(format!(
+                    "load value invalid at row {}, column '{}' ({}): empty value cannot be loaded into a NOT NULL column",
+                    row_start + row_offset as u64,
+                    rule.name,
+                    rule.data_type
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cell_is_null(value: &str, rule: &LoadColumnRule, null_marker: Option<&str>) -> bool {
+    null_marker.is_some_and(|marker| value == marker) || (value.is_empty() && rule.empty_as_null)
+}
+
+fn load_batch_error(row_start: u64, row_end: u64, error: ConnectError) -> ConnectError {
+    let batch = ((row_start - 1) / 2_000) + 1;
+    ConnectError::Invalid(format!(
+        "load batch {batch} failed (row_start={row_start}, row_end={row_end}): {error}"
+    ))
+}
+
 async fn insert_sqlx<DB>(
     pool: &Pool<DB>,
     family: &str,
     q: &str,
     cols: &[String],
+    column_rules: &[LoadColumnRule],
     rows: &[Vec<String>],
     mode: &str,
     conflict_keys: &[String],
+    null_marker: Option<&str>,
 ) -> Result<(), ConnectError>
 where
     DB: sqlx::Database,
@@ -659,7 +850,11 @@ where
                 if j > 0 {
                     sql.push_str(", ");
                 }
-                sql.push_str(&sql_lit(cell));
+                if cell_is_null(cell, &column_rules[j], null_marker) {
+                    sql.push_str("NULL");
+                } else {
+                    sql.push_str(&sql_lit(cell));
+                }
             }
             sql.push(')');
         }
@@ -799,5 +994,50 @@ mod tests {
         assert_eq!(read_csv_batch(&mut reader, 2).unwrap().len(), 1);
         assert!(read_csv_batch(&mut reader, 2).unwrap().is_empty());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn empty_values_become_null_only_for_known_non_text_types() {
+        for data_type in [
+            "int4",
+            "integer",
+            "numeric(10,2)",
+            "boolean",
+            "timestamp without time zone",
+            "datetime2",
+            "uuid",
+        ] {
+            assert!(empty_means_null(data_type), "{data_type}");
+        }
+        for data_type in ["text", "varchar(100)", "nvarchar(50)", "char(1)", "jsonb"] {
+            assert!(!empty_means_null(data_type), "{data_type}");
+        }
+    }
+
+    #[test]
+    fn non_nullable_typed_empty_reports_row_and_column() {
+        let rules = vec![LoadColumnRule {
+            name: "count".into(),
+            empty_as_null: true,
+            nullable: false,
+            data_type: "int4".into(),
+        }];
+        let error = validate_empty_cells(&[vec![String::new()]], &rules, 7, None).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("row 7"));
+        assert!(message.contains("column 'count'"));
+        assert!(message.contains("int4"));
+    }
+
+    #[test]
+    fn explicit_null_marker_is_null_even_for_text_columns() {
+        let rule = LoadColumnRule {
+            name: "note".into(),
+            empty_as_null: false,
+            nullable: true,
+            data_type: "text".into(),
+        };
+        assert!(cell_is_null("__NULL__", &rule, Some("__NULL__")));
+        assert!(!cell_is_null("", &rule, Some("__NULL__")));
     }
 }

@@ -288,6 +288,8 @@ STORAGE_TRANSACTION_COMMIT_FAILED
 
 commit 실패는 성공으로 처리하면 안 된다. `loaded_rows`가 존재하더라도 상태는 반드시 `failed`로 저장하고, DB에서 commit 성공을 확인한 후에만 `load_results`와 `succeeded` 상태를 기록한다. deadlock과 일시적 timeout만 제한적인 자동 재시도 대상으로 둔다.
 
+DB 적재를 위해 Parquet을 임시 CSV로 변환할 때는 NULL 전용 내부 마커를 사용한다. 적재기는 이 마커를 대상 column type과 무관하게 SQL `NULL`로 변환하므로 문자형 column에서도 원래 NULL과 빈 문자열(`''`)이 구분된다. 일반 CSV 입력에는 별도 NULL 메타데이터가 없으므로, 빈 필드는 기존처럼 문자형 column에서 빈 문자열로 유지하고 정수·실수·날짜·시간·boolean·UUID 등 비문자형 column에서 SQL `NULL`로 처리한다. NULL 또는 빈 필드를 `NOT NULL` column에 넣으려 하면 DB 전송 전에 실패시키며 로그 원문에 CSV 행 번호, column 이름, 대상 자료형을 남긴다.
+
 ### 파일 적재 단계
 
 - `LOAD_OUTPUT_DIRECTORY_FAILED`: 파일 대상 디렉터리 생성 실패
@@ -363,3 +365,28 @@ info  retry_started    attempt=2
 나쁜 예: error occurred: Io(Os { code: 3 })
 좋은 예: 변환 입력 파일을 찾을 수 없습니다. 입력 dataset을 다시 실행해 주세요.
 ```
+
+## 20. 행·컬럼 단위 데이터 진단
+
+칩 실행 중 데이터 자체에서 문제가 발견되면 다음 필드를 `context_json`에 기록한다.
+
+- `row_number`: 헤더를 제외한 1부터 시작하는 데이터 행 번호
+- `column`: 원본 column 이름. 헤더가 없으면 `column_1` 형식
+- `batch_number`, `row_start`, `row_end`: DB가 batch 전체만 거부해 단일 행을 확정할 수 없을 때의 범위
+- `diagnostic`: 비밀번호·token·본문을 제거하고 1,024자로 제한한 connector/engine 진단 첫 줄
+
+적재 전 CSV·TSV 입력은 전체 행을 검사한다. 빈 셀은 허용 가능한 데이터일 수 있으므로 실행을 임의로 실패시키지 않고 `load_input_empty_value` 경고로 남긴다. 정확한 행과 column은 최대 100건까지 남기고, `load_input_validated`에 전체 검사 행 수, 빈 셀 수, 상세 로그 제한 여부를 요약한다. CSV 구조가 깨진 경우에는 해당 행 번호와 함께 `LOAD_INPUT_CONVERSION_FAILED`로 실패한다.
+
+DB batch 적재 실패에서 드라이버가 단일 행을 제공하지 않으면 존재하지 않는 행 번호를 추측하지 않는다. 대신 실패 batch와 행 범위를 기록한다. MSSQL처럼 행별 INSERT를 수행하는 경로는 정확한 실패 행을 기록한다.
+
+## 21. 추출 실행 이력과 최신 파일
+
+추출 실행 이력과 파일 목록의 수명 주기는 분리한다. 추출 페이지와 캔버스 모두 실행할 때마다 새로운 `execution`을 생성하여 과거 상태와 로그를 보존하지만, 파일 목록에는 같은 논리적 추출의 최신 dataset만 노출한다.
+
+- 캔버스 추출: 워크스페이스 칩 ID를 출력 slot의 식별자로 사용한다.
+- 추출 페이지: workspace, connection, source(table/query/API), database, 출력 파일명, delimiter, header, sequence 설정의 조합을 식별자로 사용한다.
+- 동일 식별자의 재실행이 성공하면 이전 dataset은 `deleted_at` 처리하고 이전 실제 파일도 정리한다.
+- source나 출력 설정이 다르면 파일명이 같더라도 별도의 dataset으로 유지한다.
+- 실패한 새 실행은 이전 성공 파일을 제거하지 않는다.
+
+추출 파일 화면은 실행 테이블을 기반으로 조회하지만, 성공한 실행 중 `data_files.deleted_at`이 설정된 과거 출력은 표시하지 않는다. `queued`, `running`, `failed` 실행은 진행 상태와 오류 확인을 위해 표시한다. 전체 실행 이력과 로그는 DB에 계속 보존되며 파일 화면과 별도로 조회할 수 있다.

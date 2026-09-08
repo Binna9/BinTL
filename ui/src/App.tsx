@@ -81,6 +81,7 @@ function ConsoleShell() {
               <Route path="/workspace/:workspaceId/tasks/:taskId" element={<Navigate to={loc.pathname.replace("/tasks/", "/chips/")} replace />} />
               <Route path="/db" element={<QueryPage />} />
               <Route path="/query" element={<QueryPage />} />
+              <Route path="/workspace/:workspaceId/chips/:editorChipId/extract" element={<QueryPage />} />
               <Route path="/extract/api" element={<ApiExtractPage />} />
               <Route path="/extracts" element={<ExtractResultsPage />} />
               <Route path="/transforms" element={<TransformFilesPage />} />

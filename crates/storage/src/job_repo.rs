@@ -188,7 +188,7 @@ impl Store {
     pub async fn list_logs(&self, job_id: &str) -> Result<Vec<JobLogRow>, StorageError> {
         let rows = sqlx::query_as::<_, JobLogRow>(
             "SELECT id, execution_step_id AS job_id, created_at AS ts, level, message FROM execution_logs
-             WHERE execution_step_id = ? ORDER BY sequence ASC",
+             WHERE execution_step_id = ? ORDER BY created_at ASC, sequence ASC",
         )
         .bind(job_id)
         .fetch_all(&self.pool)

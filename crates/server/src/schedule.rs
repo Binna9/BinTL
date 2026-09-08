@@ -48,7 +48,7 @@ fn validate(body: &ScheduleBody) -> Result<(), AppError> {
     if body.name.trim().is_empty() {
         return Err(AppError::bad("schedule name is required"));
     }
-    if body.schedule_type != "interval" || body.interval_value < 1 {
+    if body.schedule_type != "interval" {
         return Err(AppError::bad("invalid schedule interval"));
     }
     if !matches!(
@@ -56,6 +56,31 @@ fn validate(body: &ScheduleBody) -> Result<(), AppError> {
         "second" | "minute" | "hour" | "day" | "month" | "year"
     ) {
         return Err(AppError::bad("unsupported interval unit"));
+    }
+    let interval_max = match body.interval_unit.as_str() {
+        "second" | "minute" => 60,
+        "hour" => 24,
+        "day" => 31,
+        "month" => 12,
+        "year" => 100,
+        _ => unreachable!(),
+    };
+    if body.interval_value > interval_max {
+        return Err(AppError::bad("schedule interval is out of range"));
+    }
+    let max_interval = match body.interval_unit.as_str() {
+        "second" | "minute" => 60,
+        "hour" => 24,
+        "day" => 31,
+        "month" => 12,
+        "year" => 100,
+        _ => unreachable!("interval unit was validated above"),
+    };
+    if !(1..=max_interval).contains(&body.interval_value) {
+        return Err(AppError::bad(format!(
+            "invalid schedule interval: {} must be between 1 and {max_interval}",
+            body.interval_unit
+        )));
     }
     if !matches!(body.second, None | Some(0..=59))
         || !matches!(body.minute, None | Some(0..=59))

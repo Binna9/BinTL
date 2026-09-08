@@ -61,9 +61,11 @@ fn default_body_mode() -> String {
 #[derive(Debug, Clone)]
 pub struct HttpPreview {
     pub status: u16,
+    pub response: Value,
     pub columns: Vec<String>,
     pub rows: Vec<BTreeMap<String, String>>,
     pub row_count: usize,
+    pub conversion_error: Option<String>,
 }
 
 pub fn parse_http_spec(raw: &str) -> Result<HttpRequestSpec, ConnectError> {
@@ -117,15 +119,22 @@ pub async fn preview_http(
     limit: usize,
 ) -> Result<HttpPreview, ConnectError> {
     let (status, value) = execute_http(connection, spec).await?;
-    let records = select_records(&value, &spec.records_path)?;
-    let total = record_count(records);
     let limit = limit.clamp(1, 500);
-    let (columns, rows) = records_to_table(records, limit)?;
+    let converted = select_records(&value, &spec.records_path).and_then(|records| {
+        let total = record_count(records);
+        records_to_table(records, limit).map(|(columns, rows)| (total, columns, rows))
+    });
+    let (row_count, columns, rows, conversion_error) = match converted {
+        Ok((total, columns, rows)) => (total, columns, rows, None),
+        Err(error) => (0, Vec::new(), Vec::new(), Some(error.to_string())),
+    };
     Ok(HttpPreview {
         status,
+        response: value,
         columns,
         rows,
-        row_count: total,
+        row_count,
+        conversion_error,
     })
 }
 

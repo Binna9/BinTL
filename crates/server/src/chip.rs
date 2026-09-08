@@ -20,6 +20,8 @@ use crate::access::{self, CurrentUser};
 use crate::error::AppError;
 use crate::state::{AppState, ExecutionTask};
 
+const LOAD_NULL_MARKER: &str = "\u{1e}BINTL_NULL\u{1e}";
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/chips", get(list_catalog).post(register_chip))
@@ -55,6 +57,10 @@ struct PatchChipBody {
     kind: Option<String>,
     config: Option<Value>,
     active: Option<bool>,
+    #[serde(default)]
+    extract: Option<Value>,
+    #[serde(default)]
+    output_filename: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -95,6 +101,10 @@ struct ExtractConfig {
     delimiter: Option<String>,
     #[serde(default)]
     header: Option<bool>,
+    #[serde(default)]
+    add_sequence: Option<bool>,
+    #[serde(default)]
+    output_filename: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,7 +266,10 @@ async fn register_chip(
                     source_json,
                     delimiter,
                     header,
-                    add_sequence: false,
+                    add_sequence: config
+                        .get("add_sequence")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                     output_filename: body.output_filename.clone(),
                     place_on_workspace: body.place_on_workspace,
                 })
@@ -383,9 +396,57 @@ async fn update_chip(
     Json(body): Json<PatchChipBody>,
 ) -> Result<Json<Value>, AppError> {
     let current = access::require_chip(&state.store, &user, &id).await?;
-    if body.name.is_none() && body.kind.is_none() && body.config.is_none() && body.active.is_none()
+    if body.name.is_none()
+        && body.kind.is_none()
+        && body.config.is_none()
+        && body.active.is_none()
+        && body.extract.is_none()
     {
         return Ok(Json(chip_json(&state.store, &current).await?));
+    }
+    if let Some(raw) = body.extract {
+        if current.kind != "extract" {
+            return Err(AppError::bad(
+                "extract definition is only valid for extract chips",
+            ));
+        }
+        let config = validate_extract_config(&state.store, raw).await?;
+        let connection_id = config
+            .get("connection_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let source = config
+            .get("source")
+            .cloned()
+            .ok_or_else(|| AppError::bad("source required"))?;
+        let source_json =
+            serde_json::to_string(&source).map_err(|error| AppError::bad(error.to_string()))?;
+        let delimiter = config
+            .get("delimiter")
+            .and_then(Value::as_str)
+            .unwrap_or(",");
+        let header = config
+            .get("header")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let add_sequence = config
+            .get("add_sequence")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let chip = state
+            .store
+            .update_extract_chip(
+                &id,
+                body.name.as_deref().unwrap_or(&current.name),
+                connection_id,
+                &source_json,
+                body.output_filename.as_deref(),
+                delimiter,
+                header,
+                add_sequence,
+            )
+            .await?;
+        return Ok(Json(chip_json(&state.store, &chip).await?));
     }
     let config_json = if body.kind.is_some() || body.config.is_some() {
         if state.store.get_chip_binding(&id).await?.is_some() {
@@ -483,8 +544,45 @@ async fn queue_validation_chip_run(
         .resolve_chip_config_json(chip)
         .await
         .map_err(|error| AppError::bad(error.to_string()))?;
-    let raw: Value = serde_json::from_str(&config_raw)
+    let mut raw: Value = serde_json::from_str(&config_raw)
         .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
+    let data_edges = state
+        .store
+        .list_chip_edges(workspace_id)
+        .await?
+        .into_iter()
+        .filter(|edge| edge.kind == "data" && edge.to_chip_id == chip.id)
+        .collect::<Vec<_>>();
+    let connected_pair = if data_edges.len() == 2 {
+        let source_edge = data_edges
+            .iter()
+            .find(|edge| edge.to_port == "source")
+            .unwrap_or(&data_edges[0]);
+        let target_edge = data_edges
+            .iter()
+            .find(|edge| edge.to_port == "target")
+            .unwrap_or_else(|| {
+                if source_edge.id == data_edges[0].id {
+                    &data_edges[1]
+                } else {
+                    &data_edges[0]
+                }
+            });
+        let source_id = state
+            .store
+            .latest_chip_output_for_workspace(workspace_id, &source_edge.from_chip_id)
+            .await?
+            .ok_or_else(|| AppError::bad("validation source chip has no materialized output"))?;
+        let target_id = state
+            .store
+            .latest_chip_output_for_workspace(workspace_id, &target_edge.from_chip_id)
+            .await?
+            .ok_or_else(|| AppError::bad("validation target chip has no materialized output"))?;
+        raw["source_data_file_id"] = json!(source_id);
+        Some(target_id)
+    } else {
+        None
+    };
     let config = validate_validation_config(&state.store, workspace_id, raw).await?;
     if config.source_data_file_id.is_empty()
         || (config.keys.is_empty()
@@ -499,19 +597,34 @@ async fn queue_validation_chip_run(
         ));
     }
     access::require_dataset(&state.store, user, &config.source_data_file_id).await?;
-    let target_id = crate::planned_input::resolve_materialized_transform_input(
-        state,
-        user,
-        workspace_id,
-        &chip.id,
-        requested_input,
-        None,
-    )
-    .await?;
+    let target_id = match connected_pair {
+        Some(id) => id,
+        None => {
+            crate::planned_input::resolve_materialized_transform_input(
+                state,
+                user,
+                workspace_id,
+                &chip.id,
+                requested_input,
+                None,
+            )
+            .await?
+        }
+    };
     if target_id == config.source_data_file_id {
         return Err(AppError::bad("source and target data files must differ"));
     }
-    enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&target_id)).await
+    let resolved_config = serde_json::to_string(&config).map_err(|error| {
+        AppError::bad(format!("validation config serialization failed: {error}"))
+    })?;
+    enqueue_chip_run(
+        state,
+        chip,
+        workspace_id,
+        &resolved_config,
+        Some(&target_id),
+    )
+    .await
 }
 
 async fn queue_load_chip_run(
@@ -524,6 +637,18 @@ async fn queue_load_chip_run(
     access::require_workspace(&state.store, user, workspace_id).await?;
     if chip.active == 0 {
         return Err(AppError::conflict("chip is inactive"));
+    }
+    if chip.kind != "load" {
+        return Err(AppError::bad("expected load chip"));
+    }
+    let binding = state.store.get_chip_binding(&chip.id).await?;
+    if !binding
+        .as_ref()
+        .is_some_and(|binding| binding.ref_kind == "load_recipe")
+    {
+        return Err(AppError::bad(
+            "적재 설정이 적용되지 않았습니다. 적재 칩을 편집하고 저장해 주세요.",
+        ));
     }
     let config_raw = state
         .store
@@ -607,6 +732,15 @@ async fn queue_transform_chip_run(
     }
     if chip.kind != "transform" {
         return Err(AppError::bad("expected transform chip"));
+    }
+    let binding = state.store.get_chip_binding(&chip.id).await?;
+    if !binding
+        .as_ref()
+        .is_some_and(|binding| binding.ref_kind == "transform")
+    {
+        return Err(AppError::bad(
+            "변환 레시피가 설정되지 않았습니다. 변환 칩을 편집하고 저장해 주세요.",
+        ));
     }
     let config_raw = state
         .store
@@ -714,10 +848,7 @@ fn workspace_run_order(
         .map(|chip| (chip.id.clone(), Vec::<String>::new()))
         .collect::<HashMap<_, _>>();
     for edge in edges {
-        if edge.kind == "on_error"
-            || !incoming.contains_key(&edge.from_chip_id)
-            || !incoming.contains_key(&edge.to_chip_id)
-        {
+        if !incoming.contains_key(&edge.from_chip_id) || !incoming.contains_key(&edge.to_chip_id) {
             continue;
         }
         outgoing
@@ -782,12 +913,115 @@ pub(crate) async fn run_workspace_internal(
     }
 
     let mut run_ids = Vec::with_capacity(ordered.len());
+    let mut outputs = HashMap::<String, Option<String>>::new();
+    let mut outcomes = HashMap::<String, Option<bool>>::new();
+    let mut first_failure: Option<String> = None;
     for chip in ordered {
-        let run = queue_chip_run(&state, &user, &chip, &workspace_id, None).await?;
+        let condition_blocked = edges.iter().any(|edge| {
+            if edge.to_chip_id != chip.id {
+                return false;
+            }
+            match edge.kind.as_str() {
+                "on_success" => outcomes.get(&edge.from_chip_id) != Some(&Some(true)),
+                "on_error" => outcomes.get(&edge.from_chip_id) != Some(&Some(false)),
+                "always" => !outcomes.contains_key(&edge.from_chip_id),
+                _ => false,
+            }
+        });
+        if condition_blocked {
+            outputs.insert(chip.id.clone(), None);
+            outcomes.insert(chip.id.clone(), None);
+            continue;
+        }
+        let data_source = edges
+            .iter()
+            .find(|edge| edge.kind == "data" && edge.to_chip_id == chip.id)
+            .map(|edge| edge.from_chip_id.as_str());
+        let requested_input = match data_source {
+            Some(source_id) => match outputs.get(source_id).and_then(|value| value.as_deref()) {
+                Some(dataset_id) => Some(dataset_id.to_string()),
+                None => {
+                    let source_name = state
+                        .store
+                        .get_chip(source_id)
+                        .await?
+                        .map(|source| source.name)
+                        .unwrap_or_else(|| source_id.to_string());
+                    let reason = format!(
+                        "상위 칩 '{}'이 이번 전체 실행에서 dataset을 생성하지 못했습니다.",
+                        source_name
+                    );
+                    if let Some(id) =
+                        record_workspace_queue_failure(state, &chip, workspace_id, &reason).await?
+                    {
+                        run_ids.push(id);
+                    }
+                    outputs.insert(chip.id.clone(), None);
+                    outcomes.insert(chip.id.clone(), Some(false));
+                    first_failure.get_or_insert_with(|| format!("{}: {}", chip.name, reason));
+                    continue;
+                }
+            },
+            None => None,
+        };
+        let run = match queue_chip_run(state, user, &chip, workspace_id, requested_input).await {
+            Ok(run) => run,
+            Err(error) => {
+                let reason = error.message().to_string();
+                if let Some(id) =
+                    record_workspace_queue_failure(state, &chip, workspace_id, &reason).await?
+                {
+                    run_ids.push(id);
+                }
+                outputs.insert(chip.id.clone(), None);
+                outcomes.insert(chip.id.clone(), Some(false));
+                first_failure.get_or_insert_with(|| format!("{}: {}", chip.name, reason));
+                continue;
+            }
+        };
         run_ids.push(run.id.clone());
-        wait_for_chip_run(&state, &run.id).await?;
+        match wait_for_chip_run(state, &run.id).await {
+            Ok(()) => {
+                let completed = state.store.get_chip_run(&run.id).await?;
+                outputs.insert(
+                    chip.id.clone(),
+                    completed.and_then(|item| item.output_dataset_id),
+                );
+                outcomes.insert(chip.id.clone(), Some(true));
+            }
+            Err(error) => {
+                outputs.insert(chip.id.clone(), None);
+                outcomes.insert(chip.id.clone(), Some(false));
+                first_failure.get_or_insert_with(|| format!("{}: {}", chip.name, error.message()));
+            }
+        }
     }
-    Ok(run_ids)
+    match first_failure {
+        Some(failure) => Err(AppError::bad(failure)),
+        None => Ok(run_ids),
+    }
+}
+
+async fn record_workspace_queue_failure(
+    state: &AppState,
+    chip: &ChipRow,
+    workspace_id: &str,
+    reason: &str,
+) -> Result<Option<String>, AppError> {
+    // A queue-time validation failure must still be visible as this chip's
+    // latest failed run. Unconfigured chips may not have a resolvable binding,
+    // so persist an empty snapshot instead of silently dropping the history.
+    let config = state
+        .store
+        .resolve_chip_config_json(chip)
+        .await
+        .unwrap_or_else(|_| "{}".to_string());
+    let run = state
+        .store
+        .create_chip_run(&chip.id, workspace_id, chip.revision, &config, None)
+        .await?;
+    crate::execution_error::record_chip_failure(&state.store, &run.id, &chip.kind, reason).await;
+    Ok(Some(run.id))
 }
 
 async fn list_runs(
@@ -835,7 +1069,14 @@ async fn get_run_logs(
     let text = if !stored_logs.is_empty() {
         stored_logs
             .into_iter()
-            .map(|log| format!("{}  {:<5}  {}", log.ts, log.level, log.message))
+            .map(|log| {
+                format!(
+                    "{}  {:<5}  {}",
+                    crate::execution_error::display_timestamp(&log.ts),
+                    log.level,
+                    log.message
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     } else if run.kind == "load" {
@@ -1225,9 +1466,6 @@ async fn validate_validation_config(
     {
         return Ok(config);
     }
-    if config.source_data_file_id.is_empty() {
-        return Err(AppError::bad("source_data_file_id required"));
-    }
     if config.keys.is_empty() && config.validation_rule_id.is_none() {
         return Err(AppError::bad("at least one validation key required"));
     }
@@ -1240,14 +1478,16 @@ async fn validate_validation_config(
             return Err(AppError::bad("validation rule is inactive"));
         }
     }
-    let source = store
-        .get_dataset(&config.source_data_file_id)
-        .await?
-        .ok_or_else(|| AppError::not_found("validation source data file not found"))?;
-    if source.workspace_id != workspace_id {
-        return Err(AppError::bad(
-            "validation source belongs to another workspace",
-        ));
+    if !config.source_data_file_id.is_empty() {
+        let source = store
+            .get_dataset(&config.source_data_file_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("validation source data file not found"))?;
+        if source.workspace_id != workspace_id {
+            return Err(AppError::bad(
+                "validation source belongs to another workspace",
+            ));
+        }
     }
     Ok(config)
 }
@@ -1263,6 +1503,7 @@ async fn validate_extract_config(store: &Store, config: Value) -> Result<Value, 
             "source": { "type": "table", "table": "", "database": null },
             "delimiter": delimiter,
             "header": config.header.unwrap_or(true),
+            "add_sequence": config.add_sequence.unwrap_or(false),
         }));
     }
     if config.connection_id.trim().is_empty() {
@@ -1353,6 +1594,7 @@ async fn validate_extract_config(store: &Store, config: Value) -> Result<Value, 
         "source": source,
         "delimiter": delimiter,
         "header": config.header.unwrap_or(true),
+        "add_sequence": config.add_sequence.unwrap_or(false),
     }))
 }
 
@@ -1633,6 +1875,7 @@ async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         )
         .await
         .map_err(|error| error.to_string())?;
+    log_load_input_quality(store, &run.id, &dataset).await?;
     let result = execute_load_config(
         store,
         &config,
@@ -1674,6 +1917,155 @@ async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+const MAX_EMPTY_CELL_LOGS: usize = 100;
+
+#[derive(Debug)]
+struct EmptyCellIssue {
+    row_number: u64,
+    column: String,
+}
+
+#[derive(Debug)]
+struct InputQuality {
+    rows_scanned: u64,
+    empty_cells: u64,
+    issues: Vec<EmptyCellIssue>,
+}
+
+async fn log_load_input_quality(
+    store: &Store,
+    run_id: &str,
+    dataset: &storage::DatasetRow,
+) -> Result<(), String> {
+    let path = store.resolve(&dataset.stored_path);
+    if path
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(|v| v.eq_ignore_ascii_case("parquet"))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let delimiter = dataset.delimiter.as_deref().unwrap_or(",");
+    let delimiter = connectors::parse_delimiter(delimiter).map_err(|e| e.to_string())?;
+    let has_header = dataset.has_header.unwrap_or(1) != 0;
+    let quality =
+        tokio::task::spawn_blocking(move || inspect_delimited_input(&path, delimiter, has_header))
+            .await
+            .map_err(|e| e.to_string())??;
+    for issue in &quality.issues {
+        let context = serde_json::json!({
+            "process": "load",
+            "stage": "validate_input",
+            "error_code": "LOAD_INPUT_EMPTY_VALUE",
+            "row_number": issue.row_number,
+            "column": issue.column,
+            "retryable": false,
+        })
+        .to_string();
+        store
+            .append_execution_log(
+                run_id,
+                "warn",
+                "load_input_empty_value",
+                &format!(
+                    "입력 데이터 {}번째 행의 '{}' 컬럼이 비어 있습니다.",
+                    issue.row_number, issue.column
+                ),
+                Some(&context),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let context = serde_json::json!({
+        "process": "load",
+        "stage": "validate_input",
+        "rows_scanned": quality.rows_scanned,
+        "empty_cells": quality.empty_cells,
+        "detail_logs": quality.issues.len(),
+        "detail_limit": MAX_EMPTY_CELL_LOGS,
+        "details_truncated": quality.empty_cells as usize > quality.issues.len(),
+    })
+    .to_string();
+    store
+        .append_execution_log(
+            run_id,
+            if quality.empty_cells == 0 {
+                "info"
+            } else {
+                "warn"
+            },
+            "load_input_validated",
+            &format!(
+                "적재 입력 {}개 행을 검사했습니다. 빈 셀: {}개.",
+                quality.rows_scanned, quality.empty_cells
+            ),
+            Some(&context),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn inspect_delimited_input(
+    path: &std::path::Path,
+    delimiter: u8,
+    has_header: bool,
+) -> Result<InputQuality, String> {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .has_headers(has_header)
+        .from_path(path)
+        .map_err(|e| format!("load input csv open failed: {e}"))?;
+    let headers = if has_header {
+        reader
+            .headers()
+            .map_err(|e| format!("load input csv header failed at row 1: {e}"))?
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                if value.trim().is_empty() {
+                    format!("column_{}", index + 1)
+                } else {
+                    value.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut quality = InputQuality {
+        rows_scanned: 0,
+        empty_cells: 0,
+        issues: Vec::new(),
+    };
+    for record in reader.records() {
+        let record = record.map_err(|e| {
+            let row = e
+                .position()
+                .map(|p| p.record())
+                .unwrap_or(quality.rows_scanned + 1);
+            format!("load input csv parse failed at row {row}: {e}")
+        })?;
+        quality.rows_scanned += 1;
+        for (index, value) in record.iter().enumerate() {
+            if value.trim().is_empty() {
+                quality.empty_cells += 1;
+                if quality.issues.len() < MAX_EMPTY_CELL_LOGS {
+                    quality.issues.push(EmptyCellIssue {
+                        row_number: quality.rows_scanned,
+                        column: headers
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| format!("column_{}", index + 1)),
+                    });
+                }
+            }
+        }
+    }
+    Ok(quality)
+}
+
 pub(crate) struct LoadExecution {
     pub destination: String,
     pub loaded_rows: i64,
@@ -1699,7 +2091,7 @@ pub(crate) async fn execute_load_config(
             database,
             table,
         } => {
-            let csv = prepare_load_csv(store, run_id, dataset).await?;
+            let csv = prepare_load_csv(store, run_id, dataset, Some(LOAD_NULL_MARKER)).await?;
             let base = store
                 .live_connection(connection_id)
                 .await
@@ -1711,6 +2103,7 @@ pub(crate) async fn execute_load_config(
                 &csv,
                 &config.write_mode,
                 &config.conflict_keys,
+                Some(LOAD_NULL_MARKER),
             )
             .await
             .map_err(|e| e.to_string())? as i64;
@@ -1725,7 +2118,7 @@ pub(crate) async fn execute_load_config(
                     .map_err(|e| e.to_string())?;
             }
             if format == "csv" {
-                let csv = prepare_load_csv(store, run_id, dataset).await?;
+                let csv = prepare_load_csv(store, run_id, dataset, None).await?;
                 tokio::fs::copy(csv, &output)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -1770,6 +2163,7 @@ async fn prepare_load_csv(
     store: &Store,
     run_id: &str,
     dataset: &storage::DatasetRow,
+    null_value: Option<&'static str>,
 ) -> Result<std::path::PathBuf, String> {
     let input = store.resolve(&dataset.stored_path);
     let canonical = store.resolve(&format!("staging/load-{run_id}.csv"));
@@ -1786,11 +2180,14 @@ async fn prepare_load_csv(
     {
         let source = input.clone();
         let target = canonical.clone();
-        tokio::task::spawn_blocking(move || PolarsEngine::export_csv(&source, &target))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
-    } else if dataset.delimiter.as_deref().unwrap_or(",") == ","
+        tokio::task::spawn_blocking(move || {
+            PolarsEngine::export_csv_with_null_value(&source, &target, null_value)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    } else if null_value.is_none()
+        && dataset.delimiter.as_deref().unwrap_or(",") == ","
         && dataset.has_header.unwrap_or(1) != 0
     {
         return Ok(input);
@@ -1811,10 +2208,12 @@ async fn prepare_load_csv(
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
         let target = canonical.clone();
-        tokio::task::spawn_blocking(move || PolarsEngine::export_csv(&parquet, &target))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
+        tokio::task::spawn_blocking(move || {
+            PolarsEngine::export_csv_with_null_value(&parquet, &target, null_value)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
     }
     Ok(canonical)
 }
@@ -1824,6 +2223,8 @@ async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         .map_err(|error| format!("invalid extract config snapshot: {error}"))?;
     let delimiter = config.delimiter.unwrap_or_else(|| ",".into());
     let header = config.header.unwrap_or(true);
+    let add_sequence = config.add_sequence.unwrap_or(false);
+    let output_filename = config.output_filename.clone();
     let (kind, table, sql, database) = match config.source {
         ExtractSource::Table { table, database } => ("database", table, None, database),
         ExtractSource::Query { sql, database } => ("database", "query".into(), Some(sql), database),
@@ -1888,10 +2289,10 @@ async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         "table_name": table,
         "delimiter": delimiter,
         "header": header,
-        "add_sequence": false,
+        "add_sequence": add_sequence,
         "sql_text": sql,
         "catalog_database": database,
-        "output_filename": null,
+        "output_filename": output_filename,
     });
     store
         .prepare_extract_chip_run(&run.id, &snapshot.to_string())

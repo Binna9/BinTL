@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import { ArrowLeft, BookmarkPlus, FileDown, ScrollText, Play, RefreshCw, Table2 } from "lucide-react";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { CatalogTree } from "@/components/connections/CatalogTree";
 import { ConnectionInfoPanel } from "@/components/query/ConnectionInfoPanel";
 import {
@@ -108,7 +108,9 @@ export function QueryPage() {
   const { messages } = useLanguage();
   const location = useLocation();
   const navigate = useNavigate();
-  const returnWorkspaceId = (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
+  const { workspaceId, editorChipId } = useParams<{ workspaceId: string; editorChipId: string }>();
+  const editingChip = Boolean(workspaceId && editorChipId);
+  const returnWorkspaceId = workspaceId ?? (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
   const [params] = useSearchParams();
   const editorRef = useRef<SqlEditorHandle>(null);
   const sqlRef = useRef("");
@@ -120,6 +122,7 @@ export function QueryPage() {
   const { connectionColumns, columnsLoading, refreshColumns } =
     useConnectionColumns(browseId, selected);
   const [picked, setPicked] = useState<string[]>([]);
+  const [editingDatabase, setEditingDatabase] = useState<string>();
   const [sql, setSql] = useState("");
   sqlRef.current = sql;
   const [delimiter, setDelimiter] = useState(",");
@@ -160,6 +163,45 @@ export function QueryPage() {
     h: number;
   } | null>(null);
   const [editorSize, setEditorSize] = useState<{ w: number; h: number } | null>(null);
+
+  useEffect(() => {
+    if (!editorChipId || !workspaceId) return;
+    let cancelled = false;
+    void chipApi.get(editorChipId).then((chip) => {
+      if (cancelled) return;
+      const config = chip.config as {
+        connection_id?: unknown;
+        source?: { type?: unknown; sql?: unknown; table?: unknown; database?: unknown };
+        delimiter?: unknown;
+        header?: unknown;
+        add_sequence?: unknown;
+        output_filename?: unknown;
+      };
+      if (chip.kind !== "extract" || config.source?.type === "http") {
+        toastError(messages.workspace.loadError);
+        navigate(`/workspace/${workspaceId}`, { replace: true });
+        return;
+      }
+      const connectionId = typeof config.connection_id === "string" ? config.connection_id : "";
+      const database = typeof config.source?.database === "string" ? config.source.database : undefined;
+      const nextSql = config.source?.type === "query" && typeof config.source.sql === "string"
+        ? config.source.sql
+        : typeof config.source?.table === "string"
+          ? draftSelect(config.source.table, [])
+          : "";
+      setBrowseId(connectionId);
+      setEditingDatabase(database);
+      persistSql(nextSql);
+      setDelimiter(typeof config.delimiter === "string" ? config.delimiter : ",");
+      setHeader(config.header !== false);
+      setAddSequence(config.add_sequence === true);
+      setRegisterName(chip.name);
+      const output = typeof config.output_filename === "string" ? config.output_filename : "query.csv";
+      setRegisterOutputName(output);
+      setExportName(output.replace(/\.csv$/i, ""));
+    }).catch((reason) => toastError(messages.workspace.loadError, reason));
+    return () => { cancelled = true; };
+  }, [editorChipId, messages, navigate, workspaceId]);
   const runSeq = useRef(0);
   const toastedExtractFail = useRef("");
   const toastedExtractSuccess = useRef("");
@@ -338,6 +380,7 @@ export function QueryPage() {
       setBrowseId("");
       setSelected(null);
       setPicked([]);
+      setEditingDatabase(undefined);
       setResult(null);
       setSql("");
       sqlRef.current = "";
@@ -347,6 +390,7 @@ export function QueryPage() {
     setBrowseId(id);
     setSelected(null);
     setPicked([]);
+    setEditingDatabase(undefined);
     setResult(null);
     const saved = sqlByConnection.current[id] ?? "";
     setSql(saved);
@@ -355,6 +399,7 @@ export function QueryPage() {
 
   function onPickTable(next: CatalogSelection | null) {
     setSelected(next);
+    setEditingDatabase(next?.database);
     setPicked([]);
   }
 
@@ -382,6 +427,14 @@ export function QueryPage() {
     );
   }
 
+  const allColumnsPicked =
+    connectionColumns.length > 0 &&
+    connectionColumns.every((column) => picked.includes(column.name));
+
+  function toggleAllColumns() {
+    setPicked(allColumnsPicked ? [] : connectionColumns.map((column) => column.name));
+  }
+
   async function runQuery(previewLimit: number, openFresh: boolean) {
     if (!browseId || !sqlRef.current.trim()) return;
     const seq = ++runSeq.current;
@@ -402,7 +455,7 @@ export function QueryPage() {
         browseId,
         sqlRef.current,
         previewLimit,
-        selected?.database,
+        selected?.database ?? editingDatabase,
         logId,
       );
       if (seq !== runSeq.current) return;
@@ -432,7 +485,7 @@ export function QueryPage() {
       const created = await extractApi.createExtract({
         connection_id: browseId,
         table: selected?.qualified || "query",
-        database: selected?.database,
+        database: selected?.database ?? editingDatabase,
         sql: sqlRef.current,
         delimiter,
         header,
@@ -485,14 +538,47 @@ export function QueryPage() {
           source: {
             type: "query",
             sql,
-            ...(selected?.database ? { database: selected.database } : {}),
+            ...((selected?.database ?? editingDatabase) ? { database: selected?.database ?? editingDatabase } : {}),
           },
           delimiter,
           header,
+          add_sequence: addSequence,
         },
       });
       setIsRegisterOpen(false);
       toastSuccess(messages.query.taskRegisteredNamed(registerName.trim()));
+      if (returnWorkspaceId) {
+        navigate(`/workspace/${returnWorkspaceId}`, { state: location.state });
+      }
+    } catch (err) {
+      if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
+      else toastError(messages.workspace.saveChipError, err);
+    } finally {
+      setRegisterBusy(false);
+    }
+  }
+
+  async function onApplyChip() {
+    if (!editorChipId || !browseId || !sql.trim()) return;
+    setRegisterBusy(true);
+    try {
+      await chipApi.update(editorChipId, {
+        name: registerName.trim(),
+        output_filename: registerOutputName.trim() || "query",
+        extract: {
+          connection_id: browseId,
+          source: {
+            type: "query",
+            sql,
+            ...((selected?.database ?? editingDatabase) ? { database: selected?.database ?? editingDatabase } : {}),
+          },
+          delimiter,
+          header,
+          add_sequence: addSequence,
+        },
+      });
+      toastSuccess(messages.query.chipApplied);
+      navigate(`/workspace/${workspaceId}`, { state: location.state });
     } catch (err) {
       if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
       else toastError(messages.workspace.saveChipError, err);
@@ -649,7 +735,32 @@ export function QueryPage() {
 
             <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.columns]}>
               <section className="flex h-full min-h-0 flex-col overflow-hidden">
-                <PaneHeader title={messages.common.columns} meta={`${connectionColumns.length}`} />
+                <PaneHeader
+                  title={messages.common.columns}
+                  meta={`${connectionColumns.length}`}
+                  actions={
+                    connectionColumns.length > 0 ? (
+                      <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-text-secondary select-none">
+                        <input
+                          className="field-control"
+                          type="checkbox"
+                          checked={allColumnsPicked}
+                          onChange={toggleAllColumns}
+                          aria-label={
+                            allColumnsPicked
+                              ? messages.query.deselectAllColumns
+                              : messages.query.selectAllColumns
+                          }
+                        />
+                        <span>
+                          {allColumnsPicked
+                            ? messages.query.deselectAllColumns
+                            : messages.query.selectAllColumns}
+                        </span>
+                      </label>
+                    ) : null
+                  }
+                />
                 <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
                   {connectionColumns.length === 0 ? (
                     <p className="p-3 text-xs text-text-tertiary">{messages.query.columnsHint}</p>
@@ -818,10 +929,10 @@ export function QueryPage() {
               type="button"
               className="gap-2"
               disabled={!canRun || result?.kind === "exec"}
-              onClick={openRegister}
+              onClick={() => editingChip ? void onApplyChip() : void openRegister()}
             >
               <BookmarkPlus className="size-3.5" aria-hidden="true" />
-              {messages.query.registerTask}
+              {editingChip ? messages.query.applyChip : messages.query.registerTask}
             </Button>
           </>
         }

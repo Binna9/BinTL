@@ -9,12 +9,17 @@ import { WorkspaceTreePicker } from "@/components/workspace/WorkspaceTreePicker"
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
+import { cn } from "@/lib/cn";
 import { scheduleApi } from "@/services/schedule/scheduleApi";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { ScheduleRequest, ScheduleUnit, WorkspaceSchedule } from "@/types/schedule";
 import type { Workspace, WorkspaceFolder } from "@/types/workspace";
 
 const emptyDraft: ScheduleRequest = { workspace_id: "", name: "", schedule_type: "interval", interval_value: 1, interval_unit: "day", second: 0, hour: 0, minute: 0, day_of_month: 1, month_of_year: 1, enabled: true };
+const INTERVAL_LIMITS: Record<ScheduleUnit, { min: number; max: number }> = {
+  second: { min: 1, max: 60 }, minute: { min: 1, max: 60 }, hour: { min: 1, max: 24 },
+  day: { min: 1, max: 31 }, month: { min: 1, max: 12 }, year: { min: 1, max: 100 },
+};
 
 export function SchedulePage() {
   const { messages } = useLanguage();
@@ -24,6 +29,7 @@ export function SchedulePage() {
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [editing, setEditing] = useState<WorkspaceSchedule | null>(null);
   const [draft, setDraft] = useState<ScheduleRequest>(emptyDraft);
+  const [intervalInput, setIntervalInput] = useState("1");
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
@@ -37,17 +43,23 @@ export function SchedulePage() {
   }
   useEffect(() => { void refresh(); }, []);
   const workspaceNames = useMemo(() => new Map(workspaces.map((row) => [row.id, row.name])), [workspaces]);
+  const intervalLimit = INTERVAL_LIMITS[draft.interval_unit];
+  const parsedInterval = /^\d+$/.test(intervalInput) ? Number(intervalInput) : Number.NaN;
+  const intervalValid = Number.isInteger(parsedInterval)
+    && parsedInterval >= intervalLimit.min && parsedInterval <= intervalLimit.max;
   const valid = Boolean(draft.workspace_id && draft.name.trim()
-    && draft.interval_value >= 1
-    && (!(["month", "year"] as ScheduleUnit[]).includes(draft.interval_unit) || (draft.day_of_month ?? 0) >= 1)
-    && (draft.interval_unit !== "year" || (draft.month_of_year ?? 0) >= 1));
+    && intervalValid
+    && (!(["month", "year"] as ScheduleUnit[]).includes(draft.interval_unit)
+      || ((draft.day_of_month ?? 0) >= 1 && (draft.day_of_month ?? 0) <= 31))
+    && (draft.interval_unit !== "year"
+      || ((draft.month_of_year ?? 0) >= 1 && (draft.month_of_year ?? 0) <= 12)));
 
-  function beginCreate() { setEditing(null); setDraft({ ...emptyDraft, workspace_id: workspaces[0]?.id ?? "" }); setOpen(true); }
+  function beginCreate() { setEditing(null); setDraft({ ...emptyDraft, workspace_id: workspaces[0]?.id ?? "" }); setIntervalInput("1"); setOpen(true); }
   function beginEdit(row: WorkspaceSchedule) {
     setEditing(row); setDraft({ workspace_id: row.workspace_id, name: row.name, schedule_type: row.schedule_type,
       interval_value: row.interval_value, interval_unit: row.interval_unit, second: row.second ?? 0,
       hour: row.hour ?? 0, minute: row.minute ?? 0, day_of_month: row.day_of_month ?? 1,
-      month_of_year: row.month_of_year ?? 1, enabled: row.enabled }); setOpen(true);
+      month_of_year: row.month_of_year ?? 1, enabled: row.enabled }); setIntervalInput(String(row.interval_value)); setOpen(true);
   }
   function requestFor(row: WorkspaceSchedule, enabled = row.enabled): ScheduleRequest {
     return { workspace_id: row.workspace_id, name: row.name, schedule_type: row.schedule_type,
@@ -57,7 +69,8 @@ export function SchedulePage() {
   }
   async function save() {
     if (!valid) return; setBusy(true);
-    try { if (editing) await scheduleApi.update(editing.id, draft); else await scheduleApi.create(draft);
+    const request = { ...draft, interval_value: parsedInterval };
+    try { if (editing) await scheduleApi.update(editing.id, request); else await scheduleApi.create(request);
       setOpen(false); await refresh(); toastSuccess(t.saved); }
     catch (error) { toastError(t.saveError, error); } finally { setBusy(false); }
   }
@@ -107,13 +120,37 @@ export function SchedulePage() {
             <ChevronRight className="size-4 text-text-tertiary transition-transform group-hover:translate-x-0.5" />
           </button>
         </FormField>
-        <FormField label={t.cadence}>
-          <div className="grid grid-cols-[minmax(0,1fr)_minmax(8rem,0.8fr)] gap-2">
-            <div className="flex h-11 items-center overflow-hidden rounded-xl border border-border bg-surface focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/10">
-              <input type="number" min={1} className="min-w-0 flex-1 bg-transparent px-3 text-sm font-semibold outline-none" value={draft.interval_value} onChange={(e) => setDraft({ ...draft, interval_value: Number(e.target.value) })} />
-              <span className="pr-3 text-xs text-text-tertiary">{t.every}</span>
+        <FormField label={t.cadence} hint={t.intervalRange(intervalLimit.min, intervalLimit.max)}>
+          <div className="grid grid-cols-2 gap-2">
+            <div className={cn("field-control flex items-center overflow-hidden p-0", !intervalValid && intervalInput !== "" && "border-danger focus-within:border-danger focus-within:ring-danger/15")}>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={intervalLimit.min}
+                max={intervalLimit.max}
+                step={1}
+                className="min-w-0 flex-1 bg-transparent px-2.5 text-[13px] font-semibold outline-none"
+                value={intervalInput}
+                onChange={(event) => {
+                  const value = event.target.value.replace(/^0+(?=\d)/, "");
+                  setIntervalInput(value);
+                }}
+              />
+              <span className="pr-2.5 text-[11px] text-text-tertiary">{t.every}</span>
             </div>
-            <Select value={draft.interval_unit} onChange={(value) => setDraft({ ...draft, interval_unit: value as ScheduleUnit })} options={(Object.keys(t.units) as ScheduleUnit[]).map((unit) => ({ value: unit, label: t.units[unit] }))} />
+            <Select
+              value={draft.interval_unit}
+              onChange={(value) => {
+                const unit = value as ScheduleUnit;
+                const nextLimit = INTERVAL_LIMITS[unit];
+                const current = /^\d+$/.test(intervalInput) ? Number(intervalInput) : null;
+                setDraft({ ...draft, interval_unit: unit });
+                if (current !== null) {
+                  setIntervalInput(String(Math.min(nextLimit.max, Math.max(nextLimit.min, current))));
+                }
+              }}
+              options={(Object.keys(t.units) as ScheduleUnit[]).map((unit) => ({ value: unit, label: t.units[unit] }))}
+            />
           </div>
         </FormField>
         {draft.interval_unit === "year" ? <FormField label={t.month}><Select value={String(draft.month_of_year ?? 1)} onChange={(value) => setDraft({ ...draft, month_of_year: Number(value) })} options={Array.from({ length: 12 }, (_, index) => ({ value: String(index + 1), label: t.monthValue(index + 1) }))} /></FormField> : null}

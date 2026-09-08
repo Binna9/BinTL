@@ -140,6 +140,9 @@ export function LoadPage() {
         });
         toastSuccess(t.chipRegistered);
       }
+      if (workspaceMode || returnWorkspaceId) {
+        returnToWorkspace();
+      }
     } catch (error) {
       if (!workspaceMode && createdDefinitionId) {
         await loadApi.remove(createdDefinitionId).catch(() => undefined);

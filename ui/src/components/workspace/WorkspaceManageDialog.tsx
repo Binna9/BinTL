@@ -634,6 +634,11 @@ export function WorkspaceManageDialog({
     cancelEditor();
   }
 
+  const commitEditorRef = useRef(commitEditor);
+  commitEditorRef.current = commitEditor;
+  const editorActiveRef = useRef(Boolean(editor));
+  editorActiveRef.current = Boolean(editor);
+
   async function saveDraft() {
     if (!isDirty || busy || confirmingSaveRef.current) return;
     confirmingSaveRef.current = true;
@@ -801,6 +806,10 @@ export function WorkspaceManageDialog({
       if (event.target instanceof HTMLTextAreaElement) return;
       event.preventDefault();
       event.stopPropagation();
+      if (editorActiveRef.current) {
+        if (!event.repeat) commitEditorRef.current();
+        return;
+      }
       triggerSaveRef.current();
     }
     window.addEventListener("keydown", onKeyDown, true);

@@ -623,6 +623,14 @@ impl PolarsEngine {
     }
 
     pub fn export_csv(parquet: &Path, csv: &Path) -> Result<(), EngineError> {
+        Self::export_csv_with_null_value(parquet, csv, None)
+    }
+
+    pub fn export_csv_with_null_value(
+        parquet: &Path,
+        csv: &Path,
+        null_value: Option<&str>,
+    ) -> Result<(), EngineError> {
         let mut df = {
             let file = fs::File::open(parquet)?;
             ParquetReader::new(file).finish()?
@@ -631,9 +639,11 @@ impl PolarsEngine {
             fs::create_dir_all(parent)?;
         }
         let mut file = fs::File::create(csv)?;
-        CsvWriter::new(&mut file)
-            .include_header(true)
-            .finish(&mut df)?;
+        let mut writer = CsvWriter::new(&mut file).include_header(true);
+        if let Some(null_value) = null_value {
+            writer = writer.with_null_value(null_value.to_string());
+        }
+        writer.finish(&mut df)?;
         Ok(())
     }
 

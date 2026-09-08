@@ -75,9 +75,11 @@ export interface HttpPreviewRequest {
 
 export interface HttpPreviewResponse {
   status: number;
+  response: unknown;
   columns: string[];
   rows: string[][];
   row_count: number;
   truncated: boolean;
+  conversion_error?: string | null;
   limit: number;
 }

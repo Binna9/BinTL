@@ -388,6 +388,19 @@ export function WorkspacePage() {
       toastError(messages.workspace.dataEdgeNeedsPipelineTransform);
       return;
     }
+    let validationPort: "source" | "target" | undefined;
+    if (kind === "data" && to.kind === "validation") {
+      const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === toId);
+      if (incoming.some((edge) => edge.from_chip_id === fromId)) {
+        toastError(messages.workspace.edgeAlreadySame);
+        return;
+      }
+      validationPort = incoming.length === 0 ? "source" : "target";
+      if (incoming.some((edge) => edge.to_port === validationPort) || incoming.length >= 2) {
+        toastError(messages.workspace.validationInputsFull);
+        return;
+      }
+    }
     const existing = edges.filter(
       (edge) => edge.from_chip_id === fromId && edge.to_chip_id === toId,
     );
@@ -413,7 +426,7 @@ export function WorkspacePage() {
       to_chip_id: toId,
       kind,
       from_port: route.fromSide,
-      to_port: route.toSide,
+      to_port: validationPort ?? route.toSide,
     };
     const dropIds = new Set(existing.map((edge) => edge.id));
     const nextEdges = [
@@ -658,6 +671,9 @@ export function WorkspacePage() {
 
   function chipEditorPath(chip: Chip) {
     if (!workspaceId) return "/workspace";
+    if (chip.kind === "extract") {
+      return `/workspace/${workspaceId}/chips/${chip.id}/extract`;
+    }
     if (chip.kind === "validation") {
       return `/workspace/${workspaceId}/chips/${chip.id}/validation`;
     }
@@ -669,7 +685,7 @@ export function WorkspacePage() {
   }
 
   function openChipEditor(chip: Chip) {
-    if (chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation") return;
+    if (chip.kind !== "extract" && chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation") return;
     if (!workspaceId || currentWorkspaceRef.current !== workspaceId) return;
     void (async () => {
       const originalChipId = chip.id;
@@ -731,14 +747,34 @@ export function WorkspacePage() {
     );
     if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
     setBusy(true);
+    const previousRunIds = new Set(runs.map((run) => run.id));
     try {
       await chipApi.runWorkspace(workspaceId);
       if (currentWorkspaceRef.current !== workspaceId) return;
       const response = await chipApi.listRuns(workspaceId, { silent: true });
       setRuns(response.runs);
-      toastSuccess(messages.workspace.runQueued);
+      toastSuccess(messages.workspace.runWorkspaceCompleted);
     } catch (reason) {
-      toastError(messages.workspace.runChipError, reason);
+      if (currentWorkspaceRef.current !== workspaceId) return;
+      try {
+        const response = await chipApi.listRuns(workspaceId, { silent: true });
+        const currentRuns = response.runs.filter((run) => !previousRunIds.has(run.id));
+        setRuns(response.runs);
+        const failedNames = [...new Set(
+          currentRuns
+            .filter((run) => run.status === "failed")
+            .map((run) => chips.find((chip) => chip.id === run.chip_id)?.name)
+            .filter((name): name is string => Boolean(name)),
+        )];
+        toastError(
+          failedNames.length
+            ? messages.workspace.runFailedChips(failedNames.join(", "))
+            : messages.workspace.runChipError,
+          reason,
+        );
+      } catch {
+        toastError(messages.workspace.runChipError, reason);
+      }
     } finally {
       setBusy(false);
     }
@@ -1229,13 +1265,18 @@ export function WorkspacePage() {
               fromSide: asPortSide(edge.from_port, "right"),
               toSide: asPortSide(edge.to_port, "left"),
             };
+          const targetChip = chipsToSave.find((chip) => chip.id === edge.to_chip_id);
           return {
             id: edge.id,
             from_chip_id: edge.from_chip_id,
             to_chip_id: edge.to_chip_id,
             kind: edge.kind,
             from_port: route.fromSide,
-            to_port: route.toSide,
+            to_port: edge.kind === "data"
+              && targetChip?.kind === "validation"
+              && (edge.to_port === "source" || edge.to_port === "target")
+              ? edge.to_port
+              : route.toSide,
           };
         }),
       });
@@ -1279,7 +1320,10 @@ export function WorkspacePage() {
         messages.workspace.saveConfirmMessage,
       );
       if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
-      await saveCanvas();
+      const saved = await saveCanvas();
+      if (saved && currentWorkspaceRef.current === workspaceId) {
+        toastSuccess(messages.workspace.canvasSaved);
+      }
     } finally {
       confirmingSaveRef.current = false;
     }
@@ -1758,7 +1802,10 @@ export function WorkspacePage() {
   const latestByChip = useMemo(() => {
     const map = new Map<string, ChipRun>();
     for (const run of runs) {
-      if (!map.has(run.chip_id)) map.set(run.chip_id, run);
+      const current = map.get(run.chip_id);
+      if (!current || run.created_at.localeCompare(current.created_at) > 0) {
+        map.set(run.chip_id, run);
+      }
     }
     return map;
   }, [runs]);
@@ -2236,6 +2283,12 @@ export function WorkspacePage() {
               )}>
                 <Icon aria-hidden="true" />
               </span>
+              {chip.kind === "validation" ? (
+                <div className="pointer-events-none absolute -left-5 top-1/2 flex -translate-y-1/2 flex-col gap-1 text-[8px] font-bold uppercase tracking-wide">
+                  <span className="rounded bg-accent-subtle px-1 py-0.5 text-accent">S</span>
+                  <span className="rounded bg-success-subtle px-1 py-0.5 text-success">T</span>
+                </div>
+              ) : null}
               <span className="w-full truncate text-[11px] font-semibold leading-tight text-text">{chip.name}</span>
               <span className="text-[9px] font-medium uppercase tracking-wide text-text-tertiary">
                 {chipKindLabel(chip.kind, messages)}

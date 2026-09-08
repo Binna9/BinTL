@@ -279,6 +279,86 @@ impl Store {
             .ok_or_else(|| StorageError::NotFound("chip disappeared after register".into()))
     }
 
+    pub async fn update_extract_chip(
+        &self,
+        chip_id: &str,
+        name: &str,
+        connection_id: &str,
+        source_json: &str,
+        output_filename: Option<&str>,
+        delimiter: &str,
+        header: bool,
+        add_sequence: bool,
+    ) -> Result<ChipRow, StorageError> {
+        let chip = self
+            .get_chip(chip_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("chip not found".into()))?;
+        if chip.kind != "extract" {
+            return Err(StorageError::Invalid("chip is not an extract chip".into()));
+        }
+        let name = required_text(name, "chip name")?;
+        self.ensure_chip_name_available(&chip.owner_user_id, name, Some(chip_id))
+            .await?;
+        let binding = self
+            .get_chip_binding(chip_id)
+            .await?
+            .filter(|binding| binding.ref_kind == "extract_recipe")
+            .ok_or_else(|| StorageError::Invalid("extract chip has no extract recipe".into()))?;
+        let _ = self
+            .get_connection(connection_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("connection not found".into()))?;
+        require_config_json(source_json)?;
+        let filename = output_filename
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(crate::csv_output_filename)
+            .unwrap_or_else(|| chip_slot::display_filename(name, "extract", delimiter));
+        let source_type = serde_json::from_str::<serde_json::Value>(source_json)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("type")
+                    .and_then(|kind| kind.as_str())
+                    .map(str::to_owned)
+            })
+            .map(|kind| if kind == "http" { "api" } else { "database" })
+            .unwrap_or("database");
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE extracts SET name = ?, source_type = ?, connection_id = ?, source_json = ?,
+                    output_filename = ?, delimiter = ?, has_header = ?, add_sequence = ?,
+                    revision = revision + 1, updated_at = ? WHERE id = ?",
+        )
+        .bind(name)
+        .bind(source_type)
+        .bind(connection_id)
+        .bind(source_json)
+        .bind(filename)
+        .bind(delimiter)
+        .bind(i64::from(header))
+        .bind(i64::from(add_sequence))
+        .bind(&now)
+        .bind(&binding.ref_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE chips SET name = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
+        )
+        .bind(name)
+        .bind(&now)
+        .bind(chip_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        search::sync_search_best_effort(self, "chip", self.sync_search_chip(chip_id)).await;
+        self.get_chip(chip_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("chip disappeared after update".into()))
+    }
+
     pub async fn register_transform_chip(
         &self,
         input: &RegisterTransformChip,
@@ -488,19 +568,68 @@ impl Store {
 
     pub async fn delete_chip(&self, id: &str) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
-        let found: Option<String> = sqlx::query_scalar("SELECT id FROM chips WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        if found.is_none() {
+        let definitions: Option<(Option<String>, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT extract_id, transform_id, load_id FROM chips WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((extract_id, transform_id, load_id)) = definitions else {
             return Err(StorageError::NotFound("chip not found".into()));
-        }
+        };
+        let mut deleted_transform = false;
+        let mut deleted_load = false;
         sqlx::query("DELETE FROM chips WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        if let Some(definition_id) = extract_id.as_deref() {
+            sqlx::query(
+                "DELETE FROM extracts WHERE id = ?
+                 AND NOT EXISTS (SELECT 1 FROM chips WHERE extract_id = ?)",
+            )
+            .bind(definition_id)
+            .bind(definition_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        if let Some(definition_id) = transform_id.as_deref() {
+            deleted_transform = sqlx::query(
+                "DELETE FROM transforms WHERE id = ?
+                 AND NOT EXISTS (SELECT 1 FROM chips WHERE transform_id = ?)",
+            )
+            .bind(definition_id)
+            .bind(definition_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0;
+        }
+        if let Some(definition_id) = load_id.as_deref() {
+            deleted_load = sqlx::query(
+                "DELETE FROM loads WHERE id = ?
+                 AND NOT EXISTS (SELECT 1 FROM chips WHERE load_id = ?)",
+            )
+            .bind(definition_id)
+            .bind(definition_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0;
+        }
         tx.commit().await?;
         let _ = self.delete_search_document("chip", id).await;
+        if deleted_transform {
+            if let Some(definition_id) = transform_id {
+                let _ = self
+                    .delete_search_document("transform", &definition_id)
+                    .await;
+            }
+        }
+        if deleted_load {
+            if let Some(definition_id) = load_id {
+                let _ = self.delete_search_document("load", &definition_id).await;
+            }
+        }
         Ok(())
     }
 }

@@ -128,10 +128,14 @@ export function ChipContextMenu({
       onSelect: () => onProperties(chip),
     },
   ];
-  if (chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation") {
+  const extractSource = chip.config.source as { type?: unknown } | undefined;
+  const editableExtract = chip.kind === "extract" && extractSource?.type !== "http";
+  if (editableExtract || chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation") {
     items.push({
       id: "edit",
-      label: chip.kind === "load"
+      label: chip.kind === "extract"
+        ? messages.workspace.chipMenuEditExtract
+        : chip.kind === "load"
         ? messages.workspace.chipMenuEditLoad
         : chip.kind === "validation"
           ? messages.workspace.chipMenuEditValidation

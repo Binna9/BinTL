@@ -7,6 +7,26 @@ use connectors::{
 };
 use storage::{chip_slot, ProcessLog, Store};
 
+async fn append_extract_log(
+    store: &Store,
+    id: &str,
+    level: &str,
+    event_type: &str,
+    message: &str,
+    context: Option<&str>,
+) {
+    let _ = store
+        .append_execution_log(id, level, event_type, message, context)
+        .await;
+    if let Ok(Some(link)) = store.linked_chip_run_for_extract(id).await {
+        if link.run_id != id {
+            let _ = store
+                .append_execution_log(&link.run_id, level, event_type, message, context)
+                .await;
+        }
+    }
+}
+
 pub fn spawn(store: Store, id: String) {
     tokio::spawn(async move {
         if let Err(err) = run(&store, &id).await {
@@ -31,9 +51,26 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
     // Execution logs are stored in SQLite. Keep the legacy callback shape for
     // extraction progress without creating new per-run files.
     let log: Option<ProcessLog> = None;
-    let _ = store
-        .append_execution_log(id, "info", "extract_started", "extract started", None)
-        .await;
+    let started_context = serde_json::json!({
+        "process": "extract",
+        "stage": "read_source",
+        "extract_kind": row.kind,
+        "connection_id": row.connection_id,
+        "table": row.table_name,
+        "delimiter": row.delimiter,
+        "has_header": row.header != 0,
+        "add_sequence": row.add_sequence != 0,
+    })
+    .to_string();
+    append_extract_log(
+        store,
+        id,
+        "info",
+        "extract_started",
+        "추출을 시작했습니다.",
+        Some(&started_context),
+    )
+    .await;
     if let Some(log) = &log {
         let source = if row.kind == "api" {
             row.sql_text
@@ -63,15 +100,44 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
         if let Some(log) = &log {
             log.write("error", "failed", &err);
         }
-        let _ = store.set_extract_failed(id, &err).await;
-        let _ = store
-            .append_execution_log(id, "error", "extract_failed", &err, None)
-            .await;
+        let failure = crate::execution_error::classify("extract", &err);
+        let context = crate::execution_error::failure_context("extract", &err).to_string();
+        let diagnostic = context
+            .parse::<serde_json::Value>()
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("diagnostic")
+                    .and_then(|item| item.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| err.chars().take(8 * 1_024).collect());
+        let message = if diagnostic.is_empty() || diagnostic == failure.message {
+            failure.message.to_string()
+        } else {
+            format!("{} 원인: {}", failure.message, diagnostic)
+        };
+        let _ = store.set_extract_failed(id, failure.message).await;
+        append_extract_log(
+            store,
+            id,
+            "error",
+            "extract_failed",
+            &message,
+            Some(&context),
+        )
+        .await;
         return Err(err);
     }
-    let _ = store
-        .append_execution_log(id, "info", "extract_succeeded", "extract succeeded", None)
-        .await;
+    append_extract_log(
+        store,
+        id,
+        "info",
+        "extract_succeeded",
+        "추출이 완료되었습니다.",
+        None,
+    )
+    .await;
     Ok(())
 }
 
@@ -277,6 +343,21 @@ impl ExtractProgress {
         let id = self.id.clone();
         tokio::spawn(async move {
             let _ = store.set_extract_progress(&id, n as i64).await;
+            let context = serde_json::json!({
+                "process": "extract",
+                "stage": "write_output",
+                "rows_written": n,
+            })
+            .to_string();
+            append_extract_log(
+                &store,
+                &id,
+                "info",
+                "extract_progress",
+                &format!("{n}개 행을 추출했습니다."),
+                Some(&context),
+            )
+            .await;
         });
     }
 }

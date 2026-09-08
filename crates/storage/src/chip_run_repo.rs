@@ -329,8 +329,11 @@ impl Store {
         extract_id: &str,
     ) -> Result<Option<LinkedChipRun>, StorageError> {
         Ok(sqlx::query_as::<_, (String, String, String)>(
-            "SELECT p.id, p.chip_id, x.workspace_id FROM execution_steps p INNER JOIN executions x ON x.id=p.execution_id
-             WHERE p.id=? AND p.chip_id IS NOT NULL AND p.status IN ('queued','running')
+            "SELECT p.id, COALESCE(p.chip_id, x.trigger_id), x.workspace_id
+             FROM execution_steps p INNER JOIN executions x ON x.id=p.execution_id
+             WHERE p.id=?
+               AND (p.chip_id IS NOT NULL OR (x.source='chip' AND x.trigger_id IS NOT NULL))
+               AND p.status IN ('queued','running')
              UNION ALL
              SELECT p.id, p.chip_id, x.workspace_id FROM execution_steps p INNER JOIN executions x ON x.id=p.execution_id
              WHERE json_extract(p.result_json, '$.child_step_id')=? AND p.status IN ('queued','running')
@@ -412,6 +415,7 @@ impl Store {
                has_header = COALESCE(excluded.has_header, data_files.has_header),
                row_count = COALESCE(excluded.row_count, data_files.row_count),
                workspace_id = excluded.workspace_id,
+               deleted_at = NULL,
                updated_at = excluded.updated_at",
         )
         .bind(&dataset_id)

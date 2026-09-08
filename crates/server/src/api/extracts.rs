@@ -290,10 +290,12 @@ pub(super) async fn http_preview(
         .collect::<Vec<_>>();
     Ok(Json(json!({
         "status": preview.status,
+        "response": preview.response,
         "columns": preview.columns,
         "rows": rows,
         "row_count": preview.row_count,
         "truncated": preview.row_count > rows.len(),
+        "conversion_error": preview.conversion_error,
         "limit": limit,
     })))
 }
@@ -388,7 +390,14 @@ pub(super) async fn extract_logs(
         .list_logs(&id)
         .await?
         .into_iter()
-        .map(|log| format!("{}  {:<5}  {}", log.ts, log.level, log.message))
+        .map(|log| {
+            format!(
+                "{}  {:<5}  {}",
+                crate::execution_error::display_timestamp(&log.ts),
+                log.level,
+                log.message
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     Ok(Json(json!({ "id": id, "text": text })))
