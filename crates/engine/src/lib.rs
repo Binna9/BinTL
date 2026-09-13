@@ -1308,7 +1308,11 @@ fn read_any(
             let has_header = spec.has_header().unwrap_or(true);
             let mut opts = CsvReadOptions::default()
                 .with_has_header(has_header)
-                .map_parse_options(|o| o.with_separator(separator));
+                .map_parse_options(|o| {
+                    // ponytail: extra fields beyond the header are dropped, same as upload preview (flexible CSV).
+                    o.with_separator(separator)
+                        .with_truncate_ragged_lines(true)
+                });
             if let Some(n) = n_rows {
                 opts = opts.with_n_rows(Some(n));
             }
@@ -1540,6 +1544,27 @@ mod tests {
             .unwrap();
         assert_eq!(back.height(), 2);
         assert_eq!(back.get_column_names(), &["a", "b"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn csv_preview_truncates_ragged_lines() {
+        let dir = tmp("ragged");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "a,b\n1,2,extra\n3,4\n").unwrap();
+        let preview = PolarsEngine
+            .preview(&csv, &TransformSpec::identity(), 10)
+            .unwrap();
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(preview.rows[0], vec!["1", "2"]);
+        assert_eq!(preview.rows[1], vec!["3", "4"]);
         let _ = fs::remove_dir_all(&dir);
     }
 
