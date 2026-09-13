@@ -14,9 +14,11 @@ import {
   RotateCcw,
   Search,
   Trash2,
+  Unplug,
   Workflow,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
+import { EmptyState } from "@/components/DataGrid";
 import { CombineSetup } from "@/components/transform/CombineSetup";
 import {
   PreviewGrid,
@@ -28,6 +30,7 @@ import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
+import { DELIMITER_VALUES } from "@/lib/delimiter";
 import { MetaField } from "@/components/ui/meta-field";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
@@ -38,7 +41,7 @@ import { nextSequencedChipName } from "@/lib/chipSequence";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
 import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
-import { HttpError, isChipNameConflict } from "@/services/httpClient";
+import { HttpError, isChipNameConflict, isWorkspaceVersionConflict } from "@/services/httpClient";
 import { selectableClass } from "@/lib/selectable";
 import {
   canPreviewCombine,
@@ -91,7 +94,8 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   );
   const workspaceId = routeWorkspaceId ?? searchParams.get("workspace") ?? undefined;
   const chipId = routeChipId ?? searchParams.get("chip") ?? searchParams.get("input_chip") ?? undefined;
-  const workspaceMode = Boolean(workspaceId && chipId);
+  const canvasMode = Boolean(workspaceId && chipId);
+  const editingChip = Boolean(chipId);
   const navigationState = location.state as {
     canvasDraft?: unknown;
   } | null;
@@ -130,6 +134,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   const [registerBusy, setRegisterBusy] = useState(false);
   const [sourceMissing, setSourceMissing] = useState(false);
   const [inputSlot, setInputSlot] = useState<ChipInputSlotResponse | null>(null);
+  const [readDelimiter, setReadDelimiter] = useState(",");
   const [combineDraft, setCombineDraft] = useState<CombineDraft | null>(() => emptyCombineDraft());
   const [rightPreview, setRightPreview] = useState<FramePreview | null>(null);
   const [aggregateGroupBy, setAggregateGroupBy] = useState<string[]>([]);
@@ -229,15 +234,21 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     else params.set("section", nextSection);
     const base = workspaceId && chipId
       ? `/workspace/${workspaceId}/chips/${chipId}/transform${nextTransformId ? `/${nextTransformId}` : ""}`
-      : nextTransformId
-        ? `/transform/${nextTransformId}`
-        : "/transform";
+      : chipId
+        ? `/chips/${chipId}/transform${nextTransformId ? `/${nextTransformId}` : ""}`
+        : nextTransformId
+          ? `/transform/${nextTransformId}`
+          : "/transform";
     const query = params.toString();
     return query ? `${base}?${query}` : base;
   }
 
   function buildSpec(): TransformSpecV2 {
-    const cleanSpec = specFrom(selected, steps, baseColumns);
+    const cleanSpec = specFrom(
+      selected ? { ...selected, delimiter: readDelimiter } : selected,
+      steps,
+      baseColumns,
+    );
     const combine = combineDraftToSpec(combineDraft);
     return {
       version: 3,
@@ -344,6 +355,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
           return [...current, dataset];
         });
         setDatasetId(dataset.id);
+        if (dataset.delimiter) setReadDelimiter(dataset.delimiter);
         setName(defaultTransformName(slot.source_chip_name || dataset.filename));
       } catch (err) {
         if (!cancelled) toastError(messages.errors.workspace, err);
@@ -363,7 +375,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
       setAggregations([]);
       setRightPreview(null);
       setResultPreview(null);
-      if (!workspaceMode) {
+      if (!canvasMode) {
         setDatasetId(undefined);
         setName("");
         setSourcePreview(null);
@@ -387,7 +399,8 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
       .then((row) => {
         if (cancelled) return;
         setTransformId(row.id);
-        if (!workspaceMode) setDatasetId(row.dataset_id);
+        if (!canvasMode) setDatasetId(row.dataset_id);
+        if (!canvasMode && row.spec?.read?.delimiter) setReadDelimiter(row.spec.read.delimiter);
         setName(row.name);
         const cleanOperation = row.spec?.operations?.find((operation) => operation.type === "clean");
         const combineOperation = row.spec?.operations?.find(
@@ -433,7 +446,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     return () => {
       cancelled = true;
     };
-  }, [id, messages, workspaceMode]);
+  }, [canvasMode, id, messages]);
 
   useEffect(() => {
     if (!datasetId) {
@@ -647,6 +660,14 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     });
   }
 
+  function leaveEditor() {
+    if (workspaceId) {
+      returnToWorkspace();
+      return;
+    }
+    navigate("/chips");
+  }
+
   async function saveTransformDefinition(
     options: { returnToWorkspace?: boolean; updateRoute?: boolean } = {},
   ): Promise<string | undefined> {
@@ -677,9 +698,9 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
           navigate(editorPath(row.id), { replace: true, state: location.state });
         }
       }
-      if (workspaceMode && workspaceId && returnToWorkspace) {
+      if (editingChip && returnToWorkspace) {
         toastSuccess(messages.transform.saveToWorkspace);
-        navigate(`/workspace/${workspaceId}/chips/${chipId}`);
+        leaveEditor();
       }
       return savedTransformId;
     } catch (err) {
@@ -737,6 +758,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         const x = Number(searchParams.get("x"));
         const y = Number(searchParams.get("y"));
         await workspaceApi.save(workspaceId, {
+          version: workspace.version,
           layout: {
             ...workspace.layout,
             nodes: {
@@ -773,6 +795,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         }
       }
       if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
+      else if (isWorkspaceVersionConflict(err)) toastError(messages.workspace.versionConflict);
       else toastError(messages.errors.saveTransform, err);
     } finally {
       setRegisterBusy(false);
@@ -780,7 +803,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   }
 
   async function openRegister() {
-    if (workspaceMode) {
+    if (editingChip) {
       void saveTransformDefinition();
       return;
     }
@@ -832,7 +855,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
   async function exportResult() {
     let exportTransformId = transformId;
-    if (workspaceMode) {
+    if (editingChip) {
       exportTransformId = await saveTransformDefinition({ returnToWorkspace: false });
     }
     if (!exportTransformId) return;
@@ -853,17 +876,11 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     setDetailOpen(false);
     setFinalizedPreviewOpen(false);
     toastSuccess(messages.transform.saveToWorkspace);
-    if (workspaceId) {
-      navigate(`/workspace/${workspaceId}`, {
-        state: navigationState?.canvasDraft
-          ? { canvasDraft: navigationState.canvasDraft }
-          : undefined,
-      });
-    }
+    leaveEditor();
   }
 
   async function closeFinalizedPreview() {
-    if (workspaceMode) {
+    if (editingChip) {
       const confirmed = await showConfirm(
         messages.transform.cancelTransformTitle,
         messages.transform.cancelTransformMessage,
@@ -905,23 +922,23 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   return (
     <PageShell>
       <PageHeader
-        iconName="jobs"
+        iconName="transform"
         eyebrow={messages.transform.eyebrow}
         title={t.title}
         description={t.description}
         actions={
           <>
-            {workspaceMode ? (
+            {editingChip ? (
               <>
                 <Button
                   type="button"
                   variant="quiet"
                   className="gap-2"
                   disabled={busy}
-                  onClick={returnToWorkspace}
+                  onClick={leaveEditor}
                 >
                   <ArrowLeft className="size-3.5" aria-hidden="true" />
-                  {messages.transform.returnToWorkspace}
+                  {workspaceId ? messages.transform.returnToWorkspace : messages.chips.backToChips}
                 </Button>
                 <span className="w-3" aria-hidden="true" />
               </>
@@ -984,7 +1001,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
           defaultSizes={[layout.split.catalog]}
         >
           <aside className="flex min-h-0 flex-col overflow-hidden">
-            {workspaceMode ? (
+            {canvasMode ? (
               <>
                 <PaneHeader
                   title={messages.transform.catalog}
@@ -994,9 +1011,18 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                 />
                 <div className="scroll-pane min-h-0 flex-1 overflow-auto bg-surface">
                   {inputSlot?.mode === "unwired" ? (
-                    <p className="p-3 text-sm leading-6 text-text-secondary">
-                      {messages.transform.unwiredHint}
-                    </p>
+                    <EmptyState
+                      className="min-h-full"
+                      icon={<Unplug />}
+                      title={messages.transform.unwiredTitle}
+                      hint={messages.transform.unwiredHint}
+                      action={
+                        <Button type="button" variant="secondary" onClick={returnToWorkspace}>
+                          <ArrowLeft className="size-3.5" aria-hidden="true" />
+                          {messages.transform.returnToWorkspace}
+                        </Button>
+                      }
+                    />
                   ) : (
                     <div
                       className={cn(
@@ -1301,7 +1327,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               </div>
             ) : (
               <>
-                <div className="grid items-stretch gap-4 border-b border-border px-4 py-3 md:grid-cols-2">
+                <div className="grid items-stretch gap-4 border-b border-border px-4 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7.5rem]">
                   <FormField label={messages.transform.namePlaceholder}>
                     <div className="flex h-[3.25rem] items-start gap-2 rounded border border-border bg-surface px-2.5 py-1.5 text-[13px] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
                       <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
@@ -1323,6 +1349,20 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                       >
                         {selected.filename}
                       </span>
+                    </div>
+                  </FormField>
+                  <FormField label={messages.transform.readDelimiter}>
+                    <div title={messages.transform.readDelimiterHint}>
+                      <Select
+                        editable
+                        className="technical h-[3.25rem]"
+                        value={readDelimiter}
+                        options={DELIMITER_VALUES.map((value) => ({
+                          value,
+                          label: value === "tab" ? "tab" : value,
+                        }))}
+                        onChange={setReadDelimiter}
+                      />
                     </div>
                   </FormField>
                 </div>
@@ -1579,10 +1619,10 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               type="button"
               className="gap-2"
               disabled={busy}
-              onClick={workspaceMode ? () => void applyToWorkspaceChip() : openRegister}
+              onClick={editingChip ? () => void applyToWorkspaceChip() : openRegister}
             >
               <BookmarkPlus className="size-3.5" aria-hidden="true" />
-              {workspaceMode ? t.applyToChip : t.register}
+              {editingChip ? t.applyToChip : t.register}
             </Button>
           </>
         ) : (

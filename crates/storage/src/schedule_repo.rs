@@ -55,6 +55,7 @@ impl Store {
         month_of_year: Option<i64>,
         next_run_at: &str,
     ) -> Result<WorkspaceScheduleRow, StorageError> {
+        self.require_unique_schedule_name(name, None).await?;
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         sqlx::query(
@@ -100,6 +101,7 @@ impl Store {
         enabled: bool,
         next_run_at: &str,
     ) -> Result<WorkspaceScheduleRow, StorageError> {
+        self.require_unique_schedule_name(name, Some(id)).await?;
         let changed = sqlx::query(
             "UPDATE workspace_schedules SET workspace_id=?, name=?, schedule_type='interval', interval_value=?, interval_unit=?,
             second=?, hour=?, minute=?, day_of_month=?, month_of_year=?, enabled=?, next_run_at=?, updated_at=? WHERE id=?",
@@ -125,6 +127,36 @@ impl Store {
         self.get_workspace_schedule(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("schedule not found".into()))
+    }
+
+    async fn require_unique_schedule_name(
+        &self,
+        name: &str,
+        except_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let taken: i64 = match except_id {
+            Some(id) => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM workspace_schedules WHERE lower(trim(name)) = lower(trim(?)) AND id != ?",
+                )
+                .bind(name)
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM workspace_schedules WHERE lower(trim(name)) = lower(trim(?))",
+                )
+                .bind(name)
+                .fetch_one(&self.pool)
+                .await?
+            }
+        };
+        if taken > 0 {
+            return Err(StorageError::Conflict("schedule name already exists".into()));
+        }
+        Ok(())
     }
 
     pub async fn delete_workspace_schedule(&self, id: &str) -> Result<(), StorageError> {
@@ -179,7 +211,7 @@ impl Store {
         &self,
         workspace_id: &str,
     ) -> Result<bool, StorageError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM executions WHERE workspace_id=? AND status IN ('queued','running')")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM executions WHERE workspace_id=? AND source='workspace' AND status IN ('queued','running')")
             .bind(workspace_id).fetch_one(&self.pool).await?;
         Ok(count > 0)
     }

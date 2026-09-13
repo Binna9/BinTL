@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:adce97c3e2f265460a339b0b6ebe4dbf3d413e02a9ee9bd77882401891d0f127",
+  "claims": [
+    {
+      "id": "claim_d0162662744f4bc7b8bd8d0943e12113",
+      "statement": "engine은 파일과 TransformSpec만 해석하며 sink는 parquet이고, version 2/3 spec에 dest를 넣으면 거절한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/engine/src/lib.rs#L15-L18",
+          "version": "repo-lines-v1:sha256:04964c8c76720e00bb5853c86f88a85eb86fe1e1c1afbdcda96e8eabfd24ae3f:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDVkYzFjOTI0ZjI4Mjc5ZWYyNzkxZTA3YTVhY2EwYjRkZGRmMWZhYjg1MWUyYmJjOTI5ODVmNGFiZjA0OWIwYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTQ1MzY0MDYxN2E2YTUzZTUxNWEzM2Y5OGI2MjJhZDBiM2IyYzAwMjFhZjA4MDU3NDRkZDdmNTQ4MzM0MGE1OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWFkZmNjODNhOGRmZDk1NDU1MTYzZjBiNmEyZGRlMTRmMjM0ZGNmMmIyM2U2YmI2MzA4MDkyYWExYmM2ZmRiMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjQ2NDE1ZjYwZDFlNzU1YjQyYjA4Mjc2YjcyMTFkZGU3ZGVhOGRmYjdhZWY4ZWEwNDY2NDg1YjU0NDEwNTA5MyJ9"
+        },
+        {
+          "resource": "repo://crates/engine/src/lib.rs#L248-L272",
+          "version": "repo-lines-v1:sha256:a9a141a4768dc79d8eb16d8803e087c2ef2541385e6b1218a9b2f95aaddc77fa:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlNmI1ZTU4ZWJjMDU3MzIwNzYzNGE3MWMxY2NmZDY0MjFkNTNjYWRjMTlkNDkwZTEyMjY3NTJhMWM4YzY0ZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0ZjdmZDdlODEyNzYxOWJkYzA3MmJhZTk3Mjg3MjdjMTRiZjg3YzdjMDc2NWQ2OWUwNWFiYzY2NjU5MjIyZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0NjYwMzY2ZTZmNDg5MmM5NTk2YTg4OGMwOGFiOGNlZDdmYWYzOTY5MzM3MjFlNjRlZDc5ODYzNjg1NWYzZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlNzU3MDE2MmRjZjc5YmIwYjA5OTA4NDExZjkxM2M3OWE5Y2FkYjc3Y2JiOWQ4ODU5ZmRkYjY0MTA2NDAyMmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e9b0f7f2df154d24bfb86f5ae2220bb7",
+      "statement": "워크스페이스 모드 변환은 workspace+chip으로 들어가 업스트림 최신 출력을 입력으로 쓰고, 파일이 없는 planned preview에 스텝을 얹으면 거절한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/planned_input.rs#L544-L580",
+          "version": "repo-lines-v1:sha256:a1c93c85605f589b9cf9cafddf58f981a6fc1904ca1f2b29de27d45d6939f582:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxYTY0YjcyNTlhNzlkZjJmYTE0MzFiNGQ1YWUwODljZGEyZWUxMzczNGRjNjE3YTJjZmYyNjkxYWI2YjRjN2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhMWNkM2RlYTExYmI3YTFmZWVhMTgxZmVlZGZjNGFjNTU5MDk2NzJjOWIxMmQzNTIwZDkyN2U4ZmI1MzY3ZjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE0NGIzOTAzNmRmYjIyMDg5MzQ5YWQ2ZGUzODk1NTEyNTdjMDlmNGVjMmQ5N2FiMTA0MzkwMzc0MTc3ZjlmYTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxZmI5YWVjMjAxNmMzYmRiM2Y5Mzc2YjA0YzIyMWJhNDZmNjg0YWZlNjA4Mjc4ODA0YzlkMGU3YjVkOTQ3MTQifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/transform.rs#L463-L476",
+          "version": "repo-lines-v1:sha256:01122c0ce1af7af413a1478868c8ec41bf48aef4f2ecbfc9548bb6b4212e66bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZhNDA1YmE0MjU0MGE3N2I0ODcyYTY1N2JiOGEzOWM5MzFjZDg2NTc1YjVkNmI4NGYzZjM3YTg4MTY1MzE1OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmN2VjOGE4NDBiOWI0MjBlNjY1MzY3ZjdkYWEzMjFkZWU2ZjE2Yzk2Nzg4MzJjNDQyNjFhNmI2OWM4ZTVjYjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE0NGIzOTAzNmRmYjIyMDg5MzQ5YWQ2ZGUzODk1NTEyNTdjMDlmNGVjMmQ5N2FiMTA0MzkwMzc0MTc3ZjlmYTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIwYjY4N2IwNjUxZTUzOTM3MGRiYTlhOTFhNWM5OGQ1NjBkMDRhOTRkNDJlZjExNGMxMzNiYzI5ODdkYjY3MzAifQ"
+        },
+        {
+          "resource": "repo://ui/src/pages/TransformPage.tsx#L92-L98",
+          "version": "repo-lines-v1:sha256:429c3101d3ba250c32a42700e3b2c1dc5af015f601b95013cadb6da7e375b148:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzMyYmQ3ODYyYzY1ZjVmODBlNTg1NjIyZTk5YTMzMmI2NjQ3NTZmYWQ0OTM2NDFkYzUwOThiMTEyNzc3YmUwYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDE5Mzk3YjViZTI1ZGY1OTAwOGUwMjZjNDc5NTQyY2IxMTgwMDVkYjllZTcyMjUwYTcyNjU5ZTc4Y2E3Y2M3MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGJiZGY5Nzk1NjEyY2Q5Yzk2MzhiNjM1MTBhMjEzYmI2MDhmZGI2YzBiZDM0MjljNjE0N2Y3MWY5NzExYzFlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjgwMDE1OTdlNTYyYmY1YTQ0NTAxMGFhOWFmY2IwM2JkYjJmYjNkZGIwYTU0YWM4NTcxZTczM2JkMWIyODliZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_26ac4df7d7ab45d694170d190759d39d",
+      "statement": "칩 변환 결과는 chip_outputs 슬롯의 current.parquet에 겹어쓰고, Polars 본문은 spawn_blocking 안에서만 돌며 v2 스텝은 select/drop/rename/filter/cast/fill_null/sort/unique다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/engine/src/lib.rs#L92-L122",
+          "version": "repo-lines-v1:sha256:0a2bec24fa0510a73fbb049e96d5719ea09a5e3cf18776c5cae0bf4dd9430e4e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5NWU3NDNiZDVhZWVjYzE3OTE1YjM2NTMxNmQ1ODY3Yzk4MTk1MTIzYjIxMTE5YmI4N2NiMjQwNzg0MmJkZWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMGNkYjk3MmE3YmZiN2VkMjQ2ZjlmZjY3MjM4NWU1NWY0OTY4ZmMxMTA0M2RjNWI2ODRkNTFkZmEzMWRiY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3NjhkYTA4MjNkZjg0YjhlNDBjNTAzNmM3MTNlMzA5MDM2Yzc5MTc2ZTQzYjNmMmMzMmViYTQ0Nzk5MDdkNTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE4M2VjZTdkNTAxYmZjYmMwZjJkYjVmYzNiNjBmZjZjMGZkNzU2NTBmOWFiNWRlMGFiYTRjYTdlY2EwMDg5ZTkifQ"
+        },
+        {
+          "resource": "repo://crates/jobs/src/lib.rs#L147-L156",
+          "version": "repo-lines-v1:sha256:b60a642c3dbcdcbb6eda17d4d332cc6344fa462e093a651b45c9d8f1179d5ddc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmZWNiOWU4ZGY0ZWEyZTU1MTAxYWNmZmU1NmNlYWU0NmEwYzY1ZThlOTZkZmY2Yzc4NjQ1OTYwOWJiYWRiOGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4M2JkZmM3MTdjM2E3ZGNiNTNiZWMxZTc4NmM3ZmQxNTExNGYyNzY5OWQ5M2YzYTY1ZmRmNGVjMDhlNjg4N2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZjMzlhYWYzYTA4ZWMyNzZiNDJkNjdkNGZkMTk2ZWZjODg0NzA2NzA4N2I5YTRkYjFjYTMxMmI4YmMzZThjYTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhMjUzNWYyMmFmMmU5ZjdhNzMxYTE0ZTZiZjYyZjU5NWQ0MjQ1OWEyNjU0NWYxYjdiMDJiMzlmMzllYzhmZDkifQ"
+        },
+        {
+          "resource": "repo://crates/jobs/src/lib.rs#L80-L93",
+          "version": "repo-lines-v1:sha256:1ddba239c1bfdbd2545f9f0bd87401cbd3fe83d21914901a94f338a2b294958a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlOTc5MDZlYjc1MWU3MDI1NTlmMDE3NjljYjE2ZmYyMTI2ZDliMTg5MGQ2ODk0ZTFiMDJmOTcyZmRmMTRhZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0YTI3NTE0NGM5Y2E2ZGFmODBiNTQyZWIwODIxYzBkZmQ5MzEyZGMzYWQ2OTdiMDc1YjcyOGVhYWE0OGEzMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5MWUxY2U1YTBkOGYxYjY3ZjZhZTVhYWM0Njg0M2ViZjQ2MGYyNjA1ZTM2MTczODdmZDBkMWViOGIxNjlmNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyOTRlY2EzZDkwZjhmYzg0MDJmMTFiMzMzY2ViM2M5Yzc4OTg5Yjc4MjY2MGMwOTJmN2VhNmEwNDFmNTVjZGEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

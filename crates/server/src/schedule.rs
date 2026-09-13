@@ -202,6 +202,7 @@ async fn create(
     user: CurrentUser,
     Json(body): Json<ScheduleBody>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_etl_run(&user)?;
     validate(&body)?;
     access::require_workspace(&state.store, &user, &body.workspace_id).await?;
     let next = next_run(
@@ -240,6 +241,7 @@ async fn update(
     Path(id): Path<String>,
     Json(body): Json<ScheduleBody>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_etl_run(&user)?;
     validate(&body)?;
     let current = state
         .store

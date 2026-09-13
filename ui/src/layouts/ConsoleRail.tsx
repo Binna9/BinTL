@@ -49,12 +49,6 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
           icon: <Puzzle className={iconClassName} />,
           end: true,
         },
-        {
-          to: "/workspace/runs",
-          label: messages.nav.chipRuns,
-          icon: <History className={iconClassName} />,
-          end: true,
-        },
       ],
     },
     {
@@ -127,6 +121,14 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       to: "/history",
       label: messages.nav.history,
       icon: <History className={iconClassName} />,
+      children: [
+        {
+          to: "/history",
+          label: messages.nav.chipRuns,
+          icon: <History className={iconClassName} />,
+          end: true,
+        },
+      ],
     },
     {
       to: "/connections",

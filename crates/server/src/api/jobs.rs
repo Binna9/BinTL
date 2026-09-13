@@ -64,6 +64,7 @@ pub(super) async fn create_job(
     user: CurrentUser,
     Json(body): Json<CreateJobBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    access::require_transform_run(&user)?;
     let mut extract_read: Option<(String, bool)> = None;
     let mut workspace_id = body.workspace_id.clone();
     let source = if let Some(file_id) = body.file_id.clone() {
@@ -159,6 +160,7 @@ pub(super) async fn run_job(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_transform_run(&user)?;
     let job = access::require_job(&state.store, &user, &id).await?;
     if job.status == "running" {
         return Err(AppError::conflict("job already running"));

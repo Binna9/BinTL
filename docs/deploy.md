@@ -17,7 +17,8 @@ BinTL은 **설치형 단일 바이너리**다. 운영 환경에서는 `bintl` �
                                       └─ /*      (embed UI)
                                       └─ data/
                                            ├─ etl.db
-                                           ├─ extracts/
+                                           ├─ extract_runs/
+                                           ├─ chip_outputs/
                                            ├─ outputs/
                                            └─ logs/
 ```
@@ -92,18 +93,14 @@ just build
 ├── bintl              # 실행 파일
 ├── config.toml        # 운영 설정 (저장소에 커밋하지 않음)
 └── data/              # 기동 시 없으면 자동 생성
-    ├── etl.db         # SQLite (메타데이터·작업 이력)
-    ├── extracts/
-    │   ├── uploads/   # 업로드 파일
-    │   ├── databases/ # DB 추출 결과
-    │   └── api/       # API 추출 (예약)
-    ├── outputs/       # 변환(parquet 등) 결과
-    └── logs/          # 작업 진행 로그
-        ├── extracts/
-        ├── jobs/
-        ├── query/
-        ├── files/
-        └── connections/
+    ├── etl.db
+    ├── extract_runs/{uploads,databases,api}/
+    ├── chip_outputs/{workspace_id}/{chip_id}/
+    ├── outputs/       # 레거시 단독 변환
+    ├── loads/
+    ├── staging/
+    ├── user_images/   # default-image + {user_id}/ 프로필
+    └── logs/          # 쿼리·연결 운영 진단. 칩 로그는 DB
 ```
 
 `data/`는 **백업 대상**이다. 바이너리 업그레이드 시 그대로 둔다.
@@ -120,11 +117,8 @@ data_dir = "/opt/bintl/data"
 max_upload_mb = 512
 max_concurrent_jobs = 2
 session_secret = "랜덤-긴-문자열"   # 반드시 변경
+# encryption_secret = "다른-랜덤-문자열"  # 선택. 없으면 session_secret과 같다
 skip_auth = false
-
-[auth]
-username = "admin"
-password = "초기-비밀번호-변경"     # 최초 기동 후 UI에서 변경 권장
 ```
 
 ### 환경 변수 (설정 파일보다 우선)
@@ -134,8 +128,7 @@ password = "초기-비밀번호-변경"     # 최초 기동 후 UI에서 변경 
 | `ETL_BIND` | bind 주소 (`0.0.0.0:8080`) |
 | `ETL_DATA_DIR` | 데이터 디렉터리 |
 | `ETL_SESSION_SECRET` | 세션 HMAC 비밀 |
-| `ETL_AUTH_USERNAME` | 부트스트랩 로그인 ID |
-| `ETL_AUTH_PASSWORD` | 부트스트랩 비밀번호 (평문) |
+| `ETL_ENCRYPTION_SECRET` | 커넥션 암호 키. 없으면 `session_secret` |
 | `ETL_SKIP_AUTH` | `true`면 API 인증 생략 (**운영 금지**) |
 | `ETL_UI_DIR` | embed 대신 이 폴더의 정적 UI 서빙 |
 
@@ -144,14 +137,14 @@ password = "초기-비밀번호-변경"     # 최초 기동 후 UI에서 변경 
 ```ini
 # /etc/bintl/env (권한 600)
 ETL_SESSION_SECRET=...
-ETL_AUTH_PASSWORD=...
+ETL_ENCRYPTION_SECRET=...
 ```
 
 ### 최초 기동 (부트스트랩)
 
-- `data/etl.db`에 사용자가 없으면 `[auth]` 계정으로 admin 사용자를 만들고 admin 역할을 붙인다.
-- 기본 작업 공간이 없으면 함께 생성한다.
-- 이후 사용자·역할·권한은 UI `/settings` 또는 API로 관리한다.
+- `data/etl.db`에 사용자가 없으면 `admin` / `admin` 계정을 만들고 admin 역할을 붙인다. 비밀번호는 Argon2로 저장한다.
+- 기본 작업 공간이 없으면 함께 만들고, 있으면 그 계정 소유로 붙인다.
+- 기동 후 UI에서 비밀번호를 바꾼다. 이후 사용자·역할·권한은 `/settings` 또는 API로 관리한다.
 
 ---
 
@@ -298,8 +291,8 @@ DB 스키마는 기동 시 `crates/storage/migrations/`가 자동 적용된다. 
 | 대상 | 내용 | 주기 |
 | --- | --- | --- |
 | `data/etl.db` | 사용자, 작업 공간, 커넥션 메타, 실행 이력 | 매일 이상 |
-| `data/extracts/` | 업로드·추출 파일 | 용량에 따라 |
-| `data/outputs/` | 변환 결과 | 용량에 따라 |
+| `data/extract_runs/`, `data/chip_outputs/` | 업로드·추출·칩 최신 출력 | 용량에 따라 |
+| `data/outputs/`, `data/loads/` | 레거시 변환·파일 적재 | 용량에 따라 |
 | `config.toml` / `/etc/bintl/env` | bind, 비밀 (별도 안전 저장) | 변경 시 |
 
 SQLite 일관 백업 (서비스 중):
@@ -310,7 +303,7 @@ sqlite3 /opt/bintl/data/etl.db ".backup '/backup/etl-$(date +%F).db'"
 
 또는 서비스 중지 후 `etl.db` 파일 복사.
 
-복구: 백업 `data/`를 `/opt/bintl/data`에 복원 후 동일 `session_secret`을 유지한다. `session_secret`을 바꾸면 기존 세션 쿠키가 무효화된다.
+복구: 백업 `data/`를 `/opt/bintl/data`에 복원 후 동일 `encryption_secret`(또는 예전에 쓰던 `session_secret`)을 유지한다. `session_secret`만 바꾸면 세션 쿠키가 무효화되고, 암호 키를 바꾸면 저장된 커넥션 비밀번호를 복호화하지 못한다.
 
 ---
 

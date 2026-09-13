@@ -1,7 +1,7 @@
 import type { WorkspaceExecution } from "@/types/chip";
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Spline, Workflow, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Spline, Terminal, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -10,8 +10,10 @@ import {
 } from "@/components/workspace/ChipContextMenu";
 import {
   ChipPlaceDialog,
+  type ChipPlaceKind,
   type TransformPlaceDraft,
 } from "@/components/workspace/ChipPlaceDialog";
+import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
@@ -25,11 +27,11 @@ import { layout } from "@/lib/layout";
 import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { datasetApi } from "@/services/transform/datasetApi";
 import { chipApi } from "@/services/chips/chipApi";
-import { isChipNameConflict } from "@/services/httpClient";
+import { isChipNameConflict, isWorkspaceVersionConflict } from "@/services/httpClient";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { Dataset } from "@/types/dataset";
 import type { Chip, ChipEdge, ChipEdgeKind, ChipRun } from "@/types/chip";
-import { DRAFT_CHIP_ID_PREFIX, isDraftChipId } from "@/types/chip";
+import { DRAFT_CHIP_ID_PREFIX, chipEditorPath, isDraftChipId } from "@/types/chip";
 import type { Workspace, WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
 import {
   ACTIVE_STATUSES,
@@ -154,6 +156,7 @@ export function WorkspacePage() {
   currentWorkspaceRef.current = workspaceId;
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [canvasReloadKey, setCanvasReloadKey] = useState(0);
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [layersOpen, setLayersOpen] = useState(true);
   const [chips, setChips] = useState<Chip[]>([]);
@@ -197,10 +200,11 @@ export function WorkspacePage() {
   linkingRef.current = linking;
 
   const [pendingPlace, setPendingPlace] = useState<{
-    kind: "extract" | "transform" | "load" | "validation";
+    kind: ChipPlaceKind;
     point: Point;
   } | null>(null);
-  const lastPlaceKindRef = useRef<"extract" | "transform" | "load" | "validation">("extract");
+  const lastPlaceKindRef = useRef<ChipPlaceKind>("extract");
+  const [sqlEditor, setSqlEditor] = useState<{ chip: Chip | null } | null>(null);
   const [chipMenu, setChipMenu] = useState<ChipContextMenuState | null>(null);
   const [infoChip, setInfoChip] = useState<Chip | null>(null);
   const [logChipId, setLogChipId] = useState<string | null>(null);
@@ -404,10 +408,6 @@ export function WorkspacePage() {
       toastError(messages.workspace.dataEdgeInvalidPair);
       return;
     }
-    if (kind === "data" && to.kind === "transform" && chipFixedInputId(to)) {
-      toastError(messages.workspace.dataEdgeNeedsPipelineTransform);
-      return;
-    }
     let validationPort: "source" | "target" | undefined;
     if (kind === "data" && to.kind === "validation") {
       const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === toId);
@@ -424,14 +424,25 @@ export function WorkspacePage() {
     const existing = edges.filter(
       (edge) => edge.from_chip_id === fromId && edge.to_chip_id === toId,
     );
-    if (existing.some((edge) => edge.kind === kind) && existing.length === 1) {
+    // Transform/load take one data input. A new wire replaces the previous
+    // incoming data edge; the unique chip's standalone file stays as fallback.
+    const incomingData = kind === "data" && to.kind !== "validation"
+      ? edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === toId)
+      : [];
+    if (existing.some((edge) => edge.kind === kind) && incomingData.every((edge) => edge.from_chip_id === fromId)) {
       toastError(messages.workspace.edgeAlreadySame);
       return;
     }
-    if (existing.length > 0) {
+    const replacingIncoming = incomingData.some((edge) => edge.from_chip_id !== fromId);
+    const replacingFile = kind === "data"
+      && (to.kind === "transform" || to.kind === "load")
+      && Boolean(chipFixedInputId(to));
+    if (existing.length > 0 || replacingIncoming || replacingFile) {
       const confirmed = await showConfirm(
         messages.workspace.replaceEdgeTitle,
-        messages.workspace.replaceEdgeMessage(from.name, to.name),
+        replacingIncoming || replacingFile
+          ? messages.workspace.replaceInputMessage(from.name, to.name)
+          : messages.workspace.replaceEdgeMessage(from.name, to.name),
         { confirmLabel: messages.workspace.replaceEdgeConfirm },
       );
       if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
@@ -448,7 +459,10 @@ export function WorkspacePage() {
       from_port: route.fromSide,
       to_port: validationPort ?? route.toSide,
     };
-    const dropIds = new Set(existing.map((edge) => edge.id));
+    const dropIds = new Set([
+      ...existing.map((edge) => edge.id),
+      ...incomingData.map((edge) => edge.id),
+    ]);
     const nextEdges = [
       ...edges.filter((edge) => !dropIds.has(edge.id)),
       created,
@@ -588,7 +602,7 @@ export function WorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [messages, workspaceId]);
+  }, [canvasReloadKey, messages, workspaceId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -689,23 +703,12 @@ export function WorkspacePage() {
     };
   }, [hasActiveRun, messages, workspaceId]);
 
-  function chipEditorPath(chip: Chip) {
-    if (!workspaceId) return "/workspace";
-    if (chip.kind === "extract") {
-      return `/workspace/${workspaceId}/chips/${chip.id}/extract`;
-    }
-    if (chip.kind === "validation") {
-      return `/workspace/${workspaceId}/chips/${chip.id}/validation`;
-    }
-    const editor = chip.kind === "load" ? "load" : "transform";
-    const bindingKind = chip.kind === "load" ? "load_recipe" : "transform";
-    const bound = chip.binding?.ref_kind === bindingKind ? chip.binding.ref_id : undefined;
-    const base = `/workspace/${workspaceId}/chips/${chip.id}/${editor}`;
-    return bound ? `${base}/${bound}` : base;
+  function editorPathFor(chip: Chip) {
+    return workspaceId ? chipEditorPath(chip, workspaceId) : "/workspace";
   }
 
   function openChipEditor(chip: Chip) {
-    if (chip.kind !== "extract" && chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation") return;
+    if (chip.kind !== "extract" && chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation" && chip.kind !== "sql") return;
     if (!workspaceId || currentWorkspaceRef.current !== workspaceId) return;
     void (async () => {
       const originalChipId = chip.id;
@@ -721,12 +724,16 @@ export function WorkspacePage() {
       const savedChipId = savedDraftIdMapRef.current.get(originalChipId) ?? originalChipId;
       const currentChip = chipsRef.current.find((item) => item.id === savedChipId) ?? chip;
       if (isDraftChipId(currentChip.id)) return;
+      if (currentChip.kind === "sql") {
+        setSqlEditor({ chip: currentChip });
+        return;
+      }
       const snapshot = cloneCanvas(
         chipsRef.current,
         savedRef.current.positions,
         savedRef.current.edges,
       );
-      navigate(chipEditorPath(currentChip), {
+      navigate(editorPathFor(currentChip), {
         state: { canvasDraft: { workspaceId, ...snapshot } },
       });
     })();
@@ -946,7 +953,7 @@ export function WorkspacePage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [workspaceId, chips, edges]);
 
-  function placeTool(toolKind: "extract" | "transform" | "load" | "validation", point: Point) {
+  function placeTool(toolKind: ChipPlaceKind, point: Point) {
     if (!workspaceId) return;
     lastPlaceKindRef.current = toolKind;
     setPendingPlace({ kind: toolKind, point });
@@ -1267,6 +1274,7 @@ export function WorkspacePage() {
       }
 
       const response = await workspaceApi.save(requestWorkspaceId, {
+        version: selectedWorkspace?.version ?? 1,
         layout: {
           nodes: Object.fromEntries(
             Object.entries(positionsToSave).map(([id, point]) => [id, roundPoint(point)]),
@@ -1324,7 +1332,10 @@ export function WorkspacePage() {
     } catch (reason) {
       if (currentWorkspaceRef.current === requestWorkspaceId) {
         if (isChipNameConflict(reason)) toastError(messages.workspace.duplicateChipName);
-        else toastError(messages.workspace.saveChipError, reason);
+        else if (isWorkspaceVersionConflict(reason)) {
+          toastError(messages.workspace.versionConflict);
+          setCanvasReloadKey((key) => key + 1);
+        } else toastError(messages.workspace.saveChipError, reason);
       }
       return false;
     } finally {
@@ -1434,7 +1445,7 @@ export function WorkspacePage() {
   };
   resetCanvasRef.current = resetCanvas;
 
-  function onToolDragStart(kindValue: "extract" | "transform" | "load" | "validation", event: DragEvent<HTMLButtonElement>) {
+  function onToolDragStart(kindValue: ChipPlaceKind, event: DragEvent<HTMLButtonElement>) {
     event.dataTransfer.setData(TOOL_KIND, kindValue);
     event.dataTransfer.effectAllowed = "copy";
     const ghost = document.createElement("div");
@@ -1459,7 +1470,7 @@ export function WorkspacePage() {
     const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
     const point = { x: grab.x - NODE_W / 2, y: grab.y - NODE_H / 2 };
     const toolKind = event.dataTransfer.getData(TOOL_KIND);
-    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load" && toolKind !== "validation") return;
+    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load" && toolKind !== "validation" && toolKind !== "sql") return;
     placeTool(toolKind, point);
   }
 
@@ -1856,6 +1867,12 @@ export function WorkspacePage() {
       hint: messages.workspace.validationHint,
       icon: ShieldCheck,
     },
+    {
+      kind: "sql" as const,
+      label: messages.workspace.sql,
+      hint: messages.workspace.sqlHint,
+      icon: Terminal,
+    },
   ];
   const edgeTools = [
     {
@@ -2199,7 +2216,8 @@ export function WorkspacePage() {
           const latest = latestByChip.get(chip.id);
           const Icon = chip.kind === "transform" ? Workflow
             : chip.kind === "load" ? FileOutput
-              : chip.kind === "validation" ? ShieldCheck : DatabaseZap;
+              : chip.kind === "validation" ? ShieldCheck
+                : chip.kind === "sql" ? Terminal : DatabaseZap;
           return (
             <div
               key={chip.id}
@@ -2308,7 +2326,8 @@ export function WorkspacePage() {
                 "workspace-node-icon",
                 chip.kind === "extract" ? "is-extract"
                   : chip.kind === "load" ? "is-load"
-                    : chip.kind === "validation" ? "is-validation" : "is-transform",
+                    : chip.kind === "validation" ? "is-validation"
+                      : chip.kind === "sql" ? "is-sql" : "is-transform",
               )}>
                 <Icon aria-hidden="true" />
               </span>
@@ -2437,6 +2456,11 @@ export function WorkspacePage() {
           messages.workspace.defaultValidationChipName,
           (chip) => chip.kind === "validation",
         )}
+        defaultSqlName={nextSequencedChipName(
+          [...catalogChips, ...chips],
+          messages.workspace.defaultSqlChipName,
+          (chip) => chip.kind === "sql",
+        )}
         occupiedNames={[...catalogChips, ...chips].map((chip) => chip.name)}
         messages={messages}
         busy={busy}
@@ -2445,6 +2469,35 @@ export function WorkspacePage() {
         onPlaceNewTransform={(draft) => placeNewTransformChip(draft)}
         onPlaceNewLoad={placeNewLoadChip}
         onPlaceNewValidation={placeNewValidationChip}
+        onRegisterSql={() => setSqlEditor({ chip: null })}
+      />
+
+      <SqlChipEditorDialog
+        open={Boolean(sqlEditor)}
+        workspaceId={workspaceId}
+        chip={sqlEditor?.chip ?? null}
+        defaultName={nextSequencedChipName(
+          [...catalogChips, ...chips],
+          messages.workspace.defaultSqlChipName,
+          (chip) => chip.kind === "sql",
+        )}
+        occupiedNames={[...catalogChips, ...chips].map((chip) => chip.name)}
+        onClose={() => setSqlEditor(null)}
+        onSaved={(saved) => {
+          setCatalogChips((current) => {
+            const exists = current.some((item) => item.id === saved.id);
+            return exists
+              ? current.map((item) => (item.id === saved.id ? saved : item))
+              : [saved, ...current];
+          });
+          if (sqlEditor?.chip) {
+            setChips((current) => current.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)));
+          } else if (pendingPlace) {
+            placeCatalogChips([saved], pendingPlace.point);
+            setPendingPlace(null);
+          }
+          setSqlEditor(null);
+        }}
       />
 
       <ChipContextMenu
@@ -2558,12 +2611,15 @@ export function WorkspacePage() {
                     ? "bg-warning/10 text-warning ring-warning/20"
                     : propsChip?.kind === "validation"
                       ? "bg-violet-500/10 text-violet-600 ring-violet-500/20 dark:text-violet-400"
-                      : "bg-accent-subtle text-accent ring-accent/20",
+                      : propsChip?.kind === "sql"
+                        ? "bg-sky-500/10 text-sky-600 ring-sky-500/20 dark:text-sky-400"
+                        : "bg-accent-subtle text-accent ring-accent/20",
               )}>
                 {propsChip?.kind === "transform" ? <Workflow className="size-5" aria-hidden="true" />
                   : propsChip?.kind === "load" ? <FileOutput className="size-5" aria-hidden="true" />
                     : propsChip?.kind === "validation" ? <ShieldCheck className="size-5" aria-hidden="true" />
-                      : <DatabaseZap className="size-5" aria-hidden="true" />}
+                      : propsChip?.kind === "sql" ? <Terminal className="size-5" aria-hidden="true" />
+                        : <DatabaseZap className="size-5" aria-hidden="true" />}
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-text-tertiary">

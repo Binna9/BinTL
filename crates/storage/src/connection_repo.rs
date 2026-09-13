@@ -29,6 +29,9 @@ impl Store {
                     "http base URL required in host".into(),
                 ));
             }
+            if let Some(auth) = &new.http_auth {
+                auth.require_secrets(&new.username, &new.password)?;
+            }
         } else if new.host.trim().is_empty() || new.database.trim().is_empty() {
             return Err(StorageError::Invalid("host and database required".into()));
         }

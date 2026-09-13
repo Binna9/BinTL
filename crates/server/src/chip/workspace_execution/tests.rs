@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{AuthConfig, Config};
+use crate::config::Config;
 use std::sync::Arc;
 use storage::{NewConnection, WorkspaceSaveEdge};
 use tokio::task::JoinHandle;
@@ -17,7 +17,7 @@ impl Fixture {
         let root =
             std::env::temp_dir().join(format!("bintl-workspace-plan-{}", uuid::Uuid::new_v4()));
         let store = Store::open(&root, "test-secret").await.unwrap();
-        let user = CurrentUser(store.ensure_bootstrap("admin", "admin").await.unwrap());
+        let user = CurrentUser(store.ensure_bootstrap().await.unwrap());
         let workspace = store
             .insert_workspace("Execution test", None, user.id(), None)
             .await
@@ -45,11 +45,8 @@ impl Fixture {
             max_upload_mb: 1,
             max_concurrent_jobs: 1,
             session_secret: "test-secret".into(),
+            encryption_secret: "test-secret".into(),
             skip_auth: false,
-            auth: AuthConfig {
-                username: "admin".into(),
-                password: "admin".into(),
-            },
             ui_dir: None,
         });
         Self {
@@ -114,6 +111,7 @@ impl Fixture {
                 r#"{"nodes":{}}"#,
                 &chips.iter().map(|chip| chip.id.clone()).collect::<Vec<_>>(),
                 &edges,
+                None,
             )
             .await
             .unwrap();
@@ -396,6 +394,7 @@ async fn recipes_are_frozen_before_first_dispatch() {
                             from_port: "out".into(),
                             to_port: "in".into(),
                         }],
+                        None,
                     )
                     .await
                     .unwrap();
@@ -471,6 +470,39 @@ async fn conditional_skip_is_successful_and_does_not_trigger_error_handler() {
     for chip in [&b, &c] {
         assert_eq!(chip_run_json(&runs[&chip.id]).unwrap()["status"], "skipped");
     }
+    f.close(Some(worker)).await;
+}
+
+#[tokio::test]
+async fn sql_chip_runs_without_output_and_rejects_data_edges() {
+    let mut f = Fixture::new().await;
+    let sql = f
+        .chip(
+            "DoSql",
+            "sql",
+            json!({"connection_id": f.connection, "sql_text": "SELECT 1"}),
+        )
+        .await;
+    let extract = f.extract("Src", "SELECT 1 AS id").await;
+    let rejected = f
+        .state
+        .store
+        .save_workspace(
+            &f.workspace,
+            r#"{"nodes":{}}"#,
+            &[sql.id.clone(), extract.id.clone()],
+            &[edge(&extract, &sql, "data", "in")],
+            None,
+        )
+        .await;
+    assert!(rejected.is_err());
+    f.connect(vec![edge(&extract, &sql, "on_success", "in")])
+        .await;
+    let worker = f.worker();
+    f.run().await.unwrap();
+    let runs = f.runs().await;
+    assert_eq!(runs[&sql.id].status, "succeeded");
+    assert!(runs[&sql.id].output_dataset_id.is_none());
     f.close(Some(worker)).await;
 }
 

@@ -28,7 +28,7 @@ import { cn } from "@/lib/cn";
 import { isNotificationDialogOpen, showConfirm } from "@/lib/notifications";
 import { chipApi } from "@/services/chips/chipApi";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
-import type { Workspace, WorkspaceFolder } from "@/types/workspace";
+import { isDefaultWorkspace, type Workspace, type WorkspaceFolder } from "@/types/workspace";
 
 type Editor =
   | { mode: "create-folder"; parentId: string | null }
@@ -787,10 +787,14 @@ export function WorkspaceManageDialog({
         draftWorkspaces.filter((workspace) => !isDraftId(workspace.id)).map((w) => w.id),
       );
       const workspacesToDelete = originalWorkspaces.filter(
-        (workspace) => !keptWorkspaceIds.has(workspace.id),
+        (workspace) => !keptWorkspaceIds.has(workspace.id) && !isDefaultWorkspace(workspace.id),
       );
       for (const workspace of workspacesToDelete) {
         await workspaceApi.delete(workspace.id);
+      }
+      const defaultWorkspace = originalWorkspaces.find((workspace) => isDefaultWorkspace(workspace.id));
+      if (defaultWorkspace && !nextWorkspaces.some((workspace) => workspace.id === defaultWorkspace.id)) {
+        nextWorkspaces = [...nextWorkspaces, defaultWorkspace];
       }
 
       const keptFolderIds = new Set(
@@ -810,6 +814,8 @@ export function WorkspaceManageDialog({
       const message = reason instanceof Error ? reason.message : String(reason);
       if (message.includes("already exists")) {
         setError(messages.workspace.folderNameTaken);
+      } else if (message.includes("cannot delete the default workspace")) {
+        setError(messages.workspace.cannotDeleteDefault);
       } else {
         setError(`${messages.workspace.manageSaveError}: ${message}`);
       }
@@ -909,6 +915,10 @@ export function WorkspaceManageDialog({
   }
 
   async function removeWorkspace(workspace: Workspace) {
+    if (isDefaultWorkspace(workspace.id)) {
+      setError(messages.workspace.cannotDeleteDefault);
+      return;
+    }
     const confirmed = await showConfirm(
       messages.workspace.deleteWorkspaceTitle,
       messages.workspace.deleteWorkspaceMessage(workspace.name),
@@ -926,8 +936,13 @@ export function WorkspaceManageDialog({
     const selectedWorkspaceIds = [...selectedKeys]
       .filter((key) => key.startsWith("workspace:"))
       .map((key) => key.slice("workspace:".length));
+    const dropWorkspaceIds = new Set(selectedWorkspaceIds.filter((id) => !isDefaultWorkspace(id)));
     const selectedFolderCount = [...selectedKeys].filter((key) => key.startsWith("folder:")).length;
-    const hasContents = selectedWorkspaceIds.some((id) => {
+    if (dropWorkspaceIds.size === 0 && selectedFolderCount === 0) {
+      setError(messages.workspace.cannotDeleteDefault);
+      return;
+    }
+    const hasContents = [...dropWorkspaceIds].some((id) => {
       const workspace = draftWorkspaces.find((item) => item.id === id);
       return Boolean(
         workspace
@@ -936,10 +951,11 @@ export function WorkspaceManageDialog({
     });
     const confirmed = await showConfirm(
       messages.workspace.deleteSelectedTitle,
-      messages.workspace.deleteSelectedMessage(selectedWorkspaceIds.length, selectedFolderCount, hasContents),
+      messages.workspace.deleteSelectedMessage(dropWorkspaceIds.size, selectedFolderCount, hasContents),
       { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed) return;
+    if (selectedWorkspaceIds.some(isDefaultWorkspace)) setError(messages.workspace.cannotDeleteDefault);
     const folderIds = new Set(
       [...selectedKeys].filter((key) => key.startsWith("folder:")).map((key) => key.slice("folder:".length)),
     );
@@ -955,13 +971,13 @@ export function WorkspaceManageDialog({
     }
     setDraftFolders((current) => current.filter((folder) => !folderIds.has(folder.id)));
     setDraftWorkspaces((current) => current
-      .filter((workspace) => !selectedKeys.has(`workspace:${workspace.id}`))
+      .filter((workspace) => !dropWorkspaceIds.has(workspace.id))
       .map((workspace) => workspace.folder_id && folderIds.has(workspace.folder_id)
         ? { ...workspace, folder_id: null }
         : workspace));
     setSelectedKeys(new Set());
     setSelectionAnchor(null);
-    if (editor && "id" in editor && (folderIds.has(editor.id) || selectedKeys.has(`workspace:${editor.id}`))) cancelEditor();
+    if (editor && "id" in editor && (folderIds.has(editor.id) || dropWorkspaceIds.has(editor.id))) cancelEditor();
   }
 
   async function requestClose() {
@@ -1182,13 +1198,18 @@ export function WorkspaceManageDialog({
           {executionStatusIcon(workspace.id)}
           <AppWindow className="size-3.5 shrink-0" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
+          {isDefaultWorkspace(workspace.id) ? (
+            <span className="shrink-0 rounded-full bg-accent-subtle px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+              {messages.workspace.defaultWorkspaceBadge}
+            </span>
+          ) : null}
         </button>
         {rowActions(
           <>
             {iconButton(messages.common.edit, () => startEditWorkspace(workspace), (
               <Pencil className="size-3.5" aria-hidden="true" />
             ))}
-            {iconButton(
+            {isDefaultWorkspace(workspace.id) ? null : iconButton(
               messages.common.delete,
               () => void removeWorkspace(workspace),
               <Trash2 className="size-3.5" aria-hidden="true" />,

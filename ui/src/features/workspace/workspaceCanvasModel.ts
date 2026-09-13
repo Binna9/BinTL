@@ -9,6 +9,7 @@ export function chipKindLabel(kind: ChipKind, messages: Messages) {
   if (kind === "extract") return messages.workspace.extract;
   if (kind === "transform") return messages.workspace.transform;
   if (kind === "load") return messages.workspace.load;
+  if (kind === "sql") return messages.workspace.sql;
   return messages.workspace.validation;
 }
 

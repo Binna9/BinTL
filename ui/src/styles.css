@@ -2160,6 +2160,11 @@ a {
   background: transparent;
 }
 
+.workspace-node-icon.is-sql {
+  color: #0ea5e9;
+  background: transparent;
+}
+
 .workspace-node-icon svg {
   width: 0.95rem;
   height: 0.95rem;
@@ -2219,6 +2224,10 @@ a {
 .workspace-minimap-chip.is-load {
   /* Use the brighter warning tone to match workspace icons in the minimap */
   background: #e5b95d;
+}
+
+.workspace-minimap-chip.is-sql {
+  background: #0ea5e9;
 }
 
 .workspace-minimap-view {

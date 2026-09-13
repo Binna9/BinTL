@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use storage::LoadDefinitionRow;
 
-use crate::access::CurrentUser;
+use crate::access::{self, CurrentUser};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -67,6 +67,7 @@ async fn run_load(
     user: CurrentUser,
     Json(body): Json<RunLoadBody>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_etl_run(&user)?;
     let config = validate_load_config(&state.store, body.spec).await?;
     let dataset_id = config
         .input_dataset_id

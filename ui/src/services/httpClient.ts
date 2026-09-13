@@ -20,6 +20,18 @@ export function isChipNameConflict(error: unknown): boolean {
     && error.message === "chip name already exists";
 }
 
+export function isScheduleNameConflict(error: unknown): boolean {
+  return error instanceof HttpError
+    && error.status === 409
+    && error.message === "schedule name already exists";
+}
+
+export function isWorkspaceVersionConflict(error: unknown): boolean {
+  return error instanceof HttpError
+    && error.status === 409
+    && error.message === "workspace has changed, reload and save again";
+}
+
 export type HttpRequestInit = RequestInit & {
   /** When true, does not show the global loading overlay. */
   silent?: boolean;

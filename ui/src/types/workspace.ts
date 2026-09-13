@@ -9,6 +9,12 @@ export interface WorkspaceFolder {
   updated_at: string;
 }
 
+export const DEFAULT_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
+
+export function isDefaultWorkspace(id: string) {
+  return id === DEFAULT_WORKSPACE_ID;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -69,6 +75,7 @@ export interface SaveWorkspaceEdge {
 
 export interface SaveWorkspaceRequest {
   layout: WorkspaceLayout;
+  version: number;
   chips: string[];
   edges: SaveWorkspaceEdge[];
 }

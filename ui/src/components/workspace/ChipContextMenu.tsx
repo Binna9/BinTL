@@ -130,7 +130,7 @@ export function ChipContextMenu({
   ];
   const extractSource = chip.config.source as { type?: unknown } | undefined;
   const editableExtract = chip.kind === "extract" && extractSource?.type !== "http";
-  if (editableExtract || chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation") {
+  if (editableExtract || chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation" || chip.kind === "sql") {
     items.push({
       id: "edit",
       label: chip.kind === "extract"
@@ -139,6 +139,8 @@ export function ChipContextMenu({
         ? messages.workspace.chipMenuEditLoad
         : chip.kind === "validation"
           ? messages.workspace.chipMenuEditValidation
+        : chip.kind === "sql"
+          ? messages.workspace.chipMenuEditSql
         : messages.workspace.chipMenuEditSteps,
       icon: Pencil,
       onSelect: () => onEdit(chip),

@@ -56,23 +56,15 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let store = storage::Store::open(&config.data_dir, &config.session_secret)
+    let store = storage::Store::open(&config.data_dir, &config.encryption_secret)
         .await
         .unwrap_or_else(|e| {
             eprintln!("storage error: {e}");
             std::process::exit(1);
         });
 
-    store
-        .ensure_bootstrap(&config.auth.username, &config.auth.password)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("bootstrap user error: {e}");
-            std::process::exit(1);
-        });
-
-    store.recover_interrupted_workspace_executions().await.unwrap_or_else(|error| {
-        eprintln!("workspace execution recovery error: {error}");
+    store.recover_interrupted_executions().await.unwrap_or_else(|error| {
+        eprintln!("execution recovery error: {error}");
         std::process::exit(1);
     });
 

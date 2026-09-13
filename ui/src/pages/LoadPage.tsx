@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, BookmarkPlus, ChevronRight, Database, Eye, FileOutput, FileSpreadsheet, Play, RotateCcw, Search } from "lucide-react";
+import { ArrowLeft, BookmarkPlus, ChevronRight, Database, Eye, FileOutput, FileSpreadsheet, Play, RotateCcw, Search, Unplug } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
+import { EmptyState } from "@/components/DataGrid";
 import { CatalogTree } from "@/components/connections/CatalogTree";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { SplitLayout } from "@/layouts/SplitLayout";
@@ -35,7 +36,8 @@ export function LoadPage() {
   const location = useLocation();
   const returnWorkspaceId = (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
   const { workspaceId, editorChipId, id: routeId } = useParams<{ workspaceId: string; editorChipId: string; id: string }>();
-  const workspaceMode = Boolean(workspaceId && editorChipId);
+  const canvasMode = Boolean(workspaceId && editorChipId);
+  const editingChip = Boolean(editorChipId);
   const [loads, setLoads] = useState<LoadDefinition[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [inputSlot, setInputSlot] = useState<ChipInputSlotResponse | null>(null);
@@ -74,13 +76,13 @@ export function LoadPage() {
 
   const inputExtractId = (location.state as { inputExtractId?: string } | null)?.inputExtractId;
   useEffect(() => {
-    if (workspaceMode || !inputExtractId || userSelectedInput) return;
+    if (canvasMode || !inputExtractId || userSelectedInput) return;
     const dataset = datasets.find((item) => item.origin?.extract_id === inputExtractId);
     if (!dataset) return;
     setInputDatasetId(dataset.id);
     setUserSelectedInput(true);
     setExpandedKinds(new Set([dataset.kind as (typeof KIND_ORDER)[number]]));
-  }, [datasets, inputExtractId, userSelectedInput, workspaceMode]);
+  }, [canvasMode, datasets, inputExtractId, userSelectedInput]);
 
 
   const spec = useMemo<LoadSpec>(() => destinationType === "database"
@@ -91,7 +93,7 @@ export function LoadPage() {
   function reset() {
     setEditingId(undefined); setName(""); setDestinationType("database"); setConnectionId(""); setDatabase("");
     setTable(""); setSelectedTable(null); setFormat("parquet"); setFilename("result.parquet"); setWriteMode("append"); setConflictKeys([]);
-    if (!workspaceMode) setInputDatasetId("");
+    if (!canvasMode) setInputDatasetId("");
   }
 
   function returnToWorkspace() {
@@ -100,9 +102,17 @@ export function LoadPage() {
     navigate(`/workspace/${targetWorkspaceId}`, { state: location.state });
   }
 
+  function leaveEditor() {
+    if (workspaceId || returnWorkspaceId) {
+      returnToWorkspace();
+      return;
+    }
+    navigate("/chips");
+  }
+
   function edit(load: LoadDefinition) {
     setEditingId(load.id); setName(load.name); setDestinationType(load.destination_type); setWriteMode(load.spec.write_mode === "replace" ? "truncate" : load.spec.write_mode); setConflictKeys(load.spec.conflict_keys ?? []);
-    if (!workspaceMode) setInputDatasetId(load.spec.input_dataset_id ?? "");
+    if (!canvasMode) setInputDatasetId(load.spec.input_dataset_id ?? "");
     if (load.spec.destination.type === "database") {
       setConnectionId(load.spec.destination.connection_id);
       setDatabase(load.spec.destination.database ?? "");
@@ -127,7 +137,7 @@ export function LoadPage() {
     setBusy(true);
     let createdDefinitionId: string | undefined;
     try {
-      if (workspaceMode) {
+      if (editingChip) {
         if (editingId) {
           await loadApi.update(editingId, { name: resolvedName, spec, input_chip_id: editorChipId });
         } else {
@@ -151,15 +161,15 @@ export function LoadPage() {
         });
         toastSuccess(t.chipRegistered);
       }
-      if (workspaceMode || returnWorkspaceId) {
-        returnToWorkspace();
+      if (editingChip || returnWorkspaceId) {
+        leaveEditor();
       }
     } catch (error) {
-      if (!workspaceMode && createdDefinitionId) {
+      if (!editingChip && createdDefinitionId) {
         await loadApi.remove(createdDefinitionId).catch(() => undefined);
       }
       if (isChipNameConflict(error)) toastError(messages.workspace.duplicateChipName);
-      else toastError(workspaceMode ? t.applyError : t.registerError, error);
+      else toastError(editingChip ? t.applyError : t.registerError, error);
     } finally { setBusy(false); }
   }
 
@@ -181,7 +191,7 @@ export function LoadPage() {
       setBusy(false);
     }
   }
-  const inputDatasets = workspaceMode
+  const inputDatasets = canvasMode
     ? datasets.filter((item) => item.id === inputDatasetId)
     : datasets;
   const groupedInputs = KIND_ORDER.map((kind) => ({
@@ -240,12 +250,25 @@ export function LoadPage() {
   // definition is saved, its binding is the authoritative saved editor state.
   // Restore it even when an older canvas URL does not include the definition id.
   useEffect(() => {
-    if (!workspaceId || !editorChipId || routeId || loads.length === 0) return;
-    void chipApi.list(workspaceId).then((response) => {
-      const chip = response.chips.find((item) => item.id === editorChipId);
-      if (chip?.binding?.ref_kind !== "load_recipe") return;
-      const savedLoad = loads.find((item) => item.id === chip.binding?.ref_id);
-      if (savedLoad) edit(savedLoad);
+    if (!editorChipId || routeId || loads.length === 0) return;
+    if (workspaceId) {
+      void chipApi.list(workspaceId).then((response) => {
+        const chip = response.chips.find((item) => item.id === editorChipId);
+        if (chip?.binding?.ref_kind !== "load_recipe") return;
+        const savedLoad = loads.find((item) => item.id === chip.binding?.ref_id);
+        if (savedLoad) edit(savedLoad);
+      }).catch((error) => toastError(t.loadError, error));
+      return;
+    }
+    void chipApi.get(editorChipId).then((chip) => {
+      if (chip.binding?.ref_kind === "load_recipe") {
+        const savedLoad = loads.find((item) => item.id === chip.binding?.ref_id);
+        if (savedLoad) {
+          edit(savedLoad);
+          return;
+        }
+      }
+      setName(chip.name);
     }).catch((error) => toastError(t.loadError, error));
   }, [editorChipId, loads, routeId, workspaceId]);
 
@@ -264,17 +287,17 @@ export function LoadPage() {
   return (
     <PageShell>
       <PageHeader
-        iconName="jobs"
+        iconName="load"
         eyebrow={t.eyebrow}
         title={t.title}
         description={t.description}
         actions={
           <>
-            {(workspaceMode || returnWorkspaceId) ? (
+            {(editingChip || returnWorkspaceId) ? (
               <>
-                <Button variant="quiet" className="gap-2" disabled={busy} onClick={returnToWorkspace}>
+                <Button variant="quiet" className="gap-2" disabled={busy} onClick={leaveEditor}>
                   <ArrowLeft className="size-3.5" aria-hidden="true" />
-                  {t.returnToWorkspace}
+                  {workspaceId || returnWorkspaceId ? t.returnToWorkspace : messages.chips.backToChips}
                 </Button>
                 <span className="w-3" aria-hidden="true" />
               </>
@@ -285,7 +308,7 @@ export function LoadPage() {
             </Button>
             <Button variant="secondary" disabled={busy || !canSave} onClick={() => void save()}>
               <BookmarkPlus className="size-3.5" />
-              {busy ? messages.common.saving : workspaceMode ? t.applyToChip : t.registerChip}
+              {busy ? messages.common.saving : editingChip ? t.applyToChip : t.registerChip}
             </Button>
             <span
               className="relative mx-5 h-8 w-px shrink-0 bg-gradient-to-b from-transparent via-border-strong to-transparent"
@@ -346,7 +369,7 @@ export function LoadPage() {
                 <section className="flex min-h-[32rem] flex-col overflow-hidden rounded-xl border border-border/80 bg-surface/95 shadow-[0_6px_18px_rgba(15,23,42,0.06)]">
                   <PaneHeader
                     title={messages.transform.catalog}
-                    meta={messages.common.count(workspaceMode ? (inputSlot && inputSlot.mode !== "unwired" ? 1 : 0) : datasets.length)}
+                    meta={messages.common.count(canvasMode ? (inputSlot && inputSlot.mode !== "unwired" ? 1 : 0) : datasets.length)}
                     actions={
                       <Button
                         type="button"
@@ -361,8 +384,19 @@ export function LoadPage() {
                     }
                   />
                   <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
-                    {workspaceMode && inputSlot?.mode === "unwired" ? (
-                      <p className="p-3 text-sm leading-6 text-text-secondary">{messages.transform.unwiredHint}</p>
+                    {canvasMode && inputSlot?.mode === "unwired" ? (
+                      <EmptyState
+                        className="min-h-full"
+                        icon={<Unplug />}
+                        title={messages.transform.unwiredTitle}
+                        hint={messages.transform.unwiredHint}
+                        action={
+                          <Button type="button" variant="secondary" onClick={returnToWorkspace}>
+                            <ArrowLeft className="size-3.5" aria-hidden="true" />
+                            {t.returnToWorkspace}
+                          </Button>
+                        }
+                      />
                     ) : (
                       <div className="space-y-2 p-2">
                         {groupedInputs.map((group) => {
@@ -423,7 +457,7 @@ export function LoadPage() {
                                     "flex w-full min-w-0 items-start gap-2 border-b border-border px-3 py-2.5 text-left last:border-b-0",
                                     selectableClass(inputDatasetId === dataset.id),
                                   )}
-                                  disabled={workspaceMode}
+                                  disabled={canvasMode}
                                   onClick={() => { setInputDatasetId(dataset.id); setUserSelectedInput(true); }}
                                 >
                                   <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
@@ -455,7 +489,7 @@ export function LoadPage() {
                   <PaneHeader
                     title={t.destinationSettings}
                     description={t.destinationSettingsHint}
-                    actions={(!workspaceMode || userSelectedInput) ? (
+                    actions={(!canvasMode || userSelectedInput) ? (
                         <Button type="button" variant="primary" className="gap-1.5" disabled={!canRun || busy} onClick={() => void runLoad()}>
                           <Play className="size-3.5" aria-hidden="true" />
                           {busy ? messages.common.running : messages.common.run}

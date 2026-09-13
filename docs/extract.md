@@ -1,185 +1,52 @@
-# 추출 (Extract)
+# 추출
 
-작성: 2026-08-22
+작성: 2026-09-13
 
-이 문서는 제품에서 추출이 의미하는 것, 이번에 짠 회로, 구현한 API/화면, 의도적으로 안 한 것을 한곳에 둔다.
+추출은 DB에 바로 넣는 단계가 아니다. 커넥션의 테이블·SQL·HTTP 또는 업로드를 **서버 파일**로 남긴다. Polars를 쓰지 않는다. DB→DB로 파일을 건너뛰지 않는다.
 
-## 제품에서 추출이 의미하는 것
+제품 경로: `/db`에서 칩으로 저장하면 extract 칩을 만들고 실행한다. 같은 동작으로 두 번째 단독 추출 파일을 쓰지 않는다.
 
-추출은 DB에서 타깃으로 바로 넣는 단계가 아니다.
-**커넥션으로 테이블을 보고, 구분자를 정한 뒤, 서버에 파일을 남기는 단계**다.
-
-```
-커넥션
-  → 테이블 / 컬럼 / 미리보기 (클라이언트처럼)
-  → 구분자·헤더 선택
-  → 서버 파일 생성  (data/extracts/databases/{id}/…)
-  → 그 파일을 변환(Polars) · 적재의 입력으로 사용
-```
-
-파일은 중간 찌꺼기가 아니라 작업 공간이다. 서버에서 열어보고 나중에 고칠 수 있다.
-
-하지 않는 방향:
-
-- DB → DB 스트림으로 파일을 건너뛰지 않는다.
-- “변환 없음”이어도 추출 파일은 남긴다. 변환 없음은 변환 UI를 아직 안 쓴 상태일 뿐이다.
-- Polars는 추출에 쓰지 않는다. 추출은 connectors + sqlx/tiberius + csv.
-
-## 이번에 한 일
-
-### 1. 코어 `crates/connectors`
-
-새 모듈:
-
-- `inspect.rs` — 스키마/미리보기
-- `extract.rs` — 구분자 파일 기록
-
-| 심볼 | 역할 |
-| --- | --- |
-| `ExtractOptions` | `delimiter: u8`, `header: bool`, `quote: u8` (`"` 고정) |
-| `parse_delimiter` | `,` `\|` `;` `^` `tab`/`\t` 또는 ASCII 문자 하나 |
-| `list_columns(conn, table)` | 이름, 타입, nullable. 순서는 `ordinal_position` / `PRAGMA cid` |
-| `preview_table(conn, table, limit)` | 샘플 행. 기본 50, 최대 200. MSSQL은 `TOP` |
-| `extract_table(..., options)` | `SELECT *`를 지정 구분자 파일로 스트림 기록 |
-
-추출 동작 디테일:
-
-- 헤더는 `information_schema` / `PRAGMA`에서 가져온다. 0행 테이블도 헤더만 있는 파일을 남긴다.
-- 행은 `fetch` / `into_row_stream`으로 쓴다. 예전처럼 `fetch_all`로 테이블 전체를 RAM에 올리지 않는다.
-- 테이블/스키마 식별자는 기존 `parse_table`과 같다 (`name` 또는 `schema.name`, `[A-Za-z0-9_]`만).
-- 스키마 생략 시 postgres=`public`, mssql=`dbo`, mysql=`DATABASE()`, sqlite는 테이블명만.
-
-스키마가 없는 테이블을 가리키면 `no columns for table …`로 실패한다.
-
-### 2. 저장 `crates/storage`
-
-- 마이그레이션 `0003_extracts.sql`
-- 테이블 `extracts`는 접속정보와 같이 `data/etl.db`에 영구 보관
-- 파일 위치: `{data_dir}/extracts/{kind}/{id}/{filename}`
-  - `uploads/` — 브라우저에서 올린 파일
-  - `databases/` — DB 테이블/쿼리 추출 (`extracts.kind = database`)
-  - `api/` — HTTP 소스 (`extracts.kind = api`, 실행기는 이후)
-- `extracts.kind`는 `database` | `api`. 성공 시 `datasets.kind`에 동일 값이 들어간다.
-- 파일 내용 자체는 DB BLOB에 넣지 않는다
-- `Store::open`이 `extracts/{uploads,databases,api}` 와 `outputs/` 를 만든다
-- 예전 `data/uploads/` · `data/extracts/{id}/` 는 기동 시 새 경로로 옮긴다
-- connections 삭제와 FK를 걸지 않았다. 커넥션을 지워도 추출 파일은 남는다. 목록의 `connection_name`만 빈 문자열이 된다
-
-상태: `queued` → `running` → `succeeded` | `failed`
-
-진행 로그는 다른 칩과 동일하게 SQLite `execution_logs`에 저장한다. 실행당 최대 500개 이벤트, 칩당 완료 실행 최대 50개를 유지한다. `running` 중 `row_count`를 2초마다 갱신해 `/extracts` 목록에서 쓰는 중 행 수를 보여준다. `GET /api/extracts/:id/logs`로 해당 실행 로그를 읽을 수 있다.
-
-파일 이름:
-
-| delimiter | 확장자 |
-| --- | --- |
-| `,` | `.csv` |
-| `tab` | `.tsv` |
-| 그 외 | `.txt` |
-
-테이블 `public.users` → `public_users.csv`
-
-### 3. API (`crates/server`)
-
-| 메서드 | 경로 | 설명 |
-| --- | --- | --- |
-| GET | `/api/connections/:id/tables` | 테이블 목록 (기존) |
-| GET | `/api/connections/:id/columns?table=` | 컬럼 |
-| GET | `/api/connections/:id/preview?table=&limit=` | 미리보기 |
-| POST | `/api/connections/:id/query` | SQL 미리보기 |
-| POST | `/api/extracts` | 추출 시작. 201 즉시, 백그라운드 실행 |
-| GET | `/api/extracts` | 목록 (`?limit=`, 기본 50, 최대 200) |
-| GET | `/api/extracts/:id` | 상세·상태 |
-| GET | `/api/extracts/:id/file` | 파일 다운로드 (`succeeded`만) |
-
-`POST /api/extracts` 본문:
+## 레시피
 
 ```json
 {
   "connection_id": "…",
-  "table": "public.users",
-  "sql": null,
-  "database": null,
-  "delimiter": "|",
+  "source": { "type": "table", "table": "public.users", "database": null },
+  "delimiter": ",",
   "header": true
 }
 ```
 
-`table` 대신 `sql`을 보내면 쿼리 전체를 추출한다. `database`는 다중 데이터베이스
-카탈로그에서 선택한 데이터베이스를 전달할 때 사용한다.
-쿼리 추출은 PostgreSQL·MySQL·SQLite 연결을 읽기 전용 세션으로 전환한다.
-MSSQL은 명시적 트랜잭션에서 실행하고 결과를 읽은 뒤 항상 rollback한다.
+`source.type`: `table` | `query` | `http`. 자격 증명은 `connection_id`만 저장한다.
 
-`delimiter` 예: `,` `|` `;` `^` `tab`. 생략 시 `,`. `header` 생략 시 `true`.
+`connectors::extract_table` / `extract_query` / `extract_http`가 행을 스트림으로 CSV에 쓴다. 테이블 전체를 `fetch_all`로 올리지 않는다. 컬럼이 없으면 실패한다. 0행이어도 헤더만 남긴다. 구분자는 ASCII 한 글자 또는 `tab`. quote는 `"`.
 
-인코딩은 이번엔 UTF-8만. quote는 `"` 고정.
+테이블 식별은 `name` 또는 `schema.name`, `[A-Za-z0-9_]`만. 스키마 생략 시 postgres=`public`, mssql=`dbo`.
 
-잡 소스에 추출 파일을 쓸 때:
+## 출력 경로
 
-```json
-POST /api/jobs
-{ "extract_id": "…", "select": ["id"], "dest_connection_id": "…", "dest_table": "dw.fact" }
-```
+| 실행 | 디스크 |
+| --- | --- |
+| 칩 | `chip_outputs/{workspace}/{chip}/current.{csv\|tsv\|txt}` |
+| 단독 `/api/extracts` | `extract_runs/{database\|api}/{id}/{filename}` |
+| 업로드 | `extract_runs/uploads/…` |
 
-우선순위: `file_id` > `extract_id` > `connection_id`+`table` > `source_path`.
+사용자에게 보이는 이름은 칩 이름이다. 재실행은 슬롯을 덮어쓴다.
 
-`extract_id`로 잡을 만들면 spec에 `delimiter` / `has_header`를 넣는다. 엔진이 파이프·탭 파일을 콤마로 오독하지 않게 하기 위함이다.
+다운스트림이 슬롯이 비어 있으면 `run_extract_chip_sync`가 최대 120초 업스트림 extract를 기다린다.
 
-파이프라인 잡이 `db:{uuid}/{table}` 소스를 쓸 때는 같은 `extract_table` + `ExtractOptions::default()`(콤마, 헤더 있음)를 쓴다. 산출은 `extracts/databases/{job_id}/extract.csv`. 추출 전용 화면의 파일과는 별개다.
+## API / 화면
 
-### 4. 엔진
+커넥션 browse·컬럼·미리보기·SQL은 inspect/query. `POST /api/extracts`는 레거시 단독 실행. `/extracts` 목록은 호환용이다. 반복 작업은 캔버스 칩.
 
-`TransformSpec`에 `delimiter`, `has_header`를 추가했다. 추출 산출물을 변환 입력으로 쓸 때만 의미가 있다.
+`GET /api/extracts/:id/logs`와 칩 로그는 모두 `execution_logs`다.
 
-확장자만으로도 `.tsv`는 탭으로 읽는다. spec이 있으면 spec이 이긴다.
+## 하지 않는 것
 
-### 5. 화면
+EUC-KR 선택, quote UI, 서버 파일 에디터, parquet 추출, 추출 중 취소, 커넥션 삭제 시 추출 파일 cascade.
 
-- `/connections`: 저장/테스트 + browse → 테이블 선택 후 `/db`로 이동
-- `/db` (`/query` 호환): 카탈로그·SQL 편집·미리보기. 결과 팝업의 결과 내보내기는 서버 파일을 만들고, 칩 등록은 `chips`에 추출 칩 1건만 INSERT한다.
-- `/extracts`: 서버 파일 목록, queued/running이면 2초 폴링, 성공 시 다운로드
-- `/transform`: 완료된 extract가 Dataset 카탈로그에 등록되어 변환 입력으로 표시
-- `/workspace`: 같은 Extract 설정을 재사용 가능한 작업으로 저장하고 반복 실행
+## ponytail 천장
 
-## 레이어
-
-```
-UI
-  → Axum
-      → storage.extracts + 디스크
-      → connectors.inspect / extract   (sqlx, tiberius)
-jobs (변환 잡)
-  → 같은 extract_table (콤마 기본)  또는  extract 파일 경로
-  → engine (Polars)   ← 추출이 아님
-      spec.delimiter / has_header 로 그 파일을 읽음
-```
-
-Polars는 추출에 쓰지 않는다.
-
-## 하지 않은 것 (다음)
-
-- EUC-KR 등 인코딩 선택
-- quote/escape UI
-- 추출 파일 서버에서 직접 편집하는 에디터
-- Parquet로 추출. 지금은 사람이 볼 구분자 텍스트가 산출물
-- 추출 스케줄
-- 대용량 다운로드 스트리밍. 지금 `GET …/file`은 job result와 같이 파일을 메모리에 올린다
-- 추출 중 취소
-- connections 삭제 시 extracts 정리
-
-## 알려진 천장 (ponytail)
-
-- csv 기록은 async 워커에서 동기 write. 대량 추출이 런타임을 잠그면 writer를 `spawn_blocking`으로 빼면 된다.
-- inspect/preview/extract가 각각 커넥션을 연다. 풀 재사용은 다음.
-- 셀 stringify는 string/i64/i32/f64/bool만. timestamp·bytea는 빈 칸이 될 수 있다.
-- 새 테이블 적재는 여전히 TEXT 컬럼 + 배치 INSERT.
-
-## 로컬에서 확인
-
-빌드/실행은 이 작업에서 돌리지 않았다. 기동 후:
-
-1. `/connections`에 커넥션 저장, test
-2. browse → 테이블 선택 → `/db`에서 컬럼/SQL 미리보기 확인
-3. delimiter 고르고 extract → `/extracts`에서 succeeded 후 다운로드
-4. `/transform`에서 해당 Dataset을 골라 저장·실행
-5. 반복할 추출은 `/workspace`에서 Extract 작업으로 저장·실행
+- csv write는 워커에서 동기 I/O. 런타임을 잠그면 `spawn_blocking`.
+- inspect/preview/extract가 커넥션을 따로 연다.
+- 셀 stringify는 일부 타입만. timestamp·bytea는 빈 칸이 될 수 있다.

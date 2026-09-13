@@ -49,11 +49,30 @@ export function TopSubmenu({ prefsOnly = false }: { prefsOnly?: boolean }) {
   }
 
   return (
-    <div className="relative flex h-12 items-center justify-center">
+    <div className="relative flex h-12 items-center">
+      {prefsOnly || !user ? null : (
+        <div
+          className="mr-6 flex max-w-[12rem] items-center gap-2.5 rounded-2xl py-1 pr-3 pl-1 transition-colors hover:bg-accent-subtle/70"
+          aria-label={`${user.username} (@${user.userid})`}
+          title={`${user.username} (@${user.userid})`}
+        >
+          <span className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-full bg-accent text-[13px] font-bold text-white ring-2 ring-accent/15 ring-offset-2 ring-offset-surface">
+            {user.avatar_data_url ? (
+              <img src={user.avatar_data_url} alt="" className="size-full object-cover" />
+            ) : (
+              <User className="size-4" aria-hidden="true" />
+            )}
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-[15px] font-semibold leading-5 text-text">{user.username}</span>
+            <span className="mt-0.5 block truncate text-[11px] leading-3 text-text-tertiary">@{user.userid}</span>
+          </span>
+        </div>
+      )}
       <article className="inline-flex h-full flex-row overflow-hidden rounded-2xl border border-border/80 bg-surface text-text shadow-[3px_4px_8px_-5px_rgba(15,23,42,0.35)] dark:shadow-[3px_4px_10px_-5px_rgba(0,0,0,0.65)]">
         {prefsOnly ? null : (
           <IconButton label={user ? `${user.username} (@${user.userid})` : messages.nav.profile} pressed={accountOpen} onClick={() => setAccountOpen(true)}>
-            {user?.avatar_data_url ? <img src={user.avatar_data_url} alt="" className="size-6 rounded-full object-cover" /> : <User className="size-[18px]" />}
+            <User className="size-[18px]" />
           </IconButton>
         )}
         <IconButton label={messages.language.switchTo} onClick={toggleLocale}>

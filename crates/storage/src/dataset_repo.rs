@@ -87,8 +87,10 @@ impl Store {
         if let Some(parent) = path.parent() {
             let remove = if parent == outputs_root {
                 tokio::fs::remove_file(&path).await
-            } else if parent.starts_with(&self.data_dir) {
+            } else if parent.parent() == Some(outputs_root.as_path()) {
                 tokio::fs::remove_dir_all(parent).await
+            } else if parent.starts_with(&self.data_dir) {
+                tokio::fs::remove_file(&path).await
             } else {
                 Ok(())
             };

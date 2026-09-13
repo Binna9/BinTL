@@ -8,6 +8,7 @@ mod execution_repo;
 mod extract_repo;
 mod file_repo;
 mod identity;
+mod user_images;
 mod http_auth;
 pub use http_auth::HttpAuthConfig;
 mod job_repo;
@@ -24,8 +25,9 @@ mod workspace_repo;
 
 pub use identity::{
     DataScope, PermissionRow, RoleWithPermissions, UserRow, PERM_CONNECTION_WRITE,
-    PERM_USER_MANAGE, PERM_WORKSPACE_ALL,
+    PERM_EXTRACT_RUN, PERM_TRANSFORM_RUN, PERM_USER_MANAGE, PERM_WORKSPACE_ALL,
 };
+pub use user_images::DEFAULT_USER_IMAGE_REL;
 pub use models::*;
 pub use process_log::{
     safe_log_id, ProcessLog, LOG_AREAS, LOG_CONNECTIONS, LOG_EXTRACTS, LOG_FILES, LOG_JOBS,
@@ -35,6 +37,7 @@ pub use search::SearchHit;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -65,6 +68,7 @@ pub const REL_API: &str = "extract_runs/api";
 pub const REL_OUTPUTS: &str = "outputs";
 pub const REL_LOGS: &str = "logs";
 pub const REL_STAGING: &str = "staging";
+pub const REL_USER_IMAGES: &str = "user_images";
 pub const DEFAULT_WORKSPACE_ID: &str = "00000000-0000-0000-0000-000000000001";
 
 const EXTRACT_KINDS: [&str; 3] = ["uploads", "databases", "api"];
@@ -72,7 +76,7 @@ const EXTRACT_KINDS: [&str; 3] = ["uploads", "databases", "api"];
 impl Store {
     pub async fn open(
         data_dir: impl Into<PathBuf>,
-        session_secret: &str,
+        encryption_secret: &str,
     ) -> Result<Self, StorageError> {
         let data_dir = data_dir.into();
         ensure_data_layout(&data_dir).await?;
@@ -82,6 +86,7 @@ impl Store {
             .filename(&db_path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5))
             .foreign_keys(true);
 
         let pool = SqlitePoolOptions::new()
@@ -93,8 +98,9 @@ impl Store {
         let store = Self {
             pool,
             data_dir,
-            secret_key: secret::key_from_secret(session_secret),
+            secret_key: secret::key_from_secret(encryption_secret),
         };
+        store.ensure_bootstrap().await?;
         store.backfill_workspace_revisions().await?;
         if let Err(error) = store.reconcile_search_documents().await {
             // Search is a derived index. A repair failure must not prevent the
@@ -117,12 +123,7 @@ impl Store {
     }
 
     pub fn resolve(&self, stored: &str) -> PathBuf {
-        let p = Path::new(stored);
-        if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            self.data_dir.join(p)
-        }
+        self.data_dir.join(contained_rel(stored))
     }
 
     pub fn extract_file_rel(
@@ -236,6 +237,8 @@ async fn ensure_data_layout(data_dir: &Path) -> Result<(), StorageError> {
     for area in LOG_AREAS {
         tokio::fs::create_dir_all(data_dir.join(REL_LOGS).join(area)).await?;
     }
+    tokio::fs::create_dir_all(data_dir.join(REL_USER_IMAGES)).await?;
+    user_images::ensure_default_user_image(data_dir).await?;
     migrate_legacy_extract_dirs(data_dir).await?;
     Ok(())
 }
@@ -320,9 +323,9 @@ fn trimmed_optional(value: Option<&str>) -> Option<&str> {
 }
 
 fn validate_chip_kind(kind: &str) -> Result<(), StorageError> {
-    if !matches!(kind, "extract" | "transform" | "load" | "validation") {
+    if !matches!(kind, "extract" | "transform" | "load" | "validation" | "sql") {
         return Err(StorageError::Invalid(
-            "chip kind must be extract, transform, load, or validation".into(),
+            "chip kind must be extract, transform, load, validation, or sql".into(),
         ));
     }
     Ok(())
@@ -622,6 +625,21 @@ fn validate_uuid(id: &str, field: &str) -> Result<(), StorageError> {
         .map_err(|_| StorageError::Invalid(format!("invalid {field}")))
 }
 
+fn contained_rel(stored: &str) -> PathBuf {
+    let rel: PathBuf = Path::new(stored)
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    if rel.as_os_str().is_empty() {
+        PathBuf::from("upload.bin")
+    } else {
+        rel
+    }
+}
+
 pub fn now_rfc3339() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
@@ -690,8 +708,40 @@ mod tests {
     async fn test_store() -> (PathBuf, Store, UserRow) {
         let root = std::env::temp_dir().join(format!("bintl-storage-test-{}", Uuid::new_v4()));
         let store = Store::open(&root, "test-session-secret").await.unwrap();
-        let admin = store.ensure_bootstrap("admin", "admin").await.unwrap();
+        let admin = store.ensure_bootstrap().await.unwrap();
         (root, store, admin)
+    }
+
+    #[tokio::test]
+    async fn user_images_live_under_user_id() {
+        let (root, store, admin) = test_store().await;
+        assert!(root.join("user_images/default-image").is_file());
+        let rel = store
+            .save_user_avatar_data_url(
+                &admin.id,
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+            )
+            .await
+            .unwrap();
+        assert_eq!(rel, format!("user_images/{}/avatar.png", admin.id));
+        assert!(store.resolve(&rel).is_file());
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn open_seeds_admin_when_users_empty() {
+        let root = std::env::temp_dir().join(format!("bintl-bootstrap-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-session-secret").await.unwrap();
+        let user = store
+            .authenticate(Store::BOOTSTRAP_USERID, "admin")
+            .await
+            .unwrap()
+            .expect("empty sqlite must insert admin");
+        assert_eq!(user.userid, Store::BOOTSTRAP_USERID);
+        assert!(user.roles.iter().any(|role| role == "admin"));
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -731,6 +781,16 @@ mod tests {
     }
 
     #[test]
+    fn resolve_stays_inside_data_dir() {
+        assert_eq!(contained_rel("/etc/passwd"), PathBuf::from("etc/passwd"));
+        assert_eq!(contained_rel("../escape.csv"), PathBuf::from("escape.csv"));
+        assert_eq!(
+            contained_rel("chip_outputs/ws/chip/out.csv"),
+            PathBuf::from("chip_outputs/ws/chip/out.csv")
+        );
+        assert_eq!(contained_rel(".."), PathBuf::from("upload.bin"));
+    }
+
     fn staging_ids_must_be_uuids() {
         assert!(validate_uuid(&Uuid::new_v4().to_string(), "staging_id").is_ok());
         assert!(validate_uuid("../escape", "staging_id").is_err());
@@ -816,6 +876,45 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 1);
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn delete_transform_dataset_does_not_wipe_chip_output_dir() {
+        let (root, store, admin) = test_store().await;
+        let home = store
+            .list_visible_workspaces(Some(&DataScope::for_user(&admin)))
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .id;
+        let stored = "chip_outputs/ws/chip/current.parquet";
+        let path = store.resolve(stored);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"dataset").unwrap();
+        let sibling = path.with_file_name("keep.parquet");
+        std::fs::write(&sibling, b"keep").unwrap();
+        let row = store
+            .upsert_dataset(&DatasetUpsert {
+                id: "transform-file".into(),
+                kind: "transform".into(),
+                extract_id: None,
+                filename: "current.parquet".into(),
+                stored_path: stored.into(),
+                size_bytes: Some(7),
+                delimiter: None,
+                has_header: None,
+                row_count: Some(1),
+                workspace_id: Some(home),
+            })
+            .await
+            .unwrap();
+        store.delete_transform_dataset(&row.id).await.unwrap();
+        assert!(!path.exists());
+        assert!(sibling.exists());
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1050,6 +1149,7 @@ mod tests {
                     from_port: "right".into(),
                     to_port: "left".into(),
                 }],
+                None,
             )
             .await
             .unwrap();
@@ -1089,6 +1189,7 @@ mod tests {
                     from_port: "out".into(),
                     to_port: "in".into(),
                 }],
+                None,
             )
             .await
             .unwrap();
@@ -1128,6 +1229,7 @@ mod tests {
                         to_port: "target".into(),
                     },
                 ],
+                None,
             )
             .await
             .unwrap();
@@ -1158,9 +1260,44 @@ mod tests {
                         to_port: String::new(),
                     },
                 ],
+                None,
             )
             .await;
         assert!(cycle.is_err());
+
+        let stale = store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[extract.id.clone(), transform.id.clone()],
+                &[],
+                Some(1),
+            )
+            .await;
+        assert!(matches!(stale, Err(StorageError::Conflict(_))));
+
+        let stranger = store
+            .create_user("kim", "김하나", "secret12", &["analyst".into()])
+            .await
+            .unwrap();
+        let foreign = store
+            .insert_workspace("Other", None, &stranger.id, None)
+            .await
+            .unwrap();
+        let foreign_chip = store
+            .insert_chip(&stranger.id, &foreign.id, "Stolen", "extract", "{}")
+            .await
+            .unwrap();
+        let stolen = store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[extract.id.clone(), foreign_chip.id],
+                &[],
+                None,
+            )
+            .await;
+        assert!(matches!(stolen, Err(StorageError::Invalid(_))));
 
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
@@ -1290,6 +1427,7 @@ mod tests {
                     from_port: "out".into(),
                     to_port: "in".into(),
                 }],
+                None,
             )
             .await
             .unwrap();
@@ -1374,6 +1512,10 @@ mod tests {
         .await
         .unwrap();
 
+        let upload = store
+            .save_upload("keep-out.csv", b"a,b\n1,2\n", Some(","), Some(true), &ws.id)
+            .await
+            .unwrap();
         store.delete_workspace(&ws.id).await.unwrap();
         let left: String = sqlx::query_scalar("SELECT id FROM extracts WHERE id = ?")
             .bind(&extract_id)
@@ -1382,6 +1524,16 @@ mod tests {
             .unwrap();
         assert_eq!(left, extract_id);
         assert!(store.get_workspace(&ws.id).await.unwrap().is_none());
+        assert!(store.get_dataset(&upload.id).await.unwrap().is_none());
+        let moved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM data_files WHERE workspace_id = ? OR id = ?",
+        )
+        .bind(DEFAULT_WORKSPACE_ID)
+        .bind(&upload.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(moved, 0);
 
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);

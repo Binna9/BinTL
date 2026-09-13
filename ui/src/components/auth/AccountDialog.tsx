@@ -75,7 +75,7 @@ export function AccountDialog({ open, onClose }: { open: boolean; onClose: () =>
     if (!user) return;
     setBusy(true);
     try {
-      await userApi.updateProfile(username, avatar);
+      await userApi.updateProfile(username, avatar?.startsWith("data:") ? avatar : null);
       await refresh();
       toastSuccess(messages.nav.profileSaved);
       setMode("view");
@@ -135,20 +135,24 @@ export function AccountDialog({ open, onClose }: { open: boolean; onClose: () =>
         <aside className="flex flex-col items-center bg-raised/70 px-5 py-6 text-center">
           <button
             type="button"
-            className="group relative grid size-24 place-items-center overflow-hidden rounded-full border-[3px] border-surface bg-accent text-2xl font-bold text-white shadow-[0_8px_22px_rgba(15,23,42,0.16)] outline-none ring-1 ring-border transition hover:-translate-y-0.5 hover:ring-accent focus-visible:ring-2 focus-visible:ring-accent"
+            className="group relative grid size-24 place-items-center overflow-hidden rounded-full border-[3px] border-surface bg-accent text-2xl font-bold text-white shadow-[0_8px_22px_rgba(15,23,42,0.16)] outline-none ring-1 ring-border transition duration-300 ease-out hover:shadow-[0_10px_24px_rgba(15,23,42,0.2)] focus-visible:ring-2 focus-visible:ring-accent"
             onClick={() => fileRef.current?.click()}
             aria-label={messages.nav.chooseProfileImage}
           >
-            {avatar ? <img src={avatar} alt="" className="size-full object-cover" /> : initial}
-            <span className="absolute inset-0 grid place-items-center rounded-full bg-black/45 text-white opacity-0 transition-opacity group-hover:opacity-100">
-              <Camera className="size-5" aria-hidden="true" />
+            {avatar ? (
+              <img src={avatar} alt="" className="size-full object-cover transition duration-500 ease-out group-hover:scale-105 group-hover:blur-[2px]" />
+            ) : (
+              <span className="transition duration-500 ease-out group-hover:scale-105 group-hover:blur-[2px]">{initial}</span>
+            )}
+            <span className="pointer-events-none absolute inset-0 bg-black/25 opacity-0 transition duration-300 ease-out group-hover:opacity-100" />
+            <span className="pointer-events-none absolute inset-0 grid place-items-center">
+              <span className="grid size-8 translate-y-3 place-items-center rounded-full bg-white/95 text-text shadow-sm opacity-0 transition duration-300 ease-out group-hover:translate-y-0 group-hover:opacity-100">
+                <Camera className="size-4" aria-hidden="true" />
+              </span>
             </span>
           </button>
           <input ref={fileRef} className="hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void chooseImage(event)} />
-          <button type="button" className="mt-2 rounded-lg px-2 py-1 text-[11px] font-semibold text-accent transition-colors hover:bg-accent-subtle" onClick={() => fileRef.current?.click()}>
-            {messages.nav.changePhoto}
-          </button>
-          <h3 className="mt-3 max-w-full truncate text-base font-bold text-text">{user.username}</h3>
+          <h3 className="mt-4 max-w-full truncate text-base font-bold text-text">{user.username}</h3>
           <p className="mt-1 text-xs text-text-tertiary">@{user.userid}</p>
           <span className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-success/20 bg-success-subtle px-2.5 py-1 text-[10px] font-semibold text-success">
             <ShieldCheck className="size-3.5" aria-hidden="true" />

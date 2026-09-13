@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:4f2435c16932af128d665f23323d542131a83da4edc9f71c3ee5c288bf50734a",
+  "claims": [
+    {
+      "id": "claim_56a8e7233ae149168f99d0660e974c24",
+      "statement": "칩은 extract | transform | load | validation 레시피이며, 사용자에게 보이는 정체는 칩 이름과 최신 출력이고 extracts/…/{uuid} 경로가 아니다.",
+      "evidence": [
+        {
+          "resource": "repo://.cursor/rules/workspace-pipeline.mdc#L10-L16",
+          "version": "repo-lines-v1:sha256:1181bb4c660127f5f893d7e699d252e5ccfe8492f5ac88fb7ff247e2f7366e0c:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTgwNTMyYmQ1MGZiMDA3MzI0MDM5MWY5OTA1YWViOTMyYjJkYjYzMTcxYjZkNmFmN2U4ZDNkMGM4OTBlZWU0NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTNkNjc5MzcwY2JkNjQ0NDBhYjI3MTVhZGQ0ZGIwMGE1ODU1MDMzZGJhMDIyNGI2Yzg2MDhmY2FhYzVkMzA5ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDE0M2M4ODllZGMxZWE4MDcxOTUzZTVlZjMwNjhmMDY2NTMxM2Y2ZDNkZDBjMWY1YjRkZTRmNjNhYmQzZWEyZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzE4ZmFhMDI0NmE2NGVhNjU5OTY2NjE5N2ExYzg3YWY2NjNlMjM5MzEzOTk5YTViNjhlNTFiN2ZkZGFkM2YxYyJ9"
+        },
+        {
+          "resource": "repo://crates/storage/migrations/0001_schema.sql#L192-L210",
+          "version": "repo-lines-v1:sha256:f887f610e1723e3aa6015e1293d33b01781112cf03c747c7640f615cefb0d54a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjYmVhMGUyODRjNjI1NTJmYmExNGE0NTdhMDQ4MTYwMzNkYWEyZDgyZTllZmViNWRkMTY5OWJjYjM1YTIzYzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4MThkMDMxYzFkMjc5Yjc3NTMwMjUwMzFkZDk3MWNmYjRkZWI1NTgwMzU0ZGFhNzYwYTgyM2JmZjJiZWY0ZGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiZmQ5YjQ2YTg1MzY3ZjgyNTczZDkyMzI0YmY2YTk2MDM4NjM2NjFkMjA0MmNiZjQ3MGQ2M2IwZGZlYTQzYjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ee67f781c3a446db921c7c137176f9d3",
+      "statement": "워크스페이스+칩의 최신 출력은 workspace_chip_outputs 슬롯 하나이며, 디스크 경로는 chip_outputs/{workspace_id}/{chip_id}/{slot_file}이고 재실행이 겹어쓴다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/storage/src/chip_run_repo.rs#L548-L554",
+          "version": "repo-lines-v1:sha256:30dd7be1869cebad9449d95bbcf9c840f1e5b813b5baed9cf4f7a2d48ae5eb68:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODZiNTI3MTFkNTRhYjZiMTRjMDFkNmUzMTdkZDhmNzlhYmI3MmY2ZTBiMmYwOTJmMjM2ODYzYzhiMWI3MTUxYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGMzNTVkM2EwOTdlNDU1MTY1ODFjYzlhODI3YmNlN2E4NTkxODM1ZmNiYmI1NzU1ODQ5NGYxYTcyZDZmNzJlYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTdiMjA5OTMyZjhiMzdjMDMyYWMyZTkxZjFhYTg2MDQ1NTQ3MmQxNTZiYjU5ZGUxOWE5Nzc1YTg2ZjE2NTM0NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjk3NjEzZjcwMDc5NGRmMzlkZjQ0YjA1ZTc3NmY1YmE4NTM1N2NhODIyNDUwZmZiMjMzMzA2YWUzOGE5YWUxYyJ9"
+        },
+        {
+          "resource": "repo://crates/storage/src/chip_slot.rs#L40-L45",
+          "version": "repo-lines-v1:sha256:c53d31cfb6046d4ffba27eb7b720d749a8bca3ae5ee5ee745ce263187beb3473:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDcyMjEwN2ZkYzc3ZWQ5OWMwMzg4NzgzNjkxOWI2OWVhNDY2YWEyZWQ5NmI2NGI4OGEyYTQyNzVlMjIyNjVmZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTllNzYzNTVjZjExOTk0ODBjM2Y5OTgzNmIxNDg2Yzg0MWQ4OTFmYWFkOTA0YzYwOGUwOTMwMjJkMzc1N2FlZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGE5MTQ2N2ZhMzFjZDllMjE5NmUyODBiMGIwOTNiYmRlNThlZDQzYjFmM2Y1YzRiZDE0MWFlN2I5NjBjYzUzMCJ9"
+        },
+        {
+          "resource": "repo://crates/storage/src/chip_slot.rs#L5-L18",
+          "version": "repo-lines-v1:sha256:c809d0952008e6b09bed191f8b6de4dc67dba65d6b3f5eaf0ed4c2af4e5e29e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmYTQ4NzM1Zjc4MDQxMzcwOGYyMjhiYTZkNDkwYTA3ZjBmNjdkZmQ0MjlkODI2NzQ1NDcyZGQyMGM0MzUzMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4MzEyMzNkMjhkOTUzNWQ3YjM3NjFkMjFhM2U5YWU0M2Q4MTYwZmQ1MTAzNWExNTM3ZDAxODJlODY4OGY4OWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE2YmFlOGFmYWRhOTY1YmY2NDg5NTMwNTU3YTdjYTJkZmYxMTE4NmZjNzg3OGQ3YTZhYTY2OWJjOWM0ZjM3NGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEwMWY4YmY1Zjg3YzU4NWNiOTg0YWZkOGUzNDBhZWJiMjc2MzNmMjE3MzNmZGY0ZWZhZTczMzk5OWUwYWQyMDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3bafc0b11bf44e32a0ab5006bf9bedc6",
+      "statement": "다음 칩의 입력은 data 에지의 업스트림 최신 출력이다. 파일이 없으면 칼럼은 workspace_chip_outputs 계약으로만 남고 data_files에 가짜 행을 넣지 않으며, 실행 시 슬롯이 비면 업스트림 extract를 동기 실행하거나 실패한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/planned_input.rs#L555-L580",
+          "version": "repo-lines-v1:sha256:8ca4d098b18c2bce5ba9973e937aa205bb3f7b0d2c5d3cbf742a165a04d8013f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyNjMzMGM1ZTA4M2RkMDEzZmE0ZGY3ODI5OTdiY2NlMmQ4ZGRiZjQ3YzliNTM4Yzg5Yjk2YWJjYWIwMWUyYjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhMWNkM2RlYTExYmI3YTFmZWVhMTgxZmVlZGZjNGFjNTU5MDk2NzJjOWIxMmQzNTIwZDkyN2U4ZmI1MzY3ZjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhkODU2YTBlNGQ0YjBkZDgzYzJjMjgwZmIxZDZkNTBjZjI5MTc2ZmY2ZWMzM2E0NDk4NDZiYmFlNDU0NWNmMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxZmI5YWVjMjAxNmMzYmRiM2Y5Mzc2YjA0YzIyMWJhNDZmNjg0YWZlNjA4Mjc4ODA0YzlkMGU3YjVkOTQ3MTQifQ"
+        },
+        {
+          "resource": "repo://crates/storage/src/chip_run_repo.rs#L356-L398",
+          "version": "repo-lines-v1:sha256:20054131b1e2c5663ec234e48e6b55f96c6832c1ec6ce023caca01fe7f1e3aa5:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmZGJlMzU3MGFjMzk0NzIyZmQyODc3ZGYwZjQ2MTIxOTAxYWJjMzk4MzZhMjVlZDJiNzc3NDgzNzE3MDIxMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiYzA2YzhjOGQyMjc2MDQ5ZTRiYWEwMTAzNTg0YmMzNDIyZWI5N2NiZjlmYzc3OGYzMzc1OWMzZjkxMTNiY2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdmNmE2ZjVkY2NkNTQxYTg1MmY3ZTA0ZTRlZWMxNjcxZTkzOGYwMTU1MTFiOWQ4MzczYjIxZjNjZGViNGI2NzMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5d4e4b410bbc4850a4e40d1e95484aa2",
+      "statement": "모든 실행은 executions 아래 execution_steps로 남고, 칩 단독은 source=chip, 캔버스 전체는 source=workspace로 구분하며 레시피 스냅샷을 고정한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/storage/src/models.rs#L319-L337",
+          "version": "repo-lines-v1:sha256:9828d150967205b8e24688c9421020426ac052fd56b8d6c2d58d43d6a2bbe0d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmYTU2ZDg1YzBhMGU1MjljNTQ5ZjBmMzQzNDM2ZjQ5NGJmYTRiMmRlYWMzNzcxMGQzOTljN2NhYWYwMzUzNGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlODljMzQ5MGJlMzI5MjA5YzVmYjg4OWI2MmNhMTUxYmEyNTQyODI1MzQxNWE3MjNmZWM3MTk0YzMxNGQ4ODMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxODUxMmFmMDExODhlNzNjNTg5ZjY1MDdkNGIwMmQxMjg2MmZlNDRjN2RjMjc4Mjc0OGU2MWYxNGI3MWUzOWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0OTEzY2JiNjlkMDM2YmVjYjYyZGU3ZjhlOTFkNmRjMmNlMzc3ODQ0N2JkODQ5NDc1MzlhYmZiYmRkNzdiMjQifQ"
+        },
+        {
+          "resource": "repo://docs/schema.md#L67-L69",
+          "version": "repo-lines-v1:sha256:3ee8468037e9a8115d386f60790e15a4cd2a77103a11e3a868ab0f1cd9076d7c:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTc1MmZmYjdkMGE0Y2VlOThjNDM4MWM0OTEzYTcyYWY1YWRjNjk3ZDc5M2M1Yzc4MGYyODg2YWJmY2I4YjAyMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzFhMjBhODE5NDhhM2UxMDAzYzlkMDdiNjRhZDNlOWI0MTZkYWEwNjYwMTg5Mjk1YjJjNWI0NzYwNGMzOTQ4NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTQ4NzAwNTZlZDliNTEwODZkOTg2ZTNmZDUyODcyNzI4OTA2OWY4ZDZmYWYxMjMzMDU1ODg3OGQ5NjA0ZGQzZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2E1N2QzMTEwMWQwOTM0MzUzMjZiMmVlMDY1MDBiODZhOTY3MGM3MmEzNDgzZGQ4ODM5NmU3ZTAyYWQ5ODdkYSJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

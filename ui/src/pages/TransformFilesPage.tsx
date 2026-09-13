@@ -4,10 +4,13 @@ import {
   columnWidthsForContent,
   DataGrid,
   EmptyGridRow,
+  EmptyState,
   GridCell,
   GridRow,
 } from "@/components/DataGrid";
+import { NavIcon } from "@/components/ui/nav-icons";
 import { AppDialog } from "@/components/AppDialog";
+import { PaginationBar } from "@/components/PaginationBar";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { ActionAnchor, Button } from "@/components/ui/button";
 import { MetaField } from "@/components/ui/meta-field";
@@ -15,6 +18,7 @@ import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtWhen } from "@/lib/format";
+import { usePagination } from "@/lib/pagination";
 import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { datasetApi } from "@/services/transform/datasetApi";
 import type { Dataset, FramePreview } from "@/types/dataset";
@@ -33,7 +37,9 @@ export function TransformFilesPage() {
     [datasets],
   );
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const allSelected = files.length > 0 && selected.length === files.length;
+  const paging = usePagination(files);
+  const pageFiles = paging.items;
+  const allSelected = pageFiles.length > 0 && pageFiles.every((item) => selectedSet.has(item.id));
   const previewHeaders = preview?.columns.map((column) => column.name) ?? [];
   const previewWidths = useMemo(
     () => (preview ? columnWidthsForContent(previewHeaders, preview.rows) : undefined),
@@ -56,7 +62,12 @@ export function TransformFilesPage() {
   }
 
   function toggleAll() {
-    setSelected(allSelected ? [] : files.map((item) => item.id));
+    setSelected((current) => {
+      const pageIds = new Set(pageFiles.map((item) => item.id));
+      return allSelected
+        ? current.filter((id) => !pageIds.has(id))
+        : [...new Set([...current, ...pageIds])];
+    });
   }
 
   async function deleteSelected() {
@@ -113,14 +124,14 @@ export function TransformFilesPage() {
   }
 
   return (
-    <PageShell>
+    <PageShell fill>
       <PageHeader
-        iconName="jobs"
+        iconName="transformFiles"
         eyebrow={messages.transformFiles.eyebrow}
         title={messages.transformFiles.title}
         description={messages.transformFiles.description}
       />
-      <Panel tall>
+      <Panel fill>
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -128,7 +139,7 @@ export function TransformFilesPage() {
                 className="field-control"
                 type="checkbox"
                 checked={allSelected}
-                disabled={files.length === 0 || busy}
+                disabled={pageFiles.length === 0 || busy}
                 onChange={toggleAll}
                 aria-label={messages.transformFiles.selectAll}
               />
@@ -157,11 +168,9 @@ export function TransformFilesPage() {
           className="min-h-0 flex-1"
           headers={[...messages.transformFiles.headers]}
           columnWidths={[56, 280, 100, 96, 140, 110]}
+          empty={files.length === 0 ? <EmptyState icon={<NavIcon name="transformFiles" />} title={messages.empty.transformFiles} hint={messages.empty.transformFilesHint} /> : undefined}
         >
-          {files.length === 0 ? (
-            <EmptyGridRow cols={6} text={messages.empty.transformFiles} />
-          ) : (
-            files.map((item) => (
+          {files.length === 0 ? null : pageFiles.map((item) => (
               <GridRow
                 key={item.id}
                 selected={selectedSet.has(item.id)}
@@ -198,9 +207,18 @@ export function TransformFilesPage() {
                   )}
                 </GridCell>
               </GridRow>
-            ))
-          )}
+            ))}
         </DataGrid>
+        <PaginationBar
+          page={paging.page}
+          pageCount={paging.pageCount}
+          pageSize={paging.pageSize}
+          total={paging.total}
+          start={paging.start}
+          end={paging.end}
+          onPageChange={paging.setPage}
+          onPageSizeChange={paging.setPageSize}
+        />
       </Panel>
 
       <AppDialog

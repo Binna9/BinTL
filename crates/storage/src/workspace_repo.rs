@@ -158,16 +158,29 @@ impl Store {
         if found.is_none() {
             return Err(StorageError::NotFound("workspace not found".into()));
         }
-        sqlx::query("UPDATE executions SET workspace_id = ? WHERE workspace_id = ?")
-            .bind(DEFAULT_WORKSPACE_ID)
+        let file_ids: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM data_files WHERE workspace_id = ?")
+                .bind(id)
+                .fetch_all(&mut *tx)
+                .await?;
+        let stored_paths: Vec<String> =
+            sqlx::query_scalar("SELECT stored_path FROM data_files WHERE workspace_id = ?")
+                .bind(id)
+                .fetch_all(&mut *tx)
+                .await?;
+        sqlx::query("DELETE FROM executions WHERE workspace_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE data_files SET workspace_id = ? WHERE workspace_id = ?")
-            .bind(DEFAULT_WORKSPACE_ID)
+        sqlx::query("DELETE FROM validation_results WHERE workspace_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM data_files WHERE workspace_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(delete_guard::map_delete_sql)?;
         let result = sqlx::query("DELETE FROM workspaces WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
@@ -177,6 +190,27 @@ impl Store {
             return Err(StorageError::NotFound("workspace not found".into()));
         }
         tx.commit().await?;
+        for path in stored_paths {
+            let resolved = self.resolve(&path);
+            match tokio::fs::remove_file(&resolved).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        for rel in [
+            chip_slot::REL_CHIP_OUTPUTS.to_string(),
+            "loads".to_string(),
+        ] {
+            match tokio::fs::remove_dir_all(self.data_dir.join(rel).join(id)).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        for file_id in file_ids {
+            let _ = self.delete_search_document("data_file", &file_id).await;
+        }
         let _ = self.delete_search_document("workspace", id).await;
         Ok(())
     }
@@ -420,12 +454,19 @@ impl Store {
         layout_json: &str,
         chip_ids: &[String],
         edges: &[WorkspaceSaveEdge],
+        expected_version: Option<i64>,
     ) -> Result<(WorkspaceRow, Vec<ChipRow>, Vec<ChipEdgeRow>), StorageError> {
         require_config_json(layout_json)?;
         let current = self
             .get_workspace(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("workspace not found".into()))?;
+        let expected = expected_version.unwrap_or(current.version);
+        if expected != current.version {
+            return Err(StorageError::Conflict(
+                "workspace has changed, reload and save again".into(),
+            ));
+        }
         let now = now_rfc3339();
         let version = current.version + 1;
         let mut tx = self.pool.begin().await?;
@@ -439,6 +480,7 @@ impl Store {
             .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(|| StorageError::NotFound(format!("chip {chip_id} not found")))?;
+            chip_matches_workspace_owner(&chip, &current)?;
             saved_chips.push(chip);
         }
         sqlx::query("DELETE FROM workspace_edges WHERE workspace_id = ?")
@@ -522,15 +564,21 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         let saved_edges = replace_workspace_edges(&mut tx, id, edges, &saved_chips, &now).await?;
-        sqlx::query(
-            "UPDATE workspaces SET viewport_json = ?, version = ?, updated_at = ? WHERE id = ?",
+        let bumped = sqlx::query(
+            "UPDATE workspaces SET viewport_json = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?",
         )
         .bind(layout_json)
         .bind(version)
         .bind(&now)
         .bind(id)
+        .bind(expected)
         .execute(&mut *tx)
         .await?;
+        if bumped.rows_affected() == 0 {
+            return Err(StorageError::Conflict(
+                "workspace has changed, reload and save again".into(),
+            ));
+        }
         let snapshot = workspace_snapshot_json(layout_json, &saved_chips, &saved_edges)?;
         sqlx::query(
             "INSERT INTO workspace_revisions (workspace_id, version, snapshot_json, created_at)
@@ -592,4 +640,17 @@ impl Store {
 
 pub(crate) fn workspace_chip_id(workspace_id: &str, chip_id: &str) -> String {
     format!("{workspace_id}:{chip_id}")
+}
+
+pub(crate) fn chip_matches_workspace_owner(
+    chip: &ChipRow,
+    workspace: &WorkspaceRow,
+) -> Result<(), StorageError> {
+    match workspace.owner_user_id.as_deref() {
+        Some(owner) if chip.owner_user_id == owner => Ok(()),
+        Some(_) => Err(StorageError::Invalid(
+            "chip does not belong to this workspace".into(),
+        )),
+        None => Ok(()),
+    }
 }

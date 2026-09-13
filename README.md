@@ -27,16 +27,11 @@ curl -s localhost:8080/api/health
 
 브라우저: `http://localhost:8080`
 
-`data/`가 없으면 기동 시 만든다. 칩 실행 로그는 `etl.db`의 `execution_logs`에 제한적으로 보관하고, `logs/`는 쿼리·연결 같은 운영 진단에만 사용한다. 상세 정책은 [docs/logging.md](docs/logging.md)에 있다.
+`data/`가 없으면 기동 시 만든다. 칩 실행 로그는 `etl.db`의 `execution_logs`에 제한적으로 보관하고, `logs/`는 쿼리·연결 같은 운영 진단에만 사용한다.
 
-추출(커넥션 → 서버 파일)의 회로·API·화면은 [docs/extract.md](docs/extract.md)에 있다.
-변환(파일 → parquet)의 회로·API·화면은 [docs/transform.md](docs/transform.md)에 있다.
-반복 가능한 작업과 작업 공간 모델은 [docs/workspace.md](docs/workspace.md)에 있다.
-SQLite 테이블·컬럼 한글 설명은 [docs/schema.md](docs/schema.md)에 있다.
-코드 모듈 경계와 새 기능 배치 규칙은 [docs/architecture.md](docs/architecture.md)에 있다.
-서버 배포 절차는 [docs/deploy.md](docs/deploy.md)에 있다.
+사람용 문서는 [docs/index.md](docs/index.md)에만 둔다. 작업 공간은 [docs/workspace.md](docs/workspace.md), 배포는 [docs/deploy.md](docs/deploy.md), 코드 규칙은 [docs/ponytail.md](docs/ponytail.md).
 
-기본 계정: `admin` / `admin` (`skip_auth = false`). 개발 편의를 위해 `skip_auth = true` 또는 `ETL_SKIP_AUTH=true`를 허용한다.
+빈 DB의 기본 계정은 `admin` / `admin`이다. 개발 편의를 위해 `skip_auth = true` 또는 `ETL_SKIP_AUTH=true`를 허용한다.
 
 ## 개발 (vite + API, 프로세스 2개 허용)
 
@@ -61,8 +56,8 @@ cd ui && npm install && npm run dev
 
 1. `/connections`에서 커넥션 저장 후 `browse`
 2. 테이블을 선택해 `/db`에서 컬럼·SQL 미리보기를 확인
-3. 구분자를 고르고 추출 → `/extracts`에서 `succeeded` 후 다운로드
-4. `/transform`에서 그 파일을 소스로 고른 뒤 스텝을 저장하고 실행한다
+3. 칩으로 저장해 실행한다. 같은 동작으로 두 번째 단독 추출 파일을 만들지 않는다
+4. `/workspace`에서 그 칩 출력을 입력으로 transform을 잇는다
 
 ## 수락 테스트 C — 업로드 → 변환 → parquet
 
@@ -90,17 +85,11 @@ bintl
 config.toml
 data/          # 없으면 기동 시 생성
   etl.db
-  extracts/
-    uploads/     # 올린 파일
-    databases/   # DB 추출
-    api/         # API 추출 (예약)
-  outputs/       # 변환 결과
-  logs/          # 작업 진행 로그 (화면/상황별)
-    extracts/    # 파일 생성
-    jobs/        # 변환·적재
-    query/       # 긴 조회 (예약)
-    files/       # 업로드 (예약)
-    connections/ # 커넥션 테스트 (예약)
+  extract_runs/{uploads,databases,api}/
+  chip_outputs/{workspace}/{chip}/
+  outputs/       # 레거시 단독 변환
+  loads/
+  logs/          # 쿼리·연결 진단. 칩 로그는 etl.db
 ```
 
 ```bash
@@ -159,8 +148,7 @@ just test
 | `ETL_BIND` | bind 주소 |
 | `ETL_DATA_DIR` | 데이터 디렉터리 |
 | `ETL_SESSION_SECRET` | 세션 서명 비밀 |
-| `ETL_AUTH_USERNAME` | 로그인 사용자 |
-| `ETL_AUTH_PASSWORD` | 로그인 비밀번호 (평문, 뼈대) |
+| `ETL_ENCRYPTION_SECRET` | 커넥션 암호 키. 없으면 `session_secret` |
 | `ETL_SKIP_AUTH` | `true`면 `/api` 인증 생략 |
 | `ETL_UI_DIR` | embed 대신 이 폴더의 정적 UI |
 

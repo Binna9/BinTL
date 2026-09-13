@@ -78,6 +78,8 @@ pub async fn ensure_planned_input_for_transform(
         "source_chip_id": upstream_chip_id,
         "consumer_chip_id": transform_chip_id,
         "kind": dataset.kind,
+        "delimiter": dataset.delimiter.clone().unwrap_or_else(|| schema.delimiter.clone()),
+        "has_header": dataset.has_header.unwrap_or(i64::from(schema.header)) != 0,
         "columns": columns,
     }))
 }
@@ -459,6 +461,8 @@ pub async fn get_transform_input_slot(
         "source_chip_name": source_name,
         "source_chip_kind": source_kind,
         "dataset_id": planned["dataset_id"],
+        "delimiter": planned["delimiter"],
+        "has_header": planned["has_header"],
         "columns": planned["columns"],
     }))
 }

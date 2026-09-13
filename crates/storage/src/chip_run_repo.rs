@@ -224,13 +224,13 @@ impl Store {
             .ok_or_else(|| StorageError::NotFound("chip run disappeared after insert".into()))
     }
 
-    pub async fn recover_interrupted_workspace_executions(&self) -> Result<(), StorageError> {
+    pub async fn recover_interrupted_executions(&self) -> Result<(), StorageError> {
         let now = now_rfc3339();
-        let reason = "Server restarted before workspace execution completed";
+        let reason = "Server restarted before execution completed";
         let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE execution_steps SET status='failed', error_code='EXECUTION_INTERRUPTED', error_message=?, finished_at=? WHERE status IN ('queued','running') AND execution_id IN (SELECT id FROM executions WHERE source='workspace' AND status IN ('queued','running'))")
+        sqlx::query("UPDATE execution_steps SET status='failed', error_code='EXECUTION_INTERRUPTED', error_message=?, finished_at=? WHERE status IN ('queued','running')")
             .bind(reason).bind(&now).execute(&mut *tx).await?;
-        sqlx::query("UPDATE executions SET status='failed', error_message=?, finished_at=? WHERE source='workspace' AND status IN ('queued','running')")
+        sqlx::query("UPDATE executions SET status='failed', error_message=?, finished_at=? WHERE status IN ('queued','running')")
             .bind(reason).bind(&now).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
@@ -410,7 +410,7 @@ impl Store {
         delimiter: &str,
         header: bool,
     ) -> Result<DatasetRow, StorageError> {
-        let _ = (source_extract_definition_id, kind, delimiter, header);
+        let _ = source_extract_definition_id;
         let schema = self.upsert_data_schema(columns_json).await?;
         let placement: String = sqlx::query_scalar(
             "SELECT id FROM workspace_chips WHERE workspace_id=? AND chip_id=? LIMIT 1",
@@ -424,9 +424,14 @@ impl Store {
             VALUES (?, 'out', ?, ?, 1, ?) ON CONFLICT(workspace_chip_id, port_name) DO UPDATE SET
             schema_id=excluded.schema_id, expected_filename=excluded.expected_filename, updated_at=excluded.updated_at")
             .bind(placement).bind(schema.id).bind(filename).bind(now_rfc3339()).execute(&self.pool).await?;
-        self.find_planned_input_dataset(workspace_id, consumer_chip_id)
+        let mut dataset = self
+            .find_planned_input_dataset(workspace_id, consumer_chip_id)
             .await?
-            .ok_or_else(|| StorageError::NotFound("planned input contract missing".into()))
+            .ok_or_else(|| StorageError::NotFound("planned input contract missing".into()))?;
+        dataset.kind = kind.into();
+        dataset.delimiter = Some(delimiter.into());
+        dataset.has_header = Some(i64::from(header));
+        Ok(dataset)
     }
 
     pub async fn linked_chip_run_for_extract(
@@ -591,6 +596,26 @@ impl Store {
         link_child_step(&self.pool, id, job_id).await
     }
 
+    pub async fn set_chip_run_succeeded_without_output(
+        &self,
+        id: &str,
+    ) -> Result<(), StorageError> {
+        let result = sqlx::query(
+            "UPDATE execution_steps SET status = 'succeeded', error_message = NULL, finished_at = ?
+             WHERE id = ? AND status = 'running'",
+        )
+        .bind(now_rfc3339())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::Invalid(
+                "only a running chip run can succeed".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn set_chip_run_succeeded(
         &self,
         id: &str,
@@ -717,7 +742,7 @@ mod workspace_execution_tests {
     async fn workspace_skip_and_runtime_binding_preserve_snapshots_and_scope() {
         let root = std::env::temp_dir().join(format!("bintl-workspace-inputs-{}", Uuid::new_v4()));
         let store = Store::open(&root, "test-secret").await.unwrap();
-        let user = store.ensure_bootstrap("admin", "admin").await.unwrap();
+        let user = store.ensure_bootstrap().await.unwrap();
         let workspace = store.insert_workspace("Inputs", None, &user.id, None).await.unwrap();
         let other = store.insert_workspace("Other", None, &user.id, None).await.unwrap();
         let config = r#"{"source_data_file_id":"","keys":["id"],"workspace_rule_snapshot":true}"#;
@@ -770,7 +795,7 @@ mod workspace_execution_tests {
     async fn workspace_execution_is_grouped_and_only_orchestrator_finishes_it() {
         let root = std::env::temp_dir().join(format!("bintl-workspace-runs-{}", Uuid::new_v4()));
         let store = Store::open(&root, "test-secret").await.unwrap();
-        let user = store.ensure_bootstrap("admin", "admin").await.unwrap();
+        let user = store.ensure_bootstrap().await.unwrap();
         let workspace = store.insert_workspace("History", None, &user.id, None).await.unwrap();
         let config = r#"{"connection_id":"c","source":{"type":"table","table":"users"}}"#;
         let chip = store.insert_chip(&user.id, &workspace.id, "Users", "extract", config).await.unwrap();
@@ -816,10 +841,16 @@ mod workspace_execution_tests {
         assert_eq!(store.list_workspace_executions(&workspace.id).await.unwrap()[0].status, "succeeded");
         let interrupted = store.create_workspace_execution(&workspace.id, &user.id).await.unwrap();
         let pending = store.create_chip_run_in_execution(&chip.id, &workspace.id, chip.revision, config, None, Some(&interrupted)).await.unwrap();
-        store.recover_interrupted_workspace_executions().await.unwrap();
+        let chip_only = store.create_chip_run(&chip.id, &workspace.id, chip.revision, config, None).await.unwrap();
+        assert!(store.workspace_has_active_execution(&workspace.id).await.unwrap());
+        store.recover_interrupted_executions().await.unwrap();
         assert_eq!(store.get_chip_run(&pending.id).await.unwrap().unwrap().status, "failed");
+        assert_eq!(store.get_chip_run(&chip_only.id).await.unwrap().unwrap().status, "failed");
         assert_eq!(store.get_execution(&interrupted).await.unwrap().unwrap().status, "failed");
         assert_eq!(store.get_execution(&success).await.unwrap().unwrap().status, "succeeded");
+        let leftover_chip = store.create_chip_run(&chip.id, &workspace.id, chip.revision, config, None).await.unwrap();
+        assert_eq!(leftover_chip.status, "queued");
+        assert!(!store.workspace_has_active_execution(&workspace.id).await.unwrap());
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
     }

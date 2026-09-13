@@ -14,7 +14,6 @@ const ConnectionsPage = lazy(() => import("@/pages/ConnectionsPage").then((modul
 const ExtractResultsPage = lazy(() => import("@/pages/ExtractResultsPage").then((module) => ({ default: module.ExtractResultsPage })));
 const ApiExtractPage = lazy(() => import("@/pages/ApiExtractPage").then((module) => ({ default: module.ApiExtractPage })));
 const FilesPage = lazy(() => import("@/pages/FilesPage").then((module) => ({ default: module.FilesPage })));
-const HistoryPage = lazy(() => import("@/pages/HistoryPage").then((module) => ({ default: module.HistoryPage })));
 const JobRunPage = lazy(() => import("@/pages/JobRunPage").then((module) => ({ default: module.JobRunPage })));
 const LoadPage = lazy(() => import("@/pages/LoadPage").then((module) => ({ default: module.LoadPage })));
 const OverviewPage = lazy(() => import("@/pages/OverviewPage").then((module) => ({ default: module.OverviewPage })));
@@ -61,7 +60,7 @@ function ConsoleShell() {
         <main
           className={cn(
             "min-h-0 min-w-0 flex-1",
-            onSearchPage ? "overflow-hidden" : studio ? "overflow-hidden" : "overflow-y-auto p-4",
+            onSearchPage ? "overflow-hidden" : studio ? "overflow-hidden" : "flex flex-col overflow-y-auto p-4",
           )}
         >
           <Suspense fallback={null}>
@@ -71,17 +70,25 @@ function ConsoleShell() {
               <Route path="/files" element={<FilesPage />} />
               <Route path="/connections" element={<ConnectionsPage />} />
               <Route path="/schedule" element={<SchedulePage />} />
-              <Route path="/workspace/runs" element={<WorkspaceRunsPage />} />
+              <Route path="/workspace/runs" element={<Navigate to="/history" replace />} />
               <Route path="/workspace" element={<WorkspacePage />} />
               <Route path="/workspace/:workspaceId" element={<WorkspacePage />} />
               <Route path="/workspace/:workspaceId/chips/:chipId" element={<WorkspacePage />} />
               <Route path="/workspace/:workspaceId/chips/:editorChipId/transform" element={<TransformPage />} />
               <Route path="/workspace/:workspaceId/chips/:editorChipId/transform/:id" element={<TransformPage />} />
               <Route path="/chips" element={<ChipsPage />} />
+              <Route path="/chips/:editorChipId/extract" element={<QueryPage />} />
+              <Route path="/chips/:editorChipId/extract-api" element={<ApiExtractPage />} />
+              <Route path="/chips/:editorChipId/transform" element={<TransformPage />} />
+              <Route path="/chips/:editorChipId/transform/:id" element={<TransformPage />} />
+              <Route path="/chips/:editorChipId/load" element={<LoadPage />} />
+              <Route path="/chips/:editorChipId/load/:id" element={<LoadPage />} />
+              <Route path="/chips/:editorChipId/validation" element={<ValidationPage />} />
               <Route path="/workspace/:workspaceId/tasks/:taskId" element={<Navigate to={loc.pathname.replace("/tasks/", "/chips/")} replace />} />
               <Route path="/db" element={<QueryPage />} />
               <Route path="/query" element={<QueryPage />} />
               <Route path="/workspace/:workspaceId/chips/:editorChipId/extract" element={<QueryPage />} />
+              <Route path="/workspace/:workspaceId/chips/:editorChipId/extract-api" element={<ApiExtractPage />} />
               <Route path="/extract/api" element={<ApiExtractPage />} />
               <Route path="/extracts" element={<ExtractResultsPage />} />
               <Route path="/transforms" element={<TransformFilesPage />} />
@@ -101,7 +108,7 @@ function ConsoleShell() {
               <Route path="/validation/rules" element={<ValidationRulesPage />} />
               <Route path="/validation/results" element={<ValidationResultsPage />} />
               <Route path="/workspace/:workspaceId/chips/:editorChipId/validation" element={<ValidationPage />} />
-              <Route path="/history" element={<HistoryPage />} />
+              <Route path="/history" element={<WorkspaceRunsPage />} />
               <Route path="/jobs" element={<Navigate to="/history" replace />} />
               <Route path="/jobs/:id" element={<JobRunPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />

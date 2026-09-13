@@ -13,13 +13,13 @@ workspaces
       ├─ execution_logs       실행 로그
       ├─ execution_inputs     입력 dataset
       ├─ execution_outputs    출력 dataset
-      ├─ load_results         적재 결과
       └─ validation_results   검증 결과
+      (적재 수치는 execution_steps.result_json)
 
 chips 1 ── N execution_steps 1 ── N execution_logs
 ```
 
-같은 칩을 다시 실행해도 과거 로그를 즉시 덮어쓰지 않는다. 실행마다 UUID를 새로 만들고, 워크스페이스의 “최신 로그” 화면이 해당 칩의 가장 최근 실행을 선택한다. 칩 단독 실행 이력은 칩당 최근 완료 실행 50개를 기준으로 정리한다. 워크스페이스 전체 실행과 그 소속 칩은 이 정리에서 제외하여 실행 그룹과 로그를 보존한다. 로그는 실행 단계당 500개, 메시지당 8,192자로 제한한다.
+같은 칩을 다시 실행해도 과거 로그를 즉시 덮어쓰지 않는다. 실행마다 UUID를 새로 만들고, 워크스페이스의 “최신 로그” 화면이 해당 칩의 가장 최근 실행을 선택한다. 칩 단독 실행(`executions.source='chip'`) 이력은 칩당 최근 완료 실행 50개를 기준으로 정리한다. 워크스페이스 전체 실행과 그 소속 칩은 이 정리에서 제외한다. 로그는 실행 단계당 500개, 메시지당 8,192자로 제한한다.
 
 ## 2. 서버의 실행 생성 과정
 
@@ -106,11 +106,11 @@ CSV·TSV 결과는 실제 데이터이므로 파일 시스템에 저장하지만
 1. 입력 dataset과 적재 설정을 검증한다.
 2. `load_started` 이벤트에 입력 파일명을 기록한다.
 3. DB 대상이면 CSV를 준비해 지정 테이블에 적재한다. 파일 대상이면 CSV 또는 parquet를 지정 경로에 저장한다.
-4. `load_results`에 대상, 모드, 입력·적재·거부 행 수, 바이트 수, 소요 시간, 결과 경로를 저장한다.
+4. `execution_steps.result_json`에 대상, 모드, 입력·적재 행 수, 바이트 수, 소요 시간, 결과 경로를 저장한다. (`load_results` 테이블은 없다.)
 5. `load_completed` 이벤트에 적재 행 수, 대상, 소요 시간을 기록한다.
 6. 실행을 `succeeded`로 변경한다. 오류 시 공통 `failed` 이벤트와 오류 메시지를 저장한다.
 
-`load_results`는 결과 수치의 원본이고 `execution_logs`는 사람이 읽는 진행 과정과 오류의 원본이다.
+적재 수치의 원본은 `execution_steps.result_json`이고, `execution_logs`는 사람이 읽는 진행 과정과 오류의 원본이다.
 
 ## 7. 검증 프로세스
 
@@ -132,7 +132,7 @@ GET /api/chip-runs/{execution_step_id}/logs
 
 서버는 사용자의 워크스페이스 접근 권한을 확인하고 `execution_logs`를 `sequence ASC`로 조회한다. 각 행을 `시각 level message` 형태로 만들어 반환한다.
 
-배포 전 적재·검증 실행처럼 DB 로그가 없는 레코드는 호환을 위해 `load_results`, `result_json`, `error_message`에서 내용을 조립한다. 추출 화면의 `GET /api/extracts/{id}/logs`도 동일하게 `execution_logs`를 조회한다.
+배포 전 적재·검증처럼 로그가 빈 레코드는 호환을 위해 `result_json`, `error_message`에서 내용을 조립한다. 추출 화면의 `GET /api/extracts/{id}/logs`도 `execution_logs`를 조회한다.
 
 ## 9. 보존 및 자동 정리
 
@@ -147,7 +147,7 @@ WHERE execution_step_id = :step_id
   ), 0) - 500;
 ```
 
-새 칩 실행을 생성할 때 같은 칩의 완료 실행을 최신순으로 정렬하고 최근 50개를 초과한 `executions`를 삭제한다. `queued`, `running` 실행은 삭제하지 않는다. 대상 완료 상태는 `succeeded`, `failed`, `canceled`다.
+새 칩 단독 실행(`source='chip'`)을 만들 때 같은 칩의 완료 실행을 최신순으로 정렬하고 최근 50개를 초과한 `executions`를 삭제한다. 워크스페이스 전체 실행은 삭제하지 않는다. `queued`, `running`은 삭제하지 않는다.
 
 `executions` 삭제 시 외래키 `ON DELETE CASCADE`로 `execution_steps`, `execution_logs`, `execution_inputs`, `execution_outputs`, 해당 `validation_results`가 함께 정리된다. 실제 출력 파일과 `data_files`는 최신 workspace 출력을 보호하기 위해 로그 보존 정책과 별도로 관리한다.
 
@@ -286,7 +286,7 @@ STORAGE_TRANSACTION_COMMIT_FAILED
 - `LOAD_DEADLOCK`: DB deadlock 감지
 - `LOAD_TIMEOUT`: query 또는 transaction 시간 초과
 
-commit 실패는 성공으로 처리하면 안 된다. `loaded_rows`가 존재하더라도 상태는 반드시 `failed`로 저장하고, DB에서 commit 성공을 확인한 후에만 `load_results`와 `succeeded` 상태를 기록한다. deadlock과 일시적 timeout만 제한적인 자동 재시도 대상으로 둔다.
+commit 실패는 성공으로 처리하면 안 된다. `loaded_rows`가 존재하더라도 상태는 반드시 `failed`로 저장하고, DB에서 commit 성공을 확인한 후에만 `result_json`과 `succeeded`를 기록한다. deadlock과 일시적 timeout만 제한적인 자동 재시도 대상으로 둔다.
 
 DB 적재를 위해 Parquet을 임시 CSV로 변환할 때는 NULL 전용 내부 마커를 사용한다. 적재기는 이 마커를 대상 column type과 무관하게 SQL `NULL`로 변환하므로 문자형 column에서도 원래 NULL과 빈 문자열(`''`)이 구분된다. 일반 CSV 입력에는 별도 NULL 메타데이터가 없으므로, 빈 필드는 기존처럼 문자형 column에서 빈 문자열로 유지하고 정수·실수·날짜·시간·boolean·UUID 등 비문자형 column에서 SQL `NULL`로 처리한다. NULL 또는 빈 필드를 `NOT NULL` column에 넣으려 하면 DB 전송 전에 실패시키며 로그 원문에 CSV 행 번호, column 이름, 대상 자료형을 남긴다.
 
@@ -296,7 +296,7 @@ DB 적재를 위해 Parquet을 임시 CSV로 변환할 때는 NULL 전용 내부
 - `LOAD_OUTPUT_WRITE_FAILED`: 대상 파일 복사 또는 변환 실패
 - `LOAD_OUTPUT_ALREADY_EXISTS`: replace가 아닌데 같은 파일이 존재함
 - `LOAD_OUTPUT_DISK_FULL`: 저장 공간 부족
-- `LOAD_RESULT_SAVE_FAILED`: 적재 성공 후 `load_results` 저장 실패
+- `LOAD_RESULT_SAVE_FAILED`: 적재 성공 후 `execution_steps.result_json` 저장 실패
 
 ## 16. 검증 오류와 검증 실패
 

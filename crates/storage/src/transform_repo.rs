@@ -170,7 +170,7 @@ impl Store {
 
     pub async fn get_transform(&self, id: &str) -> Result<Option<TransformRow>, StorageError> {
         let row = sqlx::query_as::<_, TransformRow>(
-            "SELECT t.id, t.name, COALESCE(t.default_input_file_id, 'contract:' || COALESCE(d.workspace_id, (SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id=wc.chip_id WHERE c.transform_id=t.id LIMIT 1), 'default') || ':' || COALESCE((SELECT c.id FROM chips c WHERE c.transform_id=t.id LIMIT 1), t.id)) AS dataset_id, t.spec_json,
+            "SELECT t.id, t.name, COALESCE(t.default_input_file_id, 'contract:' || COALESCE(d.workspace_id, (SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id=wc.chip_id WHERE c.transform_id=t.id LIMIT 1), '00000000-0000-0000-0000-000000000001') || ':' || COALESCE((SELECT c.id FROM chips c WHERE c.transform_id=t.id LIMIT 1), t.id)) AS dataset_id, t.spec_json,
                     t.created_at, t.updated_at, COALESCE(d.workspace_id, (SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id=wc.chip_id WHERE c.transform_id=t.id LIMIT 1)) AS workspace_id,
                     (SELECT c.id FROM chips c WHERE c.transform_id = t.id ORDER BY c.updated_at DESC LIMIT 1) AS input_chip_id
              FROM transforms t LEFT JOIN data_files d ON d.id = t.default_input_file_id WHERE t.id = ?",
@@ -186,7 +186,7 @@ impl Store {
         chip_id: &str,
     ) -> Result<Option<TransformRow>, StorageError> {
         let row = sqlx::query_as::<_, TransformRow>(
-            "SELECT t.id, t.name, COALESCE(t.default_input_file_id, 'contract:' || COALESCE(d.workspace_id, wc.workspace_id, 'default') || ':' || c.id) AS dataset_id, t.spec_json,
+            "SELECT t.id, t.name, COALESCE(t.default_input_file_id, 'contract:' || COALESCE(d.workspace_id, wc.workspace_id, '00000000-0000-0000-0000-000000000001') || ':' || c.id) AS dataset_id, t.spec_json,
                     t.created_at, t.updated_at, COALESCE(d.workspace_id, wc.workspace_id) AS workspace_id, c.id AS input_chip_id
              FROM transforms t INNER JOIN chips c ON c.transform_id = t.id
              LEFT JOIN data_files d ON d.id=t.default_input_file_id
@@ -225,7 +225,7 @@ impl Store {
             None => (String::new(), Vec::new()),
         };
         let sql = format!(
-            "SELECT t.id, t.name, COALESCE(t.default_input_file_id, 'contract:' || COALESCE(d.workspace_id, (SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id=wc.chip_id WHERE c.transform_id=t.id LIMIT 1), 'default') || ':' || COALESCE((SELECT c.id FROM chips c WHERE c.transform_id=t.id LIMIT 1), t.id)) AS dataset_id, t.spec_json,
+            "SELECT t.id, t.name, COALESCE(t.default_input_file_id, 'contract:' || COALESCE(d.workspace_id, (SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id=wc.chip_id WHERE c.transform_id=t.id LIMIT 1), '00000000-0000-0000-0000-000000000001') || ':' || COALESCE((SELECT c.id FROM chips c WHERE c.transform_id=t.id LIMIT 1), t.id)) AS dataset_id, t.spec_json,
                     t.created_at, t.updated_at, COALESCE(d.workspace_id, (SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id=wc.chip_id WHERE c.transform_id=t.id LIMIT 1)) AS workspace_id,
                     (SELECT c.id FROM chips c WHERE c.transform_id = t.id ORDER BY c.updated_at DESC LIMIT 1) AS input_chip_id
              FROM transforms t LEFT JOIN data_files d ON d.id = t.default_input_file_id

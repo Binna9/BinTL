@@ -3,8 +3,8 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use connectors::{
-    load_table, normalize_sql, parse_delimiter, parse_http_spec, parse_ident, parse_table,
-    sql_kind, HttpKv, HttpRequestSpec, SqlKind,
+    load_table, normalize_sql, parse_delimiter, parse_http_spec, parse_ident, parse_table, run_sql,
+    sniff_delimiter, sql_kind, with_database, HttpKv, HttpRequestSpec, SqlKind,
 };
 use engine::{Engine, PolarsEngine, TransformSpec, ValidationSpec};
 use serde::{Deserialize, Serialize};
@@ -475,9 +475,17 @@ async fn update_chip(
             .store
             .chip_workspace_hint(&id)
             .await
-            .map_err(|error| AppError::bad(error.to_string()))?
-            .ok_or_else(|| AppError::bad("chip is not placed on a workspace"))?;
-        let config = validate_config(&state.store, &workspace_id, kind, raw_config).await?;
+            .map_err(|error| AppError::bad(error.to_string()))?;
+        if workspace_id.is_none() && kind != "sql" {
+            return Err(AppError::bad("chip is not placed on a workspace"));
+        }
+        let config = validate_config(
+            &state.store,
+            workspace_id.as_deref().unwrap_or(""),
+            kind,
+            raw_config,
+        )
+        .await?;
         Some(serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?)
     } else {
         None
@@ -513,6 +521,7 @@ async fn queue_chip_run(
     requested_input: Option<String>,
     execution_id: Option<&str>,
 ) -> Result<ChipRunRow, AppError> {
+    access::require_etl_run(user)?;
     match chip.kind.as_str() {
         "extract" => queue_extract_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await,
         "transform" => {
@@ -522,6 +531,7 @@ async fn queue_chip_run(
         "validation" => {
             queue_validation_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await
         }
+        "sql" => queue_sql_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await,
         _ => {
             access::require_workspace(&state.store, user, workspace_id).await?;
             if chip.active == 0 {
@@ -684,6 +694,38 @@ async fn queue_load_chip_run(
         return Err(AppError::not_found("input dataset file missing"));
     }
     enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&dataset_id), execution_id).await
+}
+
+async fn queue_sql_chip_run(
+    state: &AppState,
+    user: &CurrentUser,
+    chip: &ChipRow,
+    workspace_id: &str,
+    requested_input: Option<String>,
+    execution_id: Option<&str>,
+) -> Result<ChipRunRow, AppError> {
+    access::require_workspace(&state.store, user, workspace_id).await?;
+    if chip.active == 0 {
+        return Err(AppError::conflict("chip is inactive"));
+    }
+    if chip.kind != "sql" {
+        return Err(AppError::bad("expected SQL chip"));
+    }
+    if requested_input.is_some() {
+        return Err(AppError::bad("SQL chips do not accept input_dataset_id"));
+    }
+    let config_raw = state
+        .store
+        .resolve_chip_config_json(chip)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let config: Value = serde_json::from_str(&config_raw)
+        .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
+    reject_forbidden_config(&config)?;
+    let config = validate_sql_config(&state.store, config).await?;
+    let config_raw =
+        serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?;
+    enqueue_chip_run(state, chip, workspace_id, &config_raw, None, execution_id).await
 }
 
 async fn queue_extract_chip_run(
@@ -902,6 +944,7 @@ async fn run_workspace(
     user: CurrentUser,
     Path(workspace_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_etl_run(&user)?;
     access::require_workspace(&state.store, &user, &workspace_id).await?;
     let task_workspace_id = workspace_id.clone();
     let run_ids = tokio::spawn(async move {
@@ -1097,11 +1140,16 @@ pub(crate) async fn chip_json(store: &Store, row: &ChipRow) -> Result<Value, App
         .map_err(|error| AppError::bad(error.to_string()))?;
     let config = serde_json::from_str::<Value>(&config_raw)
         .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
+    let workspace_id = store
+        .chip_workspace_hint(&row.id)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
     Ok(json!({
         "id": row.id,
         "owner_user_id": row.owner_user_id,
         "name": row.name,
         "kind": row.kind,
+        "workspace_id": workspace_id,
         "binding": binding.map(|item| json!({
             "ref_kind": item.ref_kind,
             "ref_id": item.ref_id,
@@ -1350,10 +1398,48 @@ pub(crate) async fn validate_config(
             .and_then(|value| {
                 serde_json::to_value(value).map_err(|e| AppError::bad(e.to_string()))
             }),
+        "sql" => validate_sql_config(store, config).await,
         _ => Err(AppError::bad(
-            "chip kind must be extract, transform, load, or validation",
+            "chip kind must be extract, transform, load, validation, or sql",
         )),
     }
+}
+
+pub(crate) async fn validate_sql_config(store: &Store, config: Value) -> Result<Value, AppError> {
+    let connection_id = config
+        .get("connection_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let sql_text = config
+        .get("sql_text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let database = config
+        .get("database")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    if connection_id.is_empty() {
+        return Err(AppError::bad("connection_id required"));
+    }
+    let connection = store
+        .get_connection(&connection_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("connection not found"))?;
+    if connection.driver == "http" {
+        return Err(AppError::bad("http connection cannot run SQL"));
+    }
+    let sql_text = normalize_sql(&sql_text).map_err(|error| AppError::bad(error.to_string()))?;
+    validate_database(database.as_deref())?;
+    Ok(json!({
+        "connection_id": connection_id,
+        "sql_text": sql_text,
+        "database": database,
+    }))
 }
 
 async fn validate_validation_config(
@@ -1653,6 +1739,13 @@ pub(crate) async fn run_one(
                 .map_err(|error| error.to_string())?;
             run_validation(store, &run).await
         }
+        "sql" => {
+            store
+                .set_chip_run_running(run_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            run_sql_chip(store, &run).await
+        }
         kind => Err(format!("unsupported chip kind {kind}")),
     };
     match &result {
@@ -1671,6 +1764,53 @@ pub(crate) async fn run_one(
         Err(_) => {}
     }
     result
+}
+
+async fn run_sql_chip(store: &Store, run: &ChipRunRow) -> Result<(), String> {
+    let config: Value = serde_json::from_str(&run.config_snapshot_json)
+        .map_err(|error| format!("invalid SQL config snapshot: {error}"))?;
+    let connection_id = config
+        .get("connection_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if connection_id.is_empty() {
+        return Err("connection_id required".into());
+    }
+    let sql_text = config.get("sql_text").and_then(Value::as_str).unwrap_or("");
+    let database = config
+        .get("database")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let base = store
+        .live_connection(connection_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if base.driver == "http" {
+        return Err("http connection cannot run SQL".into());
+    }
+    let live = with_database(&base, database);
+    let outcome = run_sql(&live, sql_text, 1000, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    store
+        .append_execution_log(
+            &run.id,
+            "info",
+            "sql_completed",
+            &format!(
+                "kind={} rows={} elapsed_ms={} truncated={}",
+                outcome.kind, outcome.row_count, outcome.elapsed_ms, outcome.truncated
+            ),
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    store
+        .set_chip_run_succeeded_without_output(&run.id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
@@ -2244,13 +2384,21 @@ async fn run_transform(
     }
     let spec_json = serde_json::to_string(&config.spec).map_err(|error| error.to_string())?;
     let spec = TransformSpec::parse_json(&spec_json).map_err(|error| error.to_string())?;
-    let delimiter = spec
-        .delimiter()
-        .map(str::to_string)
-        .or(dataset.delimiter.clone());
-    let has_header = spec
-        .has_header()
-        .or_else(|| dataset.has_header.map(|value| value != 0));
+    let file_delimiter = dataset.delimiter.clone().filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            if run.execution_source != "workspace" {
+                return None;
+            }
+            let path = store.resolve(&dataset.stored_path);
+            let bytes = std::fs::read(&path).ok()?;
+            sniff_delimiter(&bytes[..bytes.len().min(64 * 1024)])
+        });
+    let (delimiter, has_header) = transform_read_hints(
+        &spec,
+        file_delimiter.as_deref(),
+        dataset.has_header,
+        run.execution_source == "workspace",
+    );
     let spec_json = serde_json::to_string(&spec.with_read(delimiter, has_header))
         .map_err(|error| error.to_string())?;
     let transform_id = if run.execution_source == "workspace" {
@@ -2283,4 +2431,50 @@ async fn run_transform(
         return Err(error.into());
     }
     Ok(())
+}
+
+fn nonempty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// Canvas runs follow the file the extract chip wrote. Standalone recipes keep
+/// the editor value so a user can correct a bad sniff.
+fn transform_read_hints(
+    spec: &TransformSpec,
+    dataset_delimiter: Option<&str>,
+    dataset_header: Option<i64>,
+    workspace: bool,
+) -> (Option<String>, Option<bool>) {
+    let file = nonempty(dataset_delimiter);
+    let recipe = nonempty(spec.delimiter());
+    let delimiter = if workspace { file.or(recipe) } else { recipe.or(file) }.map(str::to_string);
+    let file_header = dataset_header.map(|value| value != 0);
+    let recipe_header = spec.has_header();
+    let has_header = if workspace {
+        file_header.or(recipe_header)
+    } else {
+        recipe_header.or(file_header)
+    };
+    (delimiter, has_header)
+}
+
+#[cfg(test)]
+mod transform_read_hint_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_follows_extract_file_not_recipe_comma() {
+        let spec = TransformSpec::identity().with_read(Some(",".into()), Some(true));
+        let (delimiter, header) = transform_read_hints(&spec, Some("|"), Some(1), true);
+        assert_eq!(delimiter.as_deref(), Some("|"));
+        assert_eq!(header, Some(true));
+    }
+
+    #[test]
+    fn standalone_keeps_editor_override() {
+        let spec = TransformSpec::identity().with_read(Some("tab".into()), Some(false));
+        let (delimiter, header) = transform_read_hints(&spec, Some(","), Some(1), false);
+        assert_eq!(delimiter.as_deref(), Some("tab"));
+        assert_eq!(header, Some(false));
+    }
 }

@@ -104,7 +104,7 @@ export function JobsPage() {
   return (
     <PageShell>
       <PageHeader
-        iconName="jobs"
+        iconName="transform"
         eyebrow={messages.jobs.eyebrow}
         title={messages.jobs.title}
         description={messages.jobs.description}

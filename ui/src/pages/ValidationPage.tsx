@@ -22,7 +22,8 @@ import type { Dataset } from "@/types/dataset";
 export function ValidationPage() {
   const navigate = useNavigate();
   const { workspaceId, editorChipId } = useParams();
-  const editingChip = Boolean(workspaceId && editorChipId);
+  const editingChip = Boolean(editorChipId);
+  const canvasMode = Boolean(workspaceId && editorChipId);
   const { messages } = useLanguage();
   const t = messages.validation;
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -42,7 +43,19 @@ export function ValidationPage() {
         if (cancelled) return;
         setDatasets(result.datasets.filter((item) => item.available && (!workspaceId || item.workspace_id === workspaceId)));
         setRules(ruleResult.rules.filter((rule) => rule.active));
-        if (!editorChipId || !workspaceId) return;
+        if (!editorChipId) return;
+        if (!workspaceId) {
+          const chip = await chipApi.get(editorChipId);
+          if (cancelled) return;
+          const config = chip.config;
+          const savedRuleId = typeof config.validation_rule_id === "string" ? config.validation_rule_id : "";
+          const savedRule = ruleResult.rules.find((rule) => rule.id === savedRuleId);
+          setRuleId(savedRuleId);
+          setSourceId(typeof config.source_data_file_id === "string" ? config.source_data_file_id : "");
+          setKeys(savedRule ? savedRule.keys.join(", ") : Array.isArray(config.keys) ? config.keys.filter((v): v is string => typeof v === "string").join(", ") : "");
+          setColumns(savedRule ? savedRule.columns.join(", ") : Array.isArray(config.columns) ? config.columns.filter((v): v is string => typeof v === "string").join(", ") : "");
+          return;
+        }
         const [chip, slot, workspace, workspaceChips] = await Promise.all([
           chipApi.get(editorChipId),
           chipApi.getInputSlot(workspaceId, editorChipId),
@@ -109,7 +122,7 @@ export function ValidationPage() {
         },
       });
       toastSuccess(t.saved);
-      navigate(`/workspace/${workspaceId}`);
+      navigate(workspaceId ? `/workspace/${workspaceId}` : "/chips");
     } catch (error) {
       toastError(t.saveError, error);
     } finally {
@@ -117,8 +130,8 @@ export function ValidationPage() {
     }
   }
   return <PageShell>
-    <PageHeader iconName="jobs" eyebrow={t.eyebrow} title={t.title} description={t.description}
-      actions={editingChip ? <Button variant="quiet" onClick={() => navigate(`/workspace/${workspaceId}`)}><ArrowLeft className="size-3.5" />{t.backToWorkspace}</Button> : undefined} />
+    <PageHeader iconName="validation" eyebrow={t.eyebrow} title={t.title} description={t.description}
+      actions={editingChip ? <Button variant="quiet" onClick={() => navigate(workspaceId ? `/workspace/${workspaceId}` : "/chips")}><ArrowLeft className="size-3.5" />{workspaceId ? t.backToWorkspace : messages.chips.backToChips}</Button> : undefined} />
     <Panel tall className="overflow-hidden">
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-2 overflow-hidden">
         <aside className="grid h-full min-h-0 min-w-0 grid-cols-2 overflow-hidden border-r border-border">
@@ -126,7 +139,7 @@ export function ValidationPage() {
             <DatasetPicker title={t.source} datasets={datasets} value={sourceId} onChange={setSourceId} kindLabels={kindLabels} />
           </div>
           <div className="min-h-0 min-w-0 overflow-hidden">
-            <DatasetPicker title={t.target} datasets={datasets} value={targetId} onChange={setTargetId} kindLabels={kindLabels} disabled={editingChip} hint={editingChip ? t.targetFromCanvas : undefined} />
+            <DatasetPicker title={t.target} datasets={datasets} value={targetId} onChange={setTargetId} kindLabels={kindLabels} disabled={canvasMode} hint={canvasMode ? t.targetFromCanvas : undefined} />
           </div>
         </aside>
         <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">

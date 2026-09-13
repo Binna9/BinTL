@@ -63,4 +63,33 @@ impl HttpAuthConfig {
         }
         Ok(())
     }
+
+    pub fn require_secrets(&self, username: &str, password: &str) -> Result<(), StorageError> {
+        let invalid = |message: &str| StorageError::Invalid(message.into());
+        match self.mode.as_str() {
+            "bearer" | "api_key" if password.trim().is_empty() => {
+                Err(invalid("token or API key required"))
+            }
+            "basic" | "custom" if username.trim().is_empty() || password.trim().is_empty() => {
+                Err(invalid("username and password required"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_secrets_matches_mode() {
+        let bearer = HttpAuthConfig { mode: "bearer".into(), ..Default::default() };
+        assert!(bearer.require_secrets("", "").is_err());
+        assert!(bearer.require_secrets("", "tok").is_ok());
+        let basic = HttpAuthConfig { mode: "basic".into(), ..Default::default() };
+        assert!(basic.require_secrets("u", "").is_err());
+        assert!(basic.require_secrets("u", "p").is_ok());
+        assert!(HttpAuthConfig::default().require_secrets("", "").is_ok());
+    }
 }

@@ -66,9 +66,15 @@ impl Store {
         chip_id: &str,
     ) -> Result<(), StorageError> {
         self.require_workspace(workspace_id).await?;
-        self.get_chip(chip_id)
+        let workspace = self
+            .get_workspace(workspace_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("workspace not found".into()))?;
+        let chip = self
+            .get_chip(chip_id)
             .await?
             .ok_or_else(|| StorageError::NotFound("chip not found".into()))?;
+        workspace_repo::chip_matches_workspace_owner(&chip, &workspace)?;
         let now = now_rfc3339();
         let placement_id = workspace_chip_id(workspace_id, chip_id);
         sqlx::query(
@@ -112,7 +118,7 @@ impl Store {
                     e.output_filename,
                     COALESCE(e.delimiter, ',') AS delimiter, COALESCE(e.has_header, 1) AS header,
                     e.add_sequence,
-                    COALESCE((SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id = wc.chip_id WHERE c.extract_id = e.id LIMIT 1), 'default') AS workspace_id,
+                    COALESCE((SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id = wc.chip_id WHERE c.extract_id = e.id LIMIT 1), '{DEFAULT_WORKSPACE_ID}') AS workspace_id,
                     e.created_at, e.updated_at FROM extracts e WHERE e.id = ?"
         ))
         .bind(id)

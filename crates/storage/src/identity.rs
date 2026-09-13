@@ -10,6 +10,8 @@ use crate::password::{hash_password, verify_password};
 pub const PERM_USER_MANAGE: &str = "USER_MANAGE";
 pub const PERM_CONNECTION_WRITE: &str = "CONNECTION_WRITE";
 pub const PERM_WORKSPACE_ALL: &str = "WORKSPACE_ALL";
+pub const PERM_EXTRACT_RUN: &str = "EXTRACT_RUN";
+pub const PERM_TRANSFORM_RUN: &str = "TRANSFORM_RUN";
 
 const USER_COLS: &str =
     "id, userid, username, avatar_path AS avatar_data_url, active, created_at, updated_at";
@@ -74,6 +76,22 @@ impl UserRow {
     pub fn can_see_all_workspaces(&self) -> bool {
         self.has_permission(PERM_WORKSPACE_ALL)
     }
+
+    pub fn can_run_extract(&self) -> bool {
+        self.has_permission(PERM_EXTRACT_RUN)
+    }
+
+    pub fn can_run_transform(&self) -> bool {
+        self.has_permission(PERM_TRANSFORM_RUN)
+    }
+
+    pub fn can_run_etl(&self) -> bool {
+        self.can_run_extract() || self.can_run_transform()
+    }
+
+    pub fn can_use_connections(&self) -> bool {
+        self.can_write_connections() || self.can_run_etl()
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -133,11 +151,10 @@ impl UserCoreRow {
 }
 
 impl Store {
-    pub async fn ensure_bootstrap(
-        &self,
-        userid: &str,
-        password: &str,
-    ) -> Result<UserRow, StorageError> {
+    pub const BOOTSTRAP_USERID: &str = "admin";
+    const BOOTSTRAP_PASSWORD: &str = "admin";
+
+    pub async fn ensure_bootstrap(&self) -> Result<UserRow, StorageError> {
         if let Some(existing) = self.count_users().await? {
             if existing > 0 {
                 if let Some(admin) = self.find_bootstrap_admin().await? {
@@ -149,8 +166,14 @@ impl Store {
                 });
             }
         }
-        self.create_user_inner(userid, userid, password, &["admin".into()], true)
-            .await
+        self.create_user_inner(
+            Self::BOOTSTRAP_USERID,
+            Self::BOOTSTRAP_USERID,
+            Self::BOOTSTRAP_PASSWORD,
+            &["admin".into()],
+            true,
+        )
+        .await
     }
 
     pub async fn authenticate(
@@ -337,7 +360,7 @@ impl Store {
         let username = required_text(username, "username")?;
         let now = now_rfc3339();
         let result = sqlx::query(
-            "UPDATE users SET username = ?, avatar_path = ?, updated_at = ? WHERE id = ?",
+            "UPDATE users SET username = ?, avatar_path = COALESCE(?, avatar_path), updated_at = ? WHERE id = ?",
         )
         .bind(username)
         .bind(avatar_data_url)

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, BookmarkPlus, Braces, Code2, Database, Eye, FileDown, FileJson2, Globe2, ListFilter, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   columnWidthsForContent,
   DataGrid,
@@ -29,6 +29,7 @@ import { extractApi } from "@/services/extract/extractApi";
 import { chipApi } from "@/services/chips/chipApi";
 import { isChipNameConflict } from "@/services/httpClient";
 import type { ExtractRecord, HttpKv, HttpPreviewResponse, HttpSource } from "@/types/extract";
+import { inferredHttpAuthMode } from "@/types/connection";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
 const PREVIEW_LIMITS = [10, 20, 50, 100] as const;
@@ -160,11 +161,25 @@ function AppliedValues({ rows }: { rows: HttpKv[] }) {
   ) : null;
 }
 
+function kvOrEmpty(rows?: HttpKv[]): HttpKv[] {
+  return rows?.length ? rows : [emptyKv()];
+}
+
 export function ApiExtractPage() {
   const { messages } = useLanguage();
   const location = useLocation();
   const navigate = useNavigate();
-  const returnWorkspaceId = (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
+  const { workspaceId, editorChipId } = useParams<{ workspaceId: string; editorChipId: string }>();
+  const editingChip = Boolean(editorChipId);
+  const returnWorkspaceId = workspaceId ?? (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
+
+  function leaveEditor() {
+    if (returnWorkspaceId) {
+      navigate(`/workspace/${returnWorkspaceId}`, { state: location.state });
+      return;
+    }
+    navigate("/chips");
+  }
   const { connections } = useConnections();
   const httpConnections = useMemo(
     () => connections.filter((connection) => connection.driver === "http"),
@@ -215,10 +230,69 @@ export function ApiExtractPage() {
   }, [browseId, graphqlOperationName, httpConnections, path]);
 
   useEffect(() => {
-    if (browseInitialized.current || !httpConnections[0]) return;
+    if (editingChip || browseInitialized.current || !httpConnections[0]) return;
     setBrowseId(httpConnections[0].id);
     browseInitialized.current = true;
-  }, [httpConnections]);
+  }, [editingChip, httpConnections]);
+
+  useEffect(() => {
+    if (!editorChipId) return;
+    let cancelled = false;
+    void chipApi.get(editorChipId).then((chip) => {
+      if (cancelled) return;
+      const config = chip.config as {
+        connection_id?: unknown;
+        source?: HttpSource;
+        delimiter?: unknown;
+        header?: unknown;
+        add_sequence?: unknown;
+        output_filename?: unknown;
+      };
+      if (chip.kind !== "extract" || config.source?.type !== "http") {
+        toastError(messages.workspace.loadError);
+        leaveEditor();
+        return;
+      }
+      const source = config.source;
+      if (typeof config.connection_id === "string") setBrowseId(config.connection_id);
+      setMethod(source.method || "GET");
+      setRequestType(source.request_type === "graphql" ? "graphql" : "rest");
+      setPath(source.path ?? "");
+      setQuery(kvOrEmpty(source.query));
+      setHeaders(kvOrEmpty(source.headers));
+      setAppliedQuery(source.query ?? []);
+      setAppliedHeaders(source.headers ?? []);
+      const bodyMode = source.body_mode ?? "json";
+      const form = source.form ?? [];
+      const body = source.body ?? "";
+      setBodyMode(bodyMode);
+      setBody(body);
+      setForm(form.length ? form : [emptyKv()]);
+      setAppliedBody(source.method === "GET" || source.method === "HEAD" ? null : { mode: bodyMode, body, form });
+      const graphqlQuery = source.graphql_query ?? "";
+      const graphqlOperation = source.graphql_operation_name ?? "";
+      const graphqlVariables = source.graphql_variables
+        ? JSON.stringify(source.graphql_variables, null, 2)
+        : "{}";
+      setGraphqlQuery(graphqlQuery);
+      setGraphqlVariables(graphqlVariables);
+      setGraphqlOperationName(graphqlOperation);
+      setAppliedGraphql(source.request_type === "graphql"
+        ? { query: graphqlQuery, variables: graphqlVariables, operation: graphqlOperation }
+        : null);
+      setTimeoutMs(source.timeout_ms ?? 60_000);
+      setRecordsPath(source.records_path ?? "");
+      setDelimiter(typeof config.delimiter === "string" ? config.delimiter : ",");
+      setHeader(config.header !== false);
+      setAddSequence(config.add_sequence === true);
+      setRegisterName(chip.name);
+      const output = typeof config.output_filename === "string" ? config.output_filename : "";
+      setRegisterOutputName(output);
+      setExportName(output.replace(/\.csv$/i, ""));
+      browseInitialized.current = true;
+    }).catch((reason) => toastError(messages.workspace.loadError, reason));
+    return () => { cancelled = true; };
+  }, [editorChipId, messages]);
 
   useEffect(() => {
     if (!extractId) return;
@@ -327,6 +401,31 @@ export function ApiExtractPage() {
     }
   }
 
+  async function onApplyChip() {
+    if (!editorChipId || !browseId || !registerName.trim()) return;
+    setRegisterBusy(true);
+    try {
+      await chipApi.update(editorChipId, {
+        name: registerName.trim(),
+        output_filename: registerOutputName.trim() || suggestedOutputName,
+        extract: {
+          connection_id: browseId,
+          source: buildSource(),
+          delimiter,
+          header,
+          add_sequence: addSequence,
+        },
+      });
+      toastSuccess(messages.query.chipApplied);
+      leaveEditor();
+    } catch (err) {
+      if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
+      else toastError(messages.workspace.saveChipError, err);
+    } finally {
+      setRegisterBusy(false);
+    }
+  }
+
   async function onRegister() {
     if (!browseId || !registerName.trim()) return;
     setRegisterBusy(true);
@@ -430,21 +529,21 @@ export function ApiExtractPage() {
   return (
     <PageShell>
       <PageHeader
-        iconName="query"
+        iconName="api"
         eyebrow={messages.apiExtract.eyebrow}
         title={messages.apiExtract.title}
         description={messages.apiExtract.description}
         actions={
           <>
-            {returnWorkspaceId ? (
+            {editingChip || returnWorkspaceId ? (
               <Button
                 type="button"
                 variant="quiet"
                 className="gap-2"
-                onClick={() => navigate(`/workspace/${returnWorkspaceId}`, { state: location.state })}
+                onClick={leaveEditor}
               >
                 <ArrowLeft className="size-3.5" aria-hidden="true" />
-                {messages.load.returnToWorkspace}
+                {returnWorkspaceId ? messages.load.returnToWorkspace : messages.chips.backToChips}
               </Button>
             ) : null}
             <Button
@@ -493,7 +592,15 @@ export function ApiExtractPage() {
                   >
                     <span className="block truncate text-[13px] text-text">{connection.name}</span>
                     <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
-                      {connection.host}
+                      {`${
+                        {
+                          none: messages.connectionsPage.authNone,
+                          bearer: messages.connectionsPage.authBearer,
+                          basic: messages.connectionsPage.authBasic,
+                          api_key: messages.connectionsPage.authApiKey,
+                          custom: messages.connectionsPage.authCustom,
+                        }[inferredHttpAuthMode(connection)]
+                      } · ${connection.host}`}
                     </span>
                   </button>
                 ))
@@ -633,11 +740,11 @@ export function ApiExtractPage() {
             <Button
               type="button"
               className="gap-1.5"
-              disabled={!canRun}
-              onClick={() => void openRegister()}
+              disabled={!canRun || registerBusy}
+              onClick={() => editingChip ? void onApplyChip() : void openRegister()}
             >
               <BookmarkPlus className="size-3.5" />
-              {messages.query.registerTask}
+              {editingChip ? messages.query.applyChip : messages.query.registerTask}
             </Button>
             <Button
               type="button"

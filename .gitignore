@@ -6,3 +6,6 @@
 .config.example.toml
 .DS_Store
 
+# OpenWiki in-progress checkpoint. Durable wiki + Claims stay tracked.
+openwiki/.run.json
+

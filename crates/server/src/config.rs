@@ -11,14 +11,9 @@ pub struct FileConfig {
     pub max_concurrent_jobs: usize,
     pub session_secret: String,
     #[serde(default)]
+    pub encryption_secret: Option<String>,
+    #[serde(default)]
     pub skip_auth: bool,
-    pub auth: AuthConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AuthConfig {
-    pub username: String,
-    pub password: String,
 }
 
 #[derive(Debug, Clone)]
@@ -28,8 +23,8 @@ pub struct Config {
     pub max_upload_mb: u64,
     pub max_concurrent_jobs: usize,
     pub session_secret: String,
+    pub encryption_secret: String,
     pub skip_auth: bool,
-    pub auth: AuthConfig,
     pub ui_dir: Option<PathBuf>,
 }
 
@@ -49,11 +44,10 @@ impl Config {
         if let Ok(v) = std::env::var("ETL_SESSION_SECRET") {
             file.session_secret = v;
         }
-        if let Ok(v) = std::env::var("ETL_AUTH_USERNAME") {
-            file.auth.username = v;
-        }
-        if let Ok(v) = std::env::var("ETL_AUTH_PASSWORD") {
-            file.auth.password = v;
+        if let Ok(v) = std::env::var("ETL_ENCRYPTION_SECRET") {
+            if !v.is_empty() {
+                file.encryption_secret = Some(v);
+            }
         }
         if let Ok(v) = std::env::var("ETL_SKIP_AUTH") {
             file.skip_auth = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
@@ -66,6 +60,10 @@ impl Config {
         if file.session_secret.is_empty() {
             return Err("session_secret is empty".into());
         }
+        let encryption_secret = file
+            .encryption_secret
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| file.session_secret.clone());
 
         Ok(Self {
             bind,
@@ -73,8 +71,8 @@ impl Config {
             max_upload_mb: file.max_upload_mb,
             max_concurrent_jobs: file.max_concurrent_jobs.max(1),
             session_secret: file.session_secret,
+            encryption_secret,
             skip_auth: file.skip_auth,
-            auth: file.auth,
             ui_dir: std::env::var("ETL_UI_DIR").ok().map(PathBuf::from),
         })
     }

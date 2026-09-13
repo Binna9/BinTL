@@ -1,6 +1,6 @@
 import { useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AppWindow, ChevronDown, DatabaseZap, FileOutput, Folder, FolderOpen, Layers, Pencil, Settings2, Spline, Workflow, type LucideIcon } from "lucide-react";
+import { AppWindow, ChevronDown, DatabaseZap, FileOutput, Folder, FolderOpen, Layers, Pencil, Settings2, Spline, Terminal, Workflow, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
@@ -142,7 +142,17 @@ export function ToolIconButton({
           setTipOpen(false);
           onDragStart?.(event);
         }}
-        onDragEnd={onDragEnd}
+        onDragEnd={(event) => {
+          setTipOpen(false);
+          const button = event.currentTarget;
+          button.blur();
+          // HTML5 drag leaves :hover on the source until the next real mouseenter.
+          button.style.pointerEvents = "none";
+          requestAnimationFrame(() => {
+            button.style.pointerEvents = "";
+          });
+          onDragEnd?.();
+        }}
         onClick={(event) => {
           setTipOpen(false);
           event.currentTarget.blur();
@@ -428,6 +438,7 @@ export function WorkspaceLayers({
   const extracts = chips.filter((chip) => chip.kind === "extract");
   const transforms = chips.filter((chip) => chip.kind === "transform");
   const loads = chips.filter((chip) => chip.kind === "load");
+  const sqls = chips.filter((chip) => chip.kind === "sql");
   const allChipIds = chips.map((chip) => chip.id);
   const allEdgeIds = edges.map((edge) => edge.id);
   const allLayersSelected = (allChipIds.length + allEdgeIds.length) > 0
@@ -514,6 +525,15 @@ export function WorkspaceLayers({
         ) : loads.map((chip) => (
           <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={FileOutput}
             iconClassName="text-warning" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
+            editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
+        ))}
+      </LayerGroup>
+      <LayerGroup title={messages.workspace.layerSql(sqls.length)}>
+        {sqls.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : sqls.map((chip) => (
+          <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={Terminal}
+            iconClassName="text-sky-600 dark:text-sky-400" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
             editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
         ))}
       </LayerGroup>
@@ -617,7 +637,9 @@ export function WorkspaceMinimap({
               key={chip.id}
               className={cn(
                 "workspace-minimap-chip",
-                chip.kind === "extract" ? "is-extract" : chip.kind === "load" ? "is-load" : "is-transform",
+                chip.kind === "extract" ? "is-extract"
+                  : chip.kind === "load" ? "is-load"
+                    : chip.kind === "sql" ? "is-sql" : "is-transform",
               )}
               style={{
                 left: point.x * scale,

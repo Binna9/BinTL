@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:a4739bf99c56d6c29de31d7a0fd4f77d507c36a66f18d6147225dd94b06c87e9",
+  "claims": [
+    {
+      "id": "claim_1329dff8741f470fad531e30d8fa6a6e",
+      "statement": "칩 추출은 스냅샷을 고정한 뒤 extract::run을 호출하고, 연결된 실행은 chip_outputs/{workspace}/{chip}/current.{csv|tsv|txt} 슬롯에 쓴다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip.rs#L2143-L2223",
+          "version": "repo-lines-v1:sha256:901e7a4e7902f0424fb885e274914e0e86ee88f48771765252f7139d474d7a76:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlM2VmY2JiMjNjZTlmYzUyYzk4ZWRjODdiN2I0NzkzNmRhMzQyZDEwMjZhYWU4MjI3ZmIwMDk0YjY4N2IwOGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhMWM5ZGI3OWJiNDBhN2VjNTUxMzZmYTM4NGU1YWY0YmQ0ZGVjODgxMjhmNjJiMTlmNjAwMjFmNGZjMGEyNTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUzY2YyMzhlNmMzOTFjYjg1NGFiNjFlNWFkMTdkMWYxZTgxM2M1YjZkNjI2YTZmMTEzZjU2NzYwMWY1OTEzNDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmZTJhNGVkYTcyNzY1NjJmODJhOTEzM2U1ZWNjZmIzOGVmMWI1NmYzNDljNDYzZDkxNmY3NGY2YWM5YzIwMTQifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/extract.rs#L156-L178",
+          "version": "repo-lines-v1:sha256:958ef95de5441194733421df54a06f6d52f81f36d31f5dddf9611b9006bf5482:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNzkyYjI0Yzg3MTcyNDY5OWY3ZTdlY2RjYThjNDUzYzg2NmMyOTljOGU1Y2U2ZmFkYjAzMjJjYWMxYWI3Y2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1NzU0YzE2YWY3YWQ4OTEyZDMxYzZhODIwMzg5MDZjOGJjNmJiZDdiYjZiNmE0OWM3NWVkZjAzMDE4OTBhODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1NmY1NDI1NWVmM2NhM2NiYzJiZjUyODQwNmViOWQ0MGNlZjQ0YmE5MmExYjIzNWNkZmI0MDBkZDZiNjg0MzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bd6dcd48839f483594eabafd2d268bf3",
+      "statement": "추출은 Polars가 아니라 connectors가 SELECT * 또는 Rows SQL을 스트림으로 구분자 파일에 쓰며, DB→DB로 파일을 건너뛰지 않는다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/connectors/src/extract.rs#L142-L181",
+          "version": "repo-lines-v1:sha256:9e1cc6d58e59b35473cd7e8db2ef8d1ec9b805cbd5c65c778ed49b58ab4b5bdb:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliOTkzODkzOTJjODg3MGU0YTNhNDEwNTM2ZGQ1N2U1YmFmMmEzNGE0ZjI3MGZjNDRkMzk5YWRjOWE1M2VkOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2NWIxYjBkNWIzNzU1YTViMGM4MmQ1ZGE3ZmFiMGU4MjY1MzlmOTQ2YTliNzQ1ODMwY2VmMGQzNGM1MjBhMjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiMzE2OWFlMTNjYzA0YzIyNWIyOTYyNDNiYTBlZDIxMDQzOWYzYTAxOWFhOTYzMDcxZGM0MjgyOWE5MTE3N2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4NTk4OWE2ZWIzYjdmYTBjMDY4ODg1MzQ0ZDY3M2JhMzEyNzZjZTc1ZjE3ZGVlOTRkOTdmYTA5NzRlODlhZWYifQ"
+        },
+        {
+          "resource": "repo://docs/extract.md#L8-L26",
+          "version": "repo-lines-v1:sha256:ed9701cf530050dac609d70473c24a79f0aab6e261592c6c8b961d8b32143eab:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlMWIwZmFiNTY3YjBjNDY2NTE0NTk2YWZiMDQ0MTM2N2YwMWE5MWM1YTU3OWMzZGYxZTc5YzBhMDkyNWQ4YzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdjOWY1MDRiOGVlZGRhODY1ZDQ3ZWJhNmRhMjVkNjFmMGJiOTA0MDRkOTZhZDljZmUyYmE3ZjAyN2ZhYWQzNTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdhMGQ4YmVmNWZkYjlmZDBjYjgxMTAyNjIxOTNiMWRkNzEwOThiZTI2NTA0MzM4YTM3MzU4NmMwN2NiMTk3OTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c2ab6d4f8c904fc48ea4966363dc906c",
+      "statement": "/db에서 칩으로 저장하면 extract 칩을 만들고 실행하며, 다운스트림이 슬롯이 비어 있으면 run_extract_chip_sync로 업스트림 extract를 동기 실행한다.",
+      "evidence": [
+        {
+          "resource": "repo://.cursor/rules/workspace-pipeline.mdc#L24-L29",
+          "version": "repo-lines-v1:sha256:c98c799862d5eb6b0a9008795aceabc421d1e823f84251f003621e87a9da27e8:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDQyZmZlODNjYjA1NzMwZTY3YjBmYjBhMTAzMTlmNjg2NzBlMWYwZGNhZWZmOWU1Mzc5MWM0NTAyYjQ0NGMxNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2E4M2VlZTA1OGIwOTIzMjUwMDE1MDE3ZmRlZDA2ZjMyNjU0NmQ4YTY0NDI5NDVhZWI0MWExOWE0M2RiMDllMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDQyOWM2MWY4MTQ4YTcwOTJhMzc2ZDg3Mzk4OGRlZGVmOGIxZjlmMTVjOTdkMGE4YTZjYWQ5YTc5OGVmNWIyOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjAxNzNlNjMwMmM5NjUyYjQwODMzZjY1ZmYzNjgxNjNjOTYxMThmNjk5ZTc0ZGViNWU2YzA1YTZjNDUwMmYwOSJ9"
+        },
+        {
+          "resource": "repo://crates/server/src/chip.rs#L1049-L1059",
+          "version": "repo-lines-v1:sha256:165f2914517001d75456c6496a8b3d7cb40c1a5b9581c04bd9a6a54f49f891fe:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiZDdkMTA1NWM2ZGQ4YWI0NWUxODVkN2Q5N2Q4OWI0N2M2YjgyOTU3NDYwOTkxZjkyMDE1NmM0YmZlMTU0MzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkYzI2ODMzYWEwMzg2Y2FmNWI0YTU4ODkwYjU1ZmQzNTQ4MzAyOWViN2MzZTIyOTgyYTkwYmFkMWUzZjExZjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgzZTlkYWU1NDA4YzZhYWZjM2IzMGFjNzUwMGFjY2QzOTIxYTVhZmM4MjMyZWI3OWI2ZDY0MWNjOTBlODRmOTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjExMWVjY2M0MDI0ZmY5OWQ5OTNlZTEwZmFkMDlhYTJhMzg3MTMwOWJiMzFhNzAzNjM2MGQwNzljZmFmY2EwMTcifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

@@ -1,4 +1,4 @@
-export type ChipKind = "extract" | "transform" | "load" | "validation";
+export type ChipKind = "extract" | "transform" | "load" | "validation" | "sql";
 export type ChipEdgeKind = "data" | "on_success" | "on_error" | "always";
 export type ChipConfig = Record<string, unknown>;
 
@@ -20,11 +20,35 @@ export interface ChipOutput {
   dataset_id?: string | null;
 }
 
+export function chipEditorPath(
+  chip: Pick<Chip, "id" | "kind" | "binding" | "config">,
+  workspaceId?: string | null,
+): string {
+  const source = chip.config?.source;
+  const httpExtract =
+    chip.kind === "extract" &&
+    source != null &&
+    typeof source === "object" &&
+    !Array.isArray(source) &&
+    (source as { type?: unknown }).type === "http";
+  const prefix = workspaceId
+    ? `/workspace/${workspaceId}/chips/${chip.id}`
+    : `/chips/${chip.id}`;
+  if (chip.kind === "extract") return httpExtract ? `${prefix}/extract-api` : `${prefix}/extract`;
+  if (chip.kind === "sql") return workspaceId ? `/workspace/${workspaceId}` : "/chips";
+  if (chip.kind === "validation") return `${prefix}/validation`;
+  const editor = chip.kind === "load" ? "load" : "transform";
+  const bindingKind = chip.kind === "load" ? "load_recipe" : "transform";
+  const bound = chip.binding?.ref_kind === bindingKind ? chip.binding.ref_id : undefined;
+  return bound ? `${prefix}/${editor}/${bound}` : `${prefix}/${editor}`;
+}
+
 export interface Chip {
   id: string;
   owner_user_id: string;
   name: string;
   kind: ChipKind;
+  workspace_id?: string | null;
   config: ChipConfig;
   binding?: ChipBinding | null;
   output?: ChipOutput | null;
@@ -130,6 +154,8 @@ export interface ChipInputSlotResponse {
   source_chip_name?: string;
   source_chip_kind?: ChipKind;
   status?: string;
+  delimiter?: string;
+  has_header?: boolean;
   columns?: { name: string; dtype?: string; type?: string }[];
   dataset?: Record<string, unknown>;
 }

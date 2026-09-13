@@ -85,15 +85,19 @@ pub(super) async fn update_connection(
 
 pub(super) async fn list_connections(
     State(state): State<AppState>,
+    user: CurrentUser,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     let connections = state.store.list_connections().await?;
     Ok(Json(json!({ "connections": connections })))
 }
 
 pub(super) async fn get_connection(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     let row = state
         .store
         .get_connection(&id)
@@ -114,8 +118,10 @@ pub(super) async fn delete_connection(
 
 pub(super) async fn test_saved_connection(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     let live = state.store.live_connection(&id).await?;
     test_connection(&live).await?;
     Ok(Json(json!({ "ok": true, "driver": live.driver })))
@@ -123,8 +129,10 @@ pub(super) async fn test_saved_connection(
 
 pub(super) async fn connection_tables(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     let live = state.store.live_connection(&id).await?;
     let tables = list_tables(&live).await?;
     Ok(Json(json!({ "tables": tables })))
@@ -132,8 +140,10 @@ pub(super) async fn connection_tables(
 
 pub(super) async fn connection_databases(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     let live = state.store.live_connection(&id).await?;
     let layout = catalog_layout(&live.driver)?;
     let databases = list_databases(&live).await?;
@@ -152,9 +162,11 @@ pub(super) struct CatalogQuery {
 
 pub(super) async fn connection_schemas(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Query(q): Query<CatalogQuery>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     parse_ident(&q.database).map_err(|e| AppError::bad(e.to_string()))?;
     let live = state.store.live_connection(&id).await?;
     let schemas = list_schemas(&live, &q.database).await?;
@@ -163,9 +175,11 @@ pub(super) async fn connection_schemas(
 
 pub(super) async fn connection_relations(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Query(q): Query<CatalogQuery>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     parse_ident(&q.database).map_err(|e| AppError::bad(e.to_string()))?;
     if let Some(schema) = q.schema.as_deref() {
         parse_ident(schema).map_err(|e| AppError::bad(e.to_string()))?;
@@ -188,9 +202,11 @@ pub(super) struct TableQuery {
 
 pub(super) async fn connection_columns(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Query(q): Query<TableQuery>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     parse_table(&q.table).map_err(|e| AppError::bad(e.to_string()))?;
     if let Some(database) = q.database.as_deref() {
         parse_ident(database).map_err(|e| AppError::bad(e.to_string()))?;
@@ -203,9 +219,11 @@ pub(super) async fn connection_columns(
 
 pub(super) async fn connection_preview(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Query(q): Query<TableQuery>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     parse_table(&q.table).map_err(|e| AppError::bad(e.to_string()))?;
     if let Some(database) = q.database.as_deref() {
         parse_ident(database).map_err(|e| AppError::bad(e.to_string()))?;
@@ -235,9 +253,11 @@ pub(super) struct RunQueryBody {
 
 pub(super) async fn connection_query(
     State(state): State<AppState>,
+    user: CurrentUser,
     Path(id): Path<String>,
     Json(body): Json<RunQueryBody>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     let sql = normalize_sql(&body.sql).map_err(|e| AppError::bad(e.to_string()))?;
     if let Some(database) = body.database.as_deref() {
         parse_ident(database).map_err(|e| AppError::bad(e.to_string()))?;

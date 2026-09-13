@@ -4,12 +4,15 @@ import {
   columnWidthsForContent,
   DataGrid,
   EmptyGridRow,
+  EmptyState,
   GridCell,
   GridRow,
 } from "@/components/DataGrid";
+import { NavIcon } from "@/components/ui/nav-icons";
 import { ExcelSheetDialog } from "@/components/files/ExcelSheetDialog";
 import { FileDropzone } from "@/components/files/FileDropzone";
 import { AppDialog } from "@/components/AppDialog";
+import { PaginationBar } from "@/components/PaginationBar";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
@@ -18,6 +21,7 @@ import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useFiles } from "@/hooks/files/useFiles";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtDelimiterGlyph } from "@/lib/format";
+import { usePagination } from "@/lib/pagination";
 import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { fileApi } from "@/services/files/fileApi";
 import type {
@@ -69,7 +73,9 @@ export function FilesPage() {
   const allSelected = queue.length > 0 && selected.length === queue.length;
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const storedSelectedSet = useMemo(() => new Set(storedSelected), [storedSelected]);
-  const allStoredSelected = files.length > 0 && storedSelected.length === files.length;
+  const paging = usePagination(files);
+  const pageFiles = paging.items;
+  const allStoredSelected = pageFiles.length > 0 && pageFiles.every((file) => storedSelectedSet.has(file.id));
   const previewWidths = useMemo(
     () => (preview ? columnWidthsForContent(preview.columns, preview.rows) : undefined),
     [preview],
@@ -166,7 +172,12 @@ export function FilesPage() {
   }
 
   function toggleStoredAll() {
-    setStoredSelected(allStoredSelected ? [] : files.map((file) => file.id));
+    setStoredSelected((current) => {
+      const pageIds = new Set(pageFiles.map((file) => file.id));
+      return allStoredSelected
+        ? current.filter((id) => !pageIds.has(id))
+        : [...new Set([...current, ...pageIds])];
+    });
   }
 
   async function deleteStored() {
@@ -238,7 +249,7 @@ export function FilesPage() {
   }
 
   return (
-    <PageShell>
+    <PageShell fill>
       <PageHeader
         iconName="files"
         eyebrow={messages.files.eyebrow}
@@ -246,7 +257,7 @@ export function FilesPage() {
         description={messages.files.description}
       />
 
-      <Panel>
+      <Panel className="shrink-0">
         <PanelHeader title={messages.files.uploadTitle} description={messages.files.uploadDescription} />
         <PanelBody>
           <form className="flex flex-col gap-3" onSubmit={(event) => void onSubmit(event)}>
@@ -334,7 +345,7 @@ export function FilesPage() {
         </PanelBody>
       </Panel>
 
-      <Panel tall>
+      <Panel fill>
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -342,7 +353,7 @@ export function FilesPage() {
                 className="field-control"
                 type="checkbox"
                 checked={allStoredSelected}
-                disabled={files.length === 0 || busy}
+                disabled={pageFiles.length === 0 || busy}
                 onChange={toggleStoredAll}
                 aria-label={messages.files.selectAll}
               />
@@ -371,11 +382,9 @@ export function FilesPage() {
           className="min-h-0 flex-1"
           headers={[...messages.files.headers]}
           columnWidths={[80, 220, 120, 140, 280]}
+          empty={files.length === 0 ? <EmptyState icon={<NavIcon name="files" />} title={messages.empty.uploads} hint={messages.empty.uploadsHint} /> : undefined}
         >
-          {files.length === 0 ? (
-            <EmptyGridRow cols={5} text={messages.empty.uploads} />
-          ) : (
-            files.map((file) => (
+          {files.length === 0 ? null : pageFiles.map((file) => (
               <GridRow
                 key={`${file.id}-${file.filename}`}
                 selected={storedSelectedSet.has(file.id)}
@@ -397,9 +406,18 @@ export function FilesPage() {
                 <GridCell mono muted>{file.id.slice(0, 8)}</GridCell>
                 <GridCell mono muted>{file.stored_path}</GridCell>
               </GridRow>
-            ))
-          )}
+            ))}
         </DataGrid>
+        <PaginationBar
+          page={paging.page}
+          pageCount={paging.pageCount}
+          pageSize={paging.pageSize}
+          total={paging.total}
+          start={paging.start}
+          end={paging.end}
+          onPageChange={paging.setPage}
+          onPageSizeChange={paging.setPageSize}
+        />
       </Panel>
 
       <ExcelSheetDialog

@@ -77,6 +77,7 @@ pub(super) async fn create_extract(
     user: CurrentUser,
     Json(body): Json<CreateExtractBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    access::require_extract_run(&user)?;
     let kind = body
         .kind
         .as_deref()
@@ -249,9 +250,10 @@ pub(super) async fn create_database_extract(
 
 pub(super) async fn http_preview(
     State(state): State<AppState>,
-    _user: CurrentUser,
+    user: CurrentUser,
     Json(body): Json<HttpPreviewBody>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     let live = state.store.live_connection(&body.connection_id).await?;
     if live.driver != "http" {
         return Err(AppError::bad("http preview needs an http connection"));

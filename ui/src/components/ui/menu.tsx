@@ -1,6 +1,6 @@
 import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, ChevronRight, SquareMinus, SquarePlus } from "lucide-react";
+import { ChevronDown, ChevronRight, ListCollapse, ListTree } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -284,7 +284,7 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
             className="grid size-8 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default disabled:opacity-40"
             onClick={() => setOpenGroups(new Set(groupKeys))}
           >
-            <SquarePlus className="size-[17px]" strokeWidth={1.75} aria-hidden="true" />
+            <ListTree className="size-[17px]" strokeWidth={1.75} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -294,7 +294,7 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
             className="grid size-8 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default disabled:opacity-40"
             onClick={() => setOpenGroups(new Set())}
           >
-            <SquareMinus className="size-[17px]" strokeWidth={1.75} aria-hidden="true" />
+            <ListCollapse className="size-[17px]" strokeWidth={1.75} aria-hidden="true" />
           </button>
         </div>
         <nav

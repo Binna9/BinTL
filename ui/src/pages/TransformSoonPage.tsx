@@ -27,7 +27,7 @@ export function TransformSoonPage({ kind }: { kind: TransformSoonKind }) {
   return (
     <PageShell>
       <PageHeader
-        iconName="jobs"
+        iconName="transform"
         eyebrow={messages.transform.eyebrow}
         title={copy.title}
         description={copy.description}

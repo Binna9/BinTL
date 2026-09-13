@@ -12,6 +12,7 @@ import {
   FileStack,
   Layers3,
   Plus,
+  Terminal,
   Search,
   ShieldCheck,
   Upload,
@@ -26,7 +27,7 @@ import { selectableClass } from "@/lib/selectable";
 import type { Chip } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
-export type ChipPlaceKind = "extract" | "transform" | "load" | "validation";
+export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "sql";
 
 export type TransformPlaceDraft = {
   name: string;
@@ -78,12 +79,13 @@ function CatalogChipPanel({
     if (!needle) return options;
     return options.filter((chip) => chip.name.toLowerCase().includes(needle));
   }, [options, query]);
-  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : kind === "validation" ? ShieldCheck : FileOutput;
-  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : kind === "validation" ? "text-violet-600 dark:text-violet-400" : "text-warning";
+  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : kind === "validation" ? ShieldCheck : kind === "sql" ? Terminal : FileOutput;
+  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : kind === "validation" ? "text-violet-600 dark:text-violet-400" : kind === "sql" ? "text-sky-600 dark:text-sky-400" : "text-warning";
   const emptyHint = kind === "extract"
     ? messages.workspace.emptyCatalogExtract
     : kind === "transform" ? messages.workspace.emptyCatalogTransform
-      : kind === "validation" ? messages.workspace.emptyCatalogValidation : messages.workspace.emptyCatalogLoad;
+      : kind === "validation" ? messages.workspace.emptyCatalogValidation
+        : kind === "sql" ? messages.workspace.emptyCatalogSql : messages.workspace.emptyCatalogLoad;
 
   if (options.length === 0) {
     return (
@@ -702,11 +704,12 @@ function TransformNewPanel({
   );
 }
 
-function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, chips, canvasChipIds, defaultName, occupiedNames, messages, busy, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
-  kind?: "load" | "validation"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
+function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, chips, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
+  kind?: "load" | "validation" | "sql"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
   emptyChipLabel?: string; catalogHint?: string; registerLabel?: string;
   chips: Chip[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
-  onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty: (name: string) => void; onRegister: () => void;
+  hideEmpty?: boolean;
+  onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty?: (name: string) => void; onRegister: () => void;
   dragHandleRef: RefObject<HTMLDivElement | null>;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
@@ -730,20 +733,22 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
         dragHandleRef={dragHandleRef}
       />
 
-      <div className="grid shrink-0 grid-cols-2 gap-2 px-4 pt-4">
-        <Button
-          type="button"
-          variant="secondary"
-          className="h-10 gap-1.5 text-[12px]"
-          disabled={busy}
-          onClick={() => {
-            setEmptyName(defaultName);
-            setNamingEmpty(true);
-          }}
-        >
-          <Layers3 className="size-3.5" aria-hidden="true" />
-          {emptyChipLabel ?? messages.workspace.placeLoadEmptyChip}
-        </Button>
+      <div className={cn("grid shrink-0 gap-2 px-4 pt-4", hideEmpty ? "grid-cols-1" : "grid-cols-2")}>
+        {hideEmpty ? null : (
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-10 gap-1.5 text-[12px]"
+            disabled={busy}
+            onClick={() => {
+              setEmptyName(defaultName);
+              setNamingEmpty(true);
+            }}
+          >
+            <Layers3 className="size-3.5" aria-hidden="true" />
+            {emptyChipLabel ?? messages.workspace.placeLoadEmptyChip}
+          </Button>
+        )}
         <Button
           type="button"
           variant="secondary"
@@ -794,7 +799,7 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
               const trimmed = emptyName.trim();
               if (!trimmed) return;
               setNamingEmpty(false);
-              onPlaceEmpty(trimmed);
+              onPlaceEmpty?.(trimmed);
             }}>
               {messages.workspace.nameChipConfirm}
             </Button>
@@ -817,7 +822,7 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
                 const trimmed = emptyName.trim();
                 if (!trimmed || busy || nameTaken) return;
                 setNamingEmpty(false);
-                onPlaceEmpty(trimmed);
+                onPlaceEmpty?.(trimmed);
               }}
             />
             {nameTaken ? <span className="text-xs text-danger">{messages.workspace.duplicateChipName}</span> : null}
@@ -839,6 +844,7 @@ export function ChipPlaceDialog({
   defaultTransformName,
   defaultLoadName,
   defaultValidationName,
+  defaultSqlName,
   occupiedNames,
   messages,
   busy,
@@ -847,6 +853,7 @@ export function ChipPlaceDialog({
   onPlaceNewTransform,
   onPlaceNewLoad,
   onPlaceNewValidation,
+  onRegisterSql,
 }: {
   open: boolean;
   kind: ChipPlaceKind;
@@ -858,6 +865,7 @@ export function ChipPlaceDialog({
   defaultTransformName: string;
   defaultLoadName: string;
   defaultValidationName: string;
+  defaultSqlName: string;
   occupiedNames: string[];
   messages: Messages;
   busy?: boolean;
@@ -866,13 +874,15 @@ export function ChipPlaceDialog({
   onPlaceNewTransform: (draft: TransformPlaceDraft) => void;
   onPlaceNewLoad: (name: string) => void;
   onPlaceNewValidation: (name: string) => void;
+  onRegisterSql: () => void;
 }) {
   const navigate = useNavigate();
   const dragHandleRef = useRef<HTMLDivElement>(null);
   const dialogTitle = kind === "extract"
     ? messages.workspace.placeExtractTitle
     : kind === "transform" ? messages.workspace.placeTransformTitle
-      : kind === "load" ? messages.workspace.placeLoadTitle : messages.workspace.placeValidationTitle;
+      : kind === "load" ? messages.workspace.placeLoadTitle
+        : kind === "sql" ? messages.workspace.placeSqlTitle : messages.workspace.placeValidationTitle;
 
   function goDbRegister() {
     onClose();
@@ -939,6 +949,27 @@ export function ChipPlaceDialog({
             onClose();
             navigate("/load", { state: workspaceReturnState ?? { returnWorkspaceId: workspaceId } });
           }}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : kind === "sql" ? (
+        <LoadCatalogPanel
+          kind="sql"
+          hideEmpty
+          icon={<Terminal className="size-4" aria-hidden="true" />}
+          iconClassName="bg-sky-500/10 text-sky-600 dark:text-sky-400"
+          title={messages.workspace.placeSqlTitle}
+          simpleHint={messages.workspace.placeSqlSimpleHint}
+          catalogHint={messages.workspace.placeSqlCatalogHint}
+          registerLabel={messages.workspace.registerSqlChip}
+          chips={catalogChips}
+          canvasChipIds={canvasChipIds}
+          defaultName={defaultSqlName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceCatalog}
+          onRegister={onRegisterSql}
           dragHandleRef={dragHandleRef}
         />
       ) : (

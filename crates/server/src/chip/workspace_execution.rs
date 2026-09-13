@@ -173,6 +173,17 @@ async fn prepare_config(
             config = serde_json::to_value(validated).map_err(|e| AppError::bad(e.to_string()))?;
             config["workspace_rule_snapshot"] = json!(true);
         }
+        "sql" => {
+            if !incoming.is_empty() {
+                return Err(AppError::bad("SQL chips do not accept data inputs"));
+            }
+            let connection_id = config["connection_id"].as_str().unwrap_or("").trim();
+            let sql_text = config["sql_text"].as_str().unwrap_or("").trim();
+            if connection_id.is_empty() || sql_text.is_empty() {
+                return Err(AppError::bad("configure the SQL chip before running"));
+            }
+            config = super::validate_sql_config(&state.store, config).await?;
+        }
         _ => return Err(AppError::bad("unsupported chip kind")),
     }
     Ok(config)

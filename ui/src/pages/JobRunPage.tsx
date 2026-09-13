@@ -36,7 +36,7 @@ export function JobRunPage() {
   return (
     <PageShell>
       <PageHeader
-        iconName="jobs"
+        iconName="transform"
         eyebrow={messages.jobRun.eyebrow}
         title={messages.jobRun.title(jobRun.id.slice(0, 8))}
         description={`${jobRun.source_path} → ${jobRun.output_path ?? messages.jobRun.outputPending}`}

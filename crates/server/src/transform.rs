@@ -643,6 +643,7 @@ async fn run_transform(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_transform_run(&user)?;
     let transform = access::require_transform(&state.store, &user, &id).await?;
     let dataset = access::require_dataset(&state.store, &user, &transform.dataset_id).await?;
     if dataset.status == "planned" {

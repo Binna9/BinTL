@@ -1,4 +1,4 @@
-use crate::{access::CurrentUser, error::AppError, state::AppState};
+use crate::{access, access::CurrentUser, error::AppError, state::AppState};
 use axum::{
     extract::{Path, State},
     routing::{get, post},
@@ -201,6 +201,7 @@ async fn run_validation(
     user: CurrentUser,
     Json(mut body): Json<ValidateBody>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_etl_run(&user)?;
     if body.source_data_file_id == body.target_data_file_id {
         return Err(AppError::bad("source and target data files must differ"));
     }

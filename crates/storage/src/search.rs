@@ -656,7 +656,7 @@ mod tests {
     async fn test_store() -> (Store, String) {
         let root = std::env::temp_dir().join(format!("bintl-search-recent-{}", Uuid::new_v4()));
         let store = Store::open(&root, "test-session-secret").await.unwrap();
-        let admin = store.ensure_bootstrap("admin", "admin").await.unwrap();
+        let admin = store.ensure_bootstrap().await.unwrap();
         (store, admin.id)
     }
 

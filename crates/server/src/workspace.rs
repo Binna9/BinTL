@@ -48,6 +48,7 @@ struct CreateWorkspaceBody {
 #[derive(Deserialize)]
 struct SaveWorkspaceBody {
     layout: Value,
+    version: i64,
     #[serde(default)]
     chips: Vec<String>,
     #[serde(default)]
@@ -214,7 +215,7 @@ async fn save_workspace(
     }
     let (workspace, saved, saved_edges) = state
         .store
-        .save_workspace(&id, &layout_json, &chip_ids, &edges)
+        .save_workspace(&id, &layout_json, &chip_ids, &edges, Some(body.version))
         .await?;
     crate::planned_input::sync_workspace_planned_inputs(&state, &id).await?;
     let mut chips = Vec::with_capacity(saved.len());

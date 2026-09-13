@@ -35,7 +35,7 @@ export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
       id: slot.dataset_id,
       kind: slot.source_chip_kind === "transform" ? "transform" : "database",
       filename: slot.source_chip_name || "input",
-      stored_path: "", size_bytes: null, delimiter: ",", has_header: true,
+      stored_path: "", size_bytes: null, delimiter: slot.delimiter || ",", has_header: slot.has_header ?? true,
       columns: normalizeSlotColumns(slot.columns), row_count: null, inspected_at: null,
       created_at: "", updated_at: "", workspace_id: "", producer_chip_run_id: null,
       status: "connected", source_chip_id: slot.source_chip_id, consumer_chip_id: undefined,

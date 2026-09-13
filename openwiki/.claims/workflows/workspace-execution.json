@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:a2aae70f4f660808cd8579b1203a23c21ed149a77aac3f731a6743ddfadeee1a",
+  "claims": [
+    {
+      "id": "claim_4168f9f5cf0f416597f4fd37c339961a",
+      "statement": "전체 실행은 모든 활성 칩 설정을 사전 검증하고 오류가 있으면 단계를 실패/건너뜀으로만 남긴 채 어떤 칩도 실행 큐에 넣지 않는다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip/workspace_execution.rs#L181-L266",
+          "version": "repo-lines-v1:sha256:02beeac332a34f0063734223b4ed0ddb75724514246a9a3b823fbbc4c7dc3229:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwNzFhNDA2NzcxMWQ3MWVlZDk0YzJkOTY2ODAzYzM0NTY3ZWY2MDg1N2Y0ZWFlZDRlNzQwZjI4ZDgxN2ZkMTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViMmExMmFkNWVjZmQ3NzE2ZDU4ZTFlYjg4ZDAxOTI3Yzg5MDNiYzRkYTEzYWI5NTliM2M1YjQ1ZWVlODE2ZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2ZGE4ZWQ4MDIzMDJlYTI1MzdhOTE1NTJhODk4YjgxYzE0OWZlZTg2ZTMwMWRlN2M5YzcyMjQ0ZmExN2EzNmYifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/chip/workspace_execution/tests.rs#L206-L206",
+          "version": "repo-lines-v1:sha256:e9992c9078814256ff195c60839010ea3c475bb38ebab14cbdd787bcff724ba2:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTk5OTJjOTA3ODgxNDI1NmZmMTk1YzYwODM5MDEwZWEzYzQ3NWJiMzhlYmFiMTRjYmRkNzg3YmNmZjcyNGJhMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTk5OTJjOTA3ODgxNDI1NmZmMTk1YzYwODM5MDEwZWEzYzQ3NWJiMzhlYmFiMTRjYmRkNzg3YmNmZjcyNGJhMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzc3MmU5Mjc1Y2I2YTI0ZmZhODk1MmNjYTc3ZTZhNGE1YTJhZGU2M2NlZDQzNTFjNmJjNTg2MGFhZmU1MjJkMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzk4ZThlMWE1YWFjZmM5N2UxODkyYjk3YTg2MTMwMmEwZWY1YjkwZTdhNzA2Yjk2NjM0ZWQ3MWY4OTc0YzFiZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_22642f1a1c82472ab6c27d7f683e9db2",
+      "statement": "통과 후 칩은 의존 순으로 한 번에 하나씩 큐에 들어가며, data 선은 이번 실행 산출만 쓰고 on_success/on_error/always가 후속을 막거나 보내며 건너뜀만으로는 전체 실패가 아니다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip/workspace_execution.rs#L16-L33",
+          "version": "repo-lines-v1:sha256:1dbb6eb75ac630ec7630b933be0e86e2ec8564fda740fc12ec878b32650a1323:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjY2E5ODg2ZTU1NzJmMjUyNDhhOGNiMTc1ZDkyNDI3ODMzODRmOTIzNjk4OTIwZWU0ZGEzNjI5YWFlODU1MGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5YjE5ODJlOGRkNzQ4MTE4MTQ2YjM5YTJkMDA2MmY0MDgxZTM0Nzc5Yjg2NzVjMjM0YzRmYjEyNGRjMzkzOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY5MmM2MmFkOGFiYzhiNDIyNGFiYTM3NjBkNTdjMmU3NGE1YWY1MGQyOWJjOTVjN2Q5YTYxZThiOTQ2ZTk2YzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgxNzhmM2U2N2U3MzhiZDRlNTI0Njg4ZjE4ZGRmNDM1OGQ4NWJlYWVjZTAxM2Q5NDQ0NjFlOTE1YTljMTk5YmMifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/chip/workspace_execution.rs#L268-L386",
+          "version": "repo-lines-v1:sha256:c637ac3ee8a876260bb21f557b9b04bb4b37f735ee64a1e32cc41fdef1fc354b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3ZmRkN2RmMmFhYWFiMTVmYzY0ODgzYmI3NTkyYmQwMGUxM2M1NDE0NDAyMjhjZTA4NWQwOGJmN2E0M2M0YWY1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4MmY5OTY0MmZiYWVkOTRmMjk1ZTRiZTI0Y2QxNDgxZDdjMDMzMDg2MjUxOWUyNjNiZjE2ZDVkOWIzMTNmMjA5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIn0"
+        },
+        {
+          "resource": "repo://docs/workspace.md#L125-L133",
+          "version": "repo-lines-v1:sha256:62c166cb6a54edfeb27c5db80857ab5785df2c2be4bccbcb222d346dfb925ca8:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjliOWZhNmVlZjNjZDhmMzY1MGRlM2MwMDM5YTNjMzg3ZjI1YTRhNGRmZmU0Y2NiNWU2YzExODQ2Y2YzZjRlMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTQxZDNmMWM0MTcwNjJlOWYzYWUzYjYwODlmZTRiMmM3OTIxNjYzNmEzYzlkNjY2ZDI3MWIwMzRlOTY0YzYzNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2ZkZTZjZTQ5NTgzYjBhNmExNTVjYWY2OTcyYWY2OGE1YTRkMmQzMzBiN2I3MTFhMjJmYWY5YTc3N2ExNTYyNyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjE3ZjY2YjY1MjQ1ZGQ2NjhhZDI3YjZkZDY2MTQxOWNiMDY4NzE3YjhkMzQ1NjMzMjljNWE1NDJhMDk5ODBhNCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_23e4d888e397417d975d8045a687b96c",
+      "statement": "전체 실행은 executions.source=workspace 한 건이고 서버 finish가 상태를 확정하며, 기동 시 queued/running 전체 실행은 EXECUTION_INTERRUPTED로 닫고 재개하지 않는다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip.rs#L918-L930",
+          "version": "repo-lines-v1:sha256:513ffed81fad69628b4fc7721a1eba4633dc892da75975fa109578c2d8b5d8c4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjM2IyYzU1NzhlMGFkOGYyNWZhODFlMzQ5MmQ5YmNhMTYxMjFkZWE4MTQ5NTUwYTUzM2QxYmNjODBjMWUzYTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlY2UxMWZmY2E4ZmJlZmViODgwZjI2MmI2MTJlZWM0Yjg5MTc5NGZkMWU4YTY2NjY2MDgxYjQyYWZhYmM2N2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE0NGIzOTAzNmRmYjIyMDg5MzQ5YWQ2ZGUzODk1NTEyNTdjMDlmNGVjMmQ5N2FiMTA0MzkwMzc0MTc3ZjlmYTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4MjEwYzQ4MmU1NWE1YjA3ZjY3NmJiMzlmM2I2M2JkYTY1OTc3OGQyNzc4NWU1ZjE2ZTZkNGRlOTUyYWRkNzUifQ"
+        },
+        {
+          "resource": "repo://crates/storage/migrations/0006_workspace_execution_history.sql#L1-L16",
+          "version": "repo-lines-v1:sha256:bc0fd80f9aace657773bdf687d6547b76f8dd7d450d767e27c1eef4053600466:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4MTZlNGY0OTFkMTk1Y2IxZTkzNDkzZTY0YzI4ZmU0MzFkZmEzODM1MzU1NjcyMzA5ODQ1NTc2MjViODAwNDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjNzgyZTQ4MGQ0NDNlMzM5ODk3NzljNjJjOTQ4Njg0OTliYTU2MmRhYTI5NzdiNWQ4ZWJkMmE0N2JmOGM0MDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ1ZWIwMGY1ODg2YTg0MTEwNmEwZjE4YWJmMDI1ZDJiYTNiNDYzZGU3NmE3MzlmM2Q2ODJiZWZjYjNjZjM5NTQifQ"
+        },
+        {
+          "resource": "repo://crates/storage/src/chip_run_repo.rs#L227-L251",
+          "version": "repo-lines-v1:sha256:751e664d55a6d46b3beab364b6dc7461214739d95f4d4aa8b93b26716e2e51e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkZTYzM2ExM2NlYzhiMDhlMDYyNDE1NTk4MmZmYWE5MTQ4ZDQ0NTEwODdmMGZmMTJkNWY0M2Y4NmI0NjVmMjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwNzFjNmU5MjJkNjRlM2MyZDEyZDFiNDAwODRjMzFjYzRlNzgwN2ZiNDJlN2Y3MjI5Y2M4ODYwNWU3ZmM4YjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkNjk1YTUwZDIxYWQwODQ1ZDVkN2FlNGIwMzFmYjA3MzA4YTI5MzYxMWZiOWRhMTM2YzgxYzAyMDI0MjE4ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNTQ1NmY4NTIzMzg2YjI1NGU3YzE3NGY4OTBmYjZhMWZkYjY5NmZiNjUxOWIyNDUyMTI1ODE5MTFmOWQxYjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_36672f51432d4c42818267b7d1b4d84d",
+      "statement": "스케줄러는 due 시각에 같은 run_workspace_internal을 띄우고, 워크스페이스에 이미 활성 실행이 있으면 이번 스케줄을 skipped로 넘긴다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/schedule.rs#L300-L338",
+          "version": "repo-lines-v1:sha256:2d618486fda490304b21397ff861f92c0e66333efd961f338d3bce3a67fb6210:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkYzkxNzcwNTNmZjU5NmI5Yjc1NzAyYTAzZjRlNTI4MWQ4MjViNmM2MjBiMTE3YWZiNDkzMjExYzBhZTVhOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiZWQ2ZTdhMTE4M2M3MWNmMTNjYWU0MmE2YmY2N2RjYzc4MDA5Yjk0Y2FkZmFlODI4ZGMwNDEwYTNiMzgzNWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkNjdkOWZmMWQ4MWJlM2VkZjM0MDJhN2RiNDg0OTQyZjE2YTA0YTgxZDA3YWFmZDJkMjc1ODc2YzI4NTgzODAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI1ZTJmMGJlNjNhZGU4YmQ0MDhjNGVlMDczODEzODlkNWJiNDMyYjExNWE2NmZhNjIzMTYzM2M3ODE0ZmZkZmUifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

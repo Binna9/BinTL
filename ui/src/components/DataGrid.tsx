@@ -47,16 +47,47 @@ function scaleToFill(widths: number[], available: number): number[] {
   return scaled;
 }
 
+export function EmptyState({
+  icon,
+  title,
+  hint,
+  action,
+  className,
+}: {
+  icon?: ReactNode;
+  title: string;
+  hint?: string;
+  action?: ReactNode;
+  className?: string;
+}) {
+  const copy = hint
+    ? { title, hint }
+    : (() => {
+        const match = title.match(/^(.+?[.。])\s+(.+)$/);
+        return match ? { title: match[1], hint: match[2] } : { title };
+      })();
+  return (
+    <div className={cn("flex min-h-0 w-full flex-1 flex-col items-center justify-center bg-surface px-6 text-center", className)}>
+      {icon ? <div className="text-text-tertiary [&>svg]:size-10">{icon}</div> : null}
+      <p className={cn("text-sm font-semibold", icon ? "mt-3" : undefined)}>{copy.title}</p>
+      {copy.hint ? <p className="mt-1 max-w-sm text-xs text-text-tertiary">{copy.hint}</p> : null}
+      {action ? <div className="mt-4">{action}</div> : null}
+    </div>
+  );
+}
+
 export function DataGrid({
   headers,
   children,
   className,
   columnWidths,
+  empty,
 }: {
   headers: string[];
   children: ReactNode;
   className?: string;
   columnWidths?: number[];
+  empty?: ReactNode;
 }) {
   const { messages } = useLanguage();
   const headerKey = headers.join("\u0001");
@@ -138,10 +169,18 @@ export function DataGrid({
 
   const tableMinWidth = colWidths.reduce((sum, width) => sum + width, 0);
 
+  if (empty) {
+    return (
+      <div ref={wrapRef} className={cn("flex min-h-0 min-w-0 w-full flex-1 flex-col bg-surface", className)}>
+        {empty}
+      </div>
+    );
+  }
+
   return (
-    <div ref={wrapRef} className={cn("scroll-pane min-w-0 w-full overflow-auto", className)}>
+    <div ref={wrapRef} className={cn("scroll-pane min-w-0 w-full overflow-auto bg-workspace dark:bg-raised", className)}>
       <table
-        className="border-collapse text-[13px]"
+        className="border-collapse border-b border-border text-[13px]"
         style={{ width: tableMinWidth, minWidth: tableMinWidth, tableLayout: "fixed" }}
       >
         <colgroup>
@@ -155,10 +194,10 @@ export function DataGrid({
               <th
                 key={`${index}-${header}`}
                 className={cn(
-                  "group/th relative h-9 select-none overflow-hidden border-b-2 border-border-strong bg-subtle px-3 text-left text-[11px] font-semibold uppercase tracking-[0.06em] text-text-secondary",
-                  "transition-colors hover:bg-accent-subtle hover:text-accent",
-                  index < headers.length - 1 && "border-r border-border",
-                  active === index && "bg-accent-subtle text-accent",
+                  "group/th relative h-10 select-none overflow-hidden border-b border-accent/20 bg-accent-subtle px-3 text-left text-[12px] font-semibold text-text",
+                  "transition-colors hover:bg-accent/15 hover:text-accent",
+                  index < headers.length - 1 && "border-r border-accent/10",
+                  active === index && "bg-accent/15 text-accent",
                 )}
               >
                 <span className="block truncate">{header}</span>
@@ -178,7 +217,7 @@ export function DataGrid({
                 >
                   <span
                     className={cn(
-                      "absolute right-0 top-2 h-[calc(100%-1rem)] w-px bg-border-strong/70",
+                      "absolute right-0 top-2.5 h-[calc(100%-1.25rem)] w-px bg-accent/20",
                       "group-hover/th:bg-accent",
                       active === index && "bg-accent",
                     )}
@@ -188,7 +227,7 @@ export function DataGrid({
             ))}
           </tr>
         </thead>
-        <tbody className="bg-surface">{children}</tbody>
+        <tbody>{children}</tbody>
       </table>
     </div>
   );
@@ -219,9 +258,9 @@ export function GridRow({
   return (
     <tr
       className={cn(
-        "group cursor-pointer border-b border-border/70 transition-colors duration-150 last:border-b-0",
+        "group cursor-pointer border-b border-border/80 transition-colors duration-150",
         active && "bg-accent-subtle",
-        !active && "odd:bg-surface even:bg-subtle/35 hover:bg-accent-subtle/45",
+        !active && "odd:bg-surface even:bg-accent-subtle/55 hover:bg-accent-subtle dark:even:bg-white/4",
       )}
       onClick={(event) => {
         if ((event.target as HTMLElement).closest("a, button, input, label")) return;

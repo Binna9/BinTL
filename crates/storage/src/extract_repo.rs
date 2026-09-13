@@ -25,41 +25,26 @@ impl Store {
             .get_connection(connection_id)
             .await?
             .ok_or_else(|| StorageError::NotFound("connection not found".into()))?;
-        let owner_user_id: String = sqlx::query_scalar("SELECT COALESCE(owner_user_id, (SELECT id FROM users WHERE active = 1 ORDER BY created_at LIMIT 1)) FROM workspaces WHERE id = ?")
-            .bind(workspace_id).fetch_optional(&self.pool).await?
-            .ok_or_else(|| StorageError::Invalid("extract owner is unavailable".into()))?;
-        let definition_id = Uuid::new_v4().to_string();
         let execution_id = Uuid::new_v4().to_string();
         let id = Uuid::new_v4().to_string();
         let created_at = now_rfc3339();
-        let source_json = serde_json::json!({"table_name": table_name, "sql_text": sql_text,
-            "catalog_database": catalog_database})
-        .to_string();
-        let filename = output_filename.unwrap_or("extract.csv");
         let snapshot = serde_json::json!({"kind": kind, "connection_id": connection_id,
             "table_name": table_name, "delimiter": delimiter, "header": header,
             "add_sequence": add_sequence, "sql_text": sql_text, "catalog_database": catalog_database,
             "output_filename": output_filename}).to_string();
         let mut tx = self.pool.begin().await?;
-        sqlx::query("INSERT INTO extracts (id, owner_user_id, name, source_type, connection_id,
-            source_json, output_format, output_filename, delimiter, has_header, add_sequence,
-            revision, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'csv', ?, ?, ?, ?, 1, 1, ?, ?)")
-            .bind(&definition_id).bind(owner_user_id).bind(table_name).bind(kind).bind(connection_id)
-            .bind(&source_json).bind(filename).bind(delimiter).bind(i64::from(header))
-            .bind(i64::from(add_sequence)).bind(&created_at).bind(&created_at).execute(&mut *tx).await?;
         sqlx::query(
-            "INSERT INTO executions (id, workspace_id, source, trigger_id, status, created_at)
-            VALUES (?, ?, 'extract_page', ?, 'queued', ?)",
+            "INSERT INTO executions (id, workspace_id, source, status, created_at)
+            VALUES (?, ?, 'extract_page', 'queued', ?)",
         )
         .bind(&execution_id)
         .bind(workspace_id)
-        .bind(&definition_id)
         .bind(&created_at)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("INSERT INTO execution_steps (id, execution_id, kind, extract_id, definition_revision,
-            definition_snapshot_json, status, queued_at) VALUES (?, ?, 'extract', ?, 1, ?, 'queued', ?)")
-            .bind(&id).bind(&execution_id).bind(&definition_id).bind(snapshot).bind(&created_at).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO execution_steps (id, execution_id, kind, definition_revision,
+            definition_snapshot_json, status, queued_at) VALUES (?, ?, 'extract', 1, ?, 'queued', ?)")
+            .bind(&id).bind(&execution_id).bind(snapshot).bind(&created_at).execute(&mut *tx).await?;
         tx.commit().await?;
         search::sync_search_best_effort(self, "extract", self.sync_search_extract(&id)).await;
         self.get_extract(&id)
@@ -469,5 +454,64 @@ impl Store {
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn standalone_extract_does_not_create_a_definition() {
+        let root = std::env::temp_dir().join(format!("bintl-extract-page-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-session-secret").await.unwrap();
+        let admin = store.ensure_bootstrap().await.unwrap();
+        let workspace = store
+            .insert_workspace("Extract page", None, &admin.id, None)
+            .await
+            .unwrap();
+        let connection = store
+            .insert_connection(NewConnection {
+                http_auth: None,
+                name: "src".into(),
+                driver: "sqlite".into(),
+                host: String::new(),
+                port: 0,
+                database: ":memory:".into(),
+                username: String::new(),
+                password: String::new(),
+                ssl: false,
+            })
+            .await
+            .unwrap();
+        let row = store
+            .insert_extract(
+                "database",
+                &connection.id,
+                "public.orders",
+                ",",
+                true,
+                false,
+                Some("SELECT 1"),
+                None,
+                &workspace.id,
+                Some("orders.csv"),
+            )
+            .await
+            .unwrap();
+        let definitions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM extracts")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(definitions, 0);
+        let extract_id: Option<String> =
+            sqlx::query_scalar("SELECT extract_id FROM execution_steps WHERE id = ?")
+                .bind(&row.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert!(extract_id.is_none());
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
     }
 }

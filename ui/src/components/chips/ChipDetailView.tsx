@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Braces, Database, FileInput, FileOutput, Layers3, Link2, Settings2, ShieldCheck, Workflow, type LucideIcon } from "lucide-react";
+import { Braces, Database, FileInput, FileOutput, Layers3, Link2, Settings2, ShieldCheck, Terminal, Workflow, type LucideIcon } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import {
@@ -60,6 +60,11 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
   const extract = chip.kind === "extract" ? parseExtractConfig(chip.config) : null;
   const transform = chip.kind === "transform" ? parseTransformConfig(chip.config) : null;
   const load = chip.kind === "load" ? parseLoadConfig(chip.config) : null;
+  const sqlConnectionId = chip.kind === "sql" && typeof chip.config.connection_id === "string"
+    ? chip.config.connection_id
+    : "";
+  const sqlText = chip.kind === "sql" && typeof chip.config.sql_text === "string" ? chip.config.sql_text : "";
+  const sqlDatabase = chip.kind === "sql" && typeof chip.config.database === "string" ? chip.config.database : "";
 
   const stepLabels = useMemo<Record<StepOp, string>>(
     () => ({
@@ -77,7 +82,7 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
 
   useEffect(() => {
     let cancelled = false;
-    const connectionId = extract?.connectionId ?? load?.connectionId ?? "";
+    const connectionId = extract?.connectionId ?? load?.connectionId ?? sqlConnectionId;
     if (!connectionId) {
       setConnectionName("");
       return;
@@ -95,7 +100,7 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
     return () => {
       cancelled = true;
     };
-  }, [extract?.connectionId, load?.connectionId]);
+  }, [extract?.connectionId, load?.connectionId, sqlConnectionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +150,21 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
         <DetailRow label={messages.load.writeMode}>{load?.writeMode === "append" ? messages.load.append : load ? messages.load.replace : unset}</DetailRow>
       </DetailSection>
     </DetailStack>;
+  }
+
+  if (chip.kind === "sql") {
+    const unset = messages.chips.detailUnset;
+    return (
+      <DetailStack>
+        <DetailSection icon={Terminal} title={messages.workspace.sql}>
+          <DetailRow label={messages.workspace.connection}>{connectionName || sqlConnectionId || unset}</DetailRow>
+          <DetailRow label={messages.workspace.database}>{sqlDatabase || unset}</DetailRow>
+          <DetailRow label={messages.workspace.sql} className="items-start">
+            <span className="whitespace-pre-wrap break-all text-left font-mono text-[12px]">{sqlText || unset}</span>
+          </DetailRow>
+        </DetailSection>
+      </DetailStack>
+    );
   }
 
   if (chip.kind === "validation") {

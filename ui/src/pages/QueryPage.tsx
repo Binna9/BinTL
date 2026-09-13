@@ -109,8 +109,16 @@ export function QueryPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const { workspaceId, editorChipId } = useParams<{ workspaceId: string; editorChipId: string }>();
-  const editingChip = Boolean(workspaceId && editorChipId);
+  const editingChip = Boolean(editorChipId);
   const returnWorkspaceId = workspaceId ?? (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
+
+  function leaveEditor() {
+    if (returnWorkspaceId) {
+      navigate(`/workspace/${returnWorkspaceId}`, { state: location.state });
+      return;
+    }
+    navigate("/chips");
+  }
   const [params] = useSearchParams();
   const editorRef = useRef<SqlEditorHandle>(null);
   const sqlRef = useRef("");
@@ -165,7 +173,7 @@ export function QueryPage() {
   const [editorSize, setEditorSize] = useState<{ w: number; h: number } | null>(null);
 
   useEffect(() => {
-    if (!editorChipId || !workspaceId) return;
+    if (!editorChipId) return;
     let cancelled = false;
     void chipApi.get(editorChipId).then((chip) => {
       if (cancelled) return;
@@ -177,9 +185,18 @@ export function QueryPage() {
         add_sequence?: unknown;
         output_filename?: unknown;
       };
-      if (chip.kind !== "extract" || config.source?.type === "http") {
+      if (chip.kind !== "extract") {
         toastError(messages.workspace.loadError);
-        navigate(`/workspace/${workspaceId}`, { replace: true });
+        leaveEditor();
+        return;
+      }
+      if (config.source?.type === "http") {
+        navigate(
+          workspaceId
+            ? `/workspace/${workspaceId}/chips/${editorChipId}/extract-api`
+            : `/chips/${editorChipId}/extract-api`,
+          { replace: true, state: location.state },
+        );
         return;
       }
       const connectionId = typeof config.connection_id === "string" ? config.connection_id : "";
@@ -201,7 +218,7 @@ export function QueryPage() {
       setExportName(output.replace(/\.csv$/i, ""));
     }).catch((reason) => toastError(messages.workspace.loadError, reason));
     return () => { cancelled = true; };
-  }, [editorChipId, messages, navigate, workspaceId]);
+  }, [editorChipId, location.state, messages, navigate, workspaceId]);
   const runSeq = useRef(0);
   const toastedExtractFail = useRef("");
   const toastedExtractSuccess = useRef("");
@@ -578,7 +595,7 @@ export function QueryPage() {
         },
       });
       toastSuccess(messages.query.chipApplied);
-      navigate(`/workspace/${workspaceId}`, { state: location.state });
+      leaveEditor();
     } catch (err) {
       if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
       else toastError(messages.workspace.saveChipError, err);
@@ -657,15 +674,15 @@ export function QueryPage() {
         eyebrow={messages.query.eyebrow}
         title={messages.query.title}
         description={messages.query.description}
-        actions={returnWorkspaceId ? (
+        actions={editingChip || returnWorkspaceId ? (
           <Button
             type="button"
             variant="quiet"
             className="gap-2"
-            onClick={() => navigate(`/workspace/${returnWorkspaceId}`, { state: location.state })}
+            onClick={leaveEditor}
           >
             <ArrowLeft className="size-3.5" aria-hidden="true" />
-            {messages.load.returnToWorkspace}
+            {returnWorkspaceId ? messages.load.returnToWorkspace : messages.chips.backToChips}
           </Button>
         ) : undefined}
       />

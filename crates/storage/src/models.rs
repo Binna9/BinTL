@@ -506,8 +506,26 @@ pub(crate) const EXTRACT_COLS: &str =
         json_extract(s.definition_snapshot_json, '$.catalog_database') AS catalog_database,
         x.workspace_id, COALESCE(c.name, '') AS connection_name";
 
+fn serialize_http_auth<S: serde::Serializer>(
+    raw: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && *text != "null")
+    {
+        None => serializer.serialize_none(),
+        Some(text) => match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(value) if !value.is_null() => value.serialize(serializer),
+            _ => serializer.serialize_none(),
+        },
+    }
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ConnectionRow {
+    #[serde(rename = "http_auth", serialize_with = "serialize_http_auth")]
     pub http_auth_json: Option<String>,
     pub id: String,
     pub name: String,

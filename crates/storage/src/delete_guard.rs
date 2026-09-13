@@ -47,13 +47,17 @@ impl DatasetDeleteUsage {
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionDeleteUsage {
     pub extract_recipes: Vec<NamedRef>,
+    pub load_recipes: Vec<NamedRef>,
     pub chips: Vec<NamedRef>,
     pub extract_count: i64,
 }
 
 impl ConnectionDeleteUsage {
     pub fn is_blocked(&self) -> bool {
-        !self.extract_recipes.is_empty() || !self.chips.is_empty() || self.extract_count > 0
+        !self.extract_recipes.is_empty()
+            || !self.load_recipes.is_empty()
+            || !self.chips.is_empty()
+            || self.extract_count > 0
     }
 
     pub fn conflict_message(&self) -> String {
@@ -66,6 +70,15 @@ impl ConnectionDeleteUsage {
                 .collect::<Vec<_>>()
                 .join(", ");
             parts.push(format!("extract definitions: {names}"));
+        }
+        if !self.load_recipes.is_empty() {
+            let names = self
+                .load_recipes
+                .iter()
+                .map(|item| format!("\"{}\"", item.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("load definitions: {names}"));
         }
         if !self.chips.is_empty() {
             let names = self
@@ -224,13 +237,25 @@ pub async fn connection_delete_usage(
     .map(|(id, name)| NamedRef { id, name })
     .collect::<Vec<_>>();
 
+    let load_recipes = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, name FROM loads WHERE connection_id = ? ORDER BY name",
+    )
+    .bind(connection_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|(id, name)| NamedRef { id, name })
+    .collect::<Vec<_>>();
+
     let chips = sqlx::query_as::<_, (String, String)>(
         "SELECT DISTINCT c.id, c.name
          FROM chips c
-         INNER JOIN extracts e ON e.id = c.extract_id
-         WHERE e.connection_id = ?
+         LEFT JOIN extracts e ON e.id = c.extract_id
+         LEFT JOIN loads l ON l.id = c.load_id
+         WHERE e.connection_id = ? OR l.connection_id = ?
          ORDER BY c.name",
     )
+    .bind(connection_id)
     .bind(connection_id)
     .fetch_all(pool)
     .await?
@@ -246,6 +271,7 @@ pub async fn connection_delete_usage(
 
     Ok(ConnectionDeleteUsage {
         extract_recipes,
+        load_recipes,
         chips,
         extract_count,
     })
@@ -317,7 +343,7 @@ mod tests {
     async fn delete_upload_cascades_linked_transforms() {
         let root = std::env::temp_dir().join(format!("bintl-delete-guard-{}", Uuid::new_v4()));
         let store = Store::open(&root, "test-session-secret").await.unwrap();
-        let admin = store.ensure_bootstrap("admin", "admin").await.unwrap();
+        let admin = store.ensure_bootstrap().await.unwrap();
         let workspace = store
             .list_visible_workspaces(Some(&crate::DataScope::for_user(&admin)))
             .await

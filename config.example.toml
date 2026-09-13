@@ -2,9 +2,9 @@ bind = "0.0.0.0:8083"
 data_dir = "./data"
 max_upload_mb = 512
 max_concurrent_jobs = 1
-session_secret = "change-me"
-skip_auth = false
 
-[auth]
-username = "admin"
-password = "admin"
+session_secret = "change-me"
+# encryption_secret = "change-me-too"  # 없으면 session_secret. 세션만 돌리려면 따로 둔다.
+
+# 개발만. 운영은 false.
+skip_auth = false

@@ -28,6 +28,22 @@ impl CurrentUser {
         self.0.can_see_all_workspaces()
     }
 
+    pub fn can_use_connections(&self) -> bool {
+        self.0.can_use_connections()
+    }
+
+    pub fn can_run_extract(&self) -> bool {
+        self.0.can_run_extract()
+    }
+
+    pub fn can_run_transform(&self) -> bool {
+        self.0.can_run_transform()
+    }
+
+    pub fn can_run_etl(&self) -> bool {
+        self.0.can_run_etl()
+    }
+
     pub fn scope(&self, workspace_id: Option<String>) -> DataScope {
         DataScope::for_user(&self.0).workspace(workspace_id)
     }
@@ -58,6 +74,38 @@ pub fn require_admin(user: &CurrentUser) -> Result<(), AppError> {
 
 pub fn require_connection_write(user: &CurrentUser) -> Result<(), AppError> {
     if user.can_write_connections() {
+        Ok(())
+    } else {
+        Err(AppError::forbidden())
+    }
+}
+
+pub fn require_connection_use(user: &CurrentUser) -> Result<(), AppError> {
+    if user.can_use_connections() {
+        Ok(())
+    } else {
+        Err(AppError::forbidden())
+    }
+}
+
+pub fn require_extract_run(user: &CurrentUser) -> Result<(), AppError> {
+    if user.can_run_extract() {
+        Ok(())
+    } else {
+        Err(AppError::forbidden())
+    }
+}
+
+pub fn require_transform_run(user: &CurrentUser) -> Result<(), AppError> {
+    if user.can_run_transform() {
+        Ok(())
+    } else {
+        Err(AppError::forbidden())
+    }
+}
+
+pub fn require_etl_run(user: &CurrentUser) -> Result<(), AppError> {
+    if user.can_run_etl() {
         Ok(())
     } else {
         Err(AppError::forbidden())
