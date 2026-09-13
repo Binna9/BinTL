@@ -41,7 +41,7 @@
 | `chip_outputs/{workspace}/{chip}/` | 칩 최신 출력 슬롯 |
 | `outputs/{job_id}/` | 레거시 단독 변환 |
 | `loads/{workspace}/{scope}/` | 파일 적재 산출 |
-| `logs/` | 쿼리·연결 운영 진단. 칩 로그가 아님 |
+| `logs/query/` | SQL 미리보기 진단. 칩 로그는 DB |
 | `staging/` | 스프레드시트 커밋 전 |
 | `user_images/default-image` | 프로필 기본 이미지 |
 | `user_images/{user_id}/` | 계정별 프로필 사진 |

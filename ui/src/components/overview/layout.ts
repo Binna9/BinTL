@@ -2,16 +2,16 @@ import { layout } from "@/lib/layout";
 import type { WidgetId, WidgetLayout } from "./types";
 
 const COLS = layout.dashboard.cols;
-const STORAGE_KEY = "bintl.dashboard-layout.v3";
+const STORAGE_KEY = "bintl.dashboard-layout.v4";
 
 export const DEFAULT_LAYOUT: WidgetLayout[] = [
-  { id: "summary", x: 0, y: 0, w: 8, h: 4, visible: true },
+  { id: "summary", x: 0, y: 0, w: 8, h: 3, visible: true },
   { id: "assets", x: 8, y: 0, w: 4, h: 6, visible: true },
-  { id: "trend", x: 0, y: 4, w: 8, h: 6, visible: true },
+  { id: "trend", x: 0, y: 3, w: 8, h: 5, visible: true },
   { id: "funnel", x: 8, y: 6, w: 4, h: 5, visible: true },
-  { id: "attention", x: 0, y: 10, w: 8, h: 6, visible: true },
+  { id: "attention", x: 0, y: 8, w: 8, h: 5, visible: true },
   { id: "start", x: 8, y: 11, w: 4, h: 6, visible: true },
-  { id: "activity", x: 0, y: 17, w: 12, h: 4, visible: true },
+  { id: "activity", x: 0, y: 13, w: 8, h: 4, visible: true },
 ];
 
 export const WIDGET_BOUNDS: Record<WidgetId, { minW: number; minH: number }> = {

@@ -3,7 +3,7 @@ use sqlx::Row;
 use storage::LiveConnection;
 
 use crate::{
-    driver_family, mssql_client, my_pool, parse_ident, pg_pool, sqlite_pool, with_database,
+    driver_family, mssql_client, my_pool, oracle, parse_ident, pg_pool, sqlite_pool, with_database,
     ConnectError,
 };
 
@@ -17,7 +17,7 @@ pub struct CatalogItem {
 
 pub fn catalog_layout(driver: &str) -> Result<&'static str, ConnectError> {
     Ok(match driver_family(driver)? {
-        "postgres" | "mssql" => "database.schema.table",
+        "postgres" | "mssql" | "oracle" => "database.schema.table",
         _ => "database.table",
     })
 }
@@ -92,6 +92,14 @@ pub async fn list_databases(c: &LiveConnection) -> Result<Vec<CatalogItem>, Conn
             }
             Ok(out)
         }
+        "oracle" => {
+            let name = if c.database.is_empty() {
+                "ORCL".to_string()
+            } else {
+                c.database.clone()
+            };
+            Ok(vec![item_db(&name, &name)])
+        }
         other => Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
 }
@@ -157,6 +165,30 @@ pub async fn list_schemas(
                 .collect())
         }
         "mysql" | "sqlite" => Ok(Vec::new()),
+        "oracle" => oracle::with_conn(&live, |conn| {
+            let (_, rows) = oracle::query_rows(
+                conn,
+                "SELECT username FROM all_users
+                 WHERE username NOT IN (
+                   'SYS','SYSTEM','OUTLN','DIP','ORACLE_OCM','DBSNMP','APPQOSSYS',
+                   'GSMADMIN_INTERNAL','GSMCATUSER','GSMUSER','SYSDG','SYSBACKUP',
+                   'SYSKM','SYSRAC','AUDSYS','XS$NULL','OJVMSYS','LBACSYS','DVSYS',
+                   'DVF','GGSYS','XDB','ANONYMOUS','CTXSYS','MDSYS','OLAPSYS','WMSYS',
+                   'ORDSYS','ORDDATA','SI_INFORMTN_SCHEMA','FLOWS_FILES',
+                   'APEX_PUBLIC_USER','SYSCAT','SYSGIS'
+                 )
+                 ORDER BY 1",
+            )?;
+            Ok(rows
+                .into_iter()
+                .filter_map(|row| row.into_iter().next())
+                .map(|name| CatalogItem {
+                    name,
+                    kind: "schema",
+                    current: None,
+                })
+                .collect())
+        }),
         other => Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
 }
@@ -256,6 +288,35 @@ pub async fn list_relations(
                     })
                 })
                 .collect())
+        }
+        "oracle" => {
+            let schema = schema.ok_or_else(|| ConnectError::Invalid("schema required".into()))?;
+            let schema = schema.to_ascii_uppercase();
+            oracle::with_conn(&live, |conn| {
+                let sql = format!(
+                    "SELECT table_name, 'TABLE' FROM all_tables WHERE owner = '{schema}'
+                     UNION ALL
+                     SELECT view_name, 'VIEW' FROM all_views WHERE owner = '{schema}'
+                     ORDER BY 1"
+                );
+                let (_, rows) = oracle::query_rows(conn, &sql)?;
+                Ok(rows
+                    .into_iter()
+                    .filter_map(|row| {
+                        let mut cells = row.into_iter();
+                        let name = cells.next()?;
+                        let kind = match cells.next().as_deref() {
+                            Some(t) if t.eq_ignore_ascii_case("VIEW") => "view",
+                            _ => "table",
+                        };
+                        Some(CatalogItem {
+                            name,
+                            kind,
+                            current: None,
+                        })
+                    })
+                    .collect())
+            })
         }
         other => Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }

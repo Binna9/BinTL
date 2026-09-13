@@ -1423,6 +1423,12 @@ pub(crate) async fn validate_sql_config(store: &Store, config: Value) -> Result<
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
+    let schema = config
+        .get("schema")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
     if connection_id.is_empty() {
         return Err(AppError::bad("connection_id required"));
     }
@@ -1435,10 +1441,12 @@ pub(crate) async fn validate_sql_config(store: &Store, config: Value) -> Result<
     }
     let sql_text = normalize_sql(&sql_text).map_err(|error| AppError::bad(error.to_string()))?;
     validate_database(database.as_deref())?;
+    validate_database(schema.as_deref())?;
     Ok(json!({
         "connection_id": connection_id,
         "sql_text": sql_text,
         "database": database,
+        "schema": schema,
     }))
 }
 
@@ -1783,6 +1791,11 @@ async fn run_sql_chip(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let schema = config
+        .get("schema")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let base = store
         .live_connection(connection_id)
         .await
@@ -1791,7 +1804,7 @@ async fn run_sql_chip(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         return Err("http connection cannot run SQL".into());
     }
     let live = with_database(&base, database);
-    let outcome = run_sql(&live, sql_text, 1000, None)
+    let outcome = run_sql(&live, sql_text, 1000, None, schema)
         .await
         .map_err(|error| error.to_string())?;
     store
@@ -1800,8 +1813,12 @@ async fn run_sql_chip(store: &Store, run: &ChipRunRow) -> Result<(), String> {
             "info",
             "sql_completed",
             &format!(
-                "kind={} rows={} elapsed_ms={} truncated={}",
-                outcome.kind, outcome.row_count, outcome.elapsed_ms, outcome.truncated
+                "kind={} schema={} rows={} elapsed_ms={} truncated={}",
+                outcome.kind,
+                schema.unwrap_or("-"),
+                outcome.row_count,
+                outcome.elapsed_ms,
+                outcome.truncated,
             ),
             None,
         )

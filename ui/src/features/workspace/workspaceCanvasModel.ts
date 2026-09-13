@@ -4,6 +4,15 @@ import type { WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
 
 export const ACTIVE_STATUSES = new Set(["queued", "running"]);
 export const TOOL_KIND = "application/x-bintl-tool";
+export const PINNED_WORKSPACE_KEY = "bintl.canvas.pinned-workspace";
+
+export function storedPinnedWorkspace(): string | null {
+  try {
+    return localStorage.getItem(PINNED_WORKSPACE_KEY);
+  } catch {
+    return null;
+  }
+}
 
 export function chipKindLabel(kind: ChipKind, messages: Messages) {
   if (kind === "extract") return messages.workspace.extract;

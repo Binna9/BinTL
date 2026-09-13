@@ -18,6 +18,7 @@ serde_json = { workspace = true }
 tiberius = { version = "0.12", default-features = false, features = ["tds73", "rustls", "chrono"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 calamine = "0.36.1"
+odbc-api = "8"
 
 [dev-dependencies]
 zip = { version = "8.6.0", default-features = false }

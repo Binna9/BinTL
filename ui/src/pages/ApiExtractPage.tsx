@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, BookmarkPlus, Braces, Code2, Database, Eye, FileDown, FileJson2, Globe2, ListFilter, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
+import { ArrowLeft, BookmarkPlus, Braces, Check, Code2, Database, Eye, FileDown, FileJson2, Globe2, ListFilter, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   columnWidthsForContent,
@@ -66,12 +66,16 @@ function KvEditor({
   nameLabel,
   valueLabel,
   addLabel,
+  applyLabel,
+  onApply,
 }: {
   rows: HttpKv[];
   onChange: (next: HttpKv[]) => void;
   nameLabel: string;
   valueLabel: string;
   addLabel: string;
+  applyLabel?: string;
+  onApply?: () => void;
 }) {
   return (
     <div className="space-y-2.5">
@@ -107,10 +111,18 @@ function KvEditor({
           </button>
         </div>
       ))}
-      <Button type="button" variant="secondary" className="mt-1 gap-1.5 border-dashed" onClick={() => onChange([...rows, emptyKv()])}>
-        <Plus className="size-3.5" />
-        {addLabel}
-      </Button>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <Button type="button" variant="secondary" className="gap-1.5 border-dashed" onClick={() => onChange([...rows, emptyKv()])}>
+          <Plus className="size-3.5" />
+          {addLabel}
+        </Button>
+        {onApply && applyLabel ? (
+          <Button type="button" variant="secondary" className="gap-1.5" onClick={onApply}>
+            <Check className="size-3.5" />
+            {applyLabel}
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -121,23 +133,19 @@ function RequestSection({
   className,
   icon,
   meta,
-  onSave,
 }: {
   title: string;
   children: ReactNode;
   className?: string;
   icon?: ReactNode;
   meta?: ReactNode;
-  onSave?: () => void;
 }) {
-  const { messages } = useLanguage();
   return (
     <section className={cn("overflow-hidden rounded-xl border border-border/80 bg-surface shadow-[0_1px_2px_rgba(15,23,42,0.03)]", className)}>
       <div className="flex min-h-10 items-center justify-between gap-2 border-b border-border/70 bg-raised/70 px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2.5">
           {icon ? <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-accent-subtle text-accent">{icon}</span> : null}
           <h2 className="truncate text-[13px] font-semibold text-text">{title}</h2>
-          {onSave ? <Button type="button" variant="secondary" className="gap-1.5" onClick={onSave}><Save className="size-3.5" />{messages.common.save}</Button> : null}
         </div>
         {meta ? <div className="shrink-0 text-[11px] text-text-tertiary">{meta}</div> : null}
       </div>
@@ -652,30 +660,34 @@ export function ApiExtractPage() {
 
                 <p className="text-[11px] text-text-tertiary">{messages.apiExtract.applyValuesHint}</p>
                 <section className="grid items-start gap-3 lg:grid-cols-2">
-                  <RequestSection title={messages.apiExtract.queryParams} icon={<ListFilter className="size-3.5" aria-hidden="true" />} onSave={() => setAppliedQuery(compactKv(query).map((row) => ({ ...row })))}>
+                  <RequestSection title={messages.apiExtract.queryParams} icon={<ListFilter className="size-3.5" aria-hidden="true" />}>
                     <KvEditor
                       rows={query}
                       onChange={setQuery}
                       nameLabel={messages.apiExtract.paramName}
                       valueLabel={messages.apiExtract.paramValue}
                       addLabel={messages.apiExtract.addParam}
+                      applyLabel={messages.apiExtract.apply}
+                      onApply={() => setAppliedQuery(compactKv(query).map((row) => ({ ...row })))}
                     />
                     <AppliedValues rows={appliedQuery} />
                   </RequestSection>
-                  <RequestSection title={messages.apiExtract.headers} icon={<Code2 className="size-3.5" aria-hidden="true" />} onSave={() => setAppliedHeaders(compactKv(headers).map((row) => ({ ...row })))}>
+                  <RequestSection title={messages.apiExtract.headers} icon={<Code2 className="size-3.5" aria-hidden="true" />}>
                     <KvEditor
                       rows={headers}
                       onChange={setHeaders}
                       nameLabel={messages.apiExtract.headerName}
                       valueLabel={messages.apiExtract.headerValue}
                       addLabel={messages.apiExtract.addHeader}
+                      applyLabel={messages.apiExtract.apply}
+                      onApply={() => setAppliedHeaders(compactKv(headers).map((row) => ({ ...row })))}
                     />
                     <AppliedValues rows={appliedHeaders} />
                   </RequestSection>
                 </section>
 
                 {requestType === "graphql" ? (
-                  <RequestSection title={messages.apiExtract.graphql} onSave={() => setAppliedGraphql({ query: graphqlQuery, variables: graphqlVariables, operation: graphqlOperationName })} icon={<Braces className="size-3.5" aria-hidden="true" />}>
+                  <RequestSection title={messages.apiExtract.graphql} icon={<Braces className="size-3.5" aria-hidden="true" />}>
                     <div className="grid gap-4 lg:grid-cols-2">
                       <FormField label={messages.apiExtract.graphqlQuery}>
                         <textarea className="field-control technical min-h-[12rem] font-mono text-[12px]" value={graphqlQuery} placeholder="query Users($first: Int!) { users(first: $first) { nodes { id name } } }" onChange={(event) => setGraphqlQuery(event.target.value)} />
@@ -689,23 +701,45 @@ export function ApiExtractPage() {
                         </FormField>
                       </div>
                     </div>
+                    <Button type="button" variant="secondary" className="mt-3 gap-1.5" onClick={() => setAppliedGraphql({ query: graphqlQuery, variables: graphqlVariables, operation: graphqlOperationName })}>
+                      <Check className="size-3.5" />
+                      {messages.apiExtract.apply}
+                    </Button>
                     {appliedGraphql ? <AppliedValues rows={[{ name: messages.apiExtract.graphqlQuery, value: appliedGraphql.query }, { name: messages.apiExtract.graphqlVariables, value: appliedGraphql.variables }, { name: messages.apiExtract.graphqlOperationName, value: appliedGraphql.operation }]} /> : null}
                   </RequestSection>
                 ) : method === "GET" || method === "HEAD" ? null : (
-                  <RequestSection title={messages.apiExtract.requestBody} onSave={() => setAppliedBody({ mode: bodyMode, body, form: compactKv(form).map((row) => ({ ...row })) })} icon={<FileJson2 className="size-3.5" aria-hidden="true" />}>
+                  <RequestSection title={messages.apiExtract.requestBody} icon={<FileJson2 className="size-3.5" aria-hidden="true" />}>
                     <FormField label={messages.apiExtract.bodyType}>
                       <Select value={bodyMode} options={[{ value: "json", label: "JSON" }, { value: "raw", label: messages.apiExtract.rawText }, { value: "urlencoded", label: "x-www-form-urlencoded" }, { value: "multipart", label: "multipart/form-data" }]} onChange={(value) => setBodyMode(value as typeof bodyMode)} />
                     </FormField>
                     {bodyMode === "urlencoded" || bodyMode === "multipart" ? (
-                      <div className="mt-3"><KvEditor rows={form} onChange={setForm} nameLabel={messages.apiExtract.fieldName} valueLabel={messages.apiExtract.fieldValue} addLabel={messages.apiExtract.addField} /></div>
-                    ) : <div className="mt-3"><FormField label={messages.apiExtract.body}>
-                      <textarea
-                        className="field-control technical min-h-[8rem] font-mono text-[12px]"
-                        value={body}
-                        placeholder='{"page":1}'
-                        onChange={(event) => setBody(event.target.value)}
-                      />
-                    </FormField></div>}
+                      <div className="mt-3">
+                        <KvEditor
+                          rows={form}
+                          onChange={setForm}
+                          nameLabel={messages.apiExtract.fieldName}
+                          valueLabel={messages.apiExtract.fieldValue}
+                          addLabel={messages.apiExtract.addField}
+                          applyLabel={messages.apiExtract.apply}
+                          onApply={() => setAppliedBody({ mode: bodyMode, body, form: compactKv(form).map((row) => ({ ...row })) })}
+                        />
+                      </div>
+                    ) : (
+                      <div className="mt-3">
+                        <FormField label={messages.apiExtract.body}>
+                          <textarea
+                            className="field-control technical min-h-[8rem] font-mono text-[12px]"
+                            value={body}
+                            placeholder='{"page":1}'
+                            onChange={(event) => setBody(event.target.value)}
+                          />
+                        </FormField>
+                        <Button type="button" variant="secondary" className="mt-3 gap-1.5" onClick={() => setAppliedBody({ mode: bodyMode, body, form: compactKv(form).map((row) => ({ ...row })) })}>
+                          <Check className="size-3.5" />
+                          {messages.apiExtract.apply}
+                        </Button>
+                      </div>
+                    )}
                     {appliedBody ? <AppliedValues rows={appliedBody.mode === "urlencoded" || appliedBody.mode === "multipart" ? appliedBody.form : [{ name: appliedBody.mode.toUpperCase(), value: appliedBody.body }]} /> : null}
                   </RequestSection>
                 )}

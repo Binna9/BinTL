@@ -21,7 +21,7 @@
 
 `connectors::extract_table` / `extract_query` / `extract_http`가 행을 스트림으로 CSV에 쓴다. 테이블 전체를 `fetch_all`로 올리지 않는다. 컬럼이 없으면 실패한다. 0행이어도 헤더만 남긴다. 구분자는 ASCII 한 글자 또는 `tab`. quote는 `"`.
 
-테이블 식별은 `name` 또는 `schema.name`, `[A-Za-z0-9_]`만. 스키마 생략 시 postgres=`public`, mssql=`dbo`.
+테이블 식별은 `name` 또는 `schema.name`, `[A-Za-z0-9_]`만. 스키마 생략 시 postgres=`public`, mssql=`dbo`, oracle/tibero=접속 사용자(대문자).
 
 ## 출력 경로
 

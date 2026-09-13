@@ -1,11 +1,15 @@
-import { createContext, ReactNode, useContext, useMemo } from "react";
+import { createContext, ReactNode, useContext, useMemo, useState } from "react";
 import { useOverviewData } from "./useOverviewData";
 import { buildDashboardModel } from "@/components/overview/model";
 import { useDashboardLayout } from "./useDashboardLayout";
-import type { DashboardModel } from "@/components/overview/types";
+import type { AssetScope, DashboardModel, SummaryScope } from "@/components/overview/types";
 
 type DashboardContextValue = {
   model: DashboardModel;
+  summaryScope: SummaryScope;
+  setSummaryScope: (scope: SummaryScope) => void;
+  assetScope: AssetScope;
+  setAssetScope: (scope: AssetScope) => void;
 } & ReturnType<typeof useDashboardLayout>;
 
 const DashboardContext = createContext<DashboardContextValue | null>(null);
@@ -13,31 +17,29 @@ const DashboardContext = createContext<DashboardContextValue | null>(null);
 export function DashboardProvider({ children }: { children: ReactNode }) {
   const data = useOverviewData();
   const layoutState = useDashboardLayout();
+  const [summaryScope, setSummaryScope] = useState<SummaryScope>("chip");
+  const [assetScope, setAssetScope] = useState<AssetScope>("mine");
   const model = useMemo(
     () =>
       buildDashboardModel({
         systemHealth: data.systemHealth,
-        recentJobs: data.recentJobs,
-        recentExtracts: data.recentExtracts,
-        workspaceCount: data.workspaceCount,
-        activeChipCount: data.activeChipCount,
-        datasetCount: data.datasetCount,
-        connectionCount: data.connectionCount,
+        chipRuns: data.chipRuns,
+        workspaceRuns: data.workspaceRuns,
+        mineAssets: data.mineAssets,
+        sharedAssets: data.sharedAssets,
       }),
     [
       data.systemHealth,
-      data.recentJobs,
-      data.recentExtracts,
-      data.workspaceCount,
-      data.activeChipCount,
-      data.datasetCount,
-      data.connectionCount,
+      data.chipRuns,
+      data.workspaceRuns,
+      data.mineAssets,
+      data.sharedAssets,
     ],
   );
 
   const value = useMemo(
-    () => ({ model, ...layoutState }),
-    [model, layoutState],
+    () => ({ model, summaryScope, setSummaryScope, assetScope, setAssetScope, ...layoutState }),
+    [model, summaryScope, assetScope, layoutState],
   );
 
   return <DashboardContext.Provider value={value}>{children}</DashboardContext.Provider>;

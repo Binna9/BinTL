@@ -7,7 +7,7 @@ use storage::LiveConnection;
 
 use crate::inspect::list_columns;
 use crate::{
-    driver_family, mssql_client, my_pool, parse_table, pg_pool, qualified, sqlite_pool,
+    driver_family, mssql_client, my_pool, oracle, parse_table, pg_pool, qualified, sqlite_pool,
     stringify_ms, stringify_my, stringify_pg, stringify_sqlite, ConnectError,
 };
 
@@ -175,6 +175,7 @@ pub async fn extract_table(
         "mysql" => stream_my(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
         "sqlite" => stream_sqlite(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
         "mssql" => stream_ms(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
+        "oracle" => stream_oracle(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress)?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     wtr.flush()?;
@@ -282,6 +283,33 @@ async fn stream_ms(
         tick_progress(on_progress, n);
     }
     Ok(n)
+}
+
+fn stream_oracle(
+    c: &LiveConnection,
+    q: &str,
+    wtr: &mut csv::Writer<File>,
+    ncols: usize,
+    add_sequence: bool,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+) -> Result<u64, ConnectError> {
+    oracle::with_conn(c, |conn| {
+        let sql = format!("SELECT * FROM {q}");
+        let mut n = 0u64;
+        oracle::stream_query(
+            conn,
+            &sql,
+            |_| Ok(()),
+            |rec| {
+                n += 1;
+                let row: Vec<String> = rec.iter().take(ncols).cloned().collect();
+                wtr.write_record(&with_sequence(add_sequence, n, row))?;
+                tick_progress(on_progress, n);
+                Ok(())
+            },
+        )?;
+        Ok(n)
+    })
 }
 
 #[cfg(test)]

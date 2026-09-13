@@ -4,7 +4,7 @@
 
 BinTL의 추출·변환·적재·검증 칩 실행 로그는 SQLite `execution_logs`를 단일 원본으로 사용한다. 신규 칩 실행은 `data/logs/extract_runs`나 `data/logs/transform_runs`에 로그 파일을 만들지 않는다.
 
-`data/logs/query`, `files`, `connections`는 칩 실행 이력이 아니라 쿼리 및 연결 확인을 위한 운영 진단 로그다.
+`data/logs/query`는 칩 실행이 아니라 `/db` SQL 미리보기용 진단 파일이다. 7일이 지난 파일은 기동 시 지운다.
 
 ```text
 workspaces
@@ -151,11 +151,11 @@ WHERE execution_step_id = :step_id
 
 `executions` 삭제 시 외래키 `ON DELETE CASCADE`로 `execution_steps`, `execution_logs`, `execution_inputs`, `execution_outputs`, 해당 `validation_results`가 함께 정리된다. 실제 출력 파일과 `data_files`는 최신 workspace 출력을 보호하기 위해 로그 보존 정책과 별도로 관리한다.
 
-## 10. 기존 파일 로그
+## 10. 파일 로그
 
-기존 `data/logs/extract_runs/*.log`, `transform_runs/*.log`는 복구를 위해 자동 삭제하지 않는다. 신규 실행은 해당 파일에 추가 기록하지 않는다. 백업 보존 기간이 지난 뒤 운영자가 기존 파일을 삭제할 수 있다.
+칩 실행은 `.log` 파일을 만들지 않는다. `Store::open`이 `data/logs` 아래 예전 `extracts`, `extract_runs`, `transform_runs`, `jobs`, `files`, `connections` 폴더를 삭제한다.
 
-새 칩 실행 기능은 로그 파일을 직접 만들거나 `execution_logs`에 직접 INSERT하면 안 된다. 반드시 `Store::append_execution_log`를 사용해야 메시지 크기, 순서, 500개 보존 제한이 동일하게 적용된다.
+새 칩 실행 기능은 로그 파일을 만들거나 `execution_logs`에 직접 INSERT하면 안 된다. 반드시 `Store::append_execution_log`를 사용해야 메시지 크기, 순서, 500개 보존 제한이 동일하게 적용된다.
 
 ## 11. 오류 로그 공통 형식
 

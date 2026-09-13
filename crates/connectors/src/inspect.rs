@@ -3,8 +3,9 @@ use sqlx::Row;
 use storage::LiveConnection;
 
 use crate::{
-    driver_family, mssql_client, my_pool, parse_table, pg_pool, qualified, schema_or, sqlite_pool,
-    stringify_ms, stringify_my, stringify_pg, stringify_sqlite, ConnectError,
+    driver_family, mssql_client, my_pool, oracle, parse_table, pg_pool, qualified, schema_or,
+    schema_or_user, sqlite_pool, stringify_ms, stringify_my, stringify_pg, stringify_sqlite,
+    ConnectError,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -278,6 +279,78 @@ pub async fn list_columns(
                 })
                 .collect())
         }
+        "oracle" => {
+            let schema = schema_or_user(family, &parsed, &c.username).to_ascii_uppercase();
+            let table = parsed.table.to_ascii_uppercase();
+            oracle::with_conn(c, |conn| {
+                let sql = format!(
+                    "SELECT
+                        c.column_id,
+                        c.column_name,
+                        CASE
+                          WHEN c.data_type IN ('VARCHAR2','NVARCHAR2','CHAR','NCHAR','RAW')
+                               AND c.data_length IS NOT NULL
+                            THEN c.data_type || '(' || c.data_length || ')'
+                          WHEN c.data_type = 'NUMBER' AND c.data_precision IS NOT NULL
+                            THEN c.data_type || '(' || c.data_precision || ',' || NVL(c.data_scale, 0) || ')'
+                          ELSE c.data_type
+                        END,
+                        c.nullable,
+                        NULL,
+                        c.data_length,
+                        c.data_precision,
+                        c.data_scale,
+                        CASE WHEN p.column_name IS NULL THEN 'N' ELSE 'Y' END,
+                        NULL,
+                        cc.comments
+                     FROM all_tab_columns c
+                     LEFT JOIN (
+                       SELECT cols.column_name
+                       FROM all_constraints cons
+                       JOIN all_cons_columns cols
+                         ON cons.owner = cols.owner
+                        AND cons.constraint_name = cols.constraint_name
+                       WHERE cons.constraint_type = 'P'
+                         AND cons.owner = '{schema}'
+                         AND cons.table_name = '{table}'
+                     ) p ON p.column_name = c.column_name
+                     LEFT JOIN all_col_comments cc
+                       ON cc.owner = c.owner
+                      AND cc.table_name = c.table_name
+                      AND cc.column_name = c.column_name
+                     WHERE c.owner = '{schema}' AND c.table_name = '{table}'
+                     ORDER BY c.column_id"
+                );
+                let (_, rows) = oracle::query_rows(conn, &sql)?;
+                Ok(rows
+                    .into_iter()
+                    .map(|row| {
+                        let get = |i: usize| row.get(i).cloned().unwrap_or_default();
+                        let nullable = !get(3).eq_ignore_ascii_case("N");
+                        ColumnInfo {
+                            ordinal: get(0).parse().unwrap_or(0),
+                            name: get(1),
+                            data_type: get(2),
+                            nullable,
+                            default_value: None,
+                            max_length: get(5).parse().ok(),
+                            numeric_precision: get(6).parse().ok(),
+                            numeric_scale: get(7).parse().ok(),
+                            primary_key: get(8).eq_ignore_ascii_case("Y"),
+                            extra: None,
+                            comment: {
+                                let comment = get(10);
+                                if comment.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(comment)
+                                }
+                            },
+                        }
+                    })
+                    .collect())
+            })
+        }
         other => Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
 }
@@ -338,6 +411,11 @@ pub async fn preview_table(
                 .map(|r| (0..ncols).map(|i| stringify_ms(r, i)).collect())
                 .collect()
         }
+        "oracle" => oracle::with_conn(c, |conn| {
+            let sql = format!("SELECT * FROM {q} FETCH FIRST {limit} ROWS ONLY");
+            let (_, rows) = oracle::query_rows(conn, &sql)?;
+            Ok(rows)
+        })?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     Ok(Preview {

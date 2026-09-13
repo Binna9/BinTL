@@ -13,4 +13,6 @@ polars = { version = "0.51", default-features = false, features = [
     "csv",
     "parquet",
     "json",
+    "regex",
+    "strings",
 ] }

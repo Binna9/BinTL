@@ -1,5 +1,10 @@
 /target
-/.cursor
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/mcp.json
+!.cursor/skills/
+!.cursor/skills/**
 /ui/node_modules/
 /ui/dist/
 /data/

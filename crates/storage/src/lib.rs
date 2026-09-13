@@ -30,8 +30,7 @@ pub use identity::{
 pub use user_images::DEFAULT_USER_IMAGE_REL;
 pub use models::*;
 pub use process_log::{
-    safe_log_id, ProcessLog, LOG_AREAS, LOG_CONNECTIONS, LOG_EXTRACTS, LOG_FILES, LOG_JOBS,
-    LOG_QUERY,
+    clean_process_logs, safe_log_id, ProcessLog, LOG_AREAS, LOG_QUERY,
 };
 pub use search::SearchHit;
 
@@ -237,6 +236,7 @@ async fn ensure_data_layout(data_dir: &Path) -> Result<(), StorageError> {
     for area in LOG_AREAS {
         tokio::fs::create_dir_all(data_dir.join(REL_LOGS).join(area)).await?;
     }
+    process_log::clean_process_logs(data_dir).await?;
     tokio::fs::create_dir_all(data_dir.join(REL_USER_IMAGES)).await?;
     user_images::ensure_default_user_image(data_dir).await?;
     migrate_legacy_extract_dirs(data_dir).await?;
@@ -615,7 +615,16 @@ fn reject_sensitive_config(value: &serde_json::Value) -> Result<(), StorageError
 fn supported_driver(driver: &str) -> bool {
     matches!(
         driver,
-        "postgres" | "redshift" | "cockroach" | "mysql" | "mariadb" | "mssql" | "sqlite" | "http"
+        "postgres"
+            | "redshift"
+            | "cockroach"
+            | "mysql"
+            | "mariadb"
+            | "mssql"
+            | "sqlite"
+            | "oracle"
+            | "tibero"
+            | "http"
     )
 }
 

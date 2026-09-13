@@ -8,7 +8,17 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import type { Dataset, DatasetColumn, FramePreview } from "@/types/dataset";
 import type { TransformSpecV2, TransformStep } from "@/types/transform";
-import { CAST_TYPES, FILTER_OPS, resolveColumnsAtStep, type FilterOp } from "@/features/transform/transformEditorModel";
+import {
+  CAST_TYPES,
+  DERIVE_OPS,
+  FILTER_OPS,
+  buildDeriveExpr,
+  filterOpNeedsValue,
+  parseDeriveExpr,
+  resolveColumnsAtStep,
+  type DeriveOp,
+  type FilterOp,
+} from "@/features/transform/transformEditorModel";
 
 export function ColumnChipPicker({
   columns,
@@ -392,6 +402,18 @@ export function usableSteps(steps: TransformStep[], baseColumns: DatasetColumn[]
       case "filter":
         if (step.expr.trim().length > 0) out.push(step);
         break;
+      case "derive":
+        if (step.name.trim() && step.expr.trim()) out.push(step);
+        break;
+      case "trim":
+        if (step.columns.length > 0) out.push(step);
+        break;
+      case "replace":
+        if (step.column.trim() && step.find.length > 0) out.push(step);
+        break;
+      case "split":
+        if (step.column.trim() && step.delimiter.length > 0 && step.name.trim()) out.push(step);
+        break;
       case "fill_null":
         if (step.columns.length > 0 && step.value.trim().length > 0) out.push(step);
         break;
@@ -477,8 +499,13 @@ export function formatFilterValue(value: string, dtype?: string): string {
 }
 
 export function buildFilterExpr(column: string, op: FilterOp, value: string, dtype?: string): string {
-  const rhs = formatFilterValue(value, dtype);
-  if (!column.trim() || !rhs) return "";
+  if (!column.trim()) return "";
+  if (!filterOpNeedsValue(op)) return `${column.trim()} ${op}`;
+  const rhs = formatFilterValue(
+    value,
+    op === "contains" || op === "not contains" ? "String" : dtype,
+  );
+  if (!rhs) return "";
   return `${column.trim()} ${op} ${rhs}`;
 }
 
@@ -499,6 +526,14 @@ export function filterOpMeta(
       return { label: "≥", title: messages.transform.filterOpGte };
     case "<=":
       return { label: "≤", title: messages.transform.filterOpLte };
+    case "contains":
+      return { label: messages.transform.filterOpContains, title: messages.transform.filterOpContains };
+    case "not contains":
+      return { label: messages.transform.filterOpNotContains, title: messages.transform.filterOpNotContains };
+    case "is null":
+      return { label: messages.transform.filterOpIsNull, title: messages.transform.filterOpIsNull };
+    case "is not null":
+      return { label: messages.transform.filterOpNotNull, title: messages.transform.filterOpNotNull };
   }
 }
 
@@ -541,8 +576,8 @@ export function FilterStepFields({
   }
 
   const preview =
-    column && value.trim()
-      ? messages.transform.filterPreview(column, op, value.trim())
+    column && (!filterOpNeedsValue(op) || value.trim())
+      ? messages.transform.filterPreview(column, op, filterOpNeedsValue(op) ? value.trim() : "")
       : null;
 
   return (
@@ -611,15 +646,207 @@ export function FilterStepFields({
               );
             })}
           </div>
-          <FormField label={messages.transform.filterValueLabel}>
+          {filterOpNeedsValue(op) ? (
+            <FormField label={messages.transform.filterValueLabel}>
+              <input
+                className="field-control technical"
+                value={value}
+                placeholder={messages.transform.filterValuePlaceholder}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setValue(next);
+                  commit(column, op, next);
+                }}
+              />
+            </FormField>
+          ) : null}
+          {preview ? (
+            <p className="font-mono text-[11px] text-text-secondary">{preview}</p>
+          ) : null}
+        </div>
+      ) : (
+        <p className="text-[11px] text-text-tertiary">{messages.transform.filterPickColumn}</p>
+      )}
+    </div>
+  );
+}
+
+function deriveOpMeta(
+  op: DeriveOp,
+  messages: ReturnType<typeof useLanguage>["messages"],
+): { label: string; title: string } {
+  switch (op) {
+    case "+":
+      return { label: "+", title: messages.transform.deriveOpAdd };
+    case "-":
+      return { label: "−", title: messages.transform.deriveOpSub };
+    case "*":
+      return { label: "×", title: messages.transform.deriveOpMul };
+    case "/":
+      return { label: "÷", title: messages.transform.deriveOpDiv };
+  }
+}
+
+export function DeriveStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "derive" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  const parsed = useMemo(() => parseDeriveExpr(step.expr), [step.expr]);
+  const [name, setName] = useState(step.name);
+  const [left, setLeft] = useState(parsed?.left ?? "");
+  const [op, setOp] = useState<DeriveOp>(parsed?.op ?? "+");
+  const [right, setRight] = useState(parsed?.right ?? "");
+
+  useEffect(() => {
+    const next = parseDeriveExpr(step.expr);
+    setName(step.name);
+    setLeft(next?.left ?? "");
+    setOp(next?.op ?? "+");
+    setRight(next?.right ?? "");
+  }, [step.expr, step.name]);
+
+  function commit(nextName: string, nextLeft: string, nextOp: DeriveOp, nextRight: string) {
+    const leftCol = nextLeft.trim();
+    onChange({
+      op: "derive",
+      name: nextName.trim() || leftCol,
+      expr: buildDeriveExpr(leftCol, nextOp, nextRight),
+    });
+  }
+
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+
+  const resultName = name.trim() || left;
+  const preview =
+    left && right.trim()
+      ? messages.transform.derivePreview(resultName || left, left, op, right.trim())
+      : null;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
+        <div className="flex flex-nowrap gap-1.5 pb-0.5">
+          {columns.map((item) => {
+            const active = left === item.name;
+            return (
+              <button
+                key={item.name}
+                type="button"
+                title={item.dtype ? `${item.name} (${item.dtype})` : item.name}
+                aria-pressed={active}
+                onClick={() => {
+                  const nextName = !name.trim() || name.trim() === left ? item.name : name;
+                  setLeft(item.name);
+                  setName(nextName);
+                  commit(nextName, item.name, op, right);
+                }}
+                className={cn(
+                  "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                  active
+                    ? "border-accent bg-accent-subtle text-accent"
+                    : "border-border bg-surface text-text-secondary hover:border-accent/40 hover:bg-subtle",
+                )}
+              >
+                {item.name}
+                {item.dtype ? (
+                  <span className={cn("ml-1 font-normal", active ? "opacity-75" : "text-text-tertiary")}>
+                    {item.dtype}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {left ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-raised/40 p-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.06em] text-text-tertiary">
+            {messages.transform.deriveOperators}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {DERIVE_OPS.map((item) => {
+              const meta = deriveOpMeta(item, messages);
+              const active = op === item;
+              return (
+                <button
+                  key={item}
+                  type="button"
+                  title={meta.title}
+                  aria-pressed={active}
+                  onClick={() => {
+                    setOp(item);
+                    commit(name, left, item, right);
+                  }}
+                  className={cn(
+                    "min-w-[2.25rem] rounded-lg border px-2 py-1 text-xs font-semibold transition-colors",
+                    active
+                      ? "border-accent bg-accent-subtle text-accent"
+                      : "border-border bg-surface text-text-secondary hover:bg-subtle",
+                  )}
+                >
+                  {meta.label}
+                </button>
+              );
+            })}
+          </div>
+          <FormField label={messages.transform.deriveRightLabel}>
             <input
               className="field-control technical"
-              value={value}
-              placeholder={messages.transform.filterValuePlaceholder}
+              value={right}
+              placeholder={messages.transform.deriveRightPlaceholder}
               onChange={(event) => {
                 const next = event.target.value;
-                setValue(next);
-                commit(column, op, next);
+                setRight(next);
+                commit(name, left, op, next);
+              }}
+            />
+          </FormField>
+          {columns.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {columns.map((item) => {
+                const active = right === item.name;
+                return (
+                  <button
+                    key={`right-${item.name}`}
+                    type="button"
+                    title={item.name}
+                    aria-pressed={active}
+                    onClick={() => {
+                      setRight(item.name);
+                      commit(name, left, op, item.name);
+                    }}
+                    className={cn(
+                      "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors",
+                      active
+                        ? "border-accent bg-accent-subtle text-accent"
+                        : "border-border bg-surface text-text-secondary hover:border-accent/40 hover:bg-subtle",
+                    )}
+                  >
+                    {item.name}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          <FormField label={messages.transform.deriveResultName}>
+            <input
+              className="field-control"
+              value={name}
+              placeholder={left || messages.transform.deriveResultPlaceholder}
+              onChange={(event) => {
+                const next = event.target.value;
+                setName(next);
+                commit(next, left, op, right);
               }}
             />
           </FormField>
@@ -628,7 +855,164 @@ export function FilterStepFields({
           ) : null}
         </div>
       ) : (
-        <p className="text-[11px] text-text-tertiary">{messages.transform.filterPickColumn}</p>
+        <p className="text-[11px] text-text-tertiary">{messages.transform.derivePickColumn}</p>
+      )}
+    </div>
+  );
+}
+
+function TextColumnChips({
+  columns,
+  value,
+  onPick,
+}: {
+  columns: DatasetColumn[];
+  value: string;
+  onPick: (name: string) => void;
+}) {
+  return (
+    <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
+      <div className="flex flex-nowrap gap-1.5 pb-0.5">
+        {columns.map((item) => {
+          const active = value === item.name;
+          return (
+            <button
+              key={item.name}
+              type="button"
+              title={item.dtype ? `${item.name} (${item.dtype})` : item.name}
+              aria-pressed={active}
+              onClick={() => onPick(item.name)}
+              className={cn(
+                "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                active
+                  ? "border-accent bg-accent-subtle text-accent"
+                  : "border-border bg-surface text-text-secondary hover:border-accent/40 hover:bg-subtle",
+              )}
+            >
+              {item.name}
+              {item.dtype ? (
+                <span className={cn("ml-1 font-normal", active ? "opacity-75" : "text-text-tertiary")}>
+                  {item.dtype}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function ReplaceStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "replace" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <TextColumnChips
+        columns={columns}
+        value={step.column}
+        onPick={(column) => onChange({ ...step, column })}
+      />
+      {step.column ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-raised/40 p-2.5">
+          <FormField label={messages.transform.replaceFind}>
+            <input
+              className="field-control technical"
+              value={step.find}
+              placeholder={messages.transform.replaceFindPlaceholder}
+              onChange={(event) => onChange({ ...step, find: event.target.value })}
+            />
+          </FormField>
+          <FormField label={messages.transform.replaceWith}>
+            <input
+              className="field-control technical"
+              value={step.replacement}
+              placeholder={messages.transform.replaceWithPlaceholder}
+              onChange={(event) => onChange({ ...step, replacement: event.target.value })}
+            />
+          </FormField>
+        </div>
+      ) : (
+        <p className="text-[11px] text-text-tertiary">{messages.transform.pickColumn}</p>
+      )}
+    </div>
+  );
+}
+
+export function SplitStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "split" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <TextColumnChips
+        columns={columns}
+        value={step.column}
+        onPick={(column) =>
+          onChange({
+            ...step,
+            column,
+            name: step.name.trim() && step.name !== step.column ? step.name : column,
+          })
+        }
+      />
+      {step.column ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-raised/40 p-2.5">
+          <FormField label={messages.transform.splitDelimiter}>
+            <input
+              className="field-control technical"
+              value={step.delimiter}
+              placeholder={messages.transform.splitDelimiterPlaceholder}
+              onChange={(event) => onChange({ ...step, delimiter: event.target.value })}
+            />
+          </FormField>
+          <FormField label={messages.transform.splitIndex}>
+            <input
+              className="field-control technical"
+              type="number"
+              min={1}
+              value={step.index + 1}
+              onChange={(event) => {
+                const next = Number.parseInt(event.target.value, 10);
+                onChange({
+                  ...step,
+                  index: Number.isFinite(next) ? Math.max(0, next - 1) : 0,
+                });
+              }}
+            />
+          </FormField>
+          <FormField label={messages.transform.splitName}>
+            <input
+              className="field-control"
+              value={step.name}
+              placeholder={step.column || messages.transform.splitNamePlaceholder}
+              onChange={(event) => onChange({ ...step, name: event.target.value })}
+            />
+          </FormField>
+        </div>
+      ) : (
+        <p className="text-[11px] text-text-tertiary">{messages.transform.pickColumn}</p>
       )}
     </div>
   );
@@ -706,6 +1090,43 @@ export function StepFields({
     case "filter":
       return (
         <FilterStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
+        />
+      );
+    case "derive":
+      return (
+        <DeriveStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
+        />
+      );
+    case "trim":
+      return (
+        <ColumnChipPicker
+          columns={columns}
+          value={step.columns}
+          emptyLabel={messages.transform.noColumns}
+          minSelected={0}
+          onChange={(next) => onChange({ ...step, columns: next })}
+        />
+      );
+    case "replace":
+      return (
+        <ReplaceStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
+        />
+      );
+    case "split":
+      return (
+        <SplitStepFields
           step={step}
           columns={columns}
           onChange={onChange}

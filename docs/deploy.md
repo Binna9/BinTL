@@ -10,6 +10,7 @@ BinTL은 **설치형 단일 바이너리**다. 운영 환경에서는 `bintl` �
 - API와 정적 UI를 Axum이 함께 서빙한다.
 - SQLite(`data/etl.db`)와 파일 산출물은 `data_dir` 아래에 저장된다.
 - Rust, Python, JVM, 외부 DB 패키지를 서버에 설치하지 않는다. (SQLite는 bundled, TLS는 rustls)
+- 예외: Oracle/Tibero 커넥션은 호스트에 unixODBC(또는 Windows ODBC)와 벤더 ODBC 드라이버가 있어야 한다. 드라이버 이름은 환경마다 다르면 `BINTL_ORACLE_ODBC_DRIVER` / `BINTL_TIBERO_ODBC_DRIVER`로 지정한다.
 
 ```
 브라우저 ──► (선택) Nginx/Caddy ──► bintl:8080
@@ -47,6 +48,7 @@ BinTL은 **설치형 단일 바이너리**다. 운영 환경에서는 `bintl` �
 - Node.js + npm (UI 빌드용, **서버에는 불필요**)
 - `just` (`cargo install just` 또는 패키지 매니저)
 - 크로스 컴파일 시 [cross](https://github.com/cross-rs/cross) 권장
+- Oracle/Tibero를 빌드·실행하려면 unixODBC. macOS는 `brew install unixodbc`, 리눅스는 `unixodbc-dev`. 벤더 ODBC 드라이버는 런타임에 추가로 설치한다.
 
 ```bash
 # cross 설치 (리눅스 musl 타깃 권장)
@@ -100,7 +102,7 @@ just build
     ├── loads/
     ├── staging/
     ├── user_images/   # default-image + {user_id}/ 프로필
-    └── logs/          # 쿼리·연결 운영 진단. 칩 로그는 DB
+    └── logs/query/    # SQL 미리보기 진단. 칩 로그는 DB
 ```
 
 `data/`는 **백업 대상**이다. 바이너리 업그레이드 시 그대로 둔다.

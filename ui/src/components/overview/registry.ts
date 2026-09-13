@@ -11,12 +11,12 @@ import {
 import type { Messages } from "@/i18n/ko";
 import type { WidgetId } from "./types";
 import { ActivityWidget } from "./widgets/ActivityWidget";
-import { AssetsWidget } from "./widgets/AssetsWidget";
+import { AssetsScopeToggle, AssetsWidget } from "./widgets/AssetsWidget";
 import { AttentionWidget } from "./widgets/AttentionWidget";
 import { FunnelWidget } from "./widgets/FunnelWidget";
 import { StartWidget } from "./widgets/StartWidget";
-import { SummaryWidget } from "./widgets/SummaryWidget";
-import { TrendLegend, TrendWidget } from "./widgets/TrendWidget";
+import { SummaryScopeToggle, SummaryWidget } from "./widgets/SummaryWidget";
+import { TrendWidget } from "./widgets/TrendWidget";
 
 export type WidgetDef = {
   icon: LucideIcon;
@@ -31,19 +31,20 @@ export const WIDGETS: Record<WidgetId, WidgetDef> = {
     icon: Activity,
     title: (messages) => messages.overview.summary,
     description: (messages) => messages.overview.summaryDescription,
+    headerExtra: SummaryScopeToggle,
     Component: SummaryWidget,
   },
   assets: {
     icon: Boxes,
     title: (messages) => messages.overview.assets,
     description: (messages) => messages.overview.assetsDescription,
+    headerExtra: AssetsScopeToggle,
     Component: AssetsWidget,
   },
   trend: {
     icon: Activity,
     title: (messages) => messages.overview.trend,
     description: (messages) => messages.overview.trendDescription,
-    headerExtra: TrendLegend,
     Component: TrendWidget,
   },
   funnel: {

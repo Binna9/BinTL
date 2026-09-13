@@ -11,6 +11,7 @@ mod catalog;
 mod extract;
 mod http_extract;
 mod inspect;
+mod oracle;
 mod query;
 mod spreadsheet;
 
@@ -53,6 +54,7 @@ pub fn driver_family(driver: &str) -> Result<&'static str, ConnectError> {
         "mysql" | "mariadb" => Ok("mysql"),
         "mssql" | "sqlserver" => Ok("mssql"),
         "sqlite" => Ok("sqlite"),
+        "oracle" | "tibero" => Ok("oracle"),
         "http" => Ok("http"),
         other => Err(ConnectError::Invalid(format!("unsupported driver {other}"))),
     }
@@ -123,6 +125,10 @@ pub(crate) fn quote_ident(family: &str, ident: &str) -> String {
     match family {
         "mysql" => format!("`{}`", ident.replace('`', "``")),
         "mssql" => format!("[{}]", ident.replace(']', "]]")),
+        "oracle" => {
+            let ident = ident.to_ascii_uppercase();
+            format!("\"{}\"", ident.replace('"', "\"\""))
+        }
         _ => format!("\"{}\"", ident.replace('"', "\"\"")),
     }
 }
@@ -144,6 +150,22 @@ pub(crate) fn schema_or<'a>(family: &str, t: &'a TableName) -> &'a str {
         "mssql" => "dbo",
         _ => "",
     })
+}
+
+pub(crate) fn schema_or_user(family: &str, t: &TableName, username: &str) -> String {
+    if let Some(schema) = &t.schema {
+        return schema.clone();
+    }
+    match family {
+        "postgres" => "public".into(),
+        "mssql" => "dbo".into(),
+        "oracle" => username
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect::<String>()
+            .to_ascii_uppercase(),
+        _ => String::new(),
+    }
 }
 
 pub(crate) async fn pg_pool(c: &LiveConnection) -> Result<Pool<Postgres>, ConnectError> {
@@ -249,6 +271,12 @@ pub async fn test_connection(c: &LiveConnection) -> Result<(), ConnectError> {
             let mut client = mssql_client(c).await?;
             client.simple_query("SELECT 1").await?;
         }
+        "oracle" => {
+            oracle::with_conn(c, |conn| {
+                oracle::exec(conn, "SELECT 1 FROM DUAL")?;
+                Ok(())
+            })?;
+        }
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
     Ok(())
@@ -325,6 +353,18 @@ pub async fn list_tables(c: &LiveConnection) -> Result<Vec<String>, ConnectError
                 })
                 .collect())
         }
+        "oracle" => oracle::with_conn(c, |conn| {
+            let (_, rows) = oracle::query_rows(
+                conn,
+                "SELECT owner || '.' || table_name FROM all_tables
+                 WHERE owner NOT IN ('SYS','SYSTEM')
+                 UNION ALL
+                 SELECT owner || '.' || view_name FROM all_views
+                 WHERE owner NOT IN ('SYS','SYSTEM')
+                 ORDER BY 1",
+            )?;
+            Ok(rows.into_iter().filter_map(|row| row.into_iter().next()).collect())
+        }),
         other => Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
 }
@@ -462,6 +502,24 @@ fn create_table_sql(
             "IF OBJECT_ID(N'{}', N'U') IS NULL CREATE TABLE {q} ({defs})",
             raw_table.replace('\'', "")
         ),
+        "oracle" => {
+            let defs = cols
+                .iter()
+                .map(|c| format!("{} VARCHAR2(4000)", quote_ident(family, c)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let defs = if unique_keys.is_empty() {
+                defs
+            } else {
+                let keys = unique_keys
+                    .iter()
+                    .map(|key| quote_ident(family, key))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{defs}, UNIQUE ({keys})")
+            };
+            format!("CREATE TABLE {q} ({defs})")
+        }
         _ => format!("CREATE TABLE IF NOT EXISTS {q} ({defs})"),
     }
 }
@@ -694,13 +752,43 @@ pub async fn load_table(
                 }
             }
         }
+        "oracle" => {
+            oracle::with_conn(c, |conn| {
+                let drop = (mode == "recreate").then(|| format!("DROP TABLE {q}"));
+                let clear = matches!(mode, "replace" | "truncate").then(|| clear_sql(family, &q));
+                oracle::prepare_table(conn, &create, drop.as_deref(), clear.as_deref())?;
+                let (mut reader, _) = open_load_csv(csv_path)?;
+                loop {
+                    let rows = read_csv_batch(&mut reader, 80)?;
+                    if rows.is_empty() {
+                        break;
+                    }
+                    let row_start = n + 1;
+                    let row_end = n + rows.len() as u64;
+                    validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                    oracle::insert_rows(
+                        conn,
+                        &q,
+                        &cols,
+                        &column_rules,
+                        &rows,
+                        mode,
+                        conflict_keys,
+                        null_marker,
+                    )
+                    .map_err(|error| load_batch_error(row_start, row_end, error))?;
+                    n = row_end;
+                }
+                Ok(())
+            })?;
+        }
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
     Ok(n)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LoadColumnRule {
+pub(crate) struct LoadColumnRule {
     name: String,
     empty_as_null: bool,
     nullable: bool,
@@ -768,6 +856,9 @@ fn empty_means_null(data_type: &str) -> bool {
             | "smalldatetime"
             | "interval"
             | "uuid"
+            | "number"
+            | "binary_float"
+            | "binary_double"
     )
 }
 
@@ -801,7 +892,7 @@ fn validate_empty_cells(
     Ok(())
 }
 
-fn cell_is_null(value: &str, rule: &LoadColumnRule, null_marker: Option<&str>) -> bool {
+pub(crate) fn cell_is_null(value: &str, rule: &LoadColumnRule, null_marker: Option<&str>) -> bool {
     null_marker.is_some_and(|marker| value == marker) || (value.is_empty() && rule.empty_as_null)
 }
 
@@ -909,7 +1000,7 @@ where
     Ok(())
 }
 
-fn sql_lit(s: &str) -> String {
+pub(crate) fn sql_lit(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for c in s.chars() {
@@ -945,7 +1036,8 @@ mod tests {
         assert_eq!(driver_family("redshift").unwrap(), "postgres");
         assert_eq!(driver_family("cockroach").unwrap(), "postgres");
         assert_eq!(driver_family("mssql").unwrap(), "mssql");
-        assert!(driver_family("oracle").is_err());
+        assert_eq!(driver_family("oracle").unwrap(), "oracle");
+        assert_eq!(driver_family("tibero").unwrap(), "oracle");
     }
 
     #[test]
@@ -974,6 +1066,17 @@ mod tests {
         assert_eq!(schema_or("mssql", &t), "dbo");
         let q = parse_table("sales.fact").unwrap();
         assert_eq!(schema_or("postgres", &q), "sales");
+        assert_eq!(schema_or_user("oracle", &t, "hr"), "HR");
+        assert_eq!(schema_or_user("oracle", &q, "hr"), "sales");
+    }
+
+    #[test]
+    fn oracle_quotes_upper() {
+        assert_eq!(quote_ident("oracle", "employees"), "\"EMPLOYEES\"");
+        assert_eq!(
+            create_table_sql("oracle", "\"HR\".\"T\"", "hr.t", &["id".into()], &[]),
+            "CREATE TABLE \"HR\".\"T\" (\"ID\" VARCHAR2(4000))"
+        );
     }
 
     #[test]

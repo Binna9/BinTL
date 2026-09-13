@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Eye, History, ListFilter, RefreshCw, ScrollText, Search } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { DataGrid, EmptyState, GridCell, GridRow } from "@/components/DataGrid";
@@ -27,6 +27,14 @@ type TimeFilter = "all" | "today" | "7d" | "30d";
 
 const RUN_STATUSES = ["queued", "running", "succeeded", "failed", "skipped", "canceled"] as const;
 
+function historyTab(value: string | null): "chip" | "workspace" {
+  return value === "workspace" ? "workspace" : "chip";
+}
+
+function historyStatus(value: string | null) {
+  return RUN_STATUSES.includes(value as (typeof RUN_STATUSES)[number]) ? value! : "all";
+}
+
 function runAt(run: { started_at?: string | null; created_at: string }) {
   return run.started_at || run.created_at;
 }
@@ -45,7 +53,10 @@ function matchesTimeFilter(iso: string, range: TimeFilter, now = Date.now()) {
 
 export function WorkspaceRunsPage() {
   const { messages } = useLanguage();
-  const [activeTab, setActiveTab] = useState<"chip" | "workspace">("chip");
+  const [searchParams] = useSearchParams();
+  const tabParam = historyTab(searchParams.get("tab"));
+  const statusParam = historyStatus(searchParams.get("status"));
+  const [activeTab, setActiveTab] = useState<"chip" | "workspace">(tabParam);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [workspaceRuns, setWorkspaceRuns] = useState<WorkspaceRunRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -53,9 +64,9 @@ export function WorkspaceRunsPage() {
   const [logRun, setLogRun] = useState<RunRow | null>(null);
   const [logText, setLogText] = useState("");
   const [chipQuery, setChipQuery] = useState("");
-  const [chipStatus, setChipStatus] = useState("all");
+  const [chipStatus, setChipStatus] = useState(tabParam === "chip" ? statusParam : "all");
   const [workspaceQuery, setWorkspaceQuery] = useState("");
-  const [workspaceStatus, setWorkspaceStatus] = useState("all");
+  const [workspaceStatus, setWorkspaceStatus] = useState(tabParam === "workspace" ? statusParam : "all");
   const [workspaceTime, setWorkspaceTime] = useState<TimeFilter>("all");
 
   const refresh = useCallback(async (options?: { silent?: boolean }) => {
@@ -82,6 +93,14 @@ export function WorkspaceRunsPage() {
       if (!options?.silent) setLoading(false);
     }
   }, [messages]);
+
+  useEffect(() => {
+    setActiveTab(tabParam);
+    setLogRun(null);
+    setSelectedId(null);
+    if (tabParam === "workspace") setWorkspaceStatus(statusParam);
+    else setChipStatus(statusParam);
+  }, [statusParam, tabParam]);
 
   useEffect(() => {
     let stopped = false;

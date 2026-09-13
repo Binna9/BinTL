@@ -1,38 +1,64 @@
 import { CircleAlert, CircleCheck, LoaderCircle } from "lucide-react";
+import { NavIcon } from "@/components/ui/nav-icons";
 import { PanelBody } from "@/components/ui/panel";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useDashboard } from "@/hooks/overview/DashboardContext";
-import { OpsCard } from "./parts";
+import type { SummaryScope } from "../types";
+import { DashScopeToggle, OpsCard } from "./parts";
+
+function historyTo(scope: SummaryScope, status: "running" | "succeeded" | "failed") {
+  const params = new URLSearchParams({ status });
+  if (scope === "workspace") params.set("tab", "workspace");
+  return `/history?${params}`;
+}
+
+export function SummaryScopeToggle() {
+  const { messages } = useLanguage();
+  const { summaryScope, setSummaryScope } = useDashboard();
+
+  return (
+    <DashScopeToggle<SummaryScope>
+      value={summaryScope}
+      onChange={setSummaryScope}
+      label={messages.overview.summaryScope}
+      options={[
+        { id: "chip", label: messages.overview.summaryChip, icon: <NavIcon name="chips" className="size-3.5" /> },
+        { id: "workspace", label: messages.overview.summaryWorkspace, icon: <NavIcon name="workspace" className="size-3.5" /> },
+      ]}
+    />
+  );
+}
 
 export function SummaryWidget() {
   const { messages } = useLanguage();
-  const { model } = useDashboard();
+  const { model, summaryScope } = useDashboard();
+  const ops = summaryScope === "chip" ? model.chipOps : model.workspaceOps;
 
   return (
     <PanelBody className="flex h-full min-h-0 flex-wrap gap-3">
       <OpsCard
         tone="blue"
-        to="/history"
-        icon={<LoaderCircle className={`size-3.5 ${model.running ? "animate-spin" : ""}`} />}
+        to={historyTo(summaryScope, "running")}
+        icon={<LoaderCircle className={`size-3.5 ${ops.running ? "animate-spin" : ""}`} />}
         title={messages.overview.running}
-        value={messages.common.cases(model.running)}
-        hint={messages.overview.queuedHint(model.queued)}
-        bar={model.bar}
+        value={messages.common.cases(ops.running)}
+        hint={messages.overview.queuedHint(ops.queued)}
+        bar={ops.bar}
       />
       <OpsCard
         tone="green"
-        to="/history"
+        to={historyTo(summaryScope, "succeeded")}
         icon={<CircleCheck className="size-3.5" />}
         title={messages.overview.succeeded}
-        value={messages.common.cases(model.succeeded)}
+        value={messages.common.cases(ops.succeeded)}
         hint={messages.overview.succeededHint}
       />
       <OpsCard
         tone="red"
-        to="/history"
+        to={historyTo(summaryScope, "failed")}
         icon={<CircleAlert className="size-3.5" />}
         title={messages.overview.failed}
-        value={messages.common.cases(model.failed)}
+        value={messages.common.cases(ops.failed)}
         hint={messages.overview.failedHint}
       />
     </PanelBody>

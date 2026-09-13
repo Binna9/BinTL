@@ -10,9 +10,19 @@ use storage::LiveConnection;
 
 use crate::extract::{tick_progress, tick_progress_at, with_sequence, with_sequence_header};
 use crate::{
-    driver_family, mssql_client, my_pool, pg_pool, sqlite_pool, stringify_ms, stringify_my,
-    stringify_pg, stringify_sqlite, ConnectError, ExtractOptions,
+    driver_family, mssql_client, my_pool, oracle, pg_pool, quote_ident, sqlite_pool, stringify_ms,
+    stringify_my, stringify_pg, stringify_sqlite, ConnectError, ExtractOptions,
 };
+
+fn schema_search_path_sql(family: &str, schema: &str) -> Option<String> {
+    match family {
+        "postgres" => Some(format!(
+            "SET search_path TO {}",
+            quote_ident("postgres", schema)
+        )),
+        _ => None,
+    }
+}
 
 const MAX_SQL_CHARS: usize = 20_000;
 
@@ -63,17 +73,22 @@ pub async fn run_sql(
     sql: &str,
     limit: u32,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+    schema: Option<&str>,
 ) -> Result<QueryOutcome, ConnectError> {
     let sql = normalize_sql(sql)?;
     let started = Instant::now();
     let family = driver_family(&c.driver)?;
+    let schema = schema.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(schema) = schema {
+        crate::parse_ident(schema)?;
+    }
     let outcome = match sql_kind(&sql) {
         SqlKind::Rows => {
             let limit = u64::from(limit.clamp(1, 1000));
             let capped = apply_preview_limit(family, &sql, limit);
-            fetch_rows(c, family, &capped, Some(limit), on_progress).await?
+            fetch_rows(c, family, &capped, Some(limit), on_progress, schema).await?
         }
-        SqlKind::Exec => exec_sql(c, family, &sql).await?,
+        SqlKind::Exec => exec_sql(c, family, &sql, schema).await?,
     };
     Ok(QueryOutcome {
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -151,6 +166,7 @@ pub async fn extract_query(
             )
             .await?
         }
+        "oracle" => stream_oracle(c, &sql, &mut wtr, opts.header, opts.add_sequence, on_progress)?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     wtr.flush()?;
@@ -163,13 +179,15 @@ async fn fetch_rows(
     sql: &str,
     limit: Option<u64>,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+    schema: Option<&str>,
 ) -> Result<QueryOutcome, ConnectError> {
     let mut sink = RowSink::new(limit);
     match family {
-        "postgres" => collect_pg(c, sql, &mut sink, on_progress).await?,
+        "postgres" => collect_pg(c, sql, &mut sink, on_progress, schema).await?,
         "mysql" => collect_my(c, sql, &mut sink, on_progress).await?,
         "sqlite" => collect_sqlite(c, sql, &mut sink, on_progress).await?,
         "mssql" => collect_ms(c, sql, &mut sink, on_progress).await?,
+        "oracle" => collect_oracle(c, sql, &mut sink, on_progress, schema)?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
     Ok(sink.into_outcome())
@@ -179,11 +197,18 @@ async fn exec_sql(
     c: &LiveConnection,
     family: &str,
     sql: &str,
+    schema: Option<&str>,
 ) -> Result<QueryOutcome, ConnectError> {
     let affected = match family {
         "postgres" => {
             let pool = pg_pool(c).await?;
-            let n = sqlx::query(sql).execute(&pool).await?.rows_affected();
+            let n = if let Some(set) = schema.and_then(|value| schema_search_path_sql(family, value)) {
+                let mut conn = pool.acquire().await?;
+                sqlx::query(&set).execute(&mut *conn).await?;
+                sqlx::query(sql).execute(&mut *conn).await?.rows_affected()
+            } else {
+                sqlx::query(sql).execute(&pool).await?.rows_affected()
+            };
             pool.close().await;
             n
         }
@@ -204,6 +229,12 @@ async fn exec_sql(
             let result = client.execute(sql.to_string(), &[]).await?;
             result.rows_affected().iter().copied().sum()
         }
+        "oracle" => oracle::with_conn(c, |conn| {
+            if let Some(schema) = schema {
+                oracle::set_current_schema(conn, schema)?;
+            }
+            oracle::exec(conn, sql)
+        })?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     Ok(QueryOutcome {
@@ -271,17 +302,33 @@ async fn collect_pg(
     sql: &str,
     sink: &mut RowSink,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+    schema: Option<&str>,
 ) -> Result<(), ConnectError> {
     let pool = pg_pool(c).await?;
-    sink.set_columns(describe_columns(&pool, sql).await?);
-    let mut stream = sqlx::query(sql).fetch(&pool);
-    while let Some(row) = stream.try_next().await? {
-        let cols = colnames_sqlx(&row);
-        let rec: Vec<String> = (0..cols.len()).map(|i| stringify_pg(&row, i)).collect();
-        if !sink.push(cols, rec) {
-            break;
+    if let Some(set) = schema.and_then(|value| schema_search_path_sql("postgres", value)) {
+        let mut conn = pool.acquire().await?;
+        sqlx::query(&set).execute(&mut *conn).await?;
+        sink.set_columns(describe_columns(&mut *conn, sql).await?);
+        let mut stream = sqlx::query(sql).fetch(&mut *conn);
+        while let Some(row) = stream.try_next().await? {
+            let cols = colnames_sqlx(&row);
+            let rec: Vec<String> = (0..cols.len()).map(|i| stringify_pg(&row, i)).collect();
+            if !sink.push(cols, rec) {
+                break;
+            }
+            tick_progress_at(on_progress, sink.rows.len() as u64, 10);
         }
-        tick_progress_at(on_progress, sink.rows.len() as u64, 10);
+    } else {
+        sink.set_columns(describe_columns(&pool, sql).await?);
+        let mut stream = sqlx::query(sql).fetch(&pool);
+        while let Some(row) = stream.try_next().await? {
+            let cols = colnames_sqlx(&row);
+            let rec: Vec<String> = (0..cols.len()).map(|i| stringify_pg(&row, i)).collect();
+            if !sink.push(cols, rec) {
+                break;
+            }
+            tick_progress_at(on_progress, sink.rows.len() as u64, 10);
+        }
     }
     pool.close().await;
     Ok(())
@@ -362,6 +409,61 @@ async fn collect_ms(
         let _ = client.execute("SET ROWCOUNT 0", &[]).await;
     }
     Ok(())
+}
+
+fn collect_oracle(
+    c: &LiveConnection,
+    sql: &str,
+    sink: &mut RowSink,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+    schema: Option<&str>,
+) -> Result<(), ConnectError> {
+    oracle::with_conn(c, |conn| {
+        if let Some(schema) = schema {
+            oracle::set_current_schema(conn, schema)?;
+        }
+        let (columns, rows) = oracle::query_rows(conn, sql)?;
+        sink.set_columns(columns);
+        for rec in rows {
+            if !sink.push(Vec::new(), rec) {
+                break;
+            }
+            tick_progress_at(on_progress, sink.rows.len() as u64, 10);
+        }
+        Ok(())
+    })
+}
+
+fn stream_oracle(
+    c: &LiveConnection,
+    sql: &str,
+    wtr: &mut csv::Writer<File>,
+    header: bool,
+    add_sequence: bool,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+) -> Result<u64, ConnectError> {
+    oracle::with_conn(c, |conn| {
+        let wtr = std::cell::RefCell::new(wtr);
+        let mut n = 0u64;
+        oracle::stream_query(
+            conn,
+            sql,
+            |columns| {
+                if header {
+                    wtr.borrow_mut()
+                        .write_record(&with_sequence_header(add_sequence, columns.to_vec()))?;
+                }
+                Ok(())
+            },
+            |rec| {
+                n += 1;
+                wtr.borrow_mut()
+                    .write_record(&with_sequence(add_sequence, n, rec.to_vec()))?;
+                tick_progress(on_progress, n);
+                Ok(())
+            },
+        )
+    })
 }
 
 async fn stream_pg(
@@ -545,6 +647,7 @@ pub fn apply_preview_limit(family: &str, sql: &str, limit: u64) -> String {
         "show" | "explain" | "pragma" | "describe" | "desc" | "table" => sql.to_string(),
         "select" | "with" | "values" => match family {
             "mssql" => sql.to_string(),
+            "oracle" => format!("SELECT * FROM (\n{sql}\n) preview FETCH FIRST {limit} ROWS ONLY"),
             _ => format!("SELECT * FROM (\n{sql}\n) AS _bintl_preview LIMIT {limit}"),
         },
         _ => sql.to_string(),
@@ -683,6 +786,9 @@ mod tests {
         assert_eq!(show, "SHOW search_path");
         let ms = apply_preview_limit("mssql", "SELECT * FROM dbo.t", 50);
         assert_eq!(ms, "SELECT * FROM dbo.t");
+        let oracle = apply_preview_limit("oracle", "SELECT * FROM hr.emp", 20);
+        assert!(oracle.contains("FETCH FIRST 20 ROWS ONLY"));
+        assert!(oracle.contains("hr.emp"));
     }
 
     #[tokio::test]
@@ -716,7 +822,7 @@ mod tests {
             ssl: false,
         };
         let sql = "SELECT id, name FROM items WHERE 1 = 0";
-        let preview = run_sql(&connection, sql, 50, None).await.unwrap();
+        let preview = run_sql(&connection, sql, 50, None, None).await.unwrap();
         assert_eq!(preview.columns, ["id", "name"]);
         assert!(preview.rows.is_empty());
 

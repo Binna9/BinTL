@@ -122,6 +122,20 @@ export function formatTransformStepSummary(step: TransformStep): string {
         .join(", ") || "—";
     case "filter":
       return step.expr.trim() || "—";
+    case "derive":
+      return step.name.trim() && step.expr.trim()
+        ? `${step.name.trim()} = ${step.expr.trim()}`
+        : step.expr.trim() || "—";
+    case "trim":
+      return step.columns.length > 0 ? step.columns.join(", ") : "—";
+    case "replace":
+      return step.column.trim()
+        ? `${step.column} : ${step.find} → ${step.replacement}`
+        : "—";
+    case "split":
+      return step.column.trim()
+        ? `${step.column} ${step.delimiter} [${step.index + 1}] → ${step.name || "—"}`
+        : "—";
     case "cast":
       return Object.entries(step.columns)
         .map(([column, type]) => `${column}: ${type}`)

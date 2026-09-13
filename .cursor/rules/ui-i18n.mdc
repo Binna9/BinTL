@@ -1,0 +1,25 @@
+---
+description: UI 문구는 한국어와 영어 번역을 함께 제공
+globs: ui/src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# UI 다국어
+
+- 사용자에게 보이는 문구를 컴포넌트에 직접 작성하지 않는다.
+- 새 문구는 `ui/src/i18n/ko.ts`와 `ui/src/i18n/en.ts`에 동일한 키로 함께 추가한다.
+- 컴포넌트에서는 `useLanguage()`의 `messages`를 사용한다.
+- 제목, 설명, 버튼, 메뉴, 표 헤더, 빈 상태, 로딩, 오류, placeholder, tooltip, `title`, `aria-label`도 모두 번역 대상이다.
+- 개수나 동적 값이 포함된 문구는 번역 객체의 함수로 정의한다. 컴포넌트에서 한국어나 영어 어순을 조합하지 않는다.
+- 기존 도메인 그룹(`common`, `nav`, `status`, 페이지별 그룹)을 우선 재사용하고 중복 키를 만들지 않는다.
+- `ko.ts`의 `Messages` 타입과 `en.ts`의 `satisfies Messages` 관계가 유지되도록 두 언어의 구조를 항상 일치시킨다.
+- API 필드명, 라우트, SQL, 파일 경로, 사용자 데이터, 서버 로그 등 번역하면 안 되는 기술 값은 그대로 둔다.
+
+```tsx
+// 권장
+const { messages } = useLanguage();
+<button aria-label={messages.common.delete}>{messages.common.delete}</button>
+
+// 금지
+<button aria-label="삭제">삭제</button>
+```

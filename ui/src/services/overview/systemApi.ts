@@ -1,6 +1,6 @@
-import { httpRequest } from "@/services/httpClient";
+import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
 import type { SystemHealth } from "@/types/system";
 
 export const systemApi = {
-  getHealth: () => httpRequest<SystemHealth>("/api/health"),
+  getHealth: (init?: HttpRequestInit) => httpRequest<SystemHealth>("/api/health", init),
 };

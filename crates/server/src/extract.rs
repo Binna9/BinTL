@@ -5,7 +5,7 @@ use connectors::{
     extract_http, extract_query, extract_table, parse_delimiter, parse_http_spec, with_database,
     ExtractOptions,
 };
-use storage::{chip_slot, ProcessLog, Store};
+use storage::{chip_slot, Store};
 
 async fn append_extract_log(
     store: &Store,
@@ -48,9 +48,6 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
         .set_extract_running(id)
         .await
         .map_err(|e| e.to_string())?;
-    // Execution logs are stored in SQLite. Keep the legacy callback shape for
-    // extraction progress without creating new per-run files.
-    let log: Option<ProcessLog> = None;
     let started_context = serde_json::json!({
         "process": "extract",
         "stage": "read_source",
@@ -71,35 +68,7 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
         Some(&started_context),
     )
     .await;
-    if let Some(log) = &log {
-        let source = if row.kind == "api" {
-            row.sql_text
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .map(|sql| format!("http={}", truncate(sql, 240)))
-                .unwrap_or_else(|| format!("http={}", row.table_name))
-        } else {
-            row.sql_text
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .map(|sql| format!("sql={}", truncate(sql, 240)))
-                .unwrap_or_else(|| format!("table={}", row.table_name))
-        };
-        log.write(
-            "info",
-            "started",
-            &format!(
-                "{source} delimiter={} header={} sequence={}",
-                row.delimiter,
-                row.header != 0,
-                row.add_sequence != 0
-            ),
-        );
-    }
-    if let Err(err) = extract_now(store, &row, log.as_ref()).await {
-        if let Some(log) = &log {
-            log.write("error", "failed", &err);
-        }
+    if let Err(err) = extract_now(store, &row).await {
         let failure = crate::execution_error::classify("extract", &err);
         let context = crate::execution_error::failure_context("extract", &err).to_string();
         let diagnostic = context
@@ -141,14 +110,10 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-async fn extract_now(
-    store: &Store,
-    row: &storage::ExtractRow,
-    log: Option<&ProcessLog>,
-) -> Result<(), String> {
+async fn extract_now(store: &Store, row: &storage::ExtractRow) -> Result<(), String> {
     match row.kind.as_str() {
-        "api" => extract_api_now(store, row, log).await,
-        "database" => extract_database_now(store, row, log).await,
+        "api" => extract_api_now(store, row).await,
+        "database" => extract_database_now(store, row).await,
         other => Err(format!("unsupported extract kind: {other}")),
     }
 }
@@ -193,11 +158,7 @@ async fn resolve_extract_dest(
         .map_err(|e| e.to_string())
 }
 
-async fn extract_api_now(
-    store: &Store,
-    row: &storage::ExtractRow,
-    log: Option<&ProcessLog>,
-) -> Result<(), String> {
+async fn extract_api_now(store: &Store, row: &storage::ExtractRow) -> Result<(), String> {
     let live = store
         .live_connection(&row.connection_id)
         .await
@@ -215,16 +176,6 @@ async fn extract_api_now(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "api extract needs http source json".to_string())?;
     let spec = parse_http_spec(raw).map_err(|e| e.to_string())?;
-    if let Some(log) = log {
-        log.write(
-            "info",
-            "connected",
-            &format!(
-                "driver={} base={} name={} method={} path={}",
-                live.driver, live.host, live.name, spec.method, spec.path
-            ),
-        );
-    }
     let delimiter = parse_delimiter(&row.delimiter).map_err(|e| e.to_string())?;
     let opts = ExtractOptions {
         delimiter,
@@ -239,14 +190,11 @@ async fn extract_api_now(
             .await
             .map_err(|e| e.to_string())?;
     }
-    let progress = ExtractProgress::new(store.clone(), row.id.clone(), log.cloned());
+    let progress = ExtractProgress::new(store.clone(), row.id.clone());
     let on_progress = |n: u64| progress.report(n);
     let n = extract_http(&live, &spec, &dest, &opts, Some(&on_progress))
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(log) = log {
-        log.write("info", "succeeded", &format!("rows={n} file={rel}"));
-    }
     store
         .set_extract_succeeded(&row.id, &rel, &filename, n as i64)
         .await
@@ -254,26 +202,12 @@ async fn extract_api_now(
     Ok(())
 }
 
-async fn extract_database_now(
-    store: &Store,
-    row: &storage::ExtractRow,
-    log: Option<&ProcessLog>,
-) -> Result<(), String> {
+async fn extract_database_now(store: &Store, row: &storage::ExtractRow) -> Result<(), String> {
     let live = store
         .live_connection(&row.connection_id)
         .await
         .map_err(|e| e.to_string())?;
     let live = with_database(&live, row.catalog_database.as_deref());
-    if let Some(log) = log {
-        log.write(
-            "info",
-            "connected",
-            &format!(
-                "driver={} database={} name={}",
-                live.driver, live.database, live.name
-            ),
-        );
-    }
     let delimiter = parse_delimiter(&row.delimiter).map_err(|e| e.to_string())?;
     let opts = ExtractOptions {
         delimiter,
@@ -288,7 +222,7 @@ async fn extract_database_now(
             .await
             .map_err(|e| e.to_string())?;
     }
-    let progress = ExtractProgress::new(store.clone(), row.id.clone(), log.cloned());
+    let progress = ExtractProgress::new(store.clone(), row.id.clone());
     let on_progress = |n: u64| progress.report(n);
     let n = if let Some(sql) = row.sql_text.as_deref().filter(|s| !s.trim().is_empty()) {
         extract_query(&live, sql, &dest, &opts, Some(&on_progress))
@@ -299,9 +233,6 @@ async fn extract_database_now(
             .await
             .map_err(|e| e.to_string())?
     };
-    if let Some(log) = log {
-        log.write("info", "succeeded", &format!("rows={n} file={rel}"));
-    }
     store
         .set_extract_succeeded(&row.id, &rel, &filename, n as i64)
         .await
@@ -312,24 +243,19 @@ async fn extract_database_now(
 struct ExtractProgress {
     store: Store,
     id: String,
-    log: Option<ProcessLog>,
     last_db: Mutex<Instant>,
 }
 
 impl ExtractProgress {
-    fn new(store: Store, id: String, log: Option<ProcessLog>) -> Self {
+    fn new(store: Store, id: String) -> Self {
         Self {
             store,
             id,
-            log,
             last_db: Mutex::new(Instant::now() - Duration::from_secs(10)),
         }
     }
 
     fn report(&self, n: u64) {
-        if let Some(log) = &self.log {
-            log.write("info", "writing", &format!("rows={n}"));
-        }
         let mut last = match self.last_db.lock() {
             Ok(guard) => guard,
             Err(_) => return,
@@ -360,13 +286,4 @@ impl ExtractProgress {
             .await;
         });
     }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    let compact = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() <= max {
-        return compact;
-    }
-    let cut: String = compact.chars().take(max).collect();
-    format!("{cut}…")
 }

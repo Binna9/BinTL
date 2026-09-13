@@ -104,6 +104,25 @@ pub enum Step {
     Filter {
         expr: String,
     },
+    Derive {
+        name: String,
+        expr: String,
+    },
+    Trim {
+        columns: Vec<String>,
+    },
+    Replace {
+        column: String,
+        find: String,
+        replacement: String,
+    },
+    Split {
+        column: String,
+        delimiter: String,
+        #[serde(default)]
+        index: i64,
+        name: String,
+    },
     Cast {
         columns: BTreeMap<String, String>,
     },
@@ -390,6 +409,28 @@ fn validate_step(step: &Step) -> Result<(), EngineError> {
         }
         Step::Filter { expr } if expr.trim().is_empty() => {
             Err(EngineError::Spec("filter needs an expr".into()))
+        }
+        Step::Derive { name, expr } if name.trim().is_empty() || expr.trim().is_empty() => {
+            Err(EngineError::Spec("derive needs name and expr".into()))
+        }
+        Step::Trim { columns } if columns.is_empty() => {
+            Err(EngineError::Spec("trim needs columns".into()))
+        }
+        Step::Replace { column, find, .. } if column.trim().is_empty() || find.is_empty() => {
+            Err(EngineError::Spec("replace needs column and find".into()))
+        }
+        Step::Split {
+            column,
+            delimiter,
+            name,
+            ..
+        } if column.trim().is_empty() || delimiter.is_empty() || name.trim().is_empty() => {
+            Err(EngineError::Spec(
+                "split needs column, delimiter, and name".into(),
+            ))
+        }
+        Step::Split { index, .. } if *index < 0 => {
+            Err(EngineError::Spec("split index must be >= 0".into()))
         }
         Step::Cast { columns } if columns.is_empty() => {
             Err(EngineError::Spec("cast needs columns".into()))
@@ -933,6 +974,44 @@ fn apply_step(lf: LazyFrame, step: &Step) -> Result<LazyFrame, EngineError> {
             let schema = lf.clone().collect_schema()?;
             Ok(lf.filter(parse_filter(schema.as_ref(), expr)?))
         }
+        Step::Derive { name, expr } => {
+            let schema = lf.clone().collect_schema()?;
+            Ok(lf.with_columns([parse_derive(schema.as_ref(), expr)?.alias(name.as_str())]))
+        }
+        Step::Trim { columns } => {
+            let exprs: Vec<Expr> = columns
+                .iter()
+                .map(|name| {
+                    col(name)
+                        .cast(DataType::String)
+                        .str()
+                        .strip_chars(lit(NULL))
+                        .alias(name.as_str())
+                })
+                .collect();
+            Ok(lf.with_columns(exprs))
+        }
+        Step::Replace {
+            column,
+            find,
+            replacement,
+        } => Ok(lf.with_columns([col(column)
+            .cast(DataType::String)
+            .str()
+            .replace_all(lit(find.as_str()), lit(replacement.as_str()), true)
+            .alias(column.as_str())])),
+        Step::Split {
+            column,
+            delimiter,
+            index,
+            name,
+        } => Ok(lf.with_columns([col(column)
+            .cast(DataType::String)
+            .str()
+            .split(lit(delimiter.as_str()))
+            .list()
+            .get(lit(*index), true)
+            .alias(name.as_str())])),
         Step::Cast { columns } => {
             let exprs: Result<Vec<Expr>, EngineError> = columns
                 .iter()
@@ -986,6 +1065,39 @@ fn parse_dtype(raw: &str) -> Result<DataType, EngineError> {
 
 fn parse_filter(schema: &Schema, raw: &str) -> Result<Expr, EngineError> {
     let s = raw.trim();
+    for op in ["not contains", "contains", "is not null", "is null"] {
+        if let Some(at) = find_word_op(s, op) {
+            let left = s[..at].trim();
+            let right = s[at + op.len()..].trim();
+            if !is_col_name(left) {
+                return Err(EngineError::Spec(format!("bad filter column `{left}`")));
+            }
+            if schema.get(left).is_none() {
+                return Err(EngineError::Spec(format!("unknown filter column `{left}`")));
+            }
+            let lhs = col(left);
+            return Ok(match op {
+                "is null" => lhs
+                    .clone()
+                    .is_null()
+                    .or(lhs.cast(DataType::String).eq(lit(""))),
+                "is not null" => lhs
+                    .clone()
+                    .is_not_null()
+                    .and(lhs.cast(DataType::String).neq(lit(""))),
+                "contains" => lhs
+                    .cast(DataType::String)
+                    .str()
+                    .contains_literal(parse_filter_text(right)),
+                "not contains" => lhs
+                    .cast(DataType::String)
+                    .str()
+                    .contains_literal(parse_filter_text(right))
+                    .not(),
+                _ => unreachable!(),
+            });
+        }
+    }
     for op in [">=", "<=", "!=", "=", ">", "<"] {
         if let Some(at) = s.find(op) {
             let left = s[..at].trim();
@@ -1010,8 +1122,82 @@ fn parse_filter(schema: &Schema, raw: &str) -> Result<Expr, EngineError> {
         }
     }
     Err(EngineError::Spec(
-        "filter must look like `컬럼 >= 1` or `컬럼 = ok`".into(),
+        "filter must look like `컬럼 >= 1`, `컬럼 contains ok`, or `컬럼 is null`".into(),
     ))
+}
+
+fn find_word_op(raw: &str, op: &str) -> Option<usize> {
+    let padded = format!(" {op} ");
+    if let Some(at) = raw.find(&padded) {
+        return Some(at + 1);
+    }
+    let suffix = format!(" {op}");
+    if raw.ends_with(&suffix) {
+        return Some(raw.len() - op.len());
+    }
+    None
+}
+
+fn parse_filter_text(raw: &str) -> Expr {
+    lit(raw.trim().trim_matches('"').trim_matches('\'').to_string())
+}
+
+fn parse_derive(schema: &Schema, raw: &str) -> Result<Expr, EngineError> {
+    let s = raw.trim();
+    for op in ["+", "-", "*", "/"] {
+        let padded = format!(" {op} ");
+        if let Some(at) = s.find(&padded) {
+            return derive_binop(schema, &s[..at], op, &s[at + padded.len()..]);
+        }
+    }
+    for op in ["+", "-", "*", "/"] {
+        if let Some(at) = s.find(op) {
+            if at == 0 {
+                continue;
+            }
+            return derive_binop(schema, &s[..at], op, &s[at + op.len()..]);
+        }
+    }
+    Err(EngineError::Spec(
+        "derive must look like `컬럼 + 1` or `컬럼 * 컬럼`".into(),
+    ))
+}
+
+fn derive_binop(schema: &Schema, left: &str, op: &str, right: &str) -> Result<Expr, EngineError> {
+    let left = left.trim();
+    let right = right.trim();
+    if !is_col_name(left) {
+        return Err(EngineError::Spec(format!("bad derive column `{left}`")));
+    }
+    if schema.get(left).is_none() {
+        return Err(EngineError::Spec(format!("unknown derive column `{left}`")));
+    }
+    let lhs = col(left);
+    let rhs = if is_col_name(right) && schema.get(right).is_some() {
+        col(right)
+    } else {
+        parse_derive_lit(right)?
+    };
+    Ok(match op {
+        "+" => lhs + rhs,
+        "-" => lhs - rhs,
+        "*" => lhs * rhs,
+        "/" => lhs.cast(DataType::Float64) / rhs.cast(DataType::Float64),
+        _ => unreachable!(),
+    })
+}
+
+fn parse_derive_lit(raw: &str) -> Result<Expr, EngineError> {
+    let trimmed = raw.trim().trim_matches('"').trim_matches('\'');
+    if let Ok(n) = trimmed.parse::<i64>() {
+        return Ok(lit(n));
+    }
+    if let Ok(n) = trimmed.parse::<f64>() {
+        return Ok(lit(n));
+    }
+    Err(EngineError::Spec(format!(
+        "derive right side must be a column or number, got `{raw}`"
+    )))
 }
 
 fn is_string_dtype(dtype: &DataType) -> bool {
@@ -1456,6 +1642,97 @@ mod tests {
         let preview = PolarsEngine.preview(&csv, &spec, 10).unwrap();
         assert_eq!(preview.rows.len(), 2);
         assert_eq!(preview.rows[0][0], "3");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_derive_add_literal_and_multiply_columns() {
+        let dir = tmp("derive");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "number,qty\n1,2\n3,4\n").unwrap();
+        let spec = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [
+                    {"op": "derive", "name": "number", "expr": "number + 1"},
+                    {"op": "derive", "name": "amount", "expr": "number * qty"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &spec, 10).unwrap();
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["number", "qty", "amount"]
+        );
+        assert_eq!(preview.rows[0], vec!["2", "2", "4"]);
+        assert_eq!(preview.rows[1], vec!["4", "4", "16"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_text_trim_replace_split() {
+        let dir = tmp("text");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "name,code\n a ,x-y\n b ,p-q\n").unwrap();
+        let spec = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [
+                    {"op": "trim", "columns": ["name"]},
+                    {"op": "replace", "column": "code", "find": "-", "replacement": "_"},
+                    {"op": "split", "column": "code", "delimiter": "_", "index": 0, "name": "prefix"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &spec, 10).unwrap();
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["name", "code", "prefix"]
+        );
+        assert_eq!(preview.rows[0], vec!["a", "x_y", "x"]);
+        assert_eq!(preview.rows[1], vec!["b", "p_q", "p"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_filter_contains_and_is_null() {
+        let dir = tmp("filter-text");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "code,note\nfoo-1,\nbar-2,keep\nbaz-3,drop\n").unwrap();
+        let contains = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [{"op": "filter", "expr": "code contains foo"}]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &contains, 10).unwrap();
+        assert_eq!(preview.rows.len(), 1);
+        assert_eq!(preview.rows[0][0], "foo-1");
+        let missing = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [{"op": "filter", "expr": "note is null"}]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &missing, 10).unwrap();
+        assert_eq!(preview.rows.len(), 1);
+        assert_eq!(preview.rows[0][0], "foo-1");
         let _ = fs::remove_dir_all(&dir);
     }
 

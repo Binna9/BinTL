@@ -1,4 +1,4 @@
-import { ArrowUpDown, Braces, Columns3, CopyMinus, Database, FileOutput, Filter, Replace, TextCursorInput, Type, Upload, type LucideIcon } from "lucide-react";
+import { ArrowUpDown, Braces, Calculator, Columns3, CopyMinus, Database, Eraser, FileOutput, Filter, Repeat, Replace, Scissors, TextCursorInput, Type, Upload, type LucideIcon } from "lucide-react";
 import type { Dataset, DatasetColumn } from "@/types/dataset";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type { StepOp, TransformStep } from "@/types/transform";
@@ -57,6 +57,10 @@ export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
 export const STEP_OPS: StepOp[] = [
   "select",
   "filter",
+  "derive",
+  "trim",
+  "replace",
+  "split",
   "cast",
   "fill_null",
   "sort",
@@ -69,6 +73,10 @@ export const STEP_OP_ICONS: Record<StepOp, LucideIcon> = {
   drop: Columns3,
   rename: TextCursorInput,
   filter: Filter,
+  derive: Calculator,
+  trim: Eraser,
+  replace: Repeat,
+  split: Scissors,
   cast: Type,
   fill_null: Replace,
   sort: ArrowUpDown,
@@ -76,8 +84,51 @@ export const STEP_OP_ICONS: Record<StepOp, LucideIcon> = {
 };
 
 export const CAST_TYPES = ["Int64", "Int32", "Float64", "Float32", "String", "Boolean"];
-export const FILTER_OPS = [">=", "<=", "!=", "=", ">", "<"] as const;
+export const FILTER_OPS = [
+  "contains",
+  "not contains",
+  "is null",
+  "is not null",
+  ">=",
+  "<=",
+  "!=",
+  "=",
+  ">",
+  "<",
+] as const;
 export type FilterOp = (typeof FILTER_OPS)[number];
+
+export function filterOpNeedsValue(op: FilterOp): boolean {
+  return op !== "is null" && op !== "is not null";
+}
+export const DERIVE_OPS = ["+", "-", "*", "/"] as const;
+export type DeriveOp = (typeof DERIVE_OPS)[number];
+
+export function parseDeriveExpr(expr: string): { left: string; op: DeriveOp; right: string } | null {
+  const raw = expr.trim();
+  if (!raw) return null;
+  for (const op of DERIVE_OPS) {
+    const padded = ` ${op} `;
+    const at = raw.indexOf(padded);
+    if (at === -1) continue;
+    const left = raw.slice(0, at).trim();
+    const right = raw.slice(at + padded.length).trim();
+    if (left && right) return { left, op, right };
+  }
+  for (const op of DERIVE_OPS) {
+    const at = raw.indexOf(op);
+    if (at <= 0) continue;
+    const left = raw.slice(0, at).trim();
+    const right = raw.slice(at + op.length).trim();
+    if (left && right) return { left, op, right };
+  }
+  return null;
+}
+
+export function buildDeriveExpr(left: string, op: DeriveOp, right: string): string {
+  if (!left.trim() || !right.trim()) return "";
+  return `${left.trim()} ${op} ${right.trim()}`;
+}
 export const KIND_ORDER = ["upload", "database", "api", "transform"] as const;
 export const KIND_APPEARANCE = {
   upload: {
@@ -111,6 +162,14 @@ export function emptyStep(op: StepOp): TransformStep {
       return { op, map: {} };
     case "filter":
       return { op, expr: "" };
+    case "derive":
+      return { op, name: "", expr: "" };
+    case "trim":
+      return { op, columns: [] };
+    case "replace":
+      return { op, column: "", find: "", replacement: "" };
+    case "split":
+      return { op, column: "", delimiter: "", index: 0, name: "" };
     case "cast":
       return { op, columns: {} };
     case "fill_null":
@@ -143,6 +202,19 @@ export function resolveColumnsAtStep(
         ...column,
         name: step.map[column.name] ?? column.name,
       }));
+    } else if (step.op === "split" && step.name.trim()) {
+      if (!cols.some((column) => column.name === step.name)) {
+        cols = [...cols, { name: step.name, dtype: "String" }];
+      }
+    } else if (step.op === "derive" && step.name.trim()) {
+      const parsed = parseDeriveExpr(step.expr);
+      const left = parsed ? cols.find((column) => column.name === parsed.left) : undefined;
+      const dtype = parsed?.op === "/" ? "Float64" : left?.dtype ?? "Float64";
+      if (cols.some((column) => column.name === step.name)) {
+        cols = cols.map((column) => (column.name === step.name ? { ...column, dtype } : column));
+      } else {
+        cols = [...cols, { name: step.name, dtype }];
+      }
     }
   }
   return cols;

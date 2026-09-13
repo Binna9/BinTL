@@ -11,7 +11,7 @@
 | `database` | `connection_id`, `table`, 선택 `database` | `append` \| `truncate` \| `upsert` \| `recreate` \| `replace` |
 | `file` | `format`=`csv`\|`parquet`, `filename` | `replace` 또는 `recreate`만 |
 
-기본 모드는 `append`다. `upsert`는 충돌 키가 입력 컬럼에 있어야 한다. redshift와 mssql upsert는 아직 거절한다. HTTP 커넥션은 DB 타깃이 될 수 없다. 파일 이름에 `/` `\\` `.` `..`를 넣지 않는다.
+기본 모드는 `append`다. `upsert`는 충돌 키가 입력 컬럼에 있어야 한다. redshift와 mssql upsert는 아직 거절한다. oracle/tibero upsert는 `MERGE`다. HTTP 커넥션은 DB 타깃이 될 수 없다. 파일 이름에 `/` `\\` `.` `..`를 넣지 않는다.
 
 `contract:` planned id는 `default_input_file_id` FK로 묶지 않는다.
 

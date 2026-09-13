@@ -97,14 +97,20 @@ function RowButton({
   );
 }
 
+export type CatalogSchemaPick = { database: string; schema: string };
+
 export function CatalogTree({
   connectionId,
   selected,
   onPick,
+  selectedSchema,
+  onPickSchema,
 }: {
   connectionId: string;
   selected?: CatalogSelection | null;
   onPick: (pick: CatalogSelection | null) => void;
+  selectedSchema?: CatalogSchemaPick | null;
+  onPickSchema?: (pick: CatalogSchemaPick | null) => void;
 }) {
   const { messages } = useLanguage();
   const {
@@ -169,7 +175,20 @@ export function CatalogTree({
                           open={scOpen}
                           kind="schema"
                           name={child.name}
-                          onClick={() => toggleSchema(database.name, child)}
+                          active={
+                            selectedSchema?.database === database.name
+                            && selectedSchema?.schema === child.name
+                            && !selected?.table
+                          }
+                          onClick={() => {
+                            if (onPickSchema) {
+                              const same =
+                                selectedSchema?.database === database.name
+                                && selectedSchema?.schema === child.name;
+                              onPickSchema(same ? null : { database: database.name, schema: child.name });
+                            }
+                            toggleSchema(database.name, child);
+                          }}
                         />
                         {loadingNode === scKey ? (
                           <p className="px-10 py-1 text-[11px] text-text-tertiary">{messages.common.loading}</p>

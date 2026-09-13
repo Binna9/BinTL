@@ -65,6 +65,7 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
     : "";
   const sqlText = chip.kind === "sql" && typeof chip.config.sql_text === "string" ? chip.config.sql_text : "";
   const sqlDatabase = chip.kind === "sql" && typeof chip.config.database === "string" ? chip.config.database : "";
+  const sqlSchema = chip.kind === "sql" && typeof chip.config.schema === "string" ? chip.config.schema : "";
 
   const stepLabels = useMemo<Record<StepOp, string>>(
     () => ({
@@ -72,6 +73,10 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
       drop: messages.transform.opDrop,
       rename: messages.transform.opRename,
       filter: messages.transform.opFilter,
+      derive: messages.transform.opDerive,
+      trim: messages.transform.opTrim,
+      replace: messages.transform.opReplace,
+      split: messages.transform.opSplit,
       cast: messages.transform.opCast,
       fill_null: messages.transform.opFillNull,
       sort: messages.transform.opSort,
@@ -159,6 +164,7 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
         <DetailSection icon={Terminal} title={messages.workspace.sql}>
           <DetailRow label={messages.workspace.connection}>{connectionName || sqlConnectionId || unset}</DetailRow>
           <DetailRow label={messages.workspace.database}>{sqlDatabase || unset}</DetailRow>
+          <DetailRow label={messages.connectionInfo.schema}>{sqlSchema || unset}</DetailRow>
           <DetailRow label={messages.workspace.sql} className="items-start">
             <span className="whitespace-pre-wrap break-all text-left font-mono text-[12px]">{sqlText || unset}</span>
           </DetailRow>
@@ -268,7 +274,7 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
                     <span className="relative z-10 grid size-[1.625rem] place-items-center rounded-full bg-surface text-[10px] font-bold text-success ring-1 ring-border">{index + 1}</span>
                     <div className="min-w-0">
                       <p className="text-[11px] font-bold uppercase tracking-[0.06em] text-text">{stepLabels[step.op]}</p>
-                      <p className={cn("mt-0.5 break-words text-[12px] leading-relaxed text-text-secondary", step.op === "filter" && "font-mono text-[11px]")}>{formatTransformStepSummary(step)}</p>
+                      <p className={cn("mt-0.5 break-words text-[12px] leading-relaxed text-text-secondary", (step.op === "filter" || step.op === "derive") && "font-mono text-[11px]")}>{formatTransformStepSummary(step)}</p>
                     </div>
                   </li>
                 ))}

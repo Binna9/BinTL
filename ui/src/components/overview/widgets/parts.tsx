@@ -5,6 +5,37 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
 import type { FeedItem } from "../types";
 
+export function DashScopeToggle<T extends string>({
+  value,
+  onChange,
+  label,
+  options,
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  label: string;
+  options: Array<{ id: T; label: string; icon: ReactNode }>;
+}) {
+  return (
+    <div role="tablist" aria-label={label} className="dash-scope" data-scope={value}>
+      <span className="dash-scope-thumb" aria-hidden="true" />
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="tab"
+          aria-selected={value === option.id}
+          className="dash-scope-btn"
+          onClick={() => onChange(option.id)}
+        >
+          {option.icon}
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function OpsCard({
   tone,
   to,
@@ -33,7 +64,7 @@ export function OpsCard({
   return (
     <Link
       to={to}
-      className="ops-shell relative h-full min-h-0 min-w-[10.5rem] flex-1 overflow-hidden rounded-xl no-underline drop-shadow-xl transition-transform duration-200 hover:z-10 hover:scale-[1.03]"
+      className="ops-shell relative h-full min-h-0 min-w-[10.5rem] flex-1 overflow-hidden rounded-xl no-underline transition-opacity duration-150 hover:opacity-90"
       style={{ "--ops-glow": glow } as CSSProperties}
     >
       <div className="ops-shell-inner absolute inset-0.5 z-[1] flex flex-col rounded-xl px-3 py-2">
@@ -122,7 +153,11 @@ export function FeedRow({
   return (
     <Link to={item.to} className="dash-feed-row">
       <span className={`dash-kind dash-kind-${item.kind}`}>
-        {item.kind === "extract" ? messages.overview.extract : messages.overview.transform}
+        {item.kind === "extract" ? messages.overview.extract
+          : item.kind === "transform" ? messages.overview.transform
+          : item.kind === "load" ? messages.overview.load
+          : item.kind === "sql" ? messages.workspace.sql
+          : messages.workspace.validation}
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] font-medium text-text">{item.title}</span>

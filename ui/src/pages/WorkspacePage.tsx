@@ -46,6 +46,8 @@ import {
   chipFixedInputId,
   chipInMarquee,
   chipKindLabel,
+  PINNED_WORKSPACE_KEY,
+  storedPinnedWorkspace,
   chipRunOrder,
   clampMarqueePoint,
   clampPoint,
@@ -89,16 +91,7 @@ function canvasWorkspaceId(pathname: string): string | null {
   return match?.[1] ?? null;
 }
 
-const PINNED_WORKSPACE_KEY = "bintl.canvas.pinned-workspace";
 const CANVAS_ZOOM_LEVELS = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
-
-function storedPinnedWorkspace(): string | null {
-  try {
-    return localStorage.getItem(PINNED_WORKSPACE_KEY);
-  } catch {
-    return null;
-  }
-}
 
 export function WorkspacePage() {
   const { messages } = useLanguage();

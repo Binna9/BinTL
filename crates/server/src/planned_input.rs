@@ -313,6 +313,32 @@ fn apply_clean_steps(columns: &mut Vec<Value>, steps: Option<&Value>) {
                     }
                 }
             }
+            Some("split") => {
+                let name = step
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                if name.is_empty() {
+                    continue;
+                }
+                if !columns.iter().any(|column| column_name(column) == name) {
+                    columns.push(json!({ "name": name, "dtype": "String" }));
+                }
+            }
+            Some("derive") => {
+                let name = step
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                if name.is_empty() {
+                    continue;
+                }
+                if !columns.iter().any(|column| column_name(column) == name) {
+                    columns.push(json!({ "name": name, "dtype": "Float64" }));
+                }
+            }
             _ => {}
         }
     }
@@ -627,7 +653,7 @@ async fn introspect_extract_source(
                 .ok_or_else(|| AppError::bad("extract source sql required"))?;
             let database = source.get("database").and_then(Value::as_str);
             let live = with_database(live, database);
-            let result = run_sql(&live, sql, 1, None).await?;
+            let result = run_sql(&live, sql, 1, None, None).await?;
             Ok(result
                 .columns
                 .into_iter()

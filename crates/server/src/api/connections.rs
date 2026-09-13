@@ -23,6 +23,8 @@ pub(super) fn default_port(driver: &str, port: Option<u16>) -> u16 {
     port.unwrap_or(match driver {
         "mysql" | "mariadb" => 3306,
         "mssql" => 1433,
+        "oracle" => 1521,
+        "tibero" => 8629,
         "sqlite" | "http" => 0,
         _ => 5432,
     })
@@ -290,7 +292,7 @@ pub(super) async fn connection_query(
             log.write("info", "reading", &format!("rows={n}"));
         }
     };
-    match run_sql(&live, &sql, limit, Some(&on_progress)).await {
+    match run_sql(&live, &sql, limit, Some(&on_progress), None).await {
         Ok(out) => {
             if let Some(log) = &log {
                 log.write(

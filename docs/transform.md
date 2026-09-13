@@ -22,7 +22,7 @@
 | 2 | `steps` + 선택 `combine`. **dest 금지** |
 | 3 | `operations`. dest 금지 |
 
-v2 스텝: `select`, `drop`, `rename`, `filter`, `cast`, `fill_null`, `sort`, `unique`. 빈 스텝 `{ "version": 2, "steps": [], "sink": "parquet" }`는 identity다. `combine`은 join/stack 후 스텝을 적용한다. 데이터셋 id는 JSON에 있고 서버가 경로를 채운다.
+v2 스텝: `select`, `drop`, `rename`, `filter`, `derive`, `trim`, `replace`, `split`, `cast`, `fill_null`, `sort`, `unique`. `derive`는 `컬럼 + 1` 또는 `컬럼 * 컬럼`이다. `filter`는 비교·`contains`·`is null`이다. AND는 필터를 이어 붙인다. 빈 스텝 `{ "version": 2, "steps": [], "sink": "parquet" }`는 identity다. `combine`은 join/stack 후 스텝을 적용한다. 데이터셋 id는 JSON에 있고 서버가 경로를 채운다.
 
 브라우저 Polars와 임의 코드 map/apply는 없다.
 

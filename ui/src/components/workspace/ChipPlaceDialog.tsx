@@ -704,9 +704,9 @@ function TransformNewPanel({
   );
 }
 
-function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, chips, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
+function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
   kind?: "load" | "validation" | "sql"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
-  emptyChipLabel?: string; catalogHint?: string; registerLabel?: string;
+  emptyChipLabel?: string; catalogHint?: string; registerLabel?: string; submitLabel?: string;
   chips: Chip[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
   hideEmpty?: boolean;
   onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty?: (name: string) => void; onRegister: () => void;
@@ -777,7 +777,7 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
 
       <PlaceDialogFooter
         cancelLabel={messages.common.cancel}
-        submitLabel={messages.workspace.placeSelected}
+        submitLabel={submitLabel ?? messages.workspace.placeSelected}
         canSubmit={selected.length > 0}
         busy={busy}
         onCancel={onClose}
@@ -960,7 +960,8 @@ export function ChipPlaceDialog({
           title={messages.workspace.placeSqlTitle}
           simpleHint={messages.workspace.placeSqlSimpleHint}
           catalogHint={messages.workspace.placeSqlCatalogHint}
-          registerLabel={messages.workspace.registerSqlChip}
+          registerLabel={messages.workspace.registerNewChip}
+          submitLabel={messages.workspace.pickChipPlace}
           chips={catalogChips}
           canvasChipIds={canvasChipIds}
           defaultName={defaultSqlName}

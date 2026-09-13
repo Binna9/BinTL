@@ -3,6 +3,10 @@ export type TransformStep =
   | { op: "drop"; columns: string[] }
   | { op: "rename"; map: Record<string, string> }
   | { op: "filter"; expr: string }
+  | { op: "derive"; name: string; expr: string }
+  | { op: "trim"; columns: string[] }
+  | { op: "replace"; column: string; find: string; replacement: string }
+  | { op: "split"; column: string; delimiter: string; index: number; name: string }
   | { op: "cast"; columns: Record<string, string> }
   | { op: "fill_null"; value: string; columns: string[] }
   | { op: "sort"; by: { column: string; descending: boolean }[] }

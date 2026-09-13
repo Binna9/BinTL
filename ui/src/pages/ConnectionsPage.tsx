@@ -18,7 +18,7 @@ import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
 import { toastDeleteError, toastError, toastSuccess, showConfirm } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
-import { driverCatalog } from "@/mock/driverCatalog";
+import { driverCatalog, driverDefaultPort, isOracleFamily } from "@/mock/driverCatalog";
 import { connectionApi } from "@/services/connections/connectionApi";
 import {
   HTTP_AUTH_MODES,
@@ -832,27 +832,44 @@ export function ConnectionsPage() {
                     <>
                       <FormField
                         label={messages.connectionsPage.port}
-                        example={example(messages.connectionsPage.portPlaceholder)}
+                        example={example(driverDefaultPort(newDriver))}
                       >
                         <input
                           className="field-control technical"
                           name="port"
                           inputMode="numeric"
-                          placeholder={messages.connectionsPage.portPlaceholder}
+                          placeholder={driverDefaultPort(newDriver)}
                         />
                       </FormField>
                       <FormField
-                        label={messages.connectionsPage.database}
-                        example={example(messages.connectionsPage.databasePlaceholder)}
+                        label={
+                          isOracleFamily(newDriver)
+                            ? messages.connectionsPage.databaseService
+                            : messages.connectionsPage.database
+                        }
+                        example={example(
+                          isOracleFamily(newDriver)
+                            ? messages.connectionsPage.databaseServicePlaceholder
+                            : messages.connectionsPage.databasePlaceholder,
+                        )}
                         wide
                       >
                         <input
                           className="field-control"
                           name="database"
                           autoComplete="off"
-                          placeholder={messages.connectionsPage.databasePlaceholder}
+                          placeholder={
+                            isOracleFamily(newDriver)
+                              ? messages.connectionsPage.databaseServicePlaceholder
+                              : messages.connectionsPage.databasePlaceholder
+                          }
                         />
                       </FormField>
+                      {isOracleFamily(newDriver) ? (
+                        <p className="col-span-full text-xs text-text-tertiary">
+                          {messages.connectionsPage.odbcHint}
+                        </p>
+                      ) : null}
                     </>
                   )}
                 </div>
@@ -1231,10 +1248,17 @@ export function ConnectionsPage() {
                     className="field-control technical"
                     name="port"
                     defaultValue={editing.port || ""}
-                    placeholder="5432"
+                    placeholder={driverDefaultPort(editing.driver)}
                   />
                 </FormField>
-                <FormField label={messages.connectionsPage.database} wide>
+                <FormField
+                  label={
+                    isOracleFamily(editing.driver)
+                      ? messages.connectionsPage.databaseService
+                      : messages.connectionsPage.database
+                  }
+                  wide
+                >
                   <input
                     className="field-control"
                     name="database"

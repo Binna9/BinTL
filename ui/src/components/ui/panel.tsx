@@ -72,7 +72,11 @@ export function PanelHeader({
           ) : null}
         </div>
       </div>
-      {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
+      {actions ? (
+        <div className="flex shrink-0 items-center gap-1.5" onPointerDown={(event) => event.stopPropagation()}>
+          {actions}
+        </div>
+      ) : null}
     </header>
   );
 }

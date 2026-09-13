@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  ArcElement,
   BarElement,
   CategoryScale,
   Chart as ChartJS,
@@ -13,12 +12,12 @@ import {
   Tooltip,
   type ChartData,
   type ChartOptions,
-  type Plugin,
   type ScriptableContext,
 } from "chart.js";
-import { Bar, Doughnut, Line } from "react-chartjs-2";
+import { Bar, Line } from "react-chartjs-2";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import type { DayPoint } from "@/lib/overview";
+import type { ChipKind } from "@/types/chip";
 
 ChartJS.register(
   CategoryScale,
@@ -26,7 +25,6 @@ ChartJS.register(
   PointElement,
   LineElement,
   BarElement,
-  ArcElement,
   Tooltip,
   Legend,
   Filler,
@@ -125,62 +123,94 @@ function lineFill(
   return gradient;
 }
 
-export function TrendChart({ days }: { days: DayPoint[] }) {
+export function TrendChart({ days, hidden = [] }: { days: DayPoint[]; hidden?: ChipKind[] }) {
   const { messages } = useLanguage();
   const palette = useChartPalette();
 
   const data = useMemo<ChartData<"line">>(
     () => ({
       labels: days.map((day) => day.label),
-      datasets: [
-        {
-          label: messages.overview.extract,
-          data: days.map((day) => day.extract),
-          borderColor: palette.accent,
-          backgroundColor: (ctx) => lineFill(ctx, palette.accent, 0.28, 0.02),
-          borderWidth: 2.4,
-          tension: 0.38,
-          fill: true,
-          pointRadius: 3.2,
-          pointHoverRadius: 5.5,
-          pointBackgroundColor: palette.surface,
-          pointBorderColor: palette.accent,
-          pointBorderWidth: 2,
-          pointHoverBorderWidth: 2.4,
-        },
-        {
-          label: messages.overview.transform,
-          data: days.map((day) => day.transform),
-          borderColor: palette.success,
-          backgroundColor: (ctx) => lineFill(ctx, palette.success, 0.22, 0.02),
-          borderWidth: 2.4,
-          tension: 0.38,
-          fill: true,
-          pointRadius: 3.2,
-          pointHoverRadius: 5.5,
-          pointBackgroundColor: palette.surface,
-          pointBorderColor: palette.success,
-          pointBorderWidth: 2,
-          pointHoverBorderWidth: 2.4,
-        },
-        {
-          label: messages.overview.load,
-          data: days.map((day) => day.load),
-          borderColor: palette.warning,
-          backgroundColor: (ctx) => lineFill(ctx, palette.warning, 0.18, 0.02),
+      datasets: (
+        [
+          {
+            kind: "extract",
+            label: messages.overview.extract,
+            values: days.map((day) => day.extract),
+            color: palette.accent,
+            fillTop: 0.28,
+            dash: undefined,
+            fill: true,
+            point: 3.2,
+          },
+          {
+            kind: "transform",
+            label: messages.overview.transform,
+            values: days.map((day) => day.transform),
+            color: palette.success,
+            fillTop: 0.22,
+            dash: undefined,
+            fill: true,
+            point: 3.2,
+          },
+          {
+            kind: "load",
+            label: messages.overview.load,
+            values: days.map((day) => day.load),
+            color: palette.warning,
+            fillTop: 0.18,
+            dash: [5, 4] as number[],
+            fill: false,
+            point: 2.6,
+          },
+          {
+            kind: "sql",
+            label: messages.workspace.sql,
+            values: days.map((day) => day.sql),
+            color: palette.ink,
+            fillTop: 0.16,
+            dash: undefined,
+            fill: false,
+            point: 2.6,
+          },
+          {
+            kind: "validation",
+            label: messages.workspace.validation,
+            values: days.map((day) => day.validation),
+            color: palette.muted,
+            fillTop: 0.12,
+            dash: [4, 4] as number[],
+            fill: false,
+            point: 2.4,
+          },
+        ] satisfies Array<{
+          kind: ChipKind;
+          label: string;
+          values: number[];
+          color: string;
+          fillTop: number;
+          dash?: number[];
+          fill: boolean;
+          point: number;
+        }>
+      )
+        .filter((series) => !hidden.includes(series.kind))
+        .map((series) => ({
+          label: series.label,
+          data: series.values,
+          borderColor: series.color,
+          backgroundColor: (ctx: ScriptableContext<"line">) => lineFill(ctx, series.color, series.fillTop, 0.02),
           borderWidth: 2.2,
-          borderDash: [5, 4],
+          borderDash: series.dash,
           tension: 0.38,
-          fill: false,
-          pointRadius: 2.6,
-          pointHoverRadius: 5,
+          fill: series.fill,
+          pointRadius: series.point,
+          pointHoverRadius: 5.2,
           pointBackgroundColor: palette.surface,
-          pointBorderColor: palette.warning,
+          pointBorderColor: series.color,
           pointBorderWidth: 2,
-        },
-      ],
+        })),
     }),
-    [days, messages, palette],
+    [days, hidden, messages, palette],
   );
 
   const options = useMemo<ChartOptions<"line">>(
@@ -231,131 +261,6 @@ export function TrendChart({ days }: { days: DayPoint[] }) {
     <ChartFrame>
       <Line data={data} options={options} />
     </ChartFrame>
-  );
-}
-
-type CenterOpts = { label?: string; total?: number };
-
-const doughnutCenter: Plugin<"doughnut"> = {
-  id: "doughnutCenter",
-  afterDraw(chart) {
-    const meta = chart.getDatasetMeta(0);
-    if (!meta?.data?.[0]) return;
-    const plugins = chart.options.plugins as Record<string, CenterOpts | undefined> | undefined;
-    const opts = plugins?.doughnutCenter;
-    const values = (chart.data.datasets[0]?.data ?? []) as number[];
-    const total = opts?.total ?? values.reduce((sum, value) => sum + Number(value || 0), 0);
-    const { x, y } = meta.data[0];
-    const { ctx } = chart;
-    const label = opts?.label ?? "";
-    const ink = getComputedStyle(document.documentElement).getPropertyValue("--theme-text").trim() || "#20242a";
-    const muted = getComputedStyle(document.documentElement).getPropertyValue("--theme-text-tertiary").trim()
-      || "#89919c";
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = ink;
-    ctx.font = "700 1.35rem Pretendard Variable, Pretendard, sans-serif";
-    ctx.fillText(String(total), x, y - (label ? 8 : 0));
-    if (label) {
-      ctx.fillStyle = muted;
-      ctx.font = "600 0.68rem Pretendard Variable, Pretendard, sans-serif";
-      ctx.fillText(label, x, y + 14);
-    }
-    ctx.restore();
-  },
-};
-
-export function FlowChart({
-  stages,
-}: {
-  stages: Array<{ name: string; value: number; to: string }>;
-}) {
-  const { messages } = useLanguage();
-  const navigate = useNavigate();
-  const palette = useChartPalette();
-  const colors = useMemo(
-    () => [palette.accent, palette.success, palette.warning],
-    [palette.accent, palette.success, palette.warning],
-  );
-  const hasData = stages.some((stage) => stage.value > 0);
-  const realTotal = stages.reduce((sum, stage) => sum + stage.value, 0);
-  const unit = messages.common.cases(0).replace(/\d+/g, "").trim() || "건";
-
-  const data = useMemo<ChartData<"doughnut">>(
-    () => ({
-      labels: stages.map((stage) => stage.name),
-      datasets: [
-        {
-          data: hasData ? stages.map((stage) => stage.value) : [1],
-          backgroundColor: hasData
-            ? colors.map((color) => alpha(color, 0.9))
-            : [alpha(palette.grid, 0.55)],
-          borderColor: palette.surface,
-          borderWidth: 3,
-          hoverOffset: 8,
-          hoverBorderWidth: 3,
-        },
-      ],
-    }),
-    [colors, hasData, palette.grid, palette.surface, stages],
-  );
-
-  const options = useMemo<ChartOptions<"doughnut">>(
-    () => ({
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: "68%",
-      animation: { animateRotate: true, duration: 900, easing: "easeOutQuart" },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          ...chartTooltip(),
-          enabled: hasData,
-          callbacks: {
-            label(item) {
-              return ` ${messages.common.cases(Number(item.raw ?? 0))}`;
-            },
-          },
-        },
-        doughnutCenter: { label: unit, total: realTotal },
-      } as ChartOptions<"doughnut">["plugins"],
-      onClick(_event, elements) {
-        if (!hasData) return;
-        const index = elements[0]?.index;
-        if (index == null) return;
-        const target = stages[index]?.to;
-        if (target) navigate(target);
-      },
-      onHover(event, elements) {
-        const canvas = event.native?.target as HTMLCanvasElement | undefined;
-        if (canvas) canvas.style.cursor = hasData && elements.length ? "pointer" : "default";
-      },
-    }),
-    [hasData, messages, navigate, realTotal, stages, unit],
-  );
-
-  return (
-    <div className="flex h-full min-h-0 items-center gap-3">
-      <div className="relative h-full min-h-0 min-w-0 flex-1">
-        <Doughnut data={data} options={options} plugins={[doughnutCenter]} />
-      </div>
-      <ul className="dash-chart-legend shrink-0 space-y-2.5 pr-1">
-        {stages.map((stage, index) => (
-          <li key={stage.to}>
-            <button
-              type="button"
-              className="dash-chart-legend-item"
-              onClick={() => navigate(stage.to)}
-            >
-              <i style={{ background: colors[index] ?? palette.accent }} />
-              <span className="min-w-0 flex-1 truncate text-left">{stage.name}</span>
-              <strong>{stage.value}</strong>
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
   );
 }
 

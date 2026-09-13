@@ -10,7 +10,7 @@ impl Store {
         let driver = new.driver.to_ascii_lowercase();
         if !supported_driver(&driver) {
             return Err(StorageError::Invalid(
-                "driver must be postgres, redshift, cockroach, mysql, mariadb, mssql, sqlite, or http"
+                "driver must be postgres, redshift, cockroach, mysql, mariadb, mssql, sqlite, oracle, tibero, or http"
                     .into(),
             ));
         }
@@ -74,7 +74,7 @@ impl Store {
         let driver = new.driver.to_ascii_lowercase();
         if !supported_driver(&driver) {
             return Err(StorageError::Invalid(
-                "driver must be postgres, redshift, cockroach, mysql, mariadb, mssql, sqlite, or http"
+                "driver must be postgres, redshift, cockroach, mysql, mariadb, mssql, sqlite, oracle, tibero, or http"
                     .into(),
             ));
         }

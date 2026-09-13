@@ -19,3 +19,7 @@ run: ui
 
 test:
     cargo test --workspace
+
+cursor-env:
+    command -v openwiki >/dev/null || npm i -g openwiki
+    openwiki integrations install cursor --project .
