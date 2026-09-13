@@ -3,6 +3,12 @@ import { flushSync } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AppWindow,
+  Ban,
+  CheckCircle2,
+  Circle,
+  Clock,
+  LoaderCircle,
+  XCircle,
   Check,
   ChevronDown,
   Folder,
@@ -20,6 +26,7 @@ import { FormField } from "@/components/ui/form-field";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { isNotificationDialogOpen, showConfirm } from "@/lib/notifications";
+import { chipApi } from "@/services/chips/chipApi";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { Workspace, WorkspaceFolder } from "@/types/workspace";
 
@@ -250,6 +257,62 @@ export function WorkspaceManageDialog({
     setDraftWorkspaces(workspaces);
     setTreeOpen(ancestorOpenMap(folders, focusFolderId));
   }, [open, focusFolderId, folders, workspaces]);
+
+  const [executionStatuses, setExecutionStatuses] = useState<Record<string, string | null>>({});
+  const executionWorkspaceIds = JSON.stringify(
+    draftWorkspaces.filter((workspace) => !isDraftId(workspace.id)).map((workspace) => workspace.id).sort(),
+  );
+
+  useEffect(() => {
+    if (!open) {
+      setExecutionStatuses({});
+      return;
+    }
+    const ids: string[] = JSON.parse(executionWorkspaceIds);
+    if (ids.length === 0) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      const results = await Promise.allSettled(ids.map(async (id) => {
+        const response = await chipApi.listWorkspaceRuns(id, { silent: true });
+        return [id, response.runs[0]?.status ?? null] as const;
+      }));
+      if (cancelled) return;
+      setExecutionStatuses((current) => {
+        const next = { ...current };
+        for (const result of results) {
+          if (result.status === "fulfilled") next[result.value[0]] = result.value[1];
+        }
+        return next;
+      });
+      timer = window.setTimeout(() => void refresh(), 2000);
+    };
+    void refresh();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [open, executionWorkspaceIds]);
+
+  function executionStatusIcon(workspaceId: string) {
+    const status = isDraftId(workspaceId) ? null : executionStatuses[workspaceId];
+    if (status === undefined) return <span className="size-3 shrink-0" aria-hidden="true" />;
+    const Icon = status === "succeeded" ? CheckCircle2
+      : status === "failed" ? XCircle
+      : status === "running" ? LoaderCircle
+      : status === "queued" ? Clock
+      : status === "canceled" ? Ban : Circle;
+    const label = status === "succeeded" ? messages.chipRuns.success
+      : status === "running" ? messages.chipRuns.running
+      : status === "failed" ? messages.status.failed
+      : status === "queued" ? messages.status.queued
+      : status === "canceled" ? messages.status.canceled : messages.chipRuns.notRun;
+    return (
+      <span className="inline-flex size-3 shrink-0" role="img" aria-label={label} title={label}>
+        <Icon className={cn("size-3", status === "succeeded" ? "text-success"
+          : status === "failed" ? "text-danger"
+          : status === "running" ? "animate-spin text-accent motion-reduce:animate-none"
+          : "text-text-tertiary")} aria-hidden="true" />
+      </span>
+    );
+  }
 
   const isDirty = useMemo(
     () =>
@@ -1116,6 +1179,7 @@ export function WorkspaceManageDialog({
             setDropTarget(null);
           }}
         >
+          {executionStatusIcon(workspace.id)}
           <AppWindow className="size-3.5 shrink-0" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
         </button>

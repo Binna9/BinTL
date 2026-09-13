@@ -30,6 +30,7 @@ export function SchedulePage() {
   const [editing, setEditing] = useState<WorkspaceSchedule | null>(null);
   const [draft, setDraft] = useState<ScheduleRequest>(emptyDraft);
   const [intervalInput, setIntervalInput] = useState("1");
+  const [dayInput, setDayInput] = useState("1");
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
@@ -47,19 +48,21 @@ export function SchedulePage() {
   const parsedInterval = /^\d+$/.test(intervalInput) ? Number(intervalInput) : Number.NaN;
   const intervalValid = Number.isInteger(parsedInterval)
     && parsedInterval >= intervalLimit.min && parsedInterval <= intervalLimit.max;
+  const parsedDay = /^\d+$/.test(dayInput) ? Number(dayInput) : Number.NaN;
+  const dayValid = Number.isInteger(parsedDay) && parsedDay >= 1 && parsedDay <= 31;
   const valid = Boolean(draft.workspace_id && draft.name.trim()
     && intervalValid
     && (!(["month", "year"] as ScheduleUnit[]).includes(draft.interval_unit)
-      || ((draft.day_of_month ?? 0) >= 1 && (draft.day_of_month ?? 0) <= 31))
+      || dayValid)
     && (draft.interval_unit !== "year"
       || ((draft.month_of_year ?? 0) >= 1 && (draft.month_of_year ?? 0) <= 12)));
 
-  function beginCreate() { setEditing(null); setDraft({ ...emptyDraft, workspace_id: workspaces[0]?.id ?? "" }); setIntervalInput("1"); setOpen(true); }
+  function beginCreate() { setEditing(null); setDraft({ ...emptyDraft, workspace_id: workspaces[0]?.id ?? "" }); setIntervalInput("1"); setDayInput("1"); setOpen(true); }
   function beginEdit(row: WorkspaceSchedule) {
     setEditing(row); setDraft({ workspace_id: row.workspace_id, name: row.name, schedule_type: row.schedule_type,
       interval_value: row.interval_value, interval_unit: row.interval_unit, second: row.second ?? 0,
       hour: row.hour ?? 0, minute: row.minute ?? 0, day_of_month: row.day_of_month ?? 1,
-      month_of_year: row.month_of_year ?? 1, enabled: row.enabled }); setIntervalInput(String(row.interval_value)); setOpen(true);
+      month_of_year: row.month_of_year ?? 1, enabled: row.enabled }); setIntervalInput(String(row.interval_value)); setDayInput(String(row.day_of_month ?? 1)); setOpen(true);
   }
   function requestFor(row: WorkspaceSchedule, enabled = row.enabled): ScheduleRequest {
     return { workspace_id: row.workspace_id, name: row.name, schedule_type: row.schedule_type,
@@ -69,7 +72,8 @@ export function SchedulePage() {
   }
   async function save() {
     if (!valid) return; setBusy(true);
-    const request = { ...draft, interval_value: parsedInterval };
+    const request = { ...draft, interval_value: parsedInterval,
+      day_of_month: ["month", "year"].includes(draft.interval_unit) ? parsedDay : draft.day_of_month };
     try { if (editing) await scheduleApi.update(editing.id, request); else await scheduleApi.create(request);
       setOpen(false); await refresh(); toastSuccess(t.saved); }
     catch (error) { toastError(t.saveError, error); } finally { setBusy(false); }
@@ -154,7 +158,7 @@ export function SchedulePage() {
           </div>
         </FormField>
         {draft.interval_unit === "year" ? <FormField label={t.month}><Select value={String(draft.month_of_year ?? 1)} onChange={(value) => setDraft({ ...draft, month_of_year: Number(value) })} options={Array.from({ length: 12 }, (_, index) => ({ value: String(index + 1), label: t.monthValue(index + 1) }))} /></FormField> : null}
-        {(["month", "year"] as ScheduleUnit[]).includes(draft.interval_unit) ? <FormField label={t.day}><input type="number" min={1} max={31} className="field-control" value={draft.day_of_month ?? 1} onChange={(e) => setDraft({ ...draft, day_of_month: Number(e.target.value) })} /></FormField> : null}
+        {(["month", "year"] as ScheduleUnit[]).includes(draft.interval_unit) ? <FormField label={t.day}><input type="number" inputMode="numeric" min={1} max={31} step={1} className="field-control" value={dayInput} onChange={(e) => setDayInput(e.target.value.replace(/^0+(?=\d)/, ""))} /></FormField> : null}
         {usesTime ? <FormField label={t.time} hint={t.timeHint}>
           <div className="group relative flex h-16 cursor-pointer items-center gap-3 overflow-hidden rounded-2xl border border-border-strong bg-gradient-to-r from-surface to-accent-subtle/35 px-4 shadow-sm transition hover:border-accent/50 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/10" onClick={(event) => { const input = event.currentTarget.querySelector("input"); input?.showPicker?.(); }}>
             <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent text-white shadow-sm"><Clock3 className="size-5" /></span>

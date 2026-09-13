@@ -63,3 +63,11 @@ validation_rules -> validation_results -> data_files(source, target)
 - 검증은 데이터를 생산하지 않으므로 `execution_outputs`나 `workspace_chip_outputs`를 만들지 않는다. 이후 제어 연결은 검증 단계의 성공/실패 상태를 사용한다.
 
 독립 실행, 규칙 CRUD, 결과 이력, 캔버스 검증 칩은 현재 같은 검증 엔진과 규칙을 사용한다.
+
+## 워크스페이스 전체 실행 이력
+
+`0006_workspace_execution_history.sql`부터 전체 실행은 `executions.source = 'workspace'` 한 건으로 기록하고, 실행한 칩의 `execution_steps.execution_id`를 공유한다. 칩 단독 실행은 `source = 'chip'`으로 구분한다. 전체 실행 상태와 종료 시각은 서버의 실행 조정 로직이 확정한다. 칩 상태 트리거는 워크스페이스 실행을 갱신하지 않아, 중간 성공·실패 및 칩 사이 대기에서도 전체 상태는 `running`을 유지한다. 조건에 의해 생략한 칩은 실행 단계로 생성하지 않는다.
+
+`GET /api/workspaces/{id}/runs`는 칩 단계 `runs`와 전체 실행 `workspace_runs`를 반환하며, 각 칩 단계에 `execution_id`, `execution_source`가 포함된다. `GET /api/workspaces/{id}/executions`는 전체 실행만 반환한다. 헤더는 최신 전체 실행 상태를 표시하므로 칩 단독 재실행의 영향을 받지 않는다. 실행 이력 화면은 칩 단독 실행과 워크스페이스 실행을 분리하고, 전체 실행 선택 시 해당 실행의 칩 및 로그를 조회한다.
+
+서버 재시작 시 미완료 전체 실행과 미완료 소속 칩은 중단 오류로 종료한다. 기존 기록은 전체 실행의 그룹 식별자가 없으므로 임의로 묶지 않고 기존 칩 실행 이력으로 유지한다.

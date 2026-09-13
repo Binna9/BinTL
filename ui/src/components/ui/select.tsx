@@ -111,7 +111,12 @@ export function Select({
       if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
       setOpen(false);
     };
-    const onViewport = () => setOpen(false);
+    const onViewport = (event: Event) => {
+      // Scrolling options (including scrollIntoView for the active option)
+      // does not move the trigger and must keep the menu open.
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
     window.addEventListener(CLOSE_EVENT, onCloseOthers);
     document.addEventListener("pointerdown", onPointer);
     window.addEventListener("resize", onViewport);

@@ -1,6 +1,7 @@
 import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
 import type {
   Chip,
+  WorkspaceExecution,
   ChipInputSlotResponse,
   ChipListResponse,
   ChipRun,
@@ -43,13 +44,16 @@ export const chipApi = {
     }),
   runWorkspace: (workspaceId: string) =>
     httpRequest<RunWorkspaceResponse>(`/api/workspaces/${workspaceId}/run`, {
+      silent: true,
       method: "POST",
     }),
+  listWorkspaceRuns: (workspaceId: string, init?: HttpRequestInit) =>
+    httpRequest<{ runs: WorkspaceExecution[] }>(`/api/workspaces/${workspaceId}/executions`, init),
   listRuns: (workspaceId: string, init?: HttpRequestInit) =>
     httpRequest<ChipRunListResponse>(`/api/workspaces/${workspaceId}/runs`, init),
   getRun: (id: string) => httpRequest<ChipRun>(`/api/chip-runs/${id}`),
-  getRunLogs: (id: string) =>
-    httpRequest<ChipRunLogsResponse>(`/api/chip-runs/${id}/logs`),
+  getRunLogs: (id: string, init?: HttpRequestInit) =>
+    httpRequest<ChipRunLogsResponse>(`/api/chip-runs/${id}/logs`, init),
   getInputSlot: (workspaceId: string, chipId: string) =>
     httpRequest<ChipInputSlotResponse>(
       `/api/workspaces/${workspaceId}/chips/${chipId}/input-slot`,

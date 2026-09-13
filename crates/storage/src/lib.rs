@@ -8,6 +8,8 @@ mod execution_repo;
 mod extract_repo;
 mod file_repo;
 mod identity;
+mod http_auth;
+pub use http_auth::HttpAuthConfig;
 mod job_repo;
 mod load_repo;
 mod models;
@@ -141,7 +143,7 @@ impl Store {
 
     pub async fn live_connection(&self, id: &str) -> Result<LiveConnection, StorageError> {
         let row = sqlx::query_as::<_, ConnectionSecretRow>(
-            "SELECT id, name, driver, host, port, database_name, username, password_cipher, ssl
+            "SELECT id, name, driver, host, port, database_name, username, password_cipher, ssl, json_extract(options_json, '$.http_auth') AS http_auth_json
              FROM connections WHERE id = ?",
         )
         .bind(id)
@@ -158,6 +160,8 @@ impl Store {
             database: row.database_name,
             username: row.username,
             password,
+            http_auth: row.http_auth_json.as_deref().map(serde_json::from_str).transpose()
+                .map_err(|_| StorageError::Invalid("invalid saved HTTP auth settings".into()))?,
             ssl: row.ssl != 0,
         })
     }
@@ -194,6 +198,7 @@ struct ConnectionSecretRow {
     username: String,
     password_cipher: String,
     ssl: i64,
+    http_auth_json: Option<String>,
 }
 
 pub fn upload_rel(id: &str, filename: &str) -> String {
@@ -938,6 +943,7 @@ mod tests {
             .unwrap();
         let connection = store
             .insert_connection(NewConnection {
+                http_auth: None,
                 name: "delete-chip-connection".into(),
                 driver: "sqlite".into(),
                 host: String::new(),
@@ -1339,6 +1345,7 @@ mod tests {
             .unwrap();
         let conn = store
             .insert_connection(NewConnection {
+                http_auth: None,
                 name: "fk-test".into(),
                 driver: "sqlite".into(),
                 host: String::new(),

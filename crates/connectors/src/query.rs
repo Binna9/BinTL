@@ -704,6 +704,7 @@ mod tests {
         pool.close().await;
 
         let connection = LiveConnection {
+            http_auth: None,
             id: "test".into(),
             name: "test".into(),
             driver: "sqlite".into(),

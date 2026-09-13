@@ -6,6 +6,7 @@ impl Store {
         &self,
         new: NewConnection,
     ) -> Result<ConnectionRow, StorageError> {
+        if let Some(auth) = &new.http_auth { auth.validate()?; }
         let driver = new.driver.to_ascii_lowercase();
         if !supported_driver(&driver) {
             return Err(StorageError::Invalid(
@@ -36,8 +37,8 @@ impl Store {
         let cipher = secret::encrypt(&self.secret_key, &new.password)?;
         sqlx::query(
             "INSERT INTO connections
-             (id, name, driver, host, port, database_name, username, password_cipher, ssl, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, name, driver, host, port, database_name, username, password_cipher, ssl, created_at, options_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(new.name.trim())
@@ -49,6 +50,7 @@ impl Store {
         .bind(&cipher)
         .bind(i64::from(new.ssl))
         .bind(&created_at)
+        .bind(serde_json::json!({ "http_auth": new.http_auth }).to_string())
         .execute(&self.pool)
         .await?;
         search::sync_search_best_effort(self, "connection", self.sync_search_connection(&id)).await;
@@ -65,6 +67,7 @@ impl Store {
         if self.get_connection(id).await?.is_none() {
             return Err(StorageError::NotFound("connection not found".into()));
         }
+        if let Some(auth) = &new.http_auth { auth.validate()?; }
         let driver = new.driver.to_ascii_lowercase();
         if !supported_driver(&driver) {
             return Err(StorageError::Invalid(
@@ -91,6 +94,7 @@ impl Store {
             return Err(StorageError::Invalid("host and database required".into()));
         }
 
+        let mut tx = self.pool.begin().await?;
         if new.password.is_empty() {
             sqlx::query(
                 "UPDATE connections
@@ -105,7 +109,7 @@ impl Store {
             .bind(new.username.trim())
             .bind(i64::from(new.ssl))
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         } else {
             let cipher = secret::encrypt(&self.secret_key, &new.password)?;
@@ -123,9 +127,16 @@ impl Store {
             .bind(&cipher)
             .bind(i64::from(new.ssl))
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         }
+
+        if let Some(auth) = &new.http_auth {
+            let raw = serde_json::to_string(auth).map_err(|_| StorageError::Invalid("invalid auth settings".into()))?;
+            sqlx::query("UPDATE connections SET options_json=json_set(options_json, '$.http_auth', json(?)) WHERE id=?")
+                .bind(raw).bind(id).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
 
         search::sync_search_best_effort(self, "connection", self.sync_search_connection(id)).await;
         self.get_connection(id)
@@ -135,7 +146,7 @@ impl Store {
 
     pub async fn get_connection(&self, id: &str) -> Result<Option<ConnectionRow>, StorageError> {
         let row = sqlx::query_as::<_, ConnectionRow>(
-            "SELECT id, name, driver, host, port, database_name, username, ssl, created_at
+            "SELECT id, name, driver, host, port, database_name, username, ssl, created_at, json_extract(options_json, '$.http_auth') AS http_auth_json
              FROM connections WHERE id = ?",
         )
         .bind(id)
@@ -146,7 +157,7 @@ impl Store {
 
     pub async fn list_connections(&self) -> Result<Vec<ConnectionRow>, StorageError> {
         let rows = sqlx::query_as::<_, ConnectionRow>(
-            "SELECT id, name, driver, host, port, database_name, username, ssl, created_at
+            "SELECT id, name, driver, host, port, database_name, username, ssl, created_at, json_extract(options_json, '$.http_auth') AS http_auth_json
              FROM connections ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)

@@ -317,6 +317,8 @@ pub struct ChipBindingRow {
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ChipRunRow {
+    pub execution_id: String,
+    pub execution_source: String,
     pub id: String,
     pub chip_id: String,
     pub workspace_id: String,
@@ -432,7 +434,7 @@ pub(crate) const CHIP_JOIN_COLS: &str = "c.id, c.owner_user_id, c.name, c.kind,
                  (SELECT revision FROM loads l WHERE l.id = c.load_id), c.revision, 1) AS revision,
         c.active, c.created_at, c.updated_at";
 pub(crate) const CHIP_RUN_COLS: &str =
-    "s.id, s.chip_id, e.workspace_id, s.kind, s.status,
+    "s.id, s.execution_id, e.source AS execution_source, s.chip_id, e.workspace_id, s.kind, s.status,
         s.definition_snapshot_json AS config_snapshot_json,
         s.definition_revision AS revision_snapshot,
         (SELECT i.data_file_id FROM execution_inputs i WHERE i.execution_step_id = s.id ORDER BY i.ordinal LIMIT 1) AS input_dataset_id,
@@ -506,6 +508,7 @@ pub(crate) const EXTRACT_COLS: &str =
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ConnectionRow {
+    pub http_auth_json: Option<String>,
     pub id: String,
     pub name: String,
     pub driver: String,
@@ -519,6 +522,7 @@ pub struct ConnectionRow {
 
 #[derive(Debug, Clone)]
 pub struct LiveConnection {
+    pub http_auth: Option<crate::HttpAuthConfig>,
     pub id: String,
     pub name: String,
     pub driver: String,
@@ -532,6 +536,7 @@ pub struct LiveConnection {
 
 #[derive(Debug, Clone)]
 pub struct NewConnection {
+    pub http_auth: Option<crate::HttpAuthConfig>,
     pub name: String,
     pub driver: String,
     pub host: String,
@@ -540,4 +545,15 @@ pub struct NewConnection {
     pub username: String,
     pub password: String,
     pub ssl: bool,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct WorkspaceExecutionRow {
+    pub id: String,
+    pub workspace_id: String,
+    pub status: String,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub error_message: Option<String>,
 }

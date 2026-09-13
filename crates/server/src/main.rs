@@ -71,6 +71,11 @@ async fn main() {
             std::process::exit(1);
         });
 
+    store.recover_interrupted_workspace_executions().await.unwrap_or_else(|error| {
+        eprintln!("workspace execution recovery error: {error}");
+        std::process::exit(1);
+    });
+
     let execution_permits = Arc::new(Semaphore::new(config.max_concurrent_jobs.max(1)));
     let (execution_tx, mut execution_rx) = mpsc::channel::<ExecutionTask>(64);
     let worker_store = store.clone();

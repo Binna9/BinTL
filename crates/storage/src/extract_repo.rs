@@ -94,7 +94,7 @@ impl Store {
              WHERE s.kind = 'extract'
                AND NOT (s.chip_id IS NOT NULL AND json_extract(s.result_json, '$.child_step_id') IS NOT NULL)
                AND (
-                 (s.status != 'succeeded' AND x.source != 'chip')
+                 (s.status != 'succeeded' AND x.source NOT IN ('chip', 'workspace'))
                  OR EXISTS (
                    SELECT 1
                    FROM execution_outputs visible_output
@@ -148,11 +148,9 @@ impl Store {
         .bind(id)
         .execute(&mut *tx)
         .await?;
-        let deleted = sqlx::query("DELETE FROM executions WHERE id = (SELECT execution_id FROM execution_steps WHERE id = ?)")
+        // Deleting an output must not cascade into the other chips of a workspace run.
+        sqlx::query("DELETE FROM executions WHERE id = (SELECT execution_id FROM execution_steps WHERE id = ?) AND source != 'workspace'")
             .bind(id).execute(&mut *tx).await?;
-        if deleted.rows_affected() == 0 {
-            return Err(StorageError::NotFound("extract not found".into()));
-        }
         tx.commit().await?;
         let mut dirs = Vec::new();
         if let Some(rel) = row.stored_path.as_deref() {

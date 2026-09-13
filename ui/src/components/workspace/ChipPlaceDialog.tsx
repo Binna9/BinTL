@@ -109,14 +109,16 @@ function CatalogChipPanel({
       </div>
       <ul className="m-0 min-h-0 flex-1 list-none divide-y divide-border/50 overflow-y-auto overscroll-contain rounded-lg border border-border/60 p-0">
         {filtered.map((chip) => {
-          const selected = selectedIds.includes(chip.id);
+          const placed = canvasChipIds.has(chip.id);
+          const selected = !placed && selectedIds.includes(chip.id);
           return (
             <li key={chip.id}>
               <button
                 type="button"
+                disabled={placed}
                 className={cn(
                   "flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none",
-                  selected ? "bg-accent-subtle/80" : "hover:bg-subtle/70",
+                  placed ? "cursor-not-allowed opacity-50" : selected ? "bg-accent-subtle/80" : "hover:bg-subtle/70",
                 )}
                 aria-pressed={selected}
                 onClick={() =>
@@ -137,7 +139,7 @@ function CatalogChipPanel({
                 </span>
                 <RowIcon className={cn("size-4 shrink-0", iconClassName)} aria-hidden="true" />
                 <span className="min-w-0 flex-1 truncate text-sm font-medium text-text">{chip.name}</span>
-                {canvasChipIds.has(chip.id) ? (
+                {placed ? (
                   <span className="shrink-0 text-[11px] text-text-tertiary">{messages.workspace.chipOnCanvas}</span>
                 ) : null}
               </button>

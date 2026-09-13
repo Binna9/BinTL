@@ -7,6 +7,7 @@ const tone: Record<string, string> = {
   succeeded: "text-success before:bg-success",
   failed: "text-danger before:bg-danger",
   canceled: "text-text-tertiary before:bg-text-tertiary",
+  skipped: "text-text-tertiary before:bg-text-tertiary",
 };
 
 export function StatusPill({ value, label }: { value: string; label?: string }) {

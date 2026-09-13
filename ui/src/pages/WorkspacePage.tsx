@@ -1,3 +1,4 @@
+import type { WorkspaceExecution } from "@/types/chip";
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Spline, Workflow, X } from "lucide-react";
@@ -227,6 +228,25 @@ export function WorkspacePage() {
     folders,
     messages.workspace.topLevel,
   );
+  const [latestWorkspaceRun, setLatestWorkspaceRun] = useState<WorkspaceExecution | null>(null);
+  useEffect(() => {
+    setLatestWorkspaceRun(null);
+    if (!workspaceId) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const refreshStatus = async () => {
+      try {
+        const response = await chipApi.listWorkspaceRuns(workspaceId, { silent: true });
+        if (!cancelled) setLatestWorkspaceRun(response.runs[0] ?? null);
+      } catch {
+        // Preserve the last known status on a transient network failure.
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void refreshStatus(), 2000);
+      }
+    };
+    void refreshStatus();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [workspaceId]);
   const workspaceName = selectedWorkspace?.name ?? messages.workspace.selectWorkspace;
   const infoInputChip = infoChip
     ? chips.find((chip) => chip.id === edges.find(
@@ -933,11 +953,12 @@ export function WorkspacePage() {
   }
 
   function placeCatalogChips(catalogChipsToPlace: Chip[], origin: Point) {
-    if (catalogChipsToPlace.length === 0) return;
+    const unplacedChips = catalogChipsToPlace.filter((chip) => !chips.some((placed) => placed.id === chip.id));
+    if (unplacedChips.length === 0) return;
     let nextPositions = { ...positionsRef.current };
     let nextChips = [...chips];
     const placedIds: string[] = [];
-    catalogChipsToPlace.forEach((catalogChip, index) => {
+    unplacedChips.forEach((catalogChip, index) => {
       const nextPoint = clampPoint({
         x: origin.x + index * (NODE_W + CHIP_PLACE_GAP),
         y: origin.y,
@@ -1945,8 +1966,8 @@ export function WorkspacePage() {
         <header className="relative shrink-0 overflow-hidden border-b border-accent/15 bg-gradient-to-r from-surface from-[12%] to-accent-subtle px-4 py-2.5">
           <div className="pointer-events-none absolute -right-10 -top-12 size-36 rounded-full bg-accent/20 blur-2xl" />
           <div className="pointer-events-none absolute right-24 -bottom-14 size-24 rounded-full bg-surface/70 blur-xl" />
-          <div className="relative flex items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-3">
+          <div className="relative flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <div className="flex min-w-[200px] flex-1 items-center gap-3">
               <span
                 className={cn(
                   "flex h-8 w-10 shrink-0 items-center border-r border-border pr-3",
@@ -1968,17 +1989,25 @@ export function WorkspacePage() {
                 )}
               </span>
               <div className="min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
+                <p className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
                   {messages.workspace.title}
                 </p>
                 <div className="mt-0.5 flex min-w-0 items-center">
                   <h1 className="min-w-0 truncate text-sm font-semibold tracking-[-0.015em] text-text">
                     {focusChip?.name ?? selectedWorkspace?.name ?? messages.workspace.selectWorkspace}
                   </h1>
+                  {!focusChip && workspaceId && (
+                    <span className="ml-3 shrink-0" aria-live="polite">
+                      <StatusPill value={latestWorkspaceRun?.status ?? "idle"}
+                        label={!latestWorkspaceRun ? messages.chipRuns.notRun
+                          : latestWorkspaceRun.status === "succeeded" ? messages.chipRuns.success
+                          : latestWorkspaceRun.status === "running" ? messages.chipRuns.running : undefined} />
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-1">
                   <Button
                     type="button"
@@ -2298,7 +2327,7 @@ export function WorkspacePage() {
                   <StatusPill
                     value={latest.status}
                     label={
-                      ACTIVE_STATUSES.has(latest.status)
+                      latest.status === "running"
                         ? messages.workspace.runStatusRunning
                         : latest.status === "succeeded"
                           ? messages.workspace.runStatusSucceeded

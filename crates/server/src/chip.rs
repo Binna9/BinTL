@@ -22,6 +22,8 @@ use crate::state::{AppState, ExecutionTask};
 
 const LOAD_NULL_MARKER: &str = "\u{1e}BINTL_NULL\u{1e}";
 
+mod workspace_execution;
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/chips", get(list_catalog).post(register_chip))
@@ -36,6 +38,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/chips/{id}/run", post(run_chip))
         .route("/api/workspaces/{id}/run", post(run_workspace))
         .route("/api/workspaces/{id}/runs", get(list_runs))
+        .route("/api/workspaces/{id}/executions", get(list_workspace_runs))
         .route("/api/chip-runs/{id}", get(get_run))
         .route("/api/chip-runs/{id}/logs", get(get_run_logs))
         .route(
@@ -328,7 +331,7 @@ async fn register_chip(
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            if let Err(error) = queue_chip_run(&state, &user, &chip, workspace_id, None).await {
+            if let Err(error) = queue_chip_run(&state, &user, &chip, workspace_id, None, None).await {
                 tracing::warn!(
                     chip_id = %chip.id,
                     ?error,
@@ -508,15 +511,16 @@ async fn queue_chip_run(
     chip: &ChipRow,
     workspace_id: &str,
     requested_input: Option<String>,
+    execution_id: Option<&str>,
 ) -> Result<ChipRunRow, AppError> {
     match chip.kind.as_str() {
-        "extract" => queue_extract_chip_run(state, user, chip, workspace_id, requested_input).await,
+        "extract" => queue_extract_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await,
         "transform" => {
-            queue_transform_chip_run(state, user, chip, workspace_id, requested_input).await
+            queue_transform_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await
         }
-        "load" => queue_load_chip_run(state, user, chip, workspace_id, requested_input).await,
+        "load" => queue_load_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await,
         "validation" => {
-            queue_validation_chip_run(state, user, chip, workspace_id, requested_input).await
+            queue_validation_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await
         }
         _ => {
             access::require_workspace(&state.store, user, workspace_id).await?;
@@ -534,6 +538,7 @@ async fn queue_validation_chip_run(
     chip: &ChipRow,
     workspace_id: &str,
     requested_input: Option<String>,
+    execution_id: Option<&str>,
 ) -> Result<ChipRunRow, AppError> {
     access::require_workspace(&state.store, user, workspace_id).await?;
     if chip.active == 0 {
@@ -623,6 +628,7 @@ async fn queue_validation_chip_run(
         workspace_id,
         &resolved_config,
         Some(&target_id),
+        execution_id,
     )
     .await
 }
@@ -633,6 +639,7 @@ async fn queue_load_chip_run(
     chip: &ChipRow,
     workspace_id: &str,
     requested_input: Option<String>,
+    execution_id: Option<&str>,
 ) -> Result<ChipRunRow, AppError> {
     access::require_workspace(&state.store, user, workspace_id).await?;
     if chip.active == 0 {
@@ -676,7 +683,7 @@ async fn queue_load_chip_run(
     if !state.store.resolve(&dataset.stored_path).is_file() {
         return Err(AppError::not_found("input dataset file missing"));
     }
-    enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&dataset_id)).await
+    enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&dataset_id), execution_id).await
 }
 
 async fn queue_extract_chip_run(
@@ -685,6 +692,7 @@ async fn queue_extract_chip_run(
     chip: &ChipRow,
     workspace_id: &str,
     requested_input: Option<String>,
+    execution_id: Option<&str>,
 ) -> Result<ChipRunRow, AppError> {
     access::require_workspace(&state.store, user, workspace_id).await?;
     if chip.active == 0 {
@@ -716,7 +724,7 @@ async fn queue_extract_chip_run(
     {
         return Err(AppError::bad("configure the extract chip before running"));
     }
-    enqueue_chip_run(state, chip, workspace_id, &config_raw, None).await
+    enqueue_chip_run(state, chip, workspace_id, &config_raw, None, execution_id).await
 }
 
 async fn queue_transform_chip_run(
@@ -725,6 +733,7 @@ async fn queue_transform_chip_run(
     chip: &ChipRow,
     workspace_id: &str,
     requested_input: Option<String>,
+    execution_id: Option<&str>,
 ) -> Result<ChipRunRow, AppError> {
     access::require_workspace(&state.store, user, workspace_id).await?;
     if chip.active == 0 {
@@ -771,7 +780,7 @@ async fn queue_transform_chip_run(
     if !state.store.resolve(&dataset.stored_path).is_file() {
         return Err(AppError::not_found("input dataset file missing"));
     }
-    enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&dataset_id)).await
+    enqueue_chip_run(state, chip, workspace_id, &config_raw, Some(&dataset_id), execution_id).await
 }
 
 async fn enqueue_chip_run(
@@ -780,15 +789,17 @@ async fn enqueue_chip_run(
     workspace_id: &str,
     config_raw: &str,
     input_dataset_id: Option<&str>,
+    execution_id: Option<&str>,
 ) -> Result<ChipRunRow, AppError> {
     let run = state
         .store
-        .create_chip_run(
+        .create_chip_run_in_execution(
             &chip.id,
             workspace_id,
             chip.revision,
             config_raw,
             input_dataset_id,
+            execution_id,
         )
         .await?;
     if state
@@ -821,6 +832,7 @@ async fn run_chip(
         &chip,
         &body.workspace_id,
         body.input_dataset_id,
+        None,
     )
     .await?;
     Ok(Json(json!({
@@ -891,7 +903,10 @@ async fn run_workspace(
     Path(workspace_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     access::require_workspace(&state.store, &user, &workspace_id).await?;
-    let run_ids = run_workspace_internal(&state, &user, &workspace_id).await?;
+    let task_workspace_id = workspace_id.clone();
+    let run_ids = tokio::spawn(async move {
+        run_workspace_internal(&state, &user, &task_workspace_id).await
+    }).await.map_err(|error| AppError::bad(format!("workspace execution interrupted: {error}")))??;
     Ok(Json(json!({
         "ok": true,
         "status": "succeeded",
@@ -905,123 +920,14 @@ pub(crate) async fn run_workspace_internal(
     user: &CurrentUser,
     workspace_id: &str,
 ) -> Result<Vec<String>, AppError> {
-    let chips = state.store.list_chips(&workspace_id).await?;
-    let edges = state.store.list_chip_edges(&workspace_id).await?;
-    let ordered = workspace_run_order(chips, &edges)?;
-    if ordered.is_empty() {
-        return Err(AppError::bad("workspace has no active chips"));
+    let execution_id = state.store.create_workspace_execution(workspace_id, &user.0.id).await?;
+    let result = workspace_execution::execute(state, user, workspace_id, &execution_id).await;
+    if result.is_err() {
+        state.store.skip_waiting_workspace_steps(&execution_id, "전체 실행이 중단되어 실행하지 않았습니다.").await?;
     }
-
-    let mut run_ids = Vec::with_capacity(ordered.len());
-    let mut outputs = HashMap::<String, Option<String>>::new();
-    let mut outcomes = HashMap::<String, Option<bool>>::new();
-    let mut first_failure: Option<String> = None;
-    for chip in ordered {
-        let condition_blocked = edges.iter().any(|edge| {
-            if edge.to_chip_id != chip.id {
-                return false;
-            }
-            match edge.kind.as_str() {
-                "on_success" => outcomes.get(&edge.from_chip_id) != Some(&Some(true)),
-                "on_error" => outcomes.get(&edge.from_chip_id) != Some(&Some(false)),
-                "always" => !outcomes.contains_key(&edge.from_chip_id),
-                _ => false,
-            }
-        });
-        if condition_blocked {
-            outputs.insert(chip.id.clone(), None);
-            outcomes.insert(chip.id.clone(), None);
-            continue;
-        }
-        let data_source = edges
-            .iter()
-            .find(|edge| edge.kind == "data" && edge.to_chip_id == chip.id)
-            .map(|edge| edge.from_chip_id.as_str());
-        let requested_input = match data_source {
-            Some(source_id) => match outputs.get(source_id).and_then(|value| value.as_deref()) {
-                Some(dataset_id) => Some(dataset_id.to_string()),
-                None => {
-                    let source_name = state
-                        .store
-                        .get_chip(source_id)
-                        .await?
-                        .map(|source| source.name)
-                        .unwrap_or_else(|| source_id.to_string());
-                    let reason = format!(
-                        "상위 칩 '{}'이 이번 전체 실행에서 dataset을 생성하지 못했습니다.",
-                        source_name
-                    );
-                    if let Some(id) =
-                        record_workspace_queue_failure(state, &chip, workspace_id, &reason).await?
-                    {
-                        run_ids.push(id);
-                    }
-                    outputs.insert(chip.id.clone(), None);
-                    outcomes.insert(chip.id.clone(), Some(false));
-                    first_failure.get_or_insert_with(|| format!("{}: {}", chip.name, reason));
-                    continue;
-                }
-            },
-            None => None,
-        };
-        let run = match queue_chip_run(state, user, &chip, workspace_id, requested_input).await {
-            Ok(run) => run,
-            Err(error) => {
-                let reason = error.message().to_string();
-                if let Some(id) =
-                    record_workspace_queue_failure(state, &chip, workspace_id, &reason).await?
-                {
-                    run_ids.push(id);
-                }
-                outputs.insert(chip.id.clone(), None);
-                outcomes.insert(chip.id.clone(), Some(false));
-                first_failure.get_or_insert_with(|| format!("{}: {}", chip.name, reason));
-                continue;
-            }
-        };
-        run_ids.push(run.id.clone());
-        match wait_for_chip_run(state, &run.id).await {
-            Ok(()) => {
-                let completed = state.store.get_chip_run(&run.id).await?;
-                outputs.insert(
-                    chip.id.clone(),
-                    completed.and_then(|item| item.output_dataset_id),
-                );
-                outcomes.insert(chip.id.clone(), Some(true));
-            }
-            Err(error) => {
-                outputs.insert(chip.id.clone(), None);
-                outcomes.insert(chip.id.clone(), Some(false));
-                first_failure.get_or_insert_with(|| format!("{}: {}", chip.name, error.message()));
-            }
-        }
-    }
-    match first_failure {
-        Some(failure) => Err(AppError::bad(failure)),
-        None => Ok(run_ids),
-    }
-}
-
-async fn record_workspace_queue_failure(
-    state: &AppState,
-    chip: &ChipRow,
-    workspace_id: &str,
-    reason: &str,
-) -> Result<Option<String>, AppError> {
-    // A queue-time validation failure must still be visible as this chip's
-    // latest failed run. Unconfigured chips may not have a resolvable binding,
-    // so persist an empty snapshot instead of silently dropping the history.
-    let config = state
-        .store
-        .resolve_chip_config_json(chip)
-        .await
-        .unwrap_or_else(|_| "{}".to_string());
-    let run = state
-        .store
-        .create_chip_run(&chip.id, workspace_id, chip.revision, &config, None)
-        .await?;
-    crate::execution_error::record_chip_failure(&state.store, &run.id, &chip.kind, reason).await;
-    Ok(Some(run.id))
+    let error = result.as_ref().err().map(|error| error.message().to_string());
+    state.store.finish_workspace_execution(&execution_id, error.as_deref()).await?;
+    result
 }
 
 async fn list_runs(
@@ -1037,6 +943,17 @@ async fn list_runs(
         .iter()
         .map(chip_run_json)
         .collect::<Result<Vec<_>, _>>()?;
+    let workspace_runs = state.store.list_workspace_executions(&workspace_id).await?;
+    Ok(Json(json!({ "runs": runs, "workspace_runs": workspace_runs })))
+}
+
+async fn list_workspace_runs(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(workspace_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    access::require_workspace(&state.store, &user, &workspace_id).await?;
+    let runs = state.store.list_workspace_executions(&workspace_id).await?;
     Ok(Json(json!({ "runs": runs })))
 }
 
@@ -1136,12 +1053,14 @@ pub async fn run_extract_chip_sync(
     chip_id: &str,
 ) -> Result<(), AppError> {
     let chip = access::require_chip(&state.store, user, chip_id).await?;
-    let run = queue_extract_chip_run(state, user, &chip, workspace_id, None).await?;
-    wait_for_chip_run(state, &run.id).await
+    let run = queue_extract_chip_run(state, user, &chip, workspace_id, None, None).await?;
+    tokio::time::timeout(Duration::from_secs(120), wait_for_chip_run(state, &run.id))
+        .await
+        .map_err(|_| AppError::bad("chip run timed out"))?
 }
 
 async fn wait_for_chip_run(state: &AppState, run_id: &str) -> Result<(), AppError> {
-    for _ in 0..600 {
+    loop {
         tokio::time::sleep(Duration::from_millis(200)).await;
         let current = state
             .store
@@ -1165,7 +1084,6 @@ async fn wait_for_chip_run(state: &AppState, run_id: &str) -> Result<(), AppErro
             }
         }
     }
-    Err(AppError::bad("chip run timed out"))
 }
 
 pub(crate) async fn chip_json(store: &Store, row: &ChipRow) -> Result<Value, AppError> {
@@ -1389,10 +1307,12 @@ fn chip_run_json(row: &ChipRunRow) -> Result<Value, AppError> {
         .map_err(|error| AppError::bad(format!("stored chip snapshot is invalid: {error}")))?;
     Ok(json!({
         "id": row.id,
+        "execution_id": row.execution_id,
+        "execution_source": row.execution_source,
         "chip_id": row.chip_id,
         "workspace_id": row.workspace_id,
         "kind": row.kind,
-        "status": row.status,
+        "status": if row.status == "canceled" && row.error_code.as_deref() == Some("WORKSPACE_STEP_SKIPPED") { "skipped" } else { &row.status },
         "config_snapshot": config_snapshot,
         "revision_snapshot": row.revision_snapshot,
         "input_dataset_id": row.input_dataset_id,
@@ -1756,7 +1676,9 @@ pub(crate) async fn run_one(
 async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     let mut config: ValidationConfig = serde_json::from_str(&run.config_snapshot_json)
         .map_err(|error| format!("invalid validation config snapshot: {error}"))?;
-    if let Some(rule_id) = config.validation_rule_id.as_deref() {
+    let frozen_rule = run.execution_source == "workspace" && serde_json::from_str::<Value>(&run.config_snapshot_json)
+        .ok().and_then(|value| value["workspace_rule_snapshot"].as_bool()).unwrap_or(false);
+    if let Some(rule_id) = config.validation_rule_id.as_deref().filter(|_| !frozen_rule) {
         let rule = store
             .get_validation_rule(rule_id)
             .await
@@ -2331,13 +2253,13 @@ async fn run_transform(
         .or_else(|| dataset.has_header.map(|value| value != 0));
     let spec_json = serde_json::to_string(&spec.with_read(delimiter, has_header))
         .map_err(|error| error.to_string())?;
-    let transform_id = store
-        .get_chip_binding(&run.chip_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .filter(|binding| binding.ref_kind == "transform")
-        .map(|binding| binding.ref_id)
-        .ok_or_else(|| "transform chip has no transform definition".to_string())?;
+    let transform_id = if run.execution_source == "workspace" {
+        store.get_execution_step(&run.id).await.map_err(|error| error.to_string())?
+            .and_then(|step| step.transform_id)
+    } else {
+        store.get_chip_binding(&run.chip_id).await.map_err(|error| error.to_string())?
+            .filter(|binding| binding.ref_kind == "transform").map(|binding| binding.ref_id)
+    }.ok_or_else(|| "transform chip has no transform definition".to_string())?;
     let job = store
         .insert_transform_job(
             &dataset.stored_path,

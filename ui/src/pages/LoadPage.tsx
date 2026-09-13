@@ -72,6 +72,17 @@ export function LoadPage() {
 
   useEffect(() => { void refresh(); }, []);
 
+  const inputExtractId = (location.state as { inputExtractId?: string } | null)?.inputExtractId;
+  useEffect(() => {
+    if (workspaceMode || !inputExtractId || userSelectedInput) return;
+    const dataset = datasets.find((item) => item.origin?.extract_id === inputExtractId);
+    if (!dataset) return;
+    setInputDatasetId(dataset.id);
+    setUserSelectedInput(true);
+    setExpandedKinds(new Set([dataset.kind as (typeof KIND_ORDER)[number]]));
+  }, [datasets, inputExtractId, userSelectedInput, workspaceMode]);
+
+
   const spec = useMemo<LoadSpec>(() => destinationType === "database"
     ? { input_dataset_id: inputDatasetId || undefined, destination: { type: "database", connection_id: connectionId, database, table }, write_mode: writeMode, conflict_keys: writeMode === "upsert" ? conflictKeys : undefined }
     : { input_dataset_id: inputDatasetId || undefined, destination: { type: "file", format, filename }, write_mode: "replace" },

@@ -15,6 +15,8 @@ pub(super) struct CreateConnectionBody {
     password: String,
     #[serde(default)]
     ssl: bool,
+    #[serde(default)]
+    http_auth: Option<storage::HttpAuthConfig>,
 }
 
 pub(super) fn default_port(driver: &str, port: Option<u16>) -> u16 {
@@ -43,6 +45,7 @@ pub(super) async fn create_connection(
             database: body.database,
             username: body.username,
             password: body.password,
+            http_auth: body.http_auth,
             ssl: body.ssl,
         })
         .await?;
@@ -72,7 +75,8 @@ pub(super) async fn update_connection(
                 database: body.database,
                 username: body.username,
                 password: body.password,
-                ssl: body.ssl,
+                http_auth: body.http_auth,
+            ssl: body.ssl,
             },
         )
         .await?;

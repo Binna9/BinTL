@@ -46,6 +46,8 @@ export interface ChipEdge {
 }
 
 export interface ChipRun {
+  execution_id: string;
+  execution_source: string;
   id: string;
   chip_id: string;
   workspace_id: string;
@@ -67,6 +69,7 @@ export interface ChipListResponse {
 
 export interface ChipRunListResponse {
   runs: ChipRun[];
+  workspace_runs: WorkspaceExecution[];
 }
 
 export interface ChipRunLogsResponse {
@@ -129,4 +132,14 @@ export interface ChipInputSlotResponse {
   status?: string;
   columns?: { name: string; dtype?: string; type?: string }[];
   dataset?: Record<string, unknown>;
+}
+
+export interface WorkspaceExecution {
+  id: string;
+  workspace_id: string;
+  status: string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error_message?: string | null;
 }

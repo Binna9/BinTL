@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, BookmarkPlus, Braces, Clock3, Code2, Eye, FileDown, FileJson2, Globe2, ListFilter, Plus, RotateCcw, Settings2, Trash2 } from "lucide-react";
+import { ArrowLeft, BookmarkPlus, Braces, Code2, Database, Eye, FileDown, FileJson2, Globe2, ListFilter, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   columnWidthsForContent,
@@ -11,7 +11,7 @@ import {
 import { AppDialog } from "@/components/AppDialog";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { SplitLayout } from "@/layouts/SplitLayout";
-import { Button } from "@/components/ui/button";
+import { ActionAnchor, Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
@@ -120,25 +120,44 @@ function RequestSection({
   className,
   icon,
   meta,
+  onSave,
 }: {
   title: string;
   children: ReactNode;
   className?: string;
   icon?: ReactNode;
   meta?: ReactNode;
+  onSave?: () => void;
 }) {
+  const { messages } = useLanguage();
   return (
     <section className={cn("overflow-hidden rounded-xl border border-border/80 bg-surface shadow-[0_1px_2px_rgba(15,23,42,0.03)]", className)}>
-      <div className="flex min-h-12 items-center justify-between gap-3 border-b border-border/70 bg-raised/70 px-4 py-2.5">
+      <div className="flex min-h-10 items-center justify-between gap-2 border-b border-border/70 bg-raised/70 px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2.5">
           {icon ? <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-accent-subtle text-accent">{icon}</span> : null}
           <h2 className="truncate text-[13px] font-semibold text-text">{title}</h2>
+          {onSave ? <Button type="button" variant="secondary" className="gap-1.5" onClick={onSave}><Save className="size-3.5" />{messages.common.save}</Button> : null}
         </div>
         {meta ? <div className="shrink-0 text-[11px] text-text-tertiary">{meta}</div> : null}
       </div>
-      <div className="p-4 md:p-5">{children}</div>
+      <div className="p-3">{children}</div>
     </section>
   );
+}
+
+function AppliedValues({ rows }: { rows: HttpKv[] }) {
+  const { messages } = useLanguage();
+  return rows.length ? (
+    <div className="mt-3"><p className="mb-1.5 text-[11px] font-medium text-text-secondary">{messages.apiExtract.appliedValues}</p>
+    <dl className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border bg-raised/40">
+      {rows.map((row, index) => (
+        <div key={index} className="grid grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)] gap-3 px-3 py-2 text-xs">
+          <dt className="break-all font-mono font-medium text-text-secondary">{row.name}</dt>
+          <dd className="whitespace-pre-wrap break-all font-mono text-text">{row.value}</dd>
+        </div>
+      ))}
+    </dl></div>
+  ) : null;
 }
 
 export function ApiExtractPage() {
@@ -161,6 +180,10 @@ export function ApiExtractPage() {
   const [body, setBody] = useState("");
   const [bodyMode, setBodyMode] = useState<"json" | "raw" | "urlencoded" | "multipart">("json");
   const [form, setForm] = useState<HttpKv[]>([emptyKv()]);
+  const [appliedQuery, setAppliedQuery] = useState<HttpKv[]>([]);
+  const [appliedHeaders, setAppliedHeaders] = useState<HttpKv[]>([]);
+  const [appliedBody, setAppliedBody] = useState<{ mode: typeof bodyMode; body: string; form: HttpKv[] } | null>(null);
+  const [appliedGraphql, setAppliedGraphql] = useState<{ query: string; variables: string; operation: string } | null>(null);
   const [timeoutMs, setTimeoutMs] = useState(60_000);
   const [graphqlQuery, setGraphqlQuery] = useState("");
   const [graphqlVariables, setGraphqlVariables] = useState("{}");
@@ -171,6 +194,7 @@ export function ApiExtractPage() {
   const [header, setHeader] = useState(true);
   const [addSequence, setAddSequence] = useState(false);
   const [exportName, setExportName] = useState("");
+  const [isResultOpen, setIsResultOpen] = useState(false);
   const [preview, setPreview] = useState<HttpPreviewResponse | null>(null);
   const [running, setRunning] = useState(false);
   const [extracting, setExtracting] = useState(false);
@@ -220,9 +244,9 @@ export function ApiExtractPage() {
 
   function buildSource(): HttpSource {
     let variables: Record<string, unknown> = {};
-    if (requestType === "graphql" && graphqlVariables.trim()) {
+    if (requestType === "graphql" && (appliedGraphql?.variables ?? "").trim()) {
       try {
-        variables = JSON.parse(graphqlVariables) as Record<string, unknown>;
+        variables = JSON.parse(appliedGraphql?.variables || "{}") as Record<string, unknown>;
       } catch {
         throw new Error(messages.apiExtract.graphqlVariablesInvalid);
       }
@@ -232,22 +256,25 @@ export function ApiExtractPage() {
       request_type: requestType,
       method,
       path: path.trim(),
-      query: compactKv(query),
-      headers: compactKv(headers),
-      body: method === "GET" || method === "HEAD" ? null : body,
-      body_mode: bodyMode,
-      form: compactKv(form),
+      query: appliedQuery,
+      headers: appliedHeaders,
+      body: method === "GET" || method === "HEAD" ? null : appliedBody?.body ?? "",
+      body_mode: appliedBody?.mode ?? "json",
+      form: appliedBody?.form ?? [],
       timeout_ms: timeoutMs,
-      graphql_query: requestType === "graphql" ? graphqlQuery : "",
+      graphql_query: requestType === "graphql" ? appliedGraphql?.query ?? "" : "",
       graphql_variables: variables,
-      graphql_operation_name: requestType === "graphql" ? graphqlOperationName : "",
+      graphql_operation_name: requestType === "graphql" ? appliedGraphql?.operation ?? "" : "",
       records_path: recordsPath.trim(),
     };
   }
 
   async function runPreview() {
     if (!browseId) return;
+    setIsResultOpen(true);
     setRunning(true);
+    setExtractId(null);
+    setExtractRow(null);
     try {
       const source = buildSource();
       const next = await extractApi.previewHttp({
@@ -332,6 +359,10 @@ export function ApiExtractPage() {
     setMethod("GET");
     setRequestType("rest");
     setPath("");
+    setAppliedQuery([]);
+    setAppliedHeaders([]);
+    setAppliedBody(null);
+    setAppliedGraphql(null);
     setQuery([emptyKv()]);
     setHeaders([emptyKv()]);
     setBody("");
@@ -348,6 +379,7 @@ export function ApiExtractPage() {
     setAddSequence(false);
     setExportName("");
     setPreview(null);
+    setIsResultOpen(false);
     setExtractId(null);
     setExtractRow(null);
     setIsRegisterOpen(false);
@@ -388,7 +420,7 @@ export function ApiExtractPage() {
     () => preview ? responseTable(preview.response, recordsPath, limit) : null,
     [limit, preview, recordsPath],
   );
-  const canExtract = canRun && Boolean(preview) && !mappedPreview?.error && !extractBusy;
+  const canExtract = !running && canRun && Boolean(preview) && !mappedPreview?.error && !extractBusy;
   const delimiterOptions = DELIMITER_VALUES.map((value) => ({ value, label: value === "tab" ? "tab" : value }));
   const resultWidths = useMemo(() => {
     if (!mappedPreview?.columns.length) return undefined;
@@ -425,24 +457,14 @@ export function ApiExtractPage() {
               <RotateCcw className="size-3.5" aria-hidden="true" />
               {messages.apiExtract.reset}
             </Button>
-            <Button
-              type="button"
-              className="gap-1.5"
-              disabled={!canRun}
-              onClick={() => void openRegister()}
-            >
-              <BookmarkPlus className="size-3.5" />
-              {messages.query.registerTask}
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              className="gap-1.5"
-              disabled={!canExtract}
-              onClick={() => void onExtract()}
-            >
-              <FileDown className="size-3.5" />
-              {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
+            {preview ? (
+              <Button type="button" variant="secondary" onClick={() => setIsResultOpen(true)}>
+                {messages.apiExtract.responseTitle}
+              </Button>
+            ) : null}
+            <Button type="button" variant="primary" className="gap-1.5" disabled={!canRun || running || extractBusy} onClick={() => void runPreview()}>
+              <Eye className="size-3.5" />
+              {running ? messages.apiExtract.calling : messages.apiExtract.call}
             </Button>
           </>
         }
@@ -484,22 +506,15 @@ export function ApiExtractPage() {
               title={messages.apiExtract.detailTitle}
               meta={browseId ? httpConnections.find((connection) => connection.id === browseId)?.name : undefined}
             />
-            <SplitLayout
-              className="min-h-0 flex-1"
-              defaultSizes={[560]}
-              defaultRatio={0.5}
-              minSize={360}
-              insetGutter
-            >
-            <div className="scroll-pane min-h-0 overflow-y-auto bg-subtle/25 p-4 md:p-5">
-              <div className="mx-auto flex max-w-5xl flex-col gap-4">
+            <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-subtle/25 p-3">
+              <div className="flex w-full flex-col gap-3">
                 <RequestSection
                   title={messages.apiExtract.apiInfo}
                   icon={<Globe2 className="size-3.5" aria-hidden="true" />}
                   meta={<span className="rounded-md border border-border bg-surface px-2 py-1 font-mono font-semibold text-text-secondary">{requestType === "graphql" ? "GraphQL · POST" : `${requestType.toUpperCase()} · ${method}`}</span>}
                   className="ring-1 ring-accent/5"
                 >
-                  <div className="grid gap-3 md:grid-cols-[7rem_7rem_minmax(0,1fr)]">
+                  <div className="grid gap-3 md:grid-cols-[6rem_6rem_minmax(0,1fr)_8rem]">
                     <FormField label={messages.apiExtract.requestType}>
                       <Select
                         value={requestType}
@@ -522,11 +537,15 @@ export function ApiExtractPage() {
                         onChange={(event) => setPath(event.target.value)}
                       />
                     </FormField>
+                    <FormField label={messages.apiExtract.timeout}>
+                      <input className="field-control technical" type="number" min="1000" max="300000" value={timeoutMs} onChange={(event) => setTimeoutMs(Number(event.target.value) || 60_000)} />
+                    </FormField>
                   </div>
                 </RequestSection>
 
-                <section className="grid items-start gap-4 lg:grid-cols-2">
-                  <RequestSection title={messages.apiExtract.queryParams} icon={<ListFilter className="size-3.5" aria-hidden="true" />} meta={<span>{compactKv(query).length}</span>}>
+                <p className="text-[11px] text-text-tertiary">{messages.apiExtract.applyValuesHint}</p>
+                <section className="grid items-start gap-3 lg:grid-cols-2">
+                  <RequestSection title={messages.apiExtract.queryParams} icon={<ListFilter className="size-3.5" aria-hidden="true" />} onSave={() => setAppliedQuery(compactKv(query).map((row) => ({ ...row })))}>
                     <KvEditor
                       rows={query}
                       onChange={setQuery}
@@ -534,8 +553,9 @@ export function ApiExtractPage() {
                       valueLabel={messages.apiExtract.paramValue}
                       addLabel={messages.apiExtract.addParam}
                     />
+                    <AppliedValues rows={appliedQuery} />
                   </RequestSection>
-                  <RequestSection title={messages.apiExtract.headers} icon={<Code2 className="size-3.5" aria-hidden="true" />} meta={<span>{compactKv(headers).length}</span>}>
+                  <RequestSection title={messages.apiExtract.headers} icon={<Code2 className="size-3.5" aria-hidden="true" />} onSave={() => setAppliedHeaders(compactKv(headers).map((row) => ({ ...row })))}>
                     <KvEditor
                       rows={headers}
                       onChange={setHeaders}
@@ -543,19 +563,12 @@ export function ApiExtractPage() {
                       valueLabel={messages.apiExtract.headerValue}
                       addLabel={messages.apiExtract.addHeader}
                     />
+                    <AppliedValues rows={appliedHeaders} />
                   </RequestSection>
                 </section>
 
-                <RequestSection title={messages.apiExtract.requestOptions} icon={<Settings2 className="size-3.5" aria-hidden="true" />}>
-                  <div className="flex max-w-sm items-end gap-3 rounded-lg border border-border/70 bg-raised/50 p-3">
-                    <span className="mb-0.5 grid size-9 shrink-0 place-items-center rounded-lg bg-surface text-text-tertiary shadow-sm"><Clock3 className="size-4" aria-hidden="true" /></span>
-                    <FormField label={messages.apiExtract.timeout}>
-                      <input className="field-control technical" type="number" min="1000" max="300000" value={timeoutMs} onChange={(event) => setTimeoutMs(Number(event.target.value) || 60_000)} />
-                    </FormField>
-                  </div>
-                </RequestSection>
                 {requestType === "graphql" ? (
-                  <RequestSection title={messages.apiExtract.graphql} icon={<Braces className="size-3.5" aria-hidden="true" />}>
+                  <RequestSection title={messages.apiExtract.graphql} onSave={() => setAppliedGraphql({ query: graphqlQuery, variables: graphqlVariables, operation: graphqlOperationName })} icon={<Braces className="size-3.5" aria-hidden="true" />}>
                     <div className="grid gap-4 lg:grid-cols-2">
                       <FormField label={messages.apiExtract.graphqlQuery}>
                         <textarea className="field-control technical min-h-[12rem] font-mono text-[12px]" value={graphqlQuery} placeholder="query Users($first: Int!) { users(first: $first) { nodes { id name } } }" onChange={(event) => setGraphqlQuery(event.target.value)} />
@@ -569,9 +582,10 @@ export function ApiExtractPage() {
                         </FormField>
                       </div>
                     </div>
+                    {appliedGraphql ? <AppliedValues rows={[{ name: messages.apiExtract.graphqlQuery, value: appliedGraphql.query }, { name: messages.apiExtract.graphqlVariables, value: appliedGraphql.variables }, { name: messages.apiExtract.graphqlOperationName, value: appliedGraphql.operation }]} /> : null}
                   </RequestSection>
                 ) : method === "GET" || method === "HEAD" ? null : (
-                  <RequestSection title={messages.apiExtract.requestBody} icon={<FileJson2 className="size-3.5" aria-hidden="true" />}>
+                  <RequestSection title={messages.apiExtract.requestBody} onSave={() => setAppliedBody({ mode: bodyMode, body, form: compactKv(form).map((row) => ({ ...row })) })} icon={<FileJson2 className="size-3.5" aria-hidden="true" />}>
                     <FormField label={messages.apiExtract.bodyType}>
                       <Select value={bodyMode} options={[{ value: "json", label: "JSON" }, { value: "raw", label: messages.apiExtract.rawText }, { value: "urlencoded", label: "x-www-form-urlencoded" }, { value: "multipart", label: "multipart/form-data" }]} onChange={(value) => setBodyMode(value as typeof bodyMode)} />
                     </FormField>
@@ -585,17 +599,70 @@ export function ApiExtractPage() {
                         onChange={(event) => setBody(event.target.value)}
                       />
                     </FormField></div>}
+                    {appliedBody ? <AppliedValues rows={appliedBody.mode === "urlencoded" || appliedBody.mode === "multipart" ? appliedBody.form : [{ name: appliedBody.mode.toUpperCase(), value: appliedBody.body }]} /> : null}
                   </RequestSection>
                 )}
 
               </div>
             </div>
-            <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-border bg-surface">
+          </div>
+        </SplitLayout>
+      </Panel>
+
+      <AppDialog
+        open={isResultOpen}
+        title={messages.apiExtract.responseTitle}
+        icon={<Braces className="size-4 text-accent" aria-hidden="true" />}
+        className="h-[90vh] w-[96vw] max-w-[90rem]"
+        minWidth={360}
+        minHeight={360}
+        onClose={() => setIsResultOpen(false)}
+        footer={
+          <>
+            {extractRow?.status === "succeeded" ? (
+              <>
+                <ActionAnchor variant="secondary" href={extractApi.getDownloadUrl(extractRow.id)}>
+                  {messages.common.download}
+                </ActionAnchor>
+                <Button type="button" className="gap-1.5" onClick={() => navigate("/load", { state: { returnWorkspaceId, inputExtractId: extractRow.id } })}>
+                  <Database className="size-3.5" />
+                  {messages.load.title}
+                </Button>
+              </>
+            ) : null}
+            <Button
+              type="button"
+              className="gap-1.5"
+              disabled={!canRun}
+              onClick={() => void openRegister()}
+            >
+              <BookmarkPlus className="size-3.5" />
+              {messages.query.registerTask}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              className="gap-1.5"
+              disabled={!canExtract}
+              onClick={() => void onExtract()}
+            >
+              <FileDown className="size-3.5" />
+              {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
+            </Button>
+          </>
+        }
+      >
+        {extractRow ? (
+          <p role="status" className={cn("border-b border-border px-4 py-2 text-xs", extractRow.status === "failed" ? "text-danger" : "text-text-secondary")}>
+            {extractRow.status === "failed" ? extractRow.error_message : extractRow.status === "succeeded" ? messages.query.extractDone(extractRow.row_count ?? 0) : messages.connectionsPage.extracting}
+          </p>
+        ) : null}
+            <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface">
               <PaneHeader
                 title={messages.apiExtract.responseTitle}
                 meta={preview ? `HTTP ${preview.status}` : undefined}
                 actions={
-                  <Button type="button" variant="primary" className="gap-1.5" disabled={!canRun || running} onClick={() => void runPreview()}>
+                  <Button type="button" variant="primary" className="gap-1.5" disabled={!canRun || running || extractBusy} onClick={() => void runPreview()}>
                     <Eye className="size-3.5" />
                     {running ? messages.apiExtract.calling : messages.apiExtract.call}
                   </Button>
@@ -648,10 +715,7 @@ export function ApiExtractPage() {
                 </div>
               </SplitLayout>
             </section>
-            </SplitLayout>
-          </div>
-        </SplitLayout>
-      </Panel>
+      </AppDialog>
 
       <AppDialog
         open={isRegisterOpen}

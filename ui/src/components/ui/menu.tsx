@@ -1,6 +1,6 @@
 import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, SquareMinus, SquarePlus } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -234,15 +234,31 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
   ({ items, className, inactive = false }, ref) => {
     const { messages } = useLanguage();
     const [openGroups, setOpenGroups] = React.useState<Set<string>>(storedOpenGroups);
+    const groupKeys = React.useMemo(() => {
+      const keys: string[] = [];
+      function collect(entries: MenuItem[]) {
+        for (const item of entries) {
+          if (item.children?.length) {
+            keys.push(item.to);
+            collect(item.children);
+          }
+        }
+      }
+      collect(items);
+      return keys;
+    }, [items]);
+    React.useEffect(() => {
+      try {
+        window.sessionStorage.setItem(MENU_OPEN_STORAGE_KEY, JSON.stringify([...openGroups]));
+      } catch {
+        // Storage may be unavailable in privacy-restricted browser contexts.
+      }
+    }, [openGroups]);
     const setGroupOpen = React.useCallback((key: string, open: boolean) => {
       setOpenGroups((current) => {
+        if (current.has(key) === open) return current;
         const next = new Set(current);
         if (open) next.add(key); else next.delete(key);
-        try {
-          window.sessionStorage.setItem(MENU_OPEN_STORAGE_KEY, JSON.stringify([...next]));
-        } catch {
-          // Storage may be unavailable in privacy-restricted browser contexts.
-        }
         return next;
       });
     }, []);
@@ -256,6 +272,31 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
         initial={false}
         aria-label={messages.nav.mainMenu}
       >
+        <div className="mb-2 flex shrink-0 items-center gap-1 border-b border-border pb-2 pl-3">
+          <span className="mr-auto text-xs font-semibold tracking-wide text-text-secondary">
+            {messages.nav.menuTitle}
+          </span>
+          <button
+            type="button"
+            title={messages.nav.expandAll}
+            aria-label={messages.nav.expandAll}
+            disabled={groupKeys.length === 0 || groupKeys.every((key) => openGroups.has(key))}
+            className="grid size-8 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default disabled:opacity-40"
+            onClick={() => setOpenGroups(new Set(groupKeys))}
+          >
+            <SquarePlus className="size-[17px]" strokeWidth={1.75} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            title={messages.nav.collapseAll}
+            aria-label={messages.nav.collapseAll}
+            disabled={!groupKeys.some((key) => openGroups.has(key))}
+            className="grid size-8 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default disabled:opacity-40"
+            onClick={() => setOpenGroups(new Set())}
+          >
+            <SquareMinus className="size-[17px]" strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        </div>
         <nav
           className="scroll-pane min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain"
           aria-label={messages.nav.platform}

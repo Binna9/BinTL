@@ -159,7 +159,7 @@ impl Store {
         .await?;
         sqlx::query(
             "UPDATE executions SET status = 'running', started_at = COALESCE(started_at, ?),
-             error_message = NULL WHERE id = ? AND status = 'queued'",
+             error_message = NULL WHERE id = ? AND status = 'queued' AND source != 'workspace'",
         )
         .bind(&now)
         .bind(execution_id)
@@ -207,7 +207,7 @@ impl Store {
             ));
         }
         sqlx::query(
-            "UPDATE executions SET status = ?, error_message = ?, finished_at = ? WHERE id = ?",
+            "UPDATE executions SET status = ?, error_message = ?, finished_at = ? WHERE id = ? AND source != 'workspace'",
         )
         .bind(status)
         .bind(error_message)
