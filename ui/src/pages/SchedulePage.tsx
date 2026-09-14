@@ -21,7 +21,6 @@ import type { ScheduleRequest, ScheduleUnit, WorkspaceSchedule } from "@/types/s
 import type { Workspace, WorkspaceFolder } from "@/types/workspace";
 
 const emptyDraft: ScheduleRequest = { workspace_id: "", name: "", schedule_type: "interval", interval_value: 1, interval_unit: "day", second: 0, hour: 0, minute: 0, day_of_month: 1, month_of_year: 1, enabled: true };
-const SCHEDULE_PAGE_SIZE = 8;
 const INTERVAL_LIMITS: Record<ScheduleUnit, { min: number; max: number }> = {
   second: { min: 1, max: 60 }, minute: { min: 1, max: 60 }, hour: { min: 1, max: 24 },
   day: { min: 1, max: 31 }, month: { min: 1, max: 12 }, year: { min: 1, max: 100 },
@@ -66,7 +65,7 @@ export function SchedulePage() {
       || dayValid)
     && (draft.interval_unit !== "year"
       || ((draft.month_of_year ?? 0) >= 1 && (draft.month_of_year ?? 0) <= 12)));
-  const paging = usePagination(schedules, "", SCHEDULE_PAGE_SIZE);
+  const paging = usePagination(schedules);
 
   function beginCreate() { setEditing(null); setDraft({ ...emptyDraft, workspace_id: workspaces[0]?.id ?? "" }); setIntervalInput("1"); setDayInput("1"); setOpen(true); }
   function beginEdit(row: WorkspaceSchedule) {
@@ -111,20 +110,20 @@ export function SchedulePage() {
   const filteredWorkspaces = workspaceSearch.trim() ? workspaces.filter((row) => row.name.toLocaleLowerCase().includes(workspaceSearch.trim().toLocaleLowerCase())) : workspaces;
   const usesTime = (["day", "month", "year"] as ScheduleUnit[]).includes(draft.interval_unit);
 
-  return <PageShell fill>
+  return <PageShell>
     <PageHeader iconName="schedule" eyebrow={t.eyebrow} title={t.title} description={t.description}
       actions={<Button onClick={beginCreate} disabled={!workspaces.length}><Plus className="size-4" />{t.newSchedule}</Button>} />
-    <Panel fill><PanelHeader title={t.listTitle} actions={<span className="text-xs text-text-tertiary">{messages.common.count(schedules.length)}</span>} />
-      <PanelBody className="flex min-h-0 flex-1 flex-col bg-surface p-4">
-        {!schedules.length ? <EmptyState icon={<NavIcon name="schedule" />} title={t.empty} hint={t.emptyHint} />
-          : <div className="min-h-0 flex-1 overflow-auto"><div className="grid gap-3 xl:grid-cols-2">{paging.items.map((row) => <article key={row.id} className="rounded-2xl border border-border bg-surface p-4 shadow-sm">
+    <Panel><PanelHeader title={t.listTitle} actions={<span className="text-xs text-text-tertiary">{messages.common.count(schedules.length)}</span>} />
+      <PanelBody className="bg-surface p-4">
+        {!schedules.length ? <EmptyState className="min-h-[calc(100vh-18rem)]" icon={<NavIcon name="schedule" />} title={t.empty} hint={t.emptyHint} />
+          : <div className="grid gap-3 xl:grid-cols-2">{paging.items.map((row) => <article key={row.id} className="rounded-2xl border border-border bg-surface p-4 shadow-sm">
             <div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent-subtle text-accent"><CalendarClock className="size-5" /></span>
               <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="truncate text-sm font-semibold">{row.name}</h2><span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${row.enabled ? "bg-success/10 text-success" : "bg-subtle text-text-tertiary"}`}>{row.enabled ? t.active : t.paused}</span></div><p className="mt-1 truncate text-xs text-text-secondary">{workspaceNames.get(row.workspace_id) ?? row.workspace_id}</p></div>
               <div className="flex gap-1"><Button variant="quiet" onClick={() => void toggle(row)}>{row.enabled ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}</Button><Button variant="quiet" onClick={() => beginEdit(row)}><Pencil className="size-3.5" /></Button><Button variant="quiet" onClick={() => void remove(row)}><Trash2 className="size-3.5" /></Button></div></div>
             <div className="mt-4 grid grid-cols-2 gap-3 rounded-xl border border-border bg-surface p-3 text-xs"><div><p className="text-text-tertiary">{t.cadence}</p><p className="mt-1 font-medium">{cadence(row)}</p></div><div><p className="text-text-tertiary">{t.nextRun}</p><p className="mt-1 font-medium">{row.enabled ? new Date(row.next_run_at).toLocaleString() : "—"}</p></div></div>
-          </article>)}</div></div>}
+          </article>)}</div>}
       </PanelBody>
-      <PaginationBar page={paging.page} pageCount={paging.pageCount} pageSize={paging.pageSize} total={paging.total} start={paging.start} end={paging.end} onPageChange={paging.setPage} />
+      <PaginationBar page={paging.page} pageCount={paging.pageCount} pageSize={paging.pageSize} total={paging.total} start={paging.start} end={paging.end} onPageChange={paging.setPage} onPageSizeChange={paging.setPageSize} />
     </Panel>
     <AppDialog open={open} title={editing ? t.editSchedule : t.newSchedule} icon={<CalendarClock className="size-4 text-accent" />} onClose={() => setOpen(false)} className="w-[min(32rem,94vw)]"
       footer={<><Button variant="quiet" onClick={() => setOpen(false)}>{messages.common.cancel}</Button><Button disabled={!valid || busy} onClick={() => void save()}>{busy ? messages.common.saving : messages.common.save}</Button></>}>

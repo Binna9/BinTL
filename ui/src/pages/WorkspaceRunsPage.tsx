@@ -153,7 +153,7 @@ export function WorkspaceRunsPage() {
     ? messages.chipRuns.success : value === "running" ? messages.chipRuns.running : undefined} />;
 
   return (
-    <PageShell fill>
+    <PageShell>
       <PageHeader iconName="runs" eyebrow={messages.history.eyebrow} title={messages.chipRuns.title}
         description={messages.chipRuns.description}
         actions={<Button type="button" variant="secondary" disabled={loading} onClick={() => void refresh()}><RefreshCw className="size-3.5" aria-hidden="true" />{messages.common.refresh}</Button>} />
@@ -190,7 +190,7 @@ export function WorkspaceRunsPage() {
           </button>
         ))}
       </div>
-      <Panel fill role="tabpanel" id="run-history-panel-chip" aria-labelledby="run-history-tab-chip" hidden={activeTab !== "chip"} tabIndex={0}>
+      <Panel role="tabpanel" id="run-history-panel-chip" aria-labelledby="run-history-tab-chip" hidden={activeTab !== "chip"} tabIndex={0}>
         {activeTab === "chip" && <>
         <Toolbar>
           <ToolbarGroup>
@@ -207,7 +207,6 @@ export function WorkspaceRunsPage() {
           onStatus={setChipStatus}
         />
         <ChipRunGrid
-          fill
           rows={chipRuns}
           loading={loading}
           status={status}
@@ -217,7 +216,7 @@ export function WorkspaceRunsPage() {
         />
         </>}
       </Panel>
-      <Panel fill role="tabpanel" id="run-history-panel-workspace" aria-labelledby="run-history-tab-workspace" hidden={activeTab !== "workspace"} tabIndex={0}>
+      <Panel role="tabpanel" id="run-history-panel-workspace" aria-labelledby="run-history-tab-workspace" hidden={activeTab !== "workspace"} tabIndex={0}>
         {activeTab === "workspace" && <>
         <Toolbar>
           <ToolbarGroup>
@@ -238,7 +237,6 @@ export function WorkspaceRunsPage() {
           onTime={setWorkspaceTime}
         />
         <WorkspaceRunGrid
-          fill
           rows={visibleWorkspaceRuns}
           runs={runs}
           loading={loading}
@@ -291,7 +289,7 @@ function ChipRunGrid({
   const grid = (
     <>
       <DataGrid
-        className={fill ? "min-h-0 flex-1" : "max-h-[360px]"}
+        className={fill ? "min-h-0 flex-1" : undefined}
         headers={[...messages.chipRuns.headers]}
         columnWidths={[180, 88, 120, 120, 180, 160, 120]}
         empty={
@@ -358,7 +356,7 @@ function WorkspaceRunGrid({
   return (
     <>
       <DataGrid
-        className={fill ? "min-h-0 flex-1" : "max-h-[360px]"}
+        className={fill ? "min-h-0 flex-1" : undefined}
         headers={[...messages.chipRuns.workspaceHeaders]}
         columnWidths={[200, 88, 140, 140, 140, 180, 140]}
         empty={

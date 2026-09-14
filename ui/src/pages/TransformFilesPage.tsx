@@ -124,14 +124,14 @@ export function TransformFilesPage() {
   }
 
   return (
-    <PageShell fill>
+    <PageShell>
       <PageHeader
         iconName="transformFiles"
         eyebrow={messages.transformFiles.eyebrow}
         title={messages.transformFiles.title}
         description={messages.transformFiles.description}
       />
-      <Panel fill>
+      <Panel>
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -165,7 +165,6 @@ export function TransformFilesPage() {
           </ToolbarGroup>
         </Toolbar>
         <DataGrid
-          className="min-h-0 flex-1"
           headers={[...messages.transformFiles.headers]}
           columnWidths={[56, 280, 100, 96, 140, 110]}
           empty={files.length === 0 ? <EmptyState icon={<NavIcon name="transformFiles" />} title={messages.empty.transformFiles} hint={messages.empty.transformFilesHint} /> : undefined}

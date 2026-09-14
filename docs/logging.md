@@ -105,10 +105,11 @@ CSV·TSV 결과는 실제 데이터이므로 파일 시스템에 저장하지만
 
 1. 입력 dataset과 적재 설정을 검증한다.
 2. `load_started` 이벤트에 입력 파일명을 기록한다.
-3. DB 대상이면 CSV를 준비해 지정 테이블에 적재한다. 파일 대상이면 CSV 또는 parquet를 지정 경로에 저장한다.
-4. `execution_steps.result_json`에 대상, 모드, 입력·적재 행 수, 바이트 수, 소요 시간, 결과 경로를 저장한다. (`load_results` 테이블은 없다.)
-5. `load_completed` 이벤트에 적재 행 수, 대상, 소요 시간을 기록한다.
-6. 실행을 `succeeded`로 변경한다. 오류 시 공통 `failed` 이벤트와 오류 메시지를 저장한다.
+3. `load_preparing` / `load_prepared` 뒤에 DB면 CSV를 준비해 지정 테이블에 적재한다. 파일 대상이면 CSV 또는 parquet를 지정 경로에 저장한다.
+4. 배치가 끝날 때마다 `load_progress`에 적재 행 수(알고 있으면 입력 대비 %)를 남기고 `execution_steps.output_rows`를 갱신한다. 2초보다 잦은 진행 로그는 줄인다.
+5. `execution_steps.result_json`에 대상, 모드, 입력·적재 행 수, 바이트 수, 소요 시간, 결과 경로를 저장한다. (`load_results` 테이블은 없다.)
+6. `load_completed` 이벤트에 적재 행 수, 대상, 소요 시간을 기록한다.
+7. 실행을 `succeeded`로 변경한다. 오류 시 공통 `failed` 이벤트와 오류 메시지를 저장한다.
 
 적재 수치의 원본은 `execution_steps.result_json`이고, `execution_logs`는 사람이 읽는 진행 과정과 오류의 원본이다.
 

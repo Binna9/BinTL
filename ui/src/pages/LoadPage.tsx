@@ -24,10 +24,11 @@ import { isChipNameConflict } from "@/services/httpClient";
 import { loadApi } from "@/services/load/loadApi";
 import { datasetApi } from "@/services/transform/datasetApi";
 import { datasetFromSlot, KIND_APPEARANCE, KIND_ORDER } from "@/features/transform/transformEditorModel";
-import type { CatalogSelection, DataConnection } from "@/types/connection";
+import { alignLoadSchema, validLoadTable } from "@/lib/loadSchema";
+import type { CatalogSelection, DataConnection, DatabaseColumn } from "@/types/connection";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type { Dataset, FramePreview } from "@/types/dataset";
-import type { LoadDefinition, LoadSpec } from "@/types/load";
+import type { LoadDefinition, LoadRunSummary, LoadSpec } from "@/types/load";
 
 export function LoadPage() {
   const { messages } = useLanguage();
@@ -61,6 +62,9 @@ export function LoadPage() {
   const [filename, setFilename] = useState("result.parquet");
   const [writeMode, setWriteMode] = useState<"append" | "truncate" | "upsert" | "recreate">("append");
   const [conflictKeys, setConflictKeys] = useState<string[]>([]);
+  const [destColumns, setDestColumns] = useState<DatabaseColumn[]>([]);
+  const [destStatus, setDestStatus] = useState<"idle" | "loading" | "existing" | "new">("idle");
+  const [lastRun, setLastRun] = useState<LoadRunSummary | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function refresh() {
@@ -93,6 +97,7 @@ export function LoadPage() {
   function reset() {
     setEditingId(undefined); setName(""); setDestinationType("database"); setConnectionId(""); setDatabase("");
     setTable(""); setSelectedTable(null); setFormat("parquet"); setFilename("result.parquet"); setWriteMode("append"); setConflictKeys([]);
+    setDestColumns([]); setDestStatus("idle"); setLastRun(null);
     if (!canvasMode) setInputDatasetId("");
   }
 
@@ -173,9 +178,17 @@ export function LoadPage() {
     } finally { setBusy(false); }
   }
 
-  const canSave = Boolean(inputDatasetId && (destinationType === "database" ? connectionId && table.trim() && (writeMode !== "upsert" || conflictKeys.length > 0) : filename.trim()));
+  const schema = alignLoadSchema(
+    (preview?.columns ?? []).map((column) => column.name),
+    destColumns.map((column) => column.name),
+  );
+  const schemaBlocksRun = destinationType === "database"
+    && destStatus === "existing"
+    && writeMode !== "recreate"
+    && schema.extra.length > 0;
+  const canSave = Boolean(inputDatasetId && (destinationType === "database" ? connectionId && validLoadTable(table) && (writeMode !== "upsert" || conflictKeys.length > 0) : filename.trim()));
   const selectedInput = datasets.find((item) => item.id === inputDatasetId);
-  const canRun = canSave && Boolean(selectedInput?.available);
+  const canRun = canSave && Boolean(selectedInput?.available) && !schemaBlocksRun;
 
   async function runLoad() {
     if (!canRun || busy) return;
@@ -183,7 +196,8 @@ export function LoadPage() {
     if (!confirmed) return;
     setBusy(true);
     try {
-      const result = await loadApi.run(spec);
+      const result = await loadApi.run(spec, editingId);
+      setLastRun(result);
       toastSuccess(t.runCompleted(result.loaded_rows));
     } catch (error) {
       toastError(t.runError, error);
@@ -283,6 +297,40 @@ export function LoadPage() {
       .then((response) => setPreview(response.preview))
       .catch((error) => toastError(t.loadError, error));
   }, [datasets, inputDatasetId, t.loadError]);
+
+  useEffect(() => {
+    if (destinationType !== "database" || !connectionId || !validLoadTable(table)) {
+      setDestColumns([]);
+      setDestStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    setDestStatus("loading");
+    const timer = window.setTimeout(() => {
+      void connectionApi.getColumns(connectionId, table.trim(), database || undefined, { silent: true })
+        .then((response) => {
+          if (cancelled) return;
+          setDestColumns(response.columns);
+          setDestStatus(response.columns.length ? "existing" : "new");
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setDestColumns([]);
+          setDestStatus("new");
+        });
+    }, 280);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [connectionId, database, destinationType, table]);
+
+  useEffect(() => {
+    if (!editingId) return;
+    void loadApi.lastRun(editingId)
+      .then((response) => setLastRun(response.run))
+      .catch(() => setLastRun(null));
+  }, [editingId]);
 
   return (
     <PageShell>
@@ -499,7 +547,22 @@ export function LoadPage() {
                   <div className="grid gap-5 p-5">
                     {destinationType === "database" && !connectionId ? <p className="text-xs text-text-tertiary">{t.connectionFirst}</p> : null}
                     {destinationType === "database" ? <>
-                      <FormField label={t.table} hint={t.tableCatalogOnly}><input className="field-control technical cursor-default" value={table} readOnly aria-readonly="true" placeholder={t.tableCatalogPlaceholder} disabled={!connectionId} /></FormField>
+                      <FormField label={t.table} hint={t.tableCatalogOnly}>
+                        <input
+                          className="field-control technical"
+                          value={table}
+                          placeholder={t.tableCatalogPlaceholder}
+                          disabled={!connectionId}
+                          onChange={(event) => {
+                            const next = event.target.value;
+                            setTable(next);
+                            setSelectedTable(next.trim()
+                              ? { database, schema: null, table: next.trim(), qualified: next.trim() }
+                              : null);
+                          }}
+                        />
+                      </FormField>
+                      {table.trim() && !validLoadTable(table) ? <p className="text-xs text-danger">{t.tableInvalid}</p> : null}
                       <FormField label={t.writeMode} hint={t.writeModeHint}><Select value={writeMode} onChange={(v) => setWriteMode(v as typeof writeMode)} options={[{ value: "append", label: t.append }, { value: "truncate", label: t.truncate }, { value: "upsert", label: t.upsert }, { value: "recreate", label: t.recreate }]} disabled={!connectionId} /></FormField>
                       {writeMode === "upsert" ? (
                         <FormField label={t.conflictKeys} hint={t.conflictKeysHint}>
@@ -517,6 +580,61 @@ export function LoadPage() {
                       <FormField label={t.filename}><input className="field-control technical" value={filename} onChange={(e) => setFilename(e.target.value)} /></FormField>
                       <p className="rounded-lg border border-border bg-subtle/40 p-3 text-xs leading-5 text-text-secondary">{t.fileHint}</p>
                     </>}
+                    {destinationType === "database" && connectionId && validLoadTable(table) ? (
+                      <section className="rounded-lg border border-border bg-subtle/30 p-3">
+                        <h3 className="text-[12px] font-semibold text-text">{t.schemaTitle}</h3>
+                        {destStatus === "loading" ? <p className="mt-2 text-xs text-text-tertiary">{t.schemaLoading}</p> : null}
+                        {destStatus === "new" ? (
+                          <div className="mt-2 space-y-1">
+                            <p className="text-[11px] font-semibold text-accent">{t.newTable}</p>
+                            <p className="text-xs text-text-secondary">{t.newTableHint}</p>
+                          </div>
+                        ) : null}
+                        {destStatus === "existing" ? (
+                          <div className="mt-2 space-y-1.5 text-xs">
+                            <p className="text-text-secondary">{t.schemaOk(schema.matched.length)}</p>
+                            {schema.extra.length ? (
+                              <p className="text-warning">
+                                {t.schemaExtra}: {schema.extra.join(", ")}
+                              </p>
+                            ) : null}
+                            {schema.missing.length ? (
+                              <p className="text-text-tertiary">
+                                {t.schemaMissing}: {schema.missing.join(", ")}
+                              </p>
+                            ) : null}
+                            {schemaBlocksRun ? <p className="text-danger">{t.schemaBlocksRun}</p> : null}
+                          </div>
+                        ) : null}
+                      </section>
+                    ) : null}
+                    <section className="rounded-lg border border-border bg-subtle/30 p-3">
+                      <h3 className="text-[12px] font-semibold text-text">{t.lastRun}</h3>
+                      {lastRun ? (
+                        <dl className="mt-2 grid gap-1.5 text-xs">
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-text-tertiary">{t.lastRunDestination}</dt>
+                            <dd className="min-w-0 truncate text-right font-medium text-text">{lastRun.destination}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-text-tertiary">{t.lastRunRows}</dt>
+                            <dd className="tabular-nums font-medium text-text">{lastRun.loaded_rows.toLocaleString()}</dd>
+                          </div>
+                          {lastRun.input_rows != null ? (
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-text-tertiary">{t.lastRunInput}</dt>
+                              <dd className="tabular-nums text-text">{lastRun.input_rows.toLocaleString()}</dd>
+                            </div>
+                          ) : null}
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-text-tertiary">{t.lastRunDuration}</dt>
+                            <dd className="tabular-nums text-text">{lastRun.duration_ms.toLocaleString()}ms</dd>
+                          </div>
+                        </dl>
+                      ) : (
+                        <p className="mt-2 text-xs text-text-tertiary">{t.lastRunEmpty}</p>
+                      )}
+                    </section>
                   </div>
                 </section>
                 </div>

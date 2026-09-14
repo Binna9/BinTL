@@ -50,6 +50,8 @@ struct SaveLoadBody {
 #[derive(Deserialize)]
 struct RunLoadBody {
     spec: Value,
+    #[serde(default)]
+    load_id: Option<String>,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -60,6 +62,7 @@ pub fn routes() -> Router<AppState> {
             "/api/loads/{id}",
             get(get_load).put(update_load).delete(delete_load),
         )
+        .route("/api/loads/{id}/last-run", get(last_load_run))
 }
 
 async fn run_load(
@@ -87,6 +90,7 @@ async fn run_load(
             Some(user.id()),
             &snapshot,
             &dataset.id,
+            body.load_id.as_deref(),
         )
         .await?;
     let run_id = step.id;
@@ -133,12 +137,41 @@ async fn run_load(
         .await?;
     Ok(Json(json!({
         "ok": true,
+        "run_id": run_id,
         "destination": result.destination,
+        "write_mode": config.write_mode,
+        "input_rows": dataset.row_count,
         "loaded_rows": result.loaded_rows,
         "input_bytes": result.input_bytes,
         "duration_ms": result.duration_ms,
         "artifact_path": result.artifact_path,
     })))
+}
+
+async fn last_load_run(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let load = require_load(&state.store, &user, &id).await?;
+    match state
+        .store
+        .latest_load_result_for_definition(&load.id)
+        .await?
+    {
+        Some(row) => Ok(Json(json!({
+            "run": {
+                "run_id": row.chip_run_id,
+                "destination": row.destination,
+                "write_mode": row.write_mode,
+                "input_rows": row.input_rows,
+                "loaded_rows": row.loaded_rows,
+                "duration_ms": row.duration_ms,
+                "finished_at": row.created_at,
+            }
+        }))),
+        None => Ok(Json(json!({ "run": null }))),
+    }
 }
 
 fn is_planned_input_contract(dataset_id: &str) -> bool {

@@ -10,7 +10,8 @@ use engine::{Engine, PolarsEngine, TransformSpec, ValidationSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use storage::{
     ChipRow, ChipRunRow, RegisterExtractChip, RegisterLoadChip, RegisterTransformChip, Store,
 };
@@ -1949,7 +1950,14 @@ async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {
             &run.id,
             "info",
             "load_started",
-            &format!("loading dataset {}", dataset.filename),
+            &format!(
+                "적재를 시작합니다. 파일: {}{}",
+                dataset.filename,
+                dataset
+                    .row_count
+                    .map(|rows| format!(", 입력 {rows}행"))
+                    .unwrap_or_default()
+            ),
             None,
         )
         .await
@@ -1983,7 +1991,7 @@ async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {
             "info",
             "load_completed",
             &format!(
-                "loaded {} rows to {} in {} ms",
+                "적재가 완료되었습니다. {}행 → {} ({}ms)",
                 result.loaded_rows, result.destination, result.duration_ms
             ),
             None,
@@ -2145,6 +2153,64 @@ fn inspect_delimited_input(
     Ok(quality)
 }
 
+struct LoadProgress {
+    store: Store,
+    run_id: String,
+    total: Option<i64>,
+    last_db: Mutex<Instant>,
+}
+
+impl LoadProgress {
+    fn new(store: Store, run_id: String, total: Option<i64>) -> Self {
+        Self {
+            store,
+            run_id,
+            total,
+            last_db: Mutex::new(Instant::now() - Duration::from_secs(10)),
+        }
+    }
+
+    fn report(&self, n: u64) {
+        let mut last = match self.last_db.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        if n != 1 && last.elapsed() < Duration::from_secs(2) && n % 10_000 != 0 {
+            return;
+        }
+        *last = Instant::now();
+        drop(last);
+        let store = self.store.clone();
+        let run_id = self.run_id.clone();
+        let message = match self.total.filter(|total| *total > 0) {
+            Some(total) => format!(
+                "{n} / {total}행을 적재했습니다. ({}%)",
+                ((n as f64 / total as f64) * 100.0).round() as u64
+            ),
+            None => format!("{n}개 행을 적재했습니다."),
+        };
+        let context = serde_json::json!({
+            "process": "load",
+            "stage": "write_destination",
+            "rows_loaded": n,
+            "input_rows": self.total,
+        })
+        .to_string();
+        tokio::spawn(async move {
+            let _ = store.set_load_progress(&run_id, n as i64).await;
+            let _ = store
+                .append_execution_log(
+                    &run_id,
+                    "info",
+                    "load_progress",
+                    &message,
+                    Some(&context),
+                )
+                .await;
+        });
+    }
+}
+
 pub(crate) struct LoadExecution {
     pub destination: String,
     pub loaded_rows: i64,
@@ -2163,7 +2229,18 @@ pub(crate) async fn execute_load_config(
 ) -> Result<LoadExecution, String> {
     let input = store.resolve(&dataset.stored_path);
     let input_bytes = std::fs::metadata(&input).ok().map(|m| m.len() as i64);
-    let started = std::time::Instant::now();
+    let started = Instant::now();
+    store
+        .append_execution_log(
+            run_id,
+            "info",
+            "load_preparing",
+            "입력 파일을 적재용으로 준비합니다.",
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let progress = LoadProgress::new(store.clone(), run_id.to_string(), dataset.row_count);
     let (destination, loaded_rows, artifact_path) = match &config.destination {
         crate::load::LoadDestination::Database {
             connection_id,
@@ -2171,11 +2248,41 @@ pub(crate) async fn execute_load_config(
             table,
         } => {
             let csv = prepare_load_csv(store, run_id, dataset, Some(LOAD_NULL_MARKER)).await?;
+            store
+                .append_execution_log(
+                    run_id,
+                    "info",
+                    "load_prepared",
+                    "적재 입력을 준비했습니다. 테이블에 쓰기를 시작합니다.",
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
             let base = store
                 .live_connection(connection_id)
                 .await
                 .map_err(|e| e.to_string())?;
             let live = connectors::with_database(&base, database.as_deref());
+            let dest = format!("{}:{}", live.name, table);
+            store
+                .append_execution_log(
+                    run_id,
+                    "info",
+                    "load_writing",
+                    &format!(
+                        "대상 {}에 {} 방식으로 적재를 시작합니다.{}",
+                        dest,
+                        config.write_mode,
+                        dataset
+                            .row_count
+                            .map(|rows| format!(" 입력 {rows}행"))
+                            .unwrap_or_default()
+                    ),
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let on_progress = |n: u64| progress.report(n);
             let loaded = load_table(
                 &live,
                 table,
@@ -2183,12 +2290,23 @@ pub(crate) async fn execute_load_config(
                 &config.write_mode,
                 &config.conflict_keys,
                 Some(LOAD_NULL_MARKER),
+                Some(&on_progress),
             )
             .await
             .map_err(|e| e.to_string())? as i64;
-            (format!("{}:{}", live.name, table), loaded, None)
+            (dest, loaded, None)
         }
         crate::load::LoadDestination::File { format, filename } => {
+            store
+                .append_execution_log(
+                    run_id,
+                    "info",
+                    "load_writing",
+                    &format!("파일 {filename}로 적재를 시작합니다."),
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
             let rel = format!("loads/{workspace_id}/{scope_id}/{filename}");
             let output = store.resolve(&rel);
             if let Some(parent) = output.parent() {
@@ -2226,7 +2344,9 @@ pub(crate) async fn execute_load_config(
                 .map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?;
             }
-            (rel.clone(), dataset.row_count.unwrap_or(0), Some(rel))
+            let loaded = dataset.row_count.unwrap_or(0);
+            progress.report(loaded as u64);
+            (rel.clone(), loaded, Some(rel))
         }
     };
     Ok(LoadExecution {

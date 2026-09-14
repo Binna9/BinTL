@@ -146,7 +146,7 @@ export function ExtractResultsPage() {
   }
 
   return (
-    <PageShell fill>
+    <PageShell>
       <PageHeader
         iconName="extracts"
         eyebrow={messages.extracts.eyebrow}
@@ -155,7 +155,7 @@ export function ExtractResultsPage() {
         actions={activeCount > 0 ? <LiveDot label={messages.extracts.generating(activeCount)} /> : null}
       />
 
-      <Panel fill>
+      <Panel>
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -189,7 +189,6 @@ export function ExtractResultsPage() {
           </ToolbarGroup>
         </Toolbar>
         <DataGrid
-          className="min-h-0 flex-1"
           headers={[...messages.extracts.headers]}
           columnWidths={[56, 180, 72, 130, 220, 96, 100, 130, 110]}
           empty={extracts.length === 0 ? <EmptyState icon={<NavIcon name="extracts" />} title={messages.empty.extracts} hint={messages.empty.extractsHint} /> : undefined}

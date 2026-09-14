@@ -165,6 +165,16 @@ async fn planned_schema_for_chip(
         let config: Value =
             serde_json::from_str(&config_raw).map_err(|error| AppError::bad(error.to_string()))?;
         apply_transform_schema(state, &mut schema.columns, config.get("spec")).await?;
+        if let Some(delimiter) = config
+            .get("spec")
+            .and_then(|spec| spec.get("read"))
+            .and_then(|read| read.get("delimiter"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            schema.delimiter = delimiter.to_string();
+        }
     }
     Ok(schema)
 }
@@ -471,6 +481,7 @@ pub async fn get_transform_input_slot(
             "source_chip_id": edge.from_chip_id,
             "source_chip_name": source_name,
             "source_chip_kind": source_kind,
+            "delimiter": dataset.delimiter.clone().unwrap_or_else(|| ",".into()),
             "dataset": crate::transform::dataset_json_public(&state.store, &dataset),
         }));
     }
@@ -563,10 +574,21 @@ async fn slot_from_fixed_dataset(
     if dataset.status != "materialized" {
         return Ok(None);
     }
+    let spec_delimiter = config
+        .get("spec")
+        .and_then(|spec| spec.get("read"))
+        .and_then(|read| read.get("delimiter"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     Ok(Some(json!({
         "mode": "materialized",
         "dataset_id": dataset.id,
         "source_chip_name": dataset.filename,
+        "delimiter": spec_delimiter
+            .or_else(|| dataset.delimiter.clone())
+            .unwrap_or_else(|| ",".into()),
         "dataset": crate::transform::dataset_json_public(&state.store, &dataset),
     })))
 }

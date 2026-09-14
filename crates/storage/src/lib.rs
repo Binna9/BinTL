@@ -1095,10 +1095,26 @@ mod tests {
             )
             .await
             .unwrap();
+        let placed_before: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM workspace_chips WHERE chip_id = ?",
+        )
+        .bind(&chip.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(placed_before.0 > 0);
 
         store.delete_chip(&chip.id).await.unwrap();
 
         assert!(store.get_chip(&chip.id).await.unwrap().is_none());
+        let canvas_placements: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM workspace_chips WHERE chip_id = ?",
+        )
+        .bind(&chip.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(canvas_placements.0, 0);
         assert!(store
             .get_extract_definition(&definition_id)
             .await

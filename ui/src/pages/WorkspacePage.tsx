@@ -1,7 +1,7 @@
 import type { WorkspaceExecution } from "@/types/chip";
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Spline, Terminal, Workflow, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Terminal, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -9,8 +9,10 @@ import {
   type ChipContextMenuState,
 } from "@/components/workspace/ChipContextMenu";
 import {
+  CanvasProducerSelect,
   ChipPlaceDialog,
   type ChipPlaceKind,
+  type EmptyConsumerDraft,
   type TransformPlaceDraft,
 } from "@/components/workspace/ChipPlaceDialog";
 import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
@@ -41,9 +43,11 @@ import {
   NODE_H,
   NODE_W,
   TOOL_KIND,
+  attachHiddenDataEdges,
   canHaveDataEdge,
   canvasPoint,
   chipFixedInputId,
+  incomingDataChipId,
   chipInMarquee,
   chipKindLabel,
   PINNED_WORKSPACE_KEY,
@@ -67,6 +71,7 @@ import {
   releasePointer,
   roundPoint,
   scrollCanvasFromPointer,
+  visibleCanvasEdges,
   wireTone,
   type CanvasSnapshot,
   type MarqueeBox,
@@ -176,7 +181,8 @@ export function WorkspacePage() {
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
   const [selectedChipIds, setSelectedChipIds] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<MarqueeBox | null>(null);
-  const [edgeTool, setEdgeTool] = useState<ChipEdgeKind>("data");
+  const [edgeTool, setEdgeTool] = useState<ChipEdgeKind>("on_success");
+  const controlEdges = useMemo(() => visibleCanvasEdges(edges), [edges]);
   const selectedChipIdsRef = useRef(selectedChipIds);
   selectedChipIdsRef.current = selectedChipIds;
   const selectedEdgeIdsRef = useRef(selectedEdgeIds);
@@ -205,6 +211,9 @@ export function WorkspacePage() {
   const [propsChip, setPropsChip] = useState<Chip | null>(null);
   const activeLogChip = logChipId ? chips.find((chip) => chip.id === logChipId) ?? null : null;
   const [propsName, setPropsName] = useState("");
+  const [propsInputChipId, setPropsInputChipId] = useState("");
+  const [propsSourceChipId, setPropsSourceChipId] = useState("");
+  const [propsTargetChipId, setPropsTargetChipId] = useState("");
   const [propsBusy, setPropsBusy] = useState(false);
   positionsRef.current = positions;
   dirtyRef.current = dirty;
@@ -822,6 +831,35 @@ export function WorkspacePage() {
     }
   }
 
+  useEffect(() => {
+    if (!logChipId) return;
+    const run = [...runs]
+      .filter((item) => item.chip_id === logChipId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    if (!run) {
+      setLogText(messages.empty.logs);
+      return;
+    }
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const response = await chipApi.getRunLogs(run.id, { silent: true });
+        if (!stopped) setLogText(response.text || messages.empty.logs);
+      } catch {
+        if (!stopped) setLogText(messages.empty.logs);
+      }
+      if (!stopped && ACTIVE_STATUSES.has(run.status)) {
+        timer = window.setTimeout(() => void poll(), 2000);
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [logChipId, messages.empty.logs, runs]);
+
   async function openChipRunLog(chip: Chip) {
     const run = [...runs]
       .filter((item) => item.chip_id === chip.id)
@@ -843,31 +881,69 @@ export function WorkspacePage() {
   function openChipProperties(chip: Chip) {
     setPropsChip(chip);
     setPropsName(chip.name);
+    setPropsInputChipId(incomingDataChipId(edges, chip.id));
+    setPropsSourceChipId(incomingDataChipId(edges, chip.id, "source"));
+    setPropsTargetChipId(incomingDataChipId(edges, chip.id, "target"));
+  }
+
+  function propsDataEdges(chip: Chip, currentEdges: ChipEdge[]): ChipEdge[] {
+    if (!workspaceId) return currentEdges;
+    if (chip.kind === "transform" || chip.kind === "load") {
+      const current = incomingDataChipId(currentEdges, chip.id);
+      if (current === propsInputChipId) return currentEdges;
+      return attachHiddenDataEdges(
+        currentEdges,
+        [{ fromId: propsInputChipId, toId: chip.id }],
+        positionsRef.current,
+        workspaceId,
+      );
+    }
+    if (chip.kind === "validation") {
+      const source = incomingDataChipId(currentEdges, chip.id, "source");
+      const target = incomingDataChipId(currentEdges, chip.id, "target");
+      if (source === propsSourceChipId && target === propsTargetChipId) return currentEdges;
+      return attachHiddenDataEdges(
+        currentEdges,
+        [
+          { fromId: propsSourceChipId, toId: chip.id, toPort: "source" },
+          { fromId: propsTargetChipId, toId: chip.id, toPort: "target" },
+        ],
+        positionsRef.current,
+        workspaceId,
+      );
+    }
+    return currentEdges;
   }
 
   async function saveChipProperties() {
     if (!propsChip || !workspaceId) return;
     const name = propsName.trim();
     if (!name) return;
+    const nextEdges = propsDataEdges(propsChip, edges);
+    const edgesChanged = nextEdges !== edges;
     if (isDraftChipId(propsChip.id)) {
       const nextChips = chips.map((item) => (
         item.id === propsChip.id ? { ...item, name } : item
       ));
       setChips(nextChips);
+      if (edgesChanged) setEdges(nextEdges);
       setPropsChip(null);
-      markDirty(nextChips, positionsRef.current, edges);
+      markDirty(nextChips, positionsRef.current, nextEdges);
       toastSuccess(messages.workspace.chipPropertiesSaved);
       return;
     }
     setPropsBusy(true);
     try {
       const updated = await chipApi.update(propsChip.id, { name });
-      setChips((current) =>
-        current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
-      );
+      const nextChips = chips.map((item) => (item.id === updated.id ? { ...item, ...updated } : item));
+      setChips(nextChips);
       setCatalogChips((current) =>
         current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
       );
+      if (edgesChanged) {
+        setEdges(nextEdges);
+        markDirty(nextChips, positionsRef.current, nextEdges);
+      }
       setPropsChip(null);
       toastSuccess(messages.workspace.chipPropertiesSaved);
     } catch (reason) {
@@ -952,7 +1028,11 @@ export function WorkspacePage() {
     setPendingPlace({ kind: toolKind, point });
   }
 
-  function placeCatalogChips(catalogChipsToPlace: Chip[], origin: Point) {
+  function placeCatalogChips(
+    catalogChipsToPlace: Chip[],
+    origin: Point,
+    dataInputs: { fromId: string; toId: string; toPort?: string }[] = [],
+  ) {
     const unplacedChips = catalogChipsToPlace.filter((chip) => !chips.some((placed) => placed.id === chip.id));
     if (unplacedChips.length === 0) return;
     let nextPositions = { ...positionsRef.current };
@@ -969,9 +1049,14 @@ export function WorkspacePage() {
       }
       placedIds.push(catalogChip.id);
     });
+    let nextEdges = edges;
+    if (dataInputs.length > 0 && workspaceId) {
+      nextEdges = attachHiddenDataEdges(edges, dataInputs, nextPositions, workspaceId);
+      setEdges(nextEdges);
+    }
     setChips(nextChips);
     setPositions(nextPositions);
-    markDirty(nextChips, nextPositions, edges);
+    markDirty(nextChips, nextPositions, nextEdges);
     setSelectedChipIds(placedIds);
     setSelectedEdgeIds([]);
     if (!workspaceId) return;
@@ -1017,7 +1102,11 @@ export function WorkspacePage() {
         created_at: now,
         updated_at: now,
       };
-      placeCatalogChips([chip], point);
+      placeCatalogChips(
+        [chip],
+        point,
+        draft.inputChipId ? [{ fromId: draft.inputChipId, toId: chip.id }] : [],
+      );
       setPendingPlace(null);
       return;
     }
@@ -1035,13 +1124,13 @@ export function WorkspacePage() {
     navigate(`/transform?${params.toString()}`);
   }
 
-  function placeNewLoadChip(name: string) {
+  function placeNewLoadChip(draft: EmptyConsumerDraft) {
     if (!pendingPlace) return;
     const now = new Date().toISOString();
     const chip: Chip = {
       id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
       owner_user_id: "",
-      name,
+      name: draft.name,
       kind: "load",
       config: {},
       revision: 0,
@@ -1049,17 +1138,21 @@ export function WorkspacePage() {
       created_at: now,
       updated_at: now,
     };
-    placeCatalogChips([chip], pendingPlace.point);
+    placeCatalogChips(
+      [chip],
+      pendingPlace.point,
+      draft.inputChipId ? [{ fromId: draft.inputChipId, toId: chip.id }] : [],
+    );
     setPendingPlace(null);
   }
 
-  function placeNewValidationChip(name: string) {
+  function placeNewValidationChip(draft: EmptyConsumerDraft) {
     if (!pendingPlace) return;
     const now = new Date().toISOString();
     const chip: Chip = {
       id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
       owner_user_id: "",
-      name,
+      name: draft.name,
       kind: "validation",
       config: {
         source_data_file_id: "",
@@ -1073,7 +1166,11 @@ export function WorkspacePage() {
       created_at: now,
       updated_at: now,
     };
-    placeCatalogChips([chip], pendingPlace.point);
+    const dataInputs = [
+      draft.sourceChipId ? { fromId: draft.sourceChipId, toId: chip.id, toPort: "source" } : null,
+      draft.targetChipId ? { fromId: draft.targetChipId, toId: chip.id, toPort: "target" } : null,
+    ].filter((item): item is { fromId: string; toId: string; toPort: string } => Boolean(item));
+    placeCatalogChips([chip], pendingPlace.point, dataInputs);
     setPendingPlace(null);
   }
 
@@ -1211,7 +1308,7 @@ export function WorkspacePage() {
       return;
     }
     setSelectedChipIds(chips.map((chip) => chip.id));
-    setSelectedEdgeIds(edges.map((edge) => edge.id));
+    setSelectedEdgeIds(controlEdges.map((edge) => edge.id));
   }
 
   async function saveCanvas(): Promise<boolean> {
@@ -1681,7 +1778,7 @@ export function WorkspacePage() {
         return point ? chipInMarquee(point, box) : false;
       })
       .map((chip) => chip.id);
-    const pickedEdges = edges
+    const pickedEdges = controlEdges
       .filter((edge) => {
         const from = positions[edge.from_chip_id];
         const to = positions[edge.to_chip_id];
@@ -1869,12 +1966,6 @@ export function WorkspacePage() {
   ];
   const edgeTools = [
     {
-      kind: "data" as const,
-      label: messages.workspace.edgeData,
-      hint: messages.workspace.edgeDataHint,
-      icon: Spline,
-    },
-    {
       kind: "on_success" as const,
       label: messages.workspace.edgeOnSuccess,
       hint: messages.workspace.edgeOnSuccessHint,
@@ -1922,7 +2013,7 @@ export function WorkspacePage() {
             <div className="scroll-pane min-h-0 flex-1 overflow-y-auto p-3 pt-2">
               <WorkspaceLayers
                 chips={chips}
-                edges={edges}
+                edges={controlEdges}
                 selectedChipIds={selectedChipIds}
                 selectedEdgeIds={selectedEdgeIds}
                 messages={messages}
@@ -2147,7 +2238,7 @@ export function WorkspacePage() {
           height={canvasWorld.height}
         >
           <defs>
-            {(["data", "on_success", "on_error", "always"] as const).map((kindValue) => (
+            {(["on_success", "on_error", "always"] as const).map((kindValue) => (
               <marker
                 key={kindValue}
                 id={`chip-wire-arrow-${kindValue}`}
@@ -2165,7 +2256,7 @@ export function WorkspacePage() {
               </marker>
             ))}
           </defs>
-          {edges.map((edge) => {
+          {controlEdges.map((edge) => {
             const from = positions[edge.from_chip_id];
             const to = positions[edge.to_chip_id];
             if (!from || !to) return null;
@@ -2433,6 +2524,7 @@ export function WorkspacePage() {
         } : undefined}
         catalogChips={catalogChips}
         datasets={datasets}
+        canvasChips={chips}
         canvasChipIds={new Set(chips.map((chip) => chip.id))}
         defaultTransformName={nextSequencedChipName(
           [...catalogChips, ...chips],
@@ -2656,6 +2748,44 @@ export function WorkspacePage() {
                 />
               </div>
             </div>
+
+            {propsChip?.kind === "transform" || propsChip?.kind === "load" ? (
+              <div className="space-y-2">
+                <p className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.inputChipHint}</p>
+                <CanvasProducerSelect
+                  chips={chips}
+                  value={propsInputChipId}
+                  excludeIds={[propsChip.id]}
+                  messages={messages}
+                  label={messages.workspace.inputChip}
+                  disabled={propsBusy}
+                  onChange={setPropsInputChipId}
+                />
+              </div>
+            ) : null}
+            {propsChip?.kind === "validation" ? (
+              <div className="space-y-3">
+                <p className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.inputChipHint}</p>
+                <CanvasProducerSelect
+                  chips={chips}
+                  value={propsSourceChipId}
+                  excludeIds={[propsChip.id]}
+                  messages={messages}
+                  label={messages.workspace.validationSourceChip}
+                  disabled={propsBusy}
+                  onChange={setPropsSourceChipId}
+                />
+                <CanvasProducerSelect
+                  chips={chips}
+                  value={propsTargetChipId}
+                  excludeIds={[propsChip.id]}
+                  messages={messages}
+                  label={messages.workspace.validationTargetChip}
+                  disabled={propsBusy}
+                  onChange={setPropsTargetChipId}
+                />
+              </div>
+            ) : null}
           </div>
         </div>
       </AppDialog>

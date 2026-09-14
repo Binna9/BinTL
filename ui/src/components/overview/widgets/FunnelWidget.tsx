@@ -1,86 +1,136 @@
-import { type CSSProperties } from "react";
-import { ChevronDown, DatabaseZap, FileOutput, ShieldCheck, Terminal, Workflow, type LucideIcon } from "lucide-react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { PanelBody } from "@/components/ui/panel";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useDashboard } from "@/hooks/overview/DashboardContext";
 import type { ChipKind } from "@/types/chip";
 
-const FLOW: ChipKind[] = ["extract", "transform", "load"];
-const EXTRA: ChipKind[] = ["sql", "validation"];
-
-const META: Record<ChipKind, { icon: LucideIcon; tone: string }> = {
-  extract: { icon: DatabaseZap, tone: "var(--theme-accent)" },
-  transform: { icon: Workflow, tone: "var(--theme-success)" },
-  load: { icon: FileOutput, tone: "var(--theme-warning)" },
-  sql: { icon: Terminal, tone: "var(--theme-text)" },
-  validation: { icon: ShieldCheck, tone: "var(--theme-text-tertiary)" },
+const TONE: Record<ChipKind, string> = {
+  extract: "var(--theme-accent)",
+  transform: "var(--theme-success)",
+  load: "var(--theme-warning)",
+  sql: "var(--theme-text)",
+  validation: "var(--theme-text-tertiary)",
 };
+
+const BOX = 220;
+const CX = 110;
+const CY = 108;
+const SWEEP = 0.75;
+const RADII = [94, 78, 62, 46, 30];
+
+type RateItem = { id: ChipKind; label: string; rate: number | null };
+
+function ringCirc(radius: number) {
+  return 2 * Math.PI * radius;
+}
 
 export function FunnelWidget() {
   const { messages } = useLanguage();
   const { model } = useDashboard();
-  const rows: Record<ChipKind, { count: number; rate: number | null }> = {
-    extract: { count: model.extractCount, rate: model.extractRate },
-    transform: { count: model.transformCount, rate: model.transformRate },
-    load: { count: model.loadCount, rate: model.loadRate },
-    sql: { count: model.sqlCount, rate: model.sqlRate },
-    validation: { count: model.validationCount, rate: model.validationRate },
-  };
-  const peak = Math.max(1, ...Object.values(rows).map((row) => row.count));
+  const [hidden, setHidden] = useState<ChipKind[]>([]);
+  const [hot, setHot] = useState<ChipKind | null>(null);
+  const [ready, setReady] = useState(false);
 
-  function label(kind: ChipKind) {
-    if (kind === "extract") return messages.overview.extract;
-    if (kind === "transform") return messages.overview.transform;
-    if (kind === "load") return messages.overview.load;
-    if (kind === "sql") return messages.workspace.sql;
-    return messages.workspace.validation;
+  const items = useMemo<RateItem[]>(
+    () => [
+      { id: "extract", label: messages.overview.extract, rate: model.extractRate },
+      { id: "transform", label: messages.overview.transform, rate: model.transformRate },
+      { id: "load", label: messages.overview.load, rate: model.loadRate },
+      { id: "sql", label: messages.workspace.sql, rate: model.sqlRate },
+      { id: "validation", label: messages.workspace.validation, rate: model.validationRate },
+    ],
+    [messages, model],
+  );
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setReady(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  function toggle(id: ChipKind) {
+    setHidden((prev) => (prev.includes(id) ? prev.filter((kind) => kind !== id) : [...prev, id]));
   }
 
-  function stage(kind: ChipKind) {
-    const meta = META[kind];
-    const Icon = meta.icon;
-    const row = rows[kind];
-    return (
-      <Link
-        key={kind}
-        to="/history"
-        className="dash-flow-row"
-        style={{ "--dash-flow-tone": meta.tone } as CSSProperties}
-      >
-        <Icon className="size-3.5 shrink-0" />
-        <span className="truncate text-left">{label(kind)}</span>
-        <span className="dash-flow-bar" aria-hidden="true">
-          <span style={{ width: `${Math.round((row.count / peak) * 100)}%` }} />
-        </span>
-        <span className="tabular-nums text-text">
-          {row.count}
-          <span
-            className="ml-1.5 font-medium text-text-tertiary"
-            title={row.rate == null ? messages.overview.noRate : messages.overview.successRate(row.rate)}
-          >
-            {row.rate == null ? "—" : `${row.rate}%`}
-          </span>
-        </span>
-      </Link>
-    );
-  }
+  const focus = items.find((item) => item.id === hot) ?? null;
 
   return (
-    <PanelBody className="h-full min-h-0">
-      <div className="dash-flow">
-        {FLOW.map((kind, index) => (
-          <div key={kind}>
-            {index > 0 ? (
-              <div className="dash-flow-arrow" aria-hidden="true">
-                <ChevronDown className="size-3" />
-              </div>
+    <PanelBody className="flex h-full min-h-0 flex-col">
+      <div className="dash-rate" onMouseLeave={() => setHot(null)}>
+        <div className="dash-rate-stage">
+          <svg className="dash-rate-rings" viewBox={`0 0 ${BOX} ${BOX}`} aria-hidden="true">
+            {items.map((item, index) => {
+              const on = !hidden.includes(item.id);
+              const radius = RADII[index] ?? RADII[RADII.length - 1];
+              const circ = ringCirc(radius);
+              const track = circ * SWEEP;
+              const pct = ready && on && item.rate != null ? item.rate / 100 : 0;
+              return (
+                <g
+                  key={item.id}
+                  className="dash-rate-ring"
+                  data-off={!on || undefined}
+                  data-hot={hot === item.id || undefined}
+                  style={{ "--dash-rate-tone": TONE[item.id] } as CSSProperties}
+                  transform={`rotate(135 ${CX} ${CY})`}
+                >
+                  <circle className="dash-rate-track" cx={CX} cy={CY} r={radius} strokeDasharray={`${track} ${circ}`} />
+                  <circle
+                    className="dash-rate-fill"
+                    cx={CX}
+                    cy={CY}
+                    r={radius}
+                    strokeDasharray={`${track * pct} ${circ}`}
+                  />
+                  <circle
+                    className="dash-rate-hit"
+                    cx={CX}
+                    cy={CY}
+                    r={radius}
+                    strokeDasharray={`${track} ${circ}`}
+                    onMouseEnter={() => setHot(item.id)}
+                    onClick={() => toggle(item.id)}
+                  />
+                </g>
+              );
+            })}
+          </svg>
+          <div className="dash-rate-center">
+            {focus ? (
+              <>
+                <strong>
+                  {focus.rate == null ? "—" : `${focus.rate}`}
+                  {focus.rate != null ? <span>%</span> : null}
+                </strong>
+                <em>{focus.label}</em>
+              </>
             ) : null}
-            {stage(kind)}
           </div>
-        ))}
-        <hr className="dash-flow-split" />
-        {EXTRA.map((kind) => stage(kind))}
+        </div>
+        <ul className="dash-chart-legend" aria-label={messages.overview.funnelSeries}>
+          {items.map((item) => {
+            const on = !hidden.includes(item.id);
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  className="dash-chart-legend-item"
+                  style={{ color: TONE[item.id] }}
+                  aria-pressed={on}
+                  aria-label={item.label}
+                  onMouseEnter={() => setHot(item.id)}
+                  onFocus={() => setHot(item.id)}
+                  onClick={() => toggle(item.id)}
+                >
+                  <i style={{ background: on ? "currentColor" : "var(--color-border-strong)" }} />
+                  <span className="min-w-0 flex-1 truncate text-left text-text-secondary">{item.label}</span>
+                  <strong title={item.rate == null ? messages.overview.noRate : messages.overview.successRate(item.rate)}>
+                    {item.rate == null ? "—" : `${item.rate}%`}
+                  </strong>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       </div>
     </PanelBody>
   );

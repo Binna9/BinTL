@@ -541,6 +541,7 @@ pub async fn load_table(
     mode: &str,
     conflict_keys: &[String],
     null_marker: Option<&str>,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     if !matches!(
         mode,
@@ -562,7 +563,11 @@ pub async fn load_table(
     let destination_columns = if mode == "recreate" {
         Vec::new()
     } else {
-        list_columns(c, table).await?
+        match list_columns(c, table).await {
+            Ok(cols) => cols,
+            Err(error) if missing_load_table(&error) => Vec::new(),
+            Err(error) => return Err(error),
+        }
     };
     let column_rules = load_column_rules(&cols, &destination_columns);
     if mode == "upsert" {
@@ -620,6 +625,7 @@ pub async fn load_table(
                 .await
                 .map_err(|error| load_batch_error(row_start, row_end, error))?;
                 n = row_end;
+                report_load_progress(on_progress, n);
             }
             pool.close().await;
         }
@@ -657,6 +663,7 @@ pub async fn load_table(
                 .await
                 .map_err(|error| load_batch_error(row_start, row_end, error))?;
                 n = row_end;
+                report_load_progress(on_progress, n);
             }
             pool.close().await;
         }
@@ -694,6 +701,7 @@ pub async fn load_table(
                 .await
                 .map_err(|error| load_batch_error(row_start, row_end, error))?;
                 n = row_end;
+                report_load_progress(on_progress, n);
             }
             pool.close().await;
         }
@@ -750,6 +758,7 @@ pub async fn load_table(
                     })?;
                     n = row_number;
                 }
+                report_load_progress(on_progress, n);
             }
         }
         "oracle" => {
@@ -778,6 +787,7 @@ pub async fn load_table(
                     )
                     .map_err(|error| load_batch_error(row_start, row_end, error))?;
                     n = row_end;
+                    report_load_progress(on_progress, n);
                 }
                 Ok(())
             })?;
@@ -894,6 +904,22 @@ fn validate_empty_cells(
 
 pub(crate) fn cell_is_null(value: &str, rule: &LoadColumnRule, null_marker: Option<&str>) -> bool {
     null_marker.is_some_and(|marker| value == marker) || (value.is_empty() && rule.empty_as_null)
+}
+
+fn report_load_progress(on_progress: Option<&(dyn Fn(u64) + Send + Sync)>, n: u64) {
+    if let Some(cb) = on_progress {
+        cb(n);
+    }
+}
+
+fn missing_load_table(error: &ConnectError) -> bool {
+    let text = error.to_string().to_ascii_lowercase();
+    text.contains("does not exist")
+        || text.contains("doesn't exist")
+        || text.contains("no such table")
+        || text.contains("invalid object name")
+        || text.contains("ora-00942")
+        || text.contains("unknown table")
 }
 
 fn load_batch_error(row_start: u64, row_end: u64, error: ConnectError) -> ConnectError {
@@ -1068,6 +1094,15 @@ mod tests {
         assert_eq!(schema_or("postgres", &q), "sales");
         assert_eq!(schema_or_user("oracle", &t, "hr"), "HR");
         assert_eq!(schema_or_user("oracle", &q, "hr"), "sales");
+    }
+
+    #[test]
+    fn missing_table_errors_are_detected() {
+        assert!(missing_load_table(&ConnectError::Invalid(
+            "relation \"sales.new_fact\" does not exist".into()
+        )));
+        assert!(missing_load_table(&ConnectError::Invalid("ORA-00942: table or view does not exist".into())));
+        assert!(!missing_load_table(&ConnectError::Invalid("permission denied".into())));
     }
 
     #[test]

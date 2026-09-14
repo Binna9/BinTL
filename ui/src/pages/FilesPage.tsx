@@ -21,6 +21,7 @@ import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useFiles } from "@/hooks/files/useFiles";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtDelimiterGlyph } from "@/lib/format";
+import { setGlobalLoadingStatus } from "@/lib/globalLoading";
 import { usePagination } from "@/lib/pagination";
 import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { fileApi } from "@/services/files/fileApi";
@@ -28,6 +29,7 @@ import type {
   FilePreview,
   StagedWorkbook,
   StoredFile,
+  WorkbookCommitProgress,
   WorkbookSheetSelection,
 } from "@/types/file";
 
@@ -131,6 +133,12 @@ export function FilesPage() {
     } catch {}
   }
 
+  function sheetProgressDetail(progress: WorkbookCommitProgress): string {
+    return progress.name
+      ? messages.files.savingSheetProgress(progress.current, progress.total, progress.name)
+      : messages.files.savingSheetCount(progress.current, progress.total);
+  }
+
   async function saveWorkbookSheets(
     sheets: WorkbookSheetSelection[],
     options: { delimiter: string; header: boolean; addSequence: boolean },
@@ -138,8 +146,24 @@ export function FilesPage() {
     const workbook = workbooks[0];
     if (!workbook) return;
     setSavingWorkbook(true);
+    setGlobalLoadingStatus({
+      label: messages.files.savingSheets,
+      progress: { current: 0, total: sheets.length, detail: "" },
+    });
     try {
-      await fileApi.commitWorkbook(workbook.staging_id, sheets, options);
+      await fileApi.commitWorkbook(workbook.staging_id, sheets, {
+        ...options,
+        onProgress: (progress) => {
+          setGlobalLoadingStatus({
+            label: messages.files.savingSheets,
+            progress: {
+              current: progress.current,
+              total: progress.total,
+              detail: sheetProgressDetail(progress),
+            },
+          });
+        },
+      });
       setWorkbooks((current) => current.slice(1));
       await refreshFiles();
     } catch (err) {
@@ -249,7 +273,7 @@ export function FilesPage() {
   }
 
   return (
-    <PageShell fill>
+    <PageShell>
       <PageHeader
         iconName="files"
         eyebrow={messages.files.eyebrow}
@@ -345,7 +369,7 @@ export function FilesPage() {
         </PanelBody>
       </Panel>
 
-      <Panel fill>
+      <Panel>
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -379,7 +403,6 @@ export function FilesPage() {
           </ToolbarGroup>
         </Toolbar>
         <DataGrid
-          className="min-h-0 flex-1"
           headers={[...messages.files.headers]}
           columnWidths={[80, 220, 120, 140, 280]}
           empty={files.length === 0 ? <EmptyState icon={<NavIcon name="files" />} title={messages.empty.uploads} hint={messages.empty.uploadsHint} /> : undefined}

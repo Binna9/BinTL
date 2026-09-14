@@ -146,7 +146,7 @@ export function AccountDialog({ open, onClose }: { open: boolean; onClose: () =>
             )}
             <span className="pointer-events-none absolute inset-0 bg-black/25 opacity-0 transition duration-300 ease-out group-hover:opacity-100" />
             <span className="pointer-events-none absolute inset-0 grid place-items-center">
-              <span className="grid size-8 translate-y-3 place-items-center rounded-full bg-white/95 text-text shadow-sm opacity-0 transition duration-300 ease-out group-hover:translate-y-0 group-hover:opacity-100">
+              <span className="grid size-8 translate-y-3 place-items-center rounded-full bg-white/95 text-black shadow-sm opacity-0 transition duration-300 ease-out group-hover:translate-y-0 group-hover:opacity-100">
                 <Camera className="size-4" aria-hidden="true" />
               </span>
             </span>

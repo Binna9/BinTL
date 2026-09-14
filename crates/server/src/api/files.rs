@@ -147,11 +147,22 @@ pub(super) struct CommitSpreadsheetBody {
     workspace_id: Option<String>,
 }
 
+pub(super) fn ndjson_line(value: Value) -> Bytes {
+    Bytes::from(format!("{value}\n"))
+}
+
+async fn send_commit_line(
+    tx: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+    value: Value,
+) -> bool {
+    tx.send(Ok(ndjson_line(value))).await.is_ok()
+}
+
 pub(super) async fn commit_spreadsheet(
     State(state): State<AppState>,
     user: CurrentUser,
     Json(body): Json<CommitSpreadsheetBody>,
-) -> Result<(StatusCode, Json<Value>), AppError> {
+) -> Result<Response, AppError> {
     if body.sheets.is_empty() {
         return Err(AppError::bad("at least one sheet must be selected"));
     }
@@ -161,27 +172,12 @@ pub(super) async fn commit_spreadsheet(
     let delimiter = parse_delimiter(&delimiter_raw)?;
     let header = body.header.unwrap_or(true);
     let add_sequence = body.add_sequence.unwrap_or(false);
+    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
     let path = staged.path.clone();
-    let exports = tokio::task::spawn_blocking(
-        move || -> Result<Vec<(String, Vec<u8>)>, connectors::ConnectError> {
-            let available: HashSet<String> = list_sheets(&path)?
-                .into_iter()
-                .map(|sheet| sheet.name)
-                .collect();
-            let mut exports = Vec::with_capacity(selected.len());
-            for sheet in selected {
-                if !available.contains(&sheet.name) {
-                    return Err(connectors::ConnectError::Invalid(format!(
-                        "sheet `{}` not found",
-                        sheet.name
-                    )));
-                }
-                let csv = export_sheet_to_csv(&path, &sheet.name, delimiter, header, add_sequence)?;
-                exports.push((sheet.filename, csv));
-            }
-            Ok(exports)
-        },
-    )
+    let available = tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || list_sheets(&path)
+    })
     .await
     .map_err(|error| {
         AppError::new(
@@ -189,17 +185,70 @@ pub(super) async fn commit_spreadsheet(
             format!("spreadsheet task failed: {error}"),
         )
     })??;
-
-    for (_, bytes) in &exports {
-        validate_csv(bytes, delimiter)?;
+    let available: HashSet<String> = available.into_iter().map(|sheet| sheet.name).collect();
+    for sheet in &selected {
+        if !available.contains(&sheet.name) {
+            return Err(AppError::bad(format!("sheet `{}` not found", sheet.name)));
+        }
     }
-    state.store.delete_stage(&staged.id).await?;
-    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
-    let mut files = Vec::with_capacity(exports.len());
-    for (filename, bytes) in exports {
-        files.push(
-            state
-                .store
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
+    let store = state.store.clone();
+    let staging_id = staged.id.clone();
+    let total = selected.len();
+    tokio::spawn(async move {
+        let mut exports = Vec::with_capacity(total);
+        for (index, sheet) in selected.into_iter().enumerate() {
+            if !send_commit_line(
+                &tx,
+                json!({
+                    "type": "progress",
+                    "current": index + 1,
+                    "total": total,
+                    "name": sheet.name,
+                }),
+            )
+            .await
+            {
+                return;
+            }
+            let path = path.clone();
+            let name = sheet.name.clone();
+            let csv = match tokio::task::spawn_blocking(move || {
+                export_sheet_to_csv(&path, &name, delimiter, header, add_sequence)
+            })
+            .await
+            {
+                Ok(Ok(csv)) => csv,
+                Ok(Err(error)) => {
+                    let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.to_string() })).await;
+                    return;
+                }
+                Err(error) => {
+                    let _ = send_commit_line(
+                        &tx,
+                        json!({
+                            "type": "error",
+                            "error": format!("spreadsheet task failed: {error}"),
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            if let Err(error) = validate_csv(&csv, delimiter) {
+                let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.message() })).await;
+                return;
+            }
+            exports.push((sheet.filename, csv));
+        }
+        if let Err(error) = store.delete_stage(&staging_id).await {
+            let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.to_string() })).await;
+            return;
+        }
+        let mut files = Vec::with_capacity(exports.len());
+        for (filename, bytes) in exports {
+            match store
                 .save_upload(
                     &filename,
                     &bytes,
@@ -207,10 +256,28 @@ pub(super) async fn commit_spreadsheet(
                     Some(header),
                     &workspace_id,
                 )
-                .await?,
-        );
-    }
-    Ok((StatusCode::CREATED, Json(json!({ "files": files }))))
+                .await
+            {
+                Ok(file) => files.push(file),
+                Err(error) => {
+                    let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.to_string() })).await;
+                    return;
+                }
+            }
+        }
+        let _ = send_commit_line(&tx, json!({ "type": "done", "files": files })).await;
+    });
+
+    Response::builder()
+        .status(StatusCode::CREATED)
+        .header(CONTENT_TYPE, "application/x-ndjson")
+        .body(Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)))
+        .map_err(|error| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("commit stream failed: {error}"),
+            )
+        })
 }
 
 pub(super) async fn cancel_stage(

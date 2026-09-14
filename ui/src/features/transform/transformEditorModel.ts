@@ -27,7 +27,10 @@ export function normalizeSlotColumns(
 export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
   if (slot.mode === "materialized" && slot.dataset) {
     const dataset = slot.dataset as unknown as Dataset;
-    return dataset;
+    return {
+      ...dataset,
+      delimiter: dataset.delimiter || slot.delimiter || ",",
+    };
   }
   if (slot.mode === "connected" && slot.dataset_id) {
     const raw = slot.dataset as Dataset | undefined;
@@ -44,6 +47,7 @@ export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
     return {
       ...raw,
       filename: slot.source_chip_name || raw.filename,
+      delimiter: raw.delimiter || slot.delimiter || ",",
       status: raw.status ?? "connected",
       columns: raw.columns?.length
         ? raw.columns

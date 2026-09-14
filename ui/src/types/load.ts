@@ -9,6 +9,16 @@ export interface LoadSpec {
   conflict_keys?: string[];
 }
 
+export type LoadRunSummary = {
+  run_id?: string;
+  destination: string;
+  write_mode: string;
+  input_rows: number | null;
+  loaded_rows: number;
+  duration_ms: number;
+  finished_at?: string;
+};
+
 export interface LoadDefinition {
   id: string;
   owner_user_id: string;

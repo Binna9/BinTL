@@ -137,7 +137,7 @@ export function ChipsPage() {
   }
 
   return (
-    <PageShell fill>
+    <PageShell>
       <PageHeader
         iconName="chips"
         eyebrow={messages.chips.eyebrow}
@@ -151,7 +151,7 @@ export function ChipsPage() {
         }
       />
 
-      <Panel fill>
+      <Panel>
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -227,7 +227,6 @@ export function ChipsPage() {
           </div>
         </div>
         <DataGrid
-          className="min-h-0 flex-1"
           headers={[...messages.chips.headers]}
           columnWidths={[56, 200, 88, 72, 88, 140]}
           empty={

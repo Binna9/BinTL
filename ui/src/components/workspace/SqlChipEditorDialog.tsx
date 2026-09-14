@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BookmarkPlus, Terminal } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { CatalogTree, type CatalogSchemaPick } from "@/components/connections/CatalogTree";
@@ -55,6 +55,7 @@ export function SqlChipEditorDialog({
   );
   const editing = Boolean(chip);
   const [name, setName] = useState(defaultName);
+  const [naming, setNaming] = useState(false);
   const [connectionId, setConnectionId] = useState("");
   const [sqlText, setSqlText] = useState("");
   const [database, setDatabase] = useState("");
@@ -69,6 +70,7 @@ export function SqlChipEditorDialog({
   useEffect(() => {
     if (!open) return;
     const saved = sqlConfig(chip);
+    setNaming(false);
     setName((chip?.name ?? defaultName).trim() || defaultName);
     setConnectionId(saved.connectionId);
     setSqlText(saved.sqlText);
@@ -92,18 +94,23 @@ export function SqlChipEditorDialog({
       value.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase()
       && value.trim().toLocaleLowerCase() !== (chip?.name ?? "").trim().toLocaleLowerCase(),
   );
-  const canSave =
-    Boolean(name.trim())
-    && Boolean(connectionId)
+  const canConfigure =
+    Boolean(connectionId)
     && Boolean(sqlText.trim())
-    && !nameTaken
     && (editing || Boolean(workspaceId));
+  const canSave = canConfigure && Boolean(name.trim()) && !nameTaken;
 
   function pickConnection(id: string) {
     setConnectionId(id);
     setSelected(null);
     setSchemaPick(null);
     setDatabase("");
+  }
+
+  function openNaming() {
+    if (busy || !canConfigure) return;
+    setName((current) => current.trim() || chip?.name?.trim() || defaultName);
+    setNaming(true);
   }
 
   async function save() {
@@ -124,6 +131,7 @@ export function SqlChipEditorDialog({
             config,
           });
       toastSuccess(messages.workspace.sqlChipSaved);
+      setNaming(false);
       onSaved(saved);
     } catch (error) {
       toastError(
@@ -135,42 +143,60 @@ export function SqlChipEditorDialog({
     }
   }
 
+  const namingRef = useRef(naming);
+  const openNamingRef = useRef(openNaming);
+  const saveRef = useRef(save);
+  namingRef.current = naming;
+  openNamingRef.current = openNaming;
+  saveRef.current = save;
+
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.repeat) return;
+      if (namingRef.current) {
+        void saveRef.current();
+        return;
+      }
+      openNamingRef.current();
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [open]);
+
   return (
-    <AppDialog
-      open={open}
-      title={editing ? messages.workspace.editSqlChipTitle : messages.workspace.placeSqlTitle}
-      icon={<Terminal className="size-4 text-sky-600 dark:text-sky-400" aria-hidden="true" />}
-      zIndex={130}
-      className="flex h-[min(40rem,88vh)] w-[min(64rem,96vw)] max-w-[96vw] flex-col"
-      minWidth={640}
-      minHeight={420}
-      onClose={onClose}
+    <>
+      <AppDialog
+        open={open}
+        title={editing ? messages.workspace.editSqlChipTitle : messages.workspace.placeSqlTitle}
+        icon={<Terminal className="size-4 text-sky-600 dark:text-sky-400" aria-hidden="true" />}
+        zIndex={130}
+        className="flex h-[min(40rem,88vh)] w-[min(64rem,96vw)] max-w-[96vw] flex-col"
+        minWidth={640}
+        minHeight={420}
+        onClose={onClose}
       footer={
         <>
           <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>
             {messages.common.cancel}
           </Button>
-          <Button type="button" className="gap-2" disabled={busy || !canSave} onClick={() => void save()}>
+          <Button
+            type="button"
+            className="gap-2"
+            disabled={busy || !canConfigure}
+            onClick={openNaming}
+          >
             <BookmarkPlus className="size-3.5" aria-hidden="true" />
-            {busy
-              ? messages.common.saving
-              : editing ? messages.query.applyChip : messages.query.registerTask}
+            {editing ? messages.query.applyChip : messages.query.registerTask}
           </Button>
         </>
       }
     >
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-        <FormField label={messages.workspace.chipName}>
-          <input
-            className="field-control max-w-[16rem] text-sm"
-            value={name}
-            disabled={busy}
-            onChange={(event) => setName(event.target.value)}
-          />
-          {nameTaken ? (
-            <span className="text-xs text-danger">{messages.workspace.duplicateChipName}</span>
-          ) : null}
-        </FormField>
         <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-surface">
           <SplitLayout className="h-full" defaultSizes={[layout.split.connections + 48]} insetGutter>
             <aside className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -259,5 +285,64 @@ export function SqlChipEditorDialog({
         </div>
       </div>
     </AppDialog>
+
+    <AppDialog
+      open={open && naming}
+      title={editing ? messages.query.applyChip : messages.query.registerTaskTitle}
+      icon={<BookmarkPlus className="size-4 text-accent" aria-hidden="true" />}
+      className="w-[min(22rem,92vw)]"
+      minWidth={320}
+      minHeight={240}
+      zIndex={140}
+      defaultOffset={{ x: 40, y: 28 }}
+      onClose={() => setNaming(false)}
+      footer={
+        <>
+          <Button type="button" variant="secondary" disabled={busy} onClick={() => setNaming(false)}>
+            {messages.common.cancel}
+          </Button>
+          <Button type="button" variant="primary" disabled={busy || !canSave} onClick={() => void save()}>
+            {busy ? messages.common.saving : messages.common.save}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3 p-4">
+        <p className="text-[11px] leading-5 text-text-tertiary">
+          {editing ? messages.workspace.editSqlHint : messages.workspace.registerSqlHint}
+        </p>
+        <FormField label={messages.workspace.chipName}>
+          <input
+            className="field-control"
+            value={name}
+            autoFocus
+            disabled={busy}
+            placeholder={messages.query.namePlaceholder}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              void save();
+            }}
+          />
+          {nameTaken ? (
+            <span className="text-xs text-danger">{messages.workspace.duplicateChipName}</span>
+          ) : null}
+        </FormField>
+        <dl className="space-y-2 border-t border-border/60 pt-3 text-[11px] text-text-tertiary">
+          <div className="flex gap-2">
+            <dt className="w-14 shrink-0">{messages.workspace.connection}</dt>
+            <dd className="min-w-0 truncate text-text-secondary">{active?.name ?? "—"}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="w-14 shrink-0">{messages.workspace.sql}</dt>
+            <dd className="line-clamp-3 min-w-0 font-mono text-[10px] leading-4 text-text-secondary">
+              {sqlText.trim() || "—"}
+            </dd>
+          </div>
+        </dl>
+      </div>
+    </AppDialog>
+    </>
   );
 }

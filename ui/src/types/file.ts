@@ -23,6 +23,12 @@ export interface WorkbookSheetSelection {
   delimiter?: string;
 }
 
+export interface WorkbookCommitProgress {
+  current: number;
+  total: number;
+  name: string;
+}
+
 export interface CommitWorkbookResponse {
   files: StoredFile[];
 }

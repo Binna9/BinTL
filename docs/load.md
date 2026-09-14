@@ -11,7 +11,7 @@
 | `database` | `connection_id`, `table`, 선택 `database` | `append` \| `truncate` \| `upsert` \| `recreate` \| `replace` |
 | `file` | `format`=`csv`\|`parquet`, `filename` | `replace` 또는 `recreate`만 |
 
-기본 모드는 `append`다. `upsert`는 충돌 키가 입력 컬럼에 있어야 한다. redshift와 mssql upsert는 아직 거절한다. oracle/tibero upsert는 `MERGE`다. HTTP 커넥션은 DB 타깃이 될 수 없다. 파일 이름에 `/` `\\` `.` `..`를 넣지 않는다.
+기본 모드는 `append`다. `upsert`는 충돌 키가 입력 컬럼에 있어야 한다. redshift와 mssql upsert는 아직 거절한다. oracle/tibero upsert는 `MERGE`다. HTTP 커넥션은 DB 타깃이 될 수 없다. 테이블은 카탈로그에서 고르거나 `name` / `schema.table`로 직접 입력한다. 없는 테이블은 입력 컬럼으로 만든다. 파일 이름에 `/` `\\` `.` `..`를 넣지 않는다.
 
 `contract:` planned id는 `default_input_file_id` FK로 묶지 않는다.
 
@@ -22,7 +22,7 @@
 - DB: parquet/CSV를 적재용 CSV로 만들고 `connectors::load_table`에 넘긴다. 빈 필드는 비텍스트 컬럼에서 NULL 마커로 보낸다.
 - 파일: `loads/{workspace}/{scope}/{filename}`에 복사하거나 parquet로 바꾼다. 칩 최신 출력 슬롯을 덮어쓰지 않는다.
 
-수치와 대상은 `execution_steps.result_json`에 남긴다. 별도 `load_results` 테이블은 없다. 구분자 입력은 적재 전 빈 셀을 검사하고 최대 100개를 warn으로 남긴다. parquet 입력은 이 검사를 건너뛴다.
+수치와 대상은 `execution_steps.result_json`에 남긴다. 별도 `load_results` 테이블은 없다. 구분자 입력은 적재 전 빈 셀을 검사하고 최대 100개를 warn으로 남긴다. parquet 입력은 이 검사를 건너뛴다. 적재 중에는 `load_progress`로 적재 행 수를 남기고 `output_rows`를 갱신한다. 적재 페이지는 실행 전 입력/대상 컬럼을 비교하고, 마지막 적재 수치를 보여 준다.
 
 `POST /api/loads/run`은 같은 실행 함수를 즉시 호출한다.
 

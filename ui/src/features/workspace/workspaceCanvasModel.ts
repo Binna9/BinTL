@@ -371,10 +371,89 @@ export function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
   );
 }
 
+export function visibleCanvasEdges(edges: ChipEdge[]): ChipEdge[] {
+  return edges.filter((edge) => edge.kind !== "data");
+}
+
+export function producerChips(chips: Chip[], excludeIds: Iterable<string> = []): Chip[] {
+  const skip = new Set(excludeIds);
+  return chips.filter((chip) =>
+    (chip.kind === "extract" || chip.kind === "transform") && !skip.has(chip.id),
+  );
+}
+
+export function incomingDataChipId(edges: ChipEdge[], toId: string, toPort?: string): string {
+  const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === toId);
+  if (toPort) return incoming.find((edge) => edge.to_port === toPort)?.from_chip_id ?? "";
+  return incoming[0]?.from_chip_id ?? "";
+}
+
+export function attachHiddenDataEdges(
+  current: ChipEdge[],
+  inputs: { fromId: string; toId: string; toPort?: string }[],
+  positions: Record<string, Point>,
+  workspaceId: string,
+): ChipEdge[] {
+  const dropExact = new Set(
+    inputs
+      .filter((input) => input.toPort)
+      .map((input) => `${input.toId}\0${input.toPort}`),
+  );
+  const dropAll = new Set(inputs.filter((input) => !input.toPort).map((input) => input.toId));
+  const kept = current.filter((edge) => {
+    if (edge.kind !== "data") return true;
+    if (dropAll.has(edge.to_chip_id)) return false;
+    return !dropExact.has(`${edge.to_chip_id}\0${edge.to_port}`);
+  });
+  const added = inputs
+    .filter((input) => input.fromId)
+    .map((input) => {
+      const fromPoint = positions[input.fromId] ?? fallbackPoint(0);
+      const toPoint = positions[input.toId] ?? fallbackPoint(0);
+      const route = routeSides(fromPoint, toPoint);
+      return {
+        id: crypto.randomUUID(),
+        workspace_id: workspaceId,
+        from_chip_id: input.fromId,
+        to_chip_id: input.toId,
+        kind: "data" as const,
+        from_port: route.fromSide,
+        to_port: input.toPort ?? route.toSide,
+      };
+    });
+  return [...kept, ...added];
+}
+
 export function chipFixedInputId(chip: Chip): string {
   const value = chip.config.input_dataset_id;
   if (typeof value !== "string") return "";
   const inputId = value.trim();
   // Contract ids are graph-derived placeholders, not user-selected fixed inputs.
   return inputId.startsWith("contract:") ? "" : inputId;
+}
+
+if (import.meta.env.DEV) {
+  const sample: ChipEdge = {
+    id: "e1",
+    workspace_id: "ws",
+    from_chip_id: "a",
+    to_chip_id: "b",
+    kind: "data",
+    from_port: "right",
+    to_port: "left",
+  };
+  const control: ChipEdge = { ...sample, id: "e2", kind: "on_success" };
+  console.assert(visibleCanvasEdges([sample, control]).map((edge) => edge.id).join(",") === "e2", "canvas: hide data wires");
+  const replaced = attachHiddenDataEdges(
+    [sample, control],
+    [{ fromId: "c", toId: "b" }],
+    { a: { x: 0, y: 0 }, b: { x: 200, y: 0 }, c: { x: 0, y: 80 } },
+    "ws",
+  );
+  console.assert(
+    replaced.some((edge) => edge.kind === "data" && edge.from_chip_id === "c" && edge.to_chip_id === "b")
+    && replaced.some((edge) => edge.id === "e2")
+    && !replaced.some((edge) => edge.id === "e1"),
+    "canvas: replace hidden data input",
+  );
 }

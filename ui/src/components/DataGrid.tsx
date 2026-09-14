@@ -67,7 +67,7 @@ export function EmptyState({
         return match ? { title: match[1], hint: match[2] } : { title };
       })();
   return (
-    <div className={cn("flex min-h-0 w-full flex-1 flex-col items-center justify-center bg-surface px-6 text-center", className)}>
+    <div className={cn("flex w-full flex-1 flex-col items-center justify-center bg-surface px-6 py-12 text-center", className)}>
       {icon ? <div className="text-text-tertiary [&>svg]:size-10">{icon}</div> : null}
       <p className={cn("text-sm font-semibold", icon ? "mt-3" : undefined)}>{copy.title}</p>
       {copy.hint ? <p className="mt-1 max-w-sm text-xs text-text-tertiary">{copy.hint}</p> : null}
@@ -171,7 +171,14 @@ export function DataGrid({
 
   if (empty) {
     return (
-      <div ref={wrapRef} className={cn("flex min-h-0 min-w-0 w-full flex-1 flex-col bg-surface", className)}>
+      <div
+        ref={wrapRef}
+        className={cn(
+          "flex min-w-0 w-full flex-1 flex-col bg-surface",
+          !className && "min-h-[calc(100vh-18rem)]",
+          className,
+        )}
+      >
         {empty}
       </div>
     );
@@ -194,10 +201,11 @@ export function DataGrid({
               <th
                 key={`${index}-${header}`}
                 className={cn(
-                  "group/th relative h-10 select-none overflow-hidden border-b border-accent/20 bg-accent-subtle px-3 text-left text-[12px] font-semibold text-text",
-                  "transition-colors hover:bg-accent/15 hover:text-accent",
-                  index < headers.length - 1 && "border-r border-accent/10",
-                  active === index && "bg-accent/15 text-accent",
+                  "group/th relative h-10 select-none overflow-hidden border-b border-border-strong bg-gradient-to-b from-raised to-subtle px-3 text-left text-[12px] font-semibold text-text-secondary",
+                  "shadow-[inset_0_1px_0_0_rgba(255,255,255,0.65)] dark:from-subtle dark:to-raised dark:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]",
+                  "transition-colors hover:text-text",
+                  index < headers.length - 1 && "border-r border-border",
+                  active === index && "text-text",
                 )}
               >
                 <span className="block truncate">{header}</span>
@@ -217,9 +225,9 @@ export function DataGrid({
                 >
                   <span
                     className={cn(
-                      "absolute right-0 top-2.5 h-[calc(100%-1.25rem)] w-px bg-accent/20",
-                      "group-hover/th:bg-accent",
-                      active === index && "bg-accent",
+                      "absolute right-0 top-2.5 h-[calc(100%-1.25rem)] w-px bg-border",
+                      "group-hover/th:bg-text-tertiary",
+                      active === index && "bg-text-secondary",
                     )}
                   />
                 </span>

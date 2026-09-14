@@ -30,7 +30,7 @@ import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
-import { DELIMITER_VALUES } from "@/lib/delimiter";
+import { DELIMITER_VALUES, displayDelimiter } from "@/lib/delimiter";
 import { MetaField } from "@/components/ui/meta-field";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
@@ -101,6 +101,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   } | null;
   const newWorkspaceChip = Boolean(workspaceId && !chipId && searchParams.get("new_chip") === "1");
   const draftInitializedRef = useRef(false);
+  const delimiterLockedRef = useRef(false);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetId, setDatasetId] = useState<string>();
   const [transformId, setTransformId] = useState<string>();
@@ -141,6 +142,16 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   const [aggregations, setAggregations] = useState<AggregateDraft[]>([]);
 
   const selected = datasets.find((item) => item.id === datasetId) ?? null;
+
+  useEffect(() => {
+    if (!datasetId) {
+      if (!delimiterLockedRef.current) setReadDelimiter(",");
+      return;
+    }
+    if (delimiterLockedRef.current) return;
+    const dataset = datasets.find((item) => item.id === datasetId) ?? null;
+    setReadDelimiter(displayDelimiter(dataset?.delimiter || inputSlot?.delimiter));
+  }, [datasetId, datasets, inputSlot]);
   const columns = selected?.columns ?? [];
   const baseColumns =
     sourcePreview && sourcePreview.columns.length > 0 ? sourcePreview.columns : columns;
@@ -331,7 +342,9 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     const dataset = datasets.find((item) => item.id === draftDatasetId);
     if (!dataset) return;
     draftInitializedRef.current = true;
+    delimiterLockedRef.current = false;
     setDatasetId(dataset.id);
+    setReadDelimiter(displayDelimiter(dataset.delimiter));
     setName(defaultTransformName(dataset.filename));
     if (KIND_ORDER.includes(dataset.kind as (typeof KIND_ORDER)[number])) {
       setExpandedKinds((current) => {
@@ -363,7 +376,8 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
           return [...current, dataset];
         });
         setDatasetId(dataset.id);
-        if (dataset.delimiter) setReadDelimiter(dataset.delimiter);
+        delimiterLockedRef.current = false;
+        setReadDelimiter(displayDelimiter(dataset.delimiter || slot.delimiter));
         setName(defaultTransformName(slot.source_chip_name || dataset.filename));
       } catch (err) {
         if (!cancelled) toastError(messages.errors.workspace, err);
@@ -384,6 +398,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
       setRightPreview(null);
       setResultPreview(null);
       if (!canvasMode) {
+        delimiterLockedRef.current = false;
         setDatasetId(undefined);
         setName("");
         setSourcePreview(null);
@@ -408,7 +423,13 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         if (cancelled) return;
         setTransformId(row.id);
         if (!canvasMode) setDatasetId(row.dataset_id);
-        if (!canvasMode && row.spec?.read?.delimiter) setReadDelimiter(row.spec.read.delimiter);
+        const savedDelimiter = row.spec?.read?.delimiter?.trim();
+        if (!canvasMode && savedDelimiter) {
+          delimiterLockedRef.current = true;
+          setReadDelimiter(displayDelimiter(savedDelimiter));
+        } else {
+          delimiterLockedRef.current = false;
+        }
         setName(row.name);
         const cleanOperation = row.spec?.operations?.find((operation) => operation.type === "clean");
         const combineOperation = row.spec?.operations?.find(
@@ -1167,7 +1188,9 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                               )}
                               onClick={() => {
                                 const selecting = datasetId !== item.id;
+                                delimiterLockedRef.current = false;
                                 setDatasetId(selecting ? item.id : undefined);
+                                setReadDelimiter(selecting ? displayDelimiter(item.delimiter) : ",");
                                 setName(selecting ? defaultTransformName(item.filename) : "");
                               }}
                             >
@@ -1296,6 +1319,22 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                     : null}
                 </div>
                 ) : null}
+                <div className="ml-3 w-24" title={messages.transform.readDelimiterHint}>
+                  <Select
+                    editable
+                    className="technical h-7"
+                    value={readDelimiter}
+                    disabled={!selected}
+                    options={DELIMITER_VALUES.map((value) => ({
+                      value,
+                      label: value === "tab" ? "tab" : value,
+                    }))}
+                    onChange={(value) => {
+                      delimiterLockedRef.current = true;
+                      setReadDelimiter(value);
+                    }}
+                  />
+                </div>
                 </div>
               }
               actions={
@@ -1335,7 +1374,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               </div>
             ) : (
               <>
-                <div className="grid items-stretch gap-4 border-b border-border px-4 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7.5rem]">
+                <div className="grid items-stretch gap-4 border-b border-border px-4 py-3 md:grid-cols-2">
                   <FormField label={messages.transform.namePlaceholder}>
                     <div className="flex h-[3.25rem] items-start gap-2 rounded border border-border bg-surface px-2.5 py-1.5 text-[13px] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
                       <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
@@ -1357,20 +1396,6 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                       >
                         {selected.filename}
                       </span>
-                    </div>
-                  </FormField>
-                  <FormField label={messages.transform.readDelimiter}>
-                    <div title={messages.transform.readDelimiterHint}>
-                      <Select
-                        editable
-                        className="technical h-[3.25rem]"
-                        value={readDelimiter}
-                        options={DELIMITER_VALUES.map((value) => ({
-                          value,
-                          label: value === "tab" ? "tab" : value,
-                        }))}
-                        onChange={setReadDelimiter}
-                      />
                     </div>
                   </FormField>
                 </div>

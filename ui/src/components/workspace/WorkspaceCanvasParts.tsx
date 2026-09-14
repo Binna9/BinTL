@@ -550,7 +550,7 @@ export function WorkspaceLayers({
                 edge.kind === "on_error"
                   ? "text-danger"
                   : edge.kind === "on_success"
-                    ? "text-success"
+                    ? "text-accent"
                     : edge.kind === "always"
                       ? "text-text-secondary"
                       : "text-accent"

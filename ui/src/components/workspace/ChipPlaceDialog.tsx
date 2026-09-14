@@ -20,6 +20,8 @@ import {
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
+import { chipKindLabel, producerChips } from "@/features/workspace/workspaceCanvasModel";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
@@ -32,7 +34,54 @@ export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "s
 export type TransformPlaceDraft = {
   name: string;
   inputDatasetId: string;
+  inputChipId?: string;
 };
+
+export type EmptyConsumerDraft = {
+  name: string;
+  inputChipId?: string;
+  sourceChipId?: string;
+  targetChipId?: string;
+};
+
+export function CanvasProducerSelect({
+  chips,
+  value,
+  excludeIds,
+  messages,
+  label,
+  disabled,
+  onChange,
+}: {
+  chips: Chip[];
+  value: string;
+  excludeIds?: Iterable<string>;
+  messages: Messages;
+  label: string;
+  disabled?: boolean;
+  onChange: (id: string) => void;
+}) {
+  const options = producerChips(chips, excludeIds).map((chip) => ({
+    value: chip.id,
+    label: `${chipKindLabel(chip.kind, messages)} · ${chip.name}`,
+  }));
+  return (
+    <label className="flex min-w-0 flex-col gap-1.5">
+      <span className="text-xs font-medium text-text-secondary">{label}</span>
+      {options.length === 0 ? (
+        <p className="text-xs leading-5 text-text-tertiary">{messages.workspace.noProducerChips}</p>
+      ) : (
+        <Select
+          value={value}
+          placeholder={messages.workspace.inputChipNone}
+          options={options}
+          disabled={disabled}
+          onChange={onChange}
+        />
+      )}
+    </label>
+  );
+}
 
 const DATASET_KIND_ORDER = ["upload", "database", "api"] as const;
 type DatasetKind = (typeof DATASET_KIND_ORDER)[number];
@@ -490,6 +539,7 @@ function TransformNewPanel({
   onPlaceDataset,
   onPlaceCatalog,
   catalogChips,
+  canvasChips,
   canvasChipIds,
   dragHandleRef,
 }: {
@@ -498,16 +548,18 @@ function TransformNewPanel({
   messages: Messages;
   busy?: boolean;
   onClose: () => void;
-  onPlaceEmpty: (name: string) => void;
+  onPlaceEmpty: (draft: EmptyConsumerDraft) => void;
   onPlaceDataset: (draft: TransformPlaceDraft) => void;
   onPlaceCatalog: (chipIds: string[]) => void;
   catalogChips: Chip[];
+  canvasChips: Chip[];
   canvasChipIds: Set<string>;
   dragHandleRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   const [pickingDataset, setPickingDataset] = useState(false);
   const [namingEmpty, setNamingEmpty] = useState(false);
   const [emptyName, setEmptyName] = useState(defaultName);
+  const [inputChipId, setInputChipId] = useState("");
   const [inputDatasetId, setInputDatasetId] = useState("");
   const [catalogSelectedIds, setCatalogSelectedIds] = useState<string[]>([]);
 
@@ -520,6 +572,7 @@ function TransformNewPanel({
     setPickingDataset(false);
     setNamingEmpty(false);
     setEmptyName(defaultName);
+    setInputChipId("");
     setInputDatasetId("");
     setCatalogSelectedIds([]);
   }, [defaultName]);
@@ -555,6 +608,7 @@ function TransformNewPanel({
           onClick={() => {
             if (pickingDataset) exitDatasetPick();
             setEmptyName(defaultName);
+            setInputChipId("");
             setNamingEmpty(true);
           }}
         >
@@ -655,7 +709,7 @@ function TransformNewPanel({
         open={namingEmpty}
         title={messages.workspace.nameChipTitle}
         zIndex={110}
-        className="w-[min(24rem,92vw)]"
+        className="w-[min(26rem,92vw)]"
         onClose={() => setNamingEmpty(false)}
         footer={
           <>
@@ -670,7 +724,7 @@ function TransformNewPanel({
                 const trimmed = emptyName.trim();
                 if (!trimmed) return;
                 setNamingEmpty(false);
-                onPlaceEmpty(trimmed);
+                onPlaceEmpty({ name: trimmed, inputChipId: inputChipId || undefined });
               }}
             >
               {messages.workspace.nameChipConfirm}
@@ -694,33 +748,56 @@ function TransformNewPanel({
                 const trimmed = emptyName.trim();
                 if (!trimmed || busy) return;
                 setNamingEmpty(false);
-                onPlaceEmpty(trimmed);
+                onPlaceEmpty({ name: trimmed, inputChipId: inputChipId || undefined });
               }}
             />
           </label>
+          <p className="text-xs leading-5 text-text-tertiary">{messages.workspace.inputChipHint}</p>
+          <CanvasProducerSelect
+            chips={canvasChips}
+            value={inputChipId}
+            messages={messages}
+            label={messages.workspace.inputChip}
+            disabled={busy}
+            onChange={setInputChipId}
+          />
         </div>
       </AppDialog>
     </>
   );
 }
 
-function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
+function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChips, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
   kind?: "load" | "validation" | "sql"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
   emptyChipLabel?: string; catalogHint?: string; registerLabel?: string; submitLabel?: string;
-  chips: Chip[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
+  chips: Chip[]; canvasChips: Chip[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
   hideEmpty?: boolean;
-  onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty?: (name: string) => void; onRegister: () => void;
+  onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty?: (draft: EmptyConsumerDraft) => void; onRegister: () => void;
   dragHandleRef: RefObject<HTMLDivElement | null>;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [namingEmpty, setNamingEmpty] = useState(false);
   const [emptyName, setEmptyName] = useState(defaultName);
+  const [inputChipId, setInputChipId] = useState("");
+  const [sourceChipId, setSourceChipId] = useState("");
+  const [targetChipId, setTargetChipId] = useState("");
 
   useEffect(() => {
     setNamingEmpty(false);
     setEmptyName(defaultName);
+    setInputChipId("");
+    setSourceChipId("");
+    setTargetChipId("");
   }, [defaultName]);
   const nameTaken = occupiedNames.some((name) => name.trim().toLocaleLowerCase() === emptyName.trim().toLocaleLowerCase());
+  const confirmEmpty = () => {
+    const trimmed = emptyName.trim();
+    if (!trimmed || busy || nameTaken) return;
+    setNamingEmpty(false);
+    onPlaceEmpty?.(kind === "validation"
+      ? { name: trimmed, sourceChipId: sourceChipId || undefined, targetChipId: targetChipId || undefined }
+      : { name: trimmed, inputChipId: inputChipId || undefined });
+  };
 
   return (
     <>
@@ -742,6 +819,9 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
             disabled={busy}
             onClick={() => {
               setEmptyName(defaultName);
+              setInputChipId("");
+              setSourceChipId("");
+              setTargetChipId("");
               setNamingEmpty(true);
             }}
           >
@@ -788,19 +868,14 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
         open={namingEmpty}
         title={messages.workspace.nameChipTitle}
         zIndex={110}
-        className="w-[min(24rem,92vw)]"
+        className="w-[min(26rem,92vw)]"
         onClose={() => setNamingEmpty(false)}
         footer={
           <>
             <Button type="button" variant="secondary" onClick={() => setNamingEmpty(false)}>
               {messages.common.cancel}
             </Button>
-            <Button type="button" variant="primary" disabled={busy || !emptyName.trim() || nameTaken} onClick={() => {
-              const trimmed = emptyName.trim();
-              if (!trimmed) return;
-              setNamingEmpty(false);
-              onPlaceEmpty?.(trimmed);
-            }}>
+            <Button type="button" variant="primary" disabled={busy || !emptyName.trim() || nameTaken} onClick={confirmEmpty}>
               {messages.workspace.nameChipConfirm}
             </Button>
           </>
@@ -819,14 +894,41 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
               onKeyDown={(event) => {
                 if (event.key !== "Enter") return;
                 event.preventDefault();
-                const trimmed = emptyName.trim();
-                if (!trimmed || busy || nameTaken) return;
-                setNamingEmpty(false);
-                onPlaceEmpty?.(trimmed);
+                confirmEmpty();
               }}
             />
             {nameTaken ? <span className="text-xs text-danger">{messages.workspace.duplicateChipName}</span> : null}
           </label>
+          <p className="text-xs leading-5 text-text-tertiary">{messages.workspace.inputChipHint}</p>
+          {kind === "validation" ? (
+            <>
+              <CanvasProducerSelect
+                chips={canvasChips}
+                value={sourceChipId}
+                messages={messages}
+                label={messages.workspace.validationSourceChip}
+                disabled={busy}
+                onChange={setSourceChipId}
+              />
+              <CanvasProducerSelect
+                chips={canvasChips}
+                value={targetChipId}
+                messages={messages}
+                label={messages.workspace.validationTargetChip}
+                disabled={busy}
+                onChange={setTargetChipId}
+              />
+            </>
+          ) : (
+            <CanvasProducerSelect
+              chips={canvasChips}
+              value={inputChipId}
+              messages={messages}
+              label={messages.workspace.inputChip}
+              disabled={busy}
+              onChange={setInputChipId}
+            />
+          )}
         </div>
       </AppDialog>
     </>
@@ -840,6 +942,7 @@ export function ChipPlaceDialog({
   workspaceReturnState,
   catalogChips,
   datasets,
+  canvasChips,
   canvasChipIds,
   defaultTransformName,
   defaultLoadName,
@@ -861,6 +964,7 @@ export function ChipPlaceDialog({
   workspaceReturnState?: unknown;
   catalogChips: Chip[];
   datasets: Dataset[];
+  canvasChips: Chip[];
   canvasChipIds: Set<string>;
   defaultTransformName: string;
   defaultLoadName: string;
@@ -872,8 +976,8 @@ export function ChipPlaceDialog({
   onClose: () => void;
   onPlaceCatalog: (chipIds: string[]) => void;
   onPlaceNewTransform: (draft: TransformPlaceDraft) => void;
-  onPlaceNewLoad: (name: string) => void;
-  onPlaceNewValidation: (name: string) => void;
+  onPlaceNewLoad: (draft: EmptyConsumerDraft) => void;
+  onPlaceNewValidation: (draft: EmptyConsumerDraft) => void;
   onRegisterSql: () => void;
 }) {
   const navigate = useNavigate();
@@ -927,16 +1031,22 @@ export function ChipPlaceDialog({
           messages={messages}
           busy={busy}
           onClose={onClose}
-          onPlaceEmpty={(name) => onPlaceNewTransform({ name, inputDatasetId: "" })}
+          onPlaceEmpty={(draft) => onPlaceNewTransform({
+            name: draft.name,
+            inputDatasetId: "",
+            inputChipId: draft.inputChipId,
+          })}
           onPlaceDataset={onPlaceNewTransform}
           onPlaceCatalog={onPlaceCatalog}
           catalogChips={catalogChips}
+          canvasChips={canvasChips}
           canvasChipIds={canvasChipIds}
           dragHandleRef={dragHandleRef}
         />
       ) : kind === "load" ? (
         <LoadCatalogPanel
           chips={catalogChips}
+          canvasChips={canvasChips}
           canvasChipIds={canvasChipIds}
           defaultName={defaultLoadName}
           occupiedNames={occupiedNames}
@@ -963,6 +1073,7 @@ export function ChipPlaceDialog({
           registerLabel={messages.workspace.registerNewChip}
           submitLabel={messages.workspace.pickChipPlace}
           chips={catalogChips}
+          canvasChips={canvasChips}
           canvasChipIds={canvasChipIds}
           defaultName={defaultSqlName}
           occupiedNames={occupiedNames}
@@ -984,6 +1095,7 @@ export function ChipPlaceDialog({
           catalogHint={messages.workspace.placeValidationCatalogHint}
           registerLabel={messages.workspace.registerValidationFirst}
           chips={catalogChips}
+          canvasChips={canvasChips}
           canvasChipIds={canvasChipIds}
           defaultName={defaultValidationName}
           occupiedNames={occupiedNames}

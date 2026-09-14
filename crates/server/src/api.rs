@@ -8,10 +8,11 @@ use extracts::*;
 use files::*;
 use jobs::*;
 
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, SET_COOKIE};
 use axum::http::{HeaderValue, StatusCode};
-use axum::response::{AppendHeaders, IntoResponse};
+use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use connectors::{
@@ -176,5 +177,22 @@ mod tests {
             },
         ])
         .is_err());
+    }
+
+    #[test]
+    fn commit_stream_events_are_single_ndjson_lines() {
+        let progress = ndjson_line(json!({
+            "type": "progress",
+            "current": 1,
+            "total": 2,
+            "name": "Sales",
+        }));
+        let text = String::from_utf8(progress.to_vec()).unwrap();
+        assert!(text.ends_with('\n'));
+        assert_eq!(text.matches('\n').count(), 1);
+        let parsed: Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(parsed["type"], "progress");
+        assert_eq!(parsed["current"], 1);
+        assert_eq!(parsed["name"], "Sales");
     }
 }

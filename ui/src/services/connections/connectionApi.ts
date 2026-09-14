@@ -76,11 +76,13 @@ export const connectionApi = {
     connectionId: string,
     table: string,
     database?: string,
+    init?: HttpRequestInit,
   ) => {
     const query = new URLSearchParams({ table });
     if (database) query.set("database", database);
     return httpRequest<ColumnListResponse>(
       `/api/connections/${connectionId}/columns?${query}`,
+      init,
     );
   },
   getPreview: (

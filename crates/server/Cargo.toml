@@ -16,6 +16,7 @@ connectors = { path = "../connectors" }
 engine = { path = "../engine" }
 axum = { version = "0.8", features = ["multipart", "macros"] }
 tokio = { workspace = true }
+tokio-stream = "0.1"
 tower-http = { version = "0.6", features = ["fs", "trace", "cors", "limit"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -533,10 +533,11 @@ export function ConnectionsPage() {
       (form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null)?.value ?? "";
     const port = value("port");
 
+    const name = field("name").value;
     setSaving(true);
     try {
       await connectionApi.createConnection({
-        name: field("name").value,
+        name,
         driver: field("driver").value,
         host: field("host").value,
         port: driver === "http" ? undefined : port ? Number(port) : undefined,
@@ -553,7 +554,7 @@ export function ConnectionsPage() {
       setNewAuthMode("bearer");
       setNewAppliedAuth(null);
       await refreshConnections();
-      toastSuccess(messages.connectionsPage.saved);
+      toastSuccess(messages.connectionsPage.saved(name));
     } catch (err) {
       toastError(messages.errors.saveConnection, err);
     } finally {
@@ -608,10 +609,11 @@ export function ConnectionsPage() {
       (form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null)?.value ?? "";
     const port = driver === "http" ? "" : value("port");
 
+    const name = field("name").value;
     setEditSaving(true);
     try {
       await connectionApi.updateConnection(editing.id, {
-        name: field("name").value,
+        name,
         driver: field("driver").value,
         host: field("host").value,
         port: port ? Number(port) : undefined,
@@ -628,6 +630,7 @@ export function ConnectionsPage() {
       setEditAppliedAuth(null);
       setAuthDialog(null);
       await refreshConnections();
+      toastSuccess(messages.connectionsPage.saved(name));
     } catch (err) {
       toastError(messages.errors.saveConnection, err);
     } finally {

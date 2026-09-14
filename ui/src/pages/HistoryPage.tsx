@@ -17,14 +17,14 @@ export function HistoryPage() {
   const paging = usePagination(jobs);
 
   return (
-    <PageShell fill>
+    <PageShell>
       <PageHeader
         iconName="history"
         eyebrow={messages.history.eyebrow}
         title={messages.history.title}
         description={messages.history.description}
       />
-      <Panel fill>
+      <Panel>
         <Toolbar>
           <ToolbarGroup>
             <span className="text-[13px] font-semibold">{messages.jobs.history}</span>
@@ -32,7 +32,6 @@ export function HistoryPage() {
           </ToolbarGroup>
         </Toolbar>
         <DataGrid
-          className="min-h-0 flex-1"
           headers={[...messages.jobs.headers]}
           empty={jobs.length === 0 ? <EmptyState icon={<NavIcon name="history" />} title={messages.empty.queue} hint={messages.empty.queueHint} /> : undefined}
         >

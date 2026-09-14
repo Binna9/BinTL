@@ -15,6 +15,7 @@ impl Store {
         requested_by: Option<&str>,
         snapshot_json: &str,
         input_file_id: &str,
+        load_id: Option<&str>,
     ) -> Result<ExecutionStepRow, StorageError> {
         self.require_workspace(workspace_id).await?;
         require_config_json(snapshot_json)?;
@@ -32,9 +33,9 @@ impl Store {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("INSERT INTO execution_steps (id, execution_id, kind, definition_revision,
-                     definition_snapshot_json, status, queued_at) VALUES (?, ?, 'load', 1, ?, 'queued', ?)")
-            .bind(&step_id).bind(&execution_id).bind(snapshot_json).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO execution_steps (id, execution_id, kind, load_id, definition_revision,
+                     definition_snapshot_json, status, queued_at) VALUES (?, ?, 'load', ?, 1, ?, 'queued', ?)")
+            .bind(&step_id).bind(&execution_id).bind(load_id).bind(snapshot_json).bind(&now).execute(&mut *tx).await?;
         sqlx::query(
             "INSERT INTO execution_inputs (execution_step_id, port_name, data_file_id, ordinal)
                      VALUES (?, 'in', ?, 0)",

@@ -246,6 +246,42 @@ impl Store {
         Ok(())
     }
 
+    pub async fn set_load_progress(&self, id: &str, loaded_rows: i64) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE execution_steps SET output_rows = ? WHERE id = ? AND status = 'running'",
+        )
+        .bind(loaded_rows)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn latest_load_result_for_definition(
+        &self,
+        load_id: &str,
+    ) -> Result<Option<LoadResultRow>, StorageError> {
+        Ok(sqlx::query_as::<_, LoadResultRow>(
+            "SELECT s.id AS chip_run_id, json_extract(s.result_json, '$.destination') AS destination,
+                    json_extract(s.result_json, '$.write_mode') AS write_mode, s.input_rows,
+                    s.output_rows AS loaded_rows, COALESCE(s.rejected_rows, 0) AS rejected_rows,
+                    s.input_bytes, COALESCE(json_extract(s.result_json, '$.duration_ms'), 0) AS duration_ms,
+                    json_extract(s.result_json, '$.artifact_path') AS artifact_path,
+                    COALESCE(json_extract(s.result_json, '$.validation_status'), 'pending') AS validation_status,
+                    COALESCE(s.finished_at, s.queued_at) AS created_at
+             FROM execution_steps s
+             LEFT JOIN chips c ON c.id = s.chip_id
+             WHERE s.kind = 'load' AND s.result_json IS NOT NULL
+               AND (s.load_id = ? OR c.load_id = ?)
+             ORDER BY COALESCE(s.finished_at, s.queued_at) DESC
+             LIMIT 1",
+        )
+        .bind(load_id)
+        .bind(load_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     pub async fn insert_load_result(
         &self,
         run_id: &str,
