@@ -1,4 +1,5 @@
-//! Workspace runs prepare every recipe before dispatching any side effects.
+//! Workspace runs freeze every recipe before the first dispatch.
+//! Chips that fail that check are not queued; chips that pass still run.
 //! Execution remains sequential; standalone chip runs retain their existing path.
 use super::*;
 use storage::ChipEdgeRow;
@@ -203,7 +204,7 @@ pub(super) async fn execute(
         return Err(AppError::bad("workspace has no active chips"));
     }
 
-    // Collect all errors first. No extract, transformation, or load is dispatched here.
+    // Collect all errors first so later chips still get a frozen snapshot.
     let mut prepared = Vec::new();
     let mut errors = HashMap::new();
     for chip in &ordered {
@@ -247,6 +248,8 @@ pub(super) async fn execute(
         "전체 실행의 칩 설정과 연결을 고정했습니다.",
         Some(&json!({ "edges": edges, "chips": ordered.iter().map(|chip| json!({"id": chip.id, "name": chip.name, "revision": chip.revision})).collect::<Vec<_>>() }).to_string()),
     ).await?;
+    let mut first_failure = None;
+    let mut canceled = false;
     if !errors.is_empty() {
         let mut messages = Vec::new();
         for (chip, run) in ordered.iter().zip(&runs) {
@@ -260,26 +263,21 @@ pub(super) async fn execute(
                     .append_execution_log(&run.id, "error", "preflight_failed", reason, None)
                     .await?;
                 messages.push(format!("{}: {}", chip.name, reason));
-            } else {
-                state
-                    .store
-                    .skip_workspace_step(
-                        &run.id,
-                        "사전 검증 오류가 있어 전체 실행을 시작하지 않았습니다.",
-                    )
-                    .await?;
             }
         }
-        return Err(AppError::bad(format!(
+        first_failure = Some(format!(
             "전체 실행 사전 검증 실패:\n{}",
             messages.join("\n")
-        )));
+        ));
     }
 
     let mut outputs = HashMap::<String, String>::new();
     let mut outcomes = HashMap::<String, Outcome>::new();
-    let mut first_failure = None;
     for (chip, run) in ordered.iter().zip(&runs) {
+        if errors.contains_key(&chip.id) {
+            outcomes.insert(chip.id.clone(), Outcome::Failed);
+            continue;
+        }
         if condition_blocked(&chip.id, &edges, &outcomes) {
             state
                 .store
@@ -342,10 +340,13 @@ pub(super) async fn execute(
                 .store
                 .bind_workspace_step_input(&run.id, input, source)
                 .await?;
-            state
-                .execution_tx
-                .try_send(ExecutionTask::Chip(run.id.clone()))
-                .map_err(|_| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "chip queue full"))?;
+            if let Err(error) = state.store.mark_dispatchable(&run.id).await {
+                if state.store.step_is_canceled(&run.id).await? {
+                    return Err(AppError::bad("canceled"));
+                }
+                return Err(error.into());
+            }
+            state.wake();
             wait_for_chip_run(state, &run.id).await
         }
         .await;
@@ -370,8 +371,12 @@ pub(super) async fn execute(
                 outcomes.insert(chip.id.clone(), Outcome::Succeeded);
             }
             Err(error) => {
-                // The worker records execution failures; this also covers failures
-                // before dispatch (missing files, full queue).
+                if error.message() == "canceled" {
+                    canceled = true;
+                    break;
+                }
+                // The worker records execution failures; this also covers
+                // failures before dispatch (missing files).
                 if state
                     .store
                     .get_chip_run(&run.id)
@@ -390,6 +395,9 @@ pub(super) async fn execute(
                 first_failure.get_or_insert_with(|| format!("{}: {}", chip.name, error.message()));
             }
         }
+    }
+    if canceled {
+        return Err(AppError::bad("canceled"));
     }
     match first_failure {
         Some(reason) => Err(AppError::bad(reason)),

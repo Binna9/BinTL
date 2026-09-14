@@ -228,27 +228,179 @@ impl Store {
         let now = now_rfc3339();
         let reason = "Server restarted before execution completed";
         let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE execution_steps SET status='failed', error_code='EXECUTION_INTERRUPTED', error_message=?, finished_at=? WHERE status IN ('queued','running')")
+        sqlx::query("UPDATE execution_steps SET status='failed', error_code='EXECUTION_INTERRUPTED', error_message=?, finished_at=? WHERE status='running'")
             .bind(reason).bind(&now).execute(&mut *tx).await?;
-        sqlx::query("UPDATE executions SET status='failed', error_message=?, finished_at=? WHERE status IN ('queued','running')")
+        sqlx::query("UPDATE execution_steps SET status='failed', error_code='EXECUTION_INTERRUPTED', error_message=?, finished_at=? WHERE status='queued' AND execution_id IN (SELECT id FROM executions WHERE source='workspace' AND status IN ('queued','running'))")
+            .bind(reason).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("UPDATE execution_steps SET status='failed', error_code='EXECUTION_INTERRUPTED', error_message=?, finished_at=? WHERE status='queued' AND id IN (SELECT child FROM (SELECT json_extract(result_json, '$.child_step_id') AS child FROM execution_steps WHERE error_code='EXECUTION_INTERRUPTED' AND json_extract(result_json, '$.child_step_id') IS NOT NULL))")
+            .bind(reason).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("UPDATE executions SET status='failed', error_message=?, finished_at=? WHERE source='workspace' AND status IN ('queued','running')")
+            .bind(reason).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("UPDATE executions SET status='failed', error_message=?, finished_at=? WHERE source != 'workspace' AND status IN ('queued','running') AND id IN (SELECT execution_id FROM execution_steps WHERE error_code='EXECUTION_INTERRUPTED')")
             .bind(reason).bind(&now).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    pub async fn mark_dispatchable(&self, id: &str) -> Result<(), StorageError> {
+        let changed = sqlx::query(
+            "UPDATE execution_steps SET dispatch_at = COALESCE(dispatch_at, ?)
+             WHERE id = ? AND status = 'queued'",
+        )
+        .bind(now_rfc3339())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if changed.rows_affected() == 0 {
+            return Err(StorageError::Invalid("step is not waiting to run".into()));
+        }
+        Ok(())
+    }
+
+    pub async fn list_dispatchable_steps(&self, limit: i64) -> Result<Vec<String>, StorageError> {
+        Ok(sqlx::query_scalar(
+            "SELECT s.id FROM execution_steps s
+             INNER JOIN executions e ON e.id = s.execution_id
+             WHERE s.status = 'queued'
+               AND (e.source != 'workspace' OR s.dispatch_at IS NOT NULL)
+             ORDER BY s.queued_at ASC, s.rowid ASC
+             LIMIT ?",
+        )
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     pub async fn create_workspace_execution(&self, workspace_id: &str, requested_by: &str) -> Result<String, StorageError> {
         self.require_workspace(workspace_id).await?;
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM executions WHERE workspace_id=? AND source='workspace' AND status IN ('queued','running')",
+        )
+        .bind(workspace_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if active > 0 {
+            return Err(StorageError::Conflict("workspace already running".into()));
+        }
         sqlx::query("INSERT INTO executions (id, workspace_id, requested_by, source, status, created_at, started_at) VALUES (?, ?, ?, 'workspace', 'running', ?, ?)")
-            .bind(&id).bind(workspace_id).bind(requested_by).bind(&now).bind(&now).execute(&self.pool).await?;
+            .bind(&id).bind(workspace_id).bind(requested_by).bind(&now).bind(&now).execute(&mut *tx).await?;
+        tx.commit().await?;
         Ok(id)
     }
 
     pub async fn finish_workspace_execution(&self, id: &str, error: Option<&str>) -> Result<(), StorageError> {
+        self.finish_workspace_execution_as(id, if error.is_some() { "failed" } else { "succeeded" }, error)
+            .await
+    }
+
+    pub async fn finish_workspace_execution_as(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        if !matches!(status, "succeeded" | "failed" | "canceled") {
+            return Err(StorageError::Invalid("invalid terminal status".into()));
+        }
         sqlx::query("UPDATE executions SET status=?, error_message=?, finished_at=? WHERE id=? AND source='workspace' AND status='running'")
-            .bind(if error.is_some() { "failed" } else { "succeeded" }).bind(error).bind(now_rfc3339()).bind(id).execute(&self.pool).await?;
+            .bind(status).bind(error).bind(now_rfc3339()).bind(id).execute(&self.pool).await?;
         Ok(())
+    }
+
+    pub async fn cancel_execution_step(&self, id: &str) -> Result<bool, StorageError> {
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let child: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT json_extract(result_json, '$.child_step_id') FROM execution_steps WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten()
+        .filter(|value| !value.is_empty());
+        let changed = sqlx::query(
+            "UPDATE execution_steps SET status='canceled', error_code=?, error_message=?, finished_at=?
+             WHERE id=? AND status IN ('queued', 'running')",
+        )
+        .bind(EXECUTION_CANCELED)
+        .bind(EXECUTION_CANCELED_MESSAGE)
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        if let Some(child) = child.as_deref() {
+            sqlx::query(
+                "UPDATE execution_steps SET status='canceled', error_code=?, error_message=?, finished_at=?
+                 WHERE id=? AND status IN ('queued', 'running')",
+            )
+            .bind(EXECUTION_CANCELED)
+            .bind(EXECUTION_CANCELED_MESSAGE)
+            .bind(&now)
+            .bind(child)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "UPDATE executions SET status='canceled', error_message=?, finished_at=?
+             WHERE id=(SELECT execution_id FROM execution_steps WHERE id=?)
+               AND source != 'workspace' AND status IN ('queued', 'running')",
+        )
+        .bind(EXECUTION_CANCELED_MESSAGE)
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        if changed.rows_affected() == 1 {
+            let _ = self
+                .append_execution_log(id, "info", "canceled", EXECUTION_CANCELED_MESSAGE, None)
+                .await;
+            if let Some(child) = child.as_deref() {
+                let _ = self
+                    .append_execution_log(child, "info", "canceled", EXECUTION_CANCELED_MESSAGE, None)
+                    .await;
+            }
+        }
+        Ok(changed.rows_affected() == 1)
+    }
+
+    pub async fn cancel_workspace_execution(&self, id: &str) -> Result<bool, StorageError> {
+        let status: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM executions WHERE id=? AND source='workspace'",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(status) = status else {
+            return Err(StorageError::NotFound("workspace execution not found".into()));
+        };
+        if !matches!(status.as_str(), "queued" | "running") {
+            return Ok(false);
+        }
+        let running: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM execution_steps WHERE execution_id=? AND status='running'",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        for step in &running {
+            self.cancel_execution_step(step).await?;
+        }
+        self.skip_waiting_workspace_steps(id, "실행이 취소되어 실행하지 않았습니다.")
+            .await?;
+        let changed = sqlx::query(
+            "UPDATE executions SET status='canceled', error_message=?, finished_at=?
+             WHERE id=? AND source='workspace' AND status IN ('queued', 'running')",
+        )
+        .bind(EXECUTION_CANCELED_MESSAGE)
+        .bind(now_rfc3339())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(changed.rows_affected() == 1)
     }
 
     pub async fn list_workspace_executions(&self, workspace_id: &str) -> Result<Vec<WorkspaceExecutionRow>, StorageError> {
@@ -843,14 +995,93 @@ mod workspace_execution_tests {
         let pending = store.create_chip_run_in_execution(&chip.id, &workspace.id, chip.revision, config, None, Some(&interrupted)).await.unwrap();
         let chip_only = store.create_chip_run(&chip.id, &workspace.id, chip.revision, config, None).await.unwrap();
         assert!(store.workspace_has_active_execution(&workspace.id).await.unwrap());
+        assert_eq!(
+            store.list_dispatchable_steps(8).await.unwrap(),
+            vec![chip_only.id.clone()]
+        );
         store.recover_interrupted_executions().await.unwrap();
         assert_eq!(store.get_chip_run(&pending.id).await.unwrap().unwrap().status, "failed");
-        assert_eq!(store.get_chip_run(&chip_only.id).await.unwrap().unwrap().status, "failed");
+        assert_eq!(store.get_chip_run(&chip_only.id).await.unwrap().unwrap().status, "queued");
         assert_eq!(store.get_execution(&interrupted).await.unwrap().unwrap().status, "failed");
         assert_eq!(store.get_execution(&success).await.unwrap().unwrap().status, "succeeded");
+        assert_eq!(
+            store.list_dispatchable_steps(8).await.unwrap(),
+            vec![chip_only.id.clone()]
+        );
         let leftover_chip = store.create_chip_run(&chip.id, &workspace.id, chip.revision, config, None).await.unwrap();
         assert_eq!(leftover_chip.status, "queued");
         assert!(!store.workspace_has_active_execution(&workspace.id).await.unwrap());
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cancel_workspace_cancels_running_and_skips_queued() {
+        let root = std::env::temp_dir().join(format!("bintl-cancel-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-secret").await.unwrap();
+        let user = store.ensure_bootstrap().await.unwrap();
+        let workspace = store
+            .insert_workspace("Cancel", None, &user.id, None)
+            .await
+            .unwrap();
+        let config = r#"{"connection_id":"c","source":{"type":"table","table":"users"}}"#;
+        let first_chip = store
+            .insert_chip(&user.id, &workspace.id, "First", "extract", config)
+            .await
+            .unwrap();
+        let second_chip = store
+            .insert_chip(&user.id, &workspace.id, "Second", "extract", config)
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&workspace.id, &first_chip.id)
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&workspace.id, &second_chip.id)
+            .await
+            .unwrap();
+        let execution = store
+            .create_workspace_execution(&workspace.id, &user.id)
+            .await
+            .unwrap();
+        let running = store
+            .create_chip_run_in_execution(
+                &first_chip.id,
+                &workspace.id,
+                first_chip.revision,
+                config,
+                None,
+                Some(&execution),
+            )
+            .await
+            .unwrap();
+        store.set_chip_run_running(&running.id).await.unwrap();
+        let queued = store
+            .create_chip_run_in_execution(
+                &second_chip.id,
+                &workspace.id,
+                second_chip.revision,
+                config,
+                None,
+                Some(&execution),
+            )
+            .await
+            .unwrap();
+        assert!(store.cancel_workspace_execution(&execution).await.unwrap());
+        let running = store.get_chip_run(&running.id).await.unwrap().unwrap();
+        let queued = store.get_chip_run(&queued.id).await.unwrap().unwrap();
+        assert_eq!(running.status, "canceled");
+        assert_eq!(running.error_code.as_deref(), Some(EXECUTION_CANCELED));
+        assert_eq!(queued.status, "canceled");
+        assert_eq!(queued.error_code.as_deref(), Some("WORKSPACE_STEP_SKIPPED"));
+        assert!(store.list_dispatchable_steps(8).await.unwrap().is_empty());
+        store.mark_dispatchable(&running.id).await.unwrap_err();
+        assert_eq!(
+            store.get_execution(&execution).await.unwrap().unwrap().status,
+            "canceled"
+        );
+        assert!(store.step_is_canceled(&running.id).await.unwrap());
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
     }

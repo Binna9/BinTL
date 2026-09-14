@@ -666,10 +666,7 @@ async fn run_transform(
             &transform.workspace_id,
         )
         .await?;
-    state
-        .execution_tx
-        .try_send(crate::state::ExecutionTask::Job(job.id.clone()))
-        .map_err(|_| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "job queue full"))?;
+    state.wake();
     Ok(Json(json!({
         "ok": true,
         "id": job.id,

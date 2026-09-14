@@ -165,10 +165,10 @@ pub(super) async fn run_job(
     if job.status == "running" {
         return Err(AppError::conflict("job already running"));
     }
-    state
-        .execution_tx
-        .try_send(crate::state::ExecutionTask::Job(id.clone()))
-        .map_err(|_| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "job queue full"))?;
+    if job.status == "failed" {
+        state.store.requeue_failed_job(&id).await?;
+    }
+    state.wake();
     Ok(Json(json!({ "ok": true, "id": id, "status": "queued" })))
 }
 

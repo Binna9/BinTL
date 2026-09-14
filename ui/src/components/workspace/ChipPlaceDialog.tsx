@@ -20,7 +20,6 @@ import {
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/select";
 import { chipKindLabel, producerChips } from "@/features/workspace/workspaceCanvasModel";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
@@ -44,6 +43,28 @@ export type EmptyConsumerDraft = {
   targetChipId?: string;
 };
 
+const PRODUCER_KIND_ORDER = ["extract", "transform"] as const;
+
+const PRODUCER_KIND_APPEARANCE = {
+  extract: {
+    icon: DatabaseZap,
+    frame: "border-accent/25",
+    header: "bg-accent-subtle text-accent",
+    count: "bg-accent/15 text-accent",
+    iconWrap: "bg-accent-subtle text-accent ring-1 ring-inset ring-accent/20",
+  },
+  transform: {
+    icon: Workflow,
+    frame: "border-success/25",
+    header: "bg-success-subtle text-success",
+    count: "bg-success/15 text-success",
+    iconWrap: "bg-success-subtle text-success ring-1 ring-inset ring-success/20",
+  },
+} as const;
+
+const EMPTY_NAME_DIALOG_CLASS = "flex max-h-[min(32rem,86vh)] w-[min(24rem,calc(100vw-1.5rem))] min-w-0 max-w-full";
+const VALIDATION_NAME_DIALOG_CLASS = "flex max-h-[min(86vh,48rem)] w-[min(40rem,calc(100vw-1.5rem))] min-w-0 max-w-full";
+
 export function CanvasProducerSelect({
   chips,
   value,
@@ -61,25 +82,81 @@ export function CanvasProducerSelect({
   disabled?: boolean;
   onChange: (id: string) => void;
 }) {
-  const options = producerChips(chips, excludeIds).map((chip) => ({
-    value: chip.id,
-    label: `${chipKindLabel(chip.kind, messages)} · ${chip.name}`,
-  }));
+  const skip = useMemo(() => new Set(excludeIds ?? []), [excludeIds]);
+  const options = useMemo(() => producerChips(chips), [chips]);
+  const grouped = useMemo(
+    () =>
+      PRODUCER_KIND_ORDER.map((kind) => ({
+        kind,
+        items: options.filter((chip) => chip.kind === kind),
+      })),
+    [options],
+  );
+
   return (
-    <label className="flex min-w-0 flex-col gap-1.5">
-      <span className="text-xs font-medium text-text-secondary">{label}</span>
-      {options.length === 0 ? (
-        <p className="text-xs leading-5 text-text-tertiary">{messages.workspace.noProducerChips}</p>
-      ) : (
-        <Select
-          value={value}
-          placeholder={messages.workspace.inputChipNone}
-          options={options}
-          disabled={disabled}
-          onChange={onChange}
-        />
-      )}
-    </label>
+    <div className="flex min-w-0 shrink-0 flex-col gap-2">
+      <span className="text-xs font-semibold text-text">{label}</span>
+      <div
+        className={cn("flex min-w-0 flex-col gap-2", disabled && "pointer-events-none opacity-50")}
+        role="listbox"
+        aria-label={label}
+        aria-disabled={disabled}
+      >
+        {grouped.map((group) => {
+          const appearance = PRODUCER_KIND_APPEARANCE[group.kind];
+          const KindIcon = appearance.icon;
+          const kindName = chipKindLabel(group.kind, messages);
+          return (
+            <section
+              key={group.kind}
+              className={cn("min-w-0 overflow-hidden rounded-lg border bg-surface", appearance.frame)}
+            >
+              <div className={cn("flex min-w-0 items-center gap-1.5 px-2 py-1.5", appearance.header)}>
+                <KindIcon className="size-3.5 shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-bold">{kindName}</span>
+                <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums", appearance.count)}>
+                  {group.items.length}
+                </span>
+              </div>
+              {group.items.length === 0 ? (
+                <p className="px-2 py-2 text-[11px] leading-4 text-text-tertiary">
+                  {messages.workspace.noKindOnCanvas(kindName)}
+                </p>
+              ) : (
+                <ul className="scroll-pane m-0 max-h-36 list-none overflow-y-auto overflow-x-hidden p-0">
+                  {group.items.map((chip) => {
+                    const selected = chip.id === value;
+                    const blocked = skip.has(chip.id);
+                    return (
+                      <li key={chip.id} className="min-w-0 border-t border-border/70">
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          disabled={disabled || blocked}
+                          className={cn(
+                            "flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left outline-none",
+                            selectableClass(selected),
+                            blocked && "opacity-50",
+                          )}
+                          onClick={() => onChange(selected ? "" : chip.id)}
+                        >
+                          <span className={cn("grid size-6 shrink-0 place-items-center rounded-md", appearance.iconWrap)}>
+                            <KindIcon className="size-3.5" aria-hidden="true" />
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-text">{chip.name}</span>
+                          {selected ? <Check className="size-3.5 shrink-0 text-accent" aria-hidden="true" /> : null}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -709,7 +786,9 @@ function TransformNewPanel({
         open={namingEmpty}
         title={messages.workspace.nameChipTitle}
         zIndex={110}
-        className="w-[min(26rem,92vw)]"
+        className={EMPTY_NAME_DIALOG_CLASS}
+        minWidth={384}
+        minHeight={240}
         onClose={() => setNamingEmpty(false)}
         footer={
           <>
@@ -719,12 +798,12 @@ function TransformNewPanel({
             <Button
               type="button"
               variant="primary"
-              disabled={busy || !emptyName.trim()}
+              disabled={busy || !emptyName.trim() || !inputChipId}
               onClick={() => {
                 const trimmed = emptyName.trim();
-                if (!trimmed) return;
+                if (!trimmed || !inputChipId) return;
                 setNamingEmpty(false);
-                onPlaceEmpty({ name: trimmed, inputChipId: inputChipId || undefined });
+                onPlaceEmpty({ name: trimmed, inputChipId });
               }}
             >
               {messages.workspace.nameChipConfirm}
@@ -732,10 +811,10 @@ function TransformNewPanel({
           </>
         }
       >
-        <div className="flex flex-col gap-3 p-4">
-          <p className="text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
-          <label className="flex min-w-0 flex-col gap-1.5">
-            <span className="text-xs font-medium text-text-secondary">{messages.workspace.chipName}</span>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto p-3">
+          <p className="shrink-0 text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
+          <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+            <span className="text-xs font-semibold text-text">{messages.workspace.chipName}</span>
             <input
               className="field-control text-sm"
               value={emptyName}
@@ -746,13 +825,13 @@ function TransformNewPanel({
                 if (event.key !== "Enter") return;
                 event.preventDefault();
                 const trimmed = emptyName.trim();
-                if (!trimmed || busy) return;
+                if (!trimmed || !inputChipId || busy) return;
                 setNamingEmpty(false);
-                onPlaceEmpty({ name: trimmed, inputChipId: inputChipId || undefined });
+                onPlaceEmpty({ name: trimmed, inputChipId });
               }}
             />
           </label>
-          <p className="text-xs leading-5 text-text-tertiary">{messages.workspace.inputChipHint}</p>
+          <p className="shrink-0 text-xs leading-5 text-text-tertiary">{messages.workspace.inputChipHint}</p>
           <CanvasProducerSelect
             chips={canvasChips}
             value={inputChipId}
@@ -790,13 +869,14 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
     setTargetChipId("");
   }, [defaultName]);
   const nameTaken = occupiedNames.some((name) => name.trim().toLocaleLowerCase() === emptyName.trim().toLocaleLowerCase());
+  const emptyReady = kind === "validation" ? Boolean(sourceChipId && targetChipId) : Boolean(inputChipId);
   const confirmEmpty = () => {
     const trimmed = emptyName.trim();
-    if (!trimmed || busy || nameTaken) return;
+    if (!trimmed || busy || nameTaken || !emptyReady) return;
     setNamingEmpty(false);
     onPlaceEmpty?.(kind === "validation"
-      ? { name: trimmed, sourceChipId: sourceChipId || undefined, targetChipId: targetChipId || undefined }
-      : { name: trimmed, inputChipId: inputChipId || undefined });
+      ? { name: trimmed, sourceChipId, targetChipId }
+      : { name: trimmed, inputChipId });
   };
 
   return (
@@ -868,23 +948,25 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
         open={namingEmpty}
         title={messages.workspace.nameChipTitle}
         zIndex={110}
-        className="w-[min(26rem,92vw)]"
+        className={kind === "validation" ? VALIDATION_NAME_DIALOG_CLASS : EMPTY_NAME_DIALOG_CLASS}
+        minWidth={kind === "validation" ? 560 : 384}
+        minHeight={kind === "validation" ? 520 : 240}
         onClose={() => setNamingEmpty(false)}
         footer={
           <>
             <Button type="button" variant="secondary" onClick={() => setNamingEmpty(false)}>
               {messages.common.cancel}
             </Button>
-            <Button type="button" variant="primary" disabled={busy || !emptyName.trim() || nameTaken} onClick={confirmEmpty}>
+            <Button type="button" variant="primary" disabled={busy || !emptyName.trim() || nameTaken || !emptyReady} onClick={confirmEmpty}>
               {messages.workspace.nameChipConfirm}
             </Button>
           </>
         }
       >
-        <div className="flex flex-col gap-3 p-4">
-          <p className="text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
-          <label className="flex min-w-0 flex-col gap-1.5">
-            <span className="text-xs font-medium text-text-secondary">{messages.workspace.chipName}</span>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto p-3">
+          <p className="shrink-0 text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
+          <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+            <span className="text-xs font-semibold text-text">{messages.workspace.chipName}</span>
             <input
               className="field-control text-sm"
               value={emptyName}
@@ -899,35 +981,42 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
             />
             {nameTaken ? <span className="text-xs text-danger">{messages.workspace.duplicateChipName}</span> : null}
           </label>
-          <p className="text-xs leading-5 text-text-tertiary">{messages.workspace.inputChipHint}</p>
           {kind === "validation" ? (
             <>
-              <CanvasProducerSelect
-                chips={canvasChips}
-                value={sourceChipId}
-                messages={messages}
-                label={messages.workspace.validationSourceChip}
-                disabled={busy}
-                onChange={setSourceChipId}
-              />
-              <CanvasProducerSelect
-                chips={canvasChips}
-                value={targetChipId}
-                messages={messages}
-                label={messages.workspace.validationTargetChip}
-                disabled={busy}
-                onChange={setTargetChipId}
-              />
+              <p className="shrink-0 text-xs leading-5 text-text-tertiary">{messages.workspace.validationConfigureHint}</p>
+              <div className="grid min-w-0 grid-cols-2 gap-3">
+                <CanvasProducerSelect
+                  chips={canvasChips}
+                  value={sourceChipId}
+                  excludeIds={targetChipId ? [targetChipId] : undefined}
+                  messages={messages}
+                  label={messages.workspace.validationSourceChip}
+                  disabled={busy}
+                  onChange={setSourceChipId}
+                />
+                <CanvasProducerSelect
+                  chips={canvasChips}
+                  value={targetChipId}
+                  excludeIds={sourceChipId ? [sourceChipId] : undefined}
+                  messages={messages}
+                  label={messages.workspace.validationTargetChip}
+                  disabled={busy}
+                  onChange={setTargetChipId}
+                />
+              </div>
             </>
           ) : (
-            <CanvasProducerSelect
-              chips={canvasChips}
-              value={inputChipId}
-              messages={messages}
-              label={messages.workspace.inputChip}
-              disabled={busy}
-              onChange={setInputChipId}
-            />
+            <>
+              <p className="shrink-0 text-xs leading-5 text-text-tertiary">{messages.workspace.inputChipHint}</p>
+              <CanvasProducerSelect
+                chips={canvasChips}
+                value={inputChipId}
+                messages={messages}
+                label={messages.workspace.inputChip}
+                disabled={busy}
+                onChange={setInputChipId}
+              />
+            </>
           )}
         </div>
       </AppDialog>

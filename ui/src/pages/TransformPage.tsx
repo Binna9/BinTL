@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -20,9 +19,9 @@ import {
 import { AppDialog } from "@/components/AppDialog";
 import { EmptyState } from "@/components/DataGrid";
 import { CombineSetup } from "@/components/transform/CombineSetup";
+import { CleanStepsPanel } from "@/components/transform/CleanStepsPanel";
 import {
   PreviewGrid,
-  StepFields,
   specFrom,
   usableSteps,
 } from "@/components/transform/TransformEditorParts";
@@ -60,7 +59,6 @@ import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { Dataset, DatasetColumn, FramePreview } from "@/types/dataset";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type {
-  StepOp,
   TransformSpecV2,
   TransformStep,
 } from "@/types/transform";
@@ -68,12 +66,9 @@ import type {
 import {
   datasetFromSlot,
   defaultTransformName,
-  emptyStep,
   KIND_APPEARANCE,
   KIND_ORDER,
   resolveColumnsAtStep,
-  STEP_OP_ICONS,
-  STEP_OPS,
 } from "@/features/transform/transformEditorModel";
 type AggregateFunction = "sum" | "count" | "mean" | "min" | "max";
 type AggregateDraft = { column: string; function: AggregateFunction; alias: string };
@@ -127,9 +122,6 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   });
   const [busy, setBusy] = useState(false);
   const [addStepOpen, setAddStepOpen] = useState(false);
-  const addStepRef = useRef<HTMLDivElement>(null);
-  const addStepMenuRef = useRef<HTMLDivElement>(null);
-  const [addStepPos, setAddStepPos] = useState<{ top: number; left: number } | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [registerChipName, setRegisterChipName] = useState("");
   const [registerBusy, setRegisterBusy] = useState(false);
@@ -295,34 +287,6 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     database: messages.transform.kindDatabase,
     transform: messages.transform.kindTransform,
     api: messages.transform.kindApi,
-  };
-  const stepLabels: Record<StepOp, string> = {
-    select: messages.transform.opSelect,
-    drop: messages.transform.opSelect,
-    rename: messages.transform.opRename,
-    filter: messages.transform.opFilter,
-    derive: messages.transform.opDerive,
-    trim: messages.transform.opTrim,
-    replace: messages.transform.opReplace,
-    split: messages.transform.opSplit,
-    cast: messages.transform.opCast,
-    fill_null: messages.transform.opFillNull,
-    sort: messages.transform.opSort,
-    unique: messages.transform.opUnique,
-  };
-  const stepHints: Record<StepOp, string> = {
-    select: messages.transform.opSelectHint,
-    drop: messages.transform.opSelectHint,
-    rename: messages.transform.opRenameHint,
-    filter: messages.transform.opFilterHint,
-    derive: messages.transform.opDeriveHint,
-    trim: messages.transform.opTrimHint,
-    replace: messages.transform.opReplaceHint,
-    split: messages.transform.opSplitHint,
-    cast: messages.transform.opCastHint,
-    fill_null: messages.transform.opFillNullHint,
-    sort: messages.transform.opSortHint,
-    unique: messages.transform.opUniqueHint,
   };
 
   async function refreshCatalog() {
@@ -635,34 +599,6 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     }));
   }, [datasets]);
 
-  useEffect(() => {
-    if (!addStepOpen) {
-      setAddStepPos(null);
-      return;
-    }
-    const box = addStepRef.current;
-    if (box) {
-      const rect = box.getBoundingClientRect();
-      setAddStepPos({ top: rect.bottom + 6, left: rect.left });
-    }
-    function onPointerDown(event: PointerEvent) {
-      const target = event.target as Node;
-      if (addStepRef.current?.contains(target) || addStepMenuRef.current?.contains(target)) {
-        return;
-      }
-      setAddStepOpen(false);
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setAddStepOpen(false);
-    }
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [addStepOpen]);
-
   function openDetail(tab: "source" | "result") {
     if (!datasetId) return;
     setDetailTab(tab);
@@ -918,10 +854,6 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     }
     setDetailOpen(false);
     setFinalizedPreviewOpen(false);
-  }
-
-  function updateStep(index: number, next: TransformStep) {
-    setSteps((current) => current.map((step, i) => (i === index ? next : step)));
   }
 
   const activePreview = detailTab === "result" ? resultPreview : sourcePreview;
@@ -1248,81 +1180,25 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                     {messages.transform.previewSteps}
                   </Button>
                 {editorSection === "clean" ? (
-                <div className="relative" ref={addStepRef}>
                   <Button
                     type="button"
                     variant="secondary"
                     className="h-7 gap-1 px-2 text-[11px]"
                     disabled={!selected}
-                    title={messages.transform.addStep}
-                    aria-expanded={addStepOpen}
-                    aria-haspopup="menu"
-                    onClick={() => setAddStepOpen((open) => !open)}
+                    onClick={() => setAddStepOpen(true)}
                   >
                     <Plus className="size-3.5 shrink-0" aria-hidden="true" />
                     {messages.transform.addStep}
                   </Button>
-                  {addStepOpen && addStepPos
-                    ? createPortal(
-                        <div
-                          ref={addStepMenuRef}
-                          role="menu"
-                          className="scroll-pane fixed z-[220] w-72 overflow-y-auto rounded-xl border border-border bg-surface py-1 shadow-[0_10px_28px_rgba(15,23,42,0.14)] dark:shadow-[0_14px_32px_rgba(0,0,0,0.48)]"
-                          style={{ top: addStepPos.top, left: addStepPos.left, maxHeight: 320 }}
-                        >
-                          {STEP_OPS.map((op) => {
-                            const Icon = STEP_OP_ICONS[op];
-                            return (
-                              <button
-                                key={op}
-                                type="button"
-                                role="menuitem"
-                                className="flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-accent-subtle"
-                                onClick={() => {
-                                  if (op === "select") {
-                                    const available = resolveColumnsAtStep(
-                                      baseColumns,
-                                      steps,
-                                      steps.length,
-                                    );
-                                    setSteps((current) => [
-                                      ...current,
-                                      {
-                                        op: "select",
-                                        columns: available.map((column) => column.name),
-                                      },
-                                    ]);
-                                  } else {
-                                    setSteps((current) => [...current, emptyStep(op)]);
-                                  }
-                                  setAddStepOpen(false);
-                                }}
-                              >
-                                <Icon
-                                  className="mt-0.5 size-4 shrink-0 text-text-tertiary"
-                                  aria-hidden="true"
-                                />
-                                <span className="min-w-0 flex-1">
-                                  <span className="block text-[13px] font-semibold text-text">
-                                    {stepLabels[op]}
-                                  </span>
-                                  <span className="mt-0.5 block text-[11px] leading-4 text-text-tertiary">
-                                    {stepHints[op]}
-                                  </span>
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>,
-                        document.body,
-                      )
-                    : null}
-                </div>
                 ) : null}
-                <div className="ml-3 w-24" title={messages.transform.readDelimiterHint}>
+                <label
+                  className="ml-4 flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] text-text-secondary"
+                  title={messages.transform.readDelimiterHint}
+                >
+                  <span className="text-xs font-semibold text-text">{messages.common.delimiter}</span>
                   <Select
                     editable
-                    className="technical h-7"
+                    className="technical h-7 !w-20 shrink-0 [&_.field-control]:h-7"
                     value={readDelimiter}
                     disabled={!selected}
                     options={DELIMITER_VALUES.map((value) => ({
@@ -1334,7 +1210,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                       setReadDelimiter(value);
                     }}
                   />
-                </div>
+                </label>
                 </div>
               }
               actions={
@@ -1530,73 +1406,15 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                   />
                 ) : (
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <div className="scroll-pane min-h-0 flex-1 overflow-auto">
-                    {steps.length === 0 ? (
-                      <div className="grid h-full min-h-32 place-items-center px-4">
-                        <p className="text-sm text-text-tertiary">{messages.empty.steps}</p>
-                      </div>
-                    ) : (
-                      steps.map((step, index) => (
-                        <article key={`${step.op}-${index}`} className="border-b border-border p-3">
-                          <div className="mb-2 flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <span className="text-xs font-semibold uppercase tracking-[0.06em]">
-                                {index + 1}. {stepLabels[step.op]}
-                              </span>
-                              <p className="mt-1 text-[11px] leading-4 text-text-tertiary">
-                                {stepHints[step.op]}
-                              </p>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-1">
-                              <Button
-                                type="button"
-                                variant="quiet"
-                                disabled={index === 0}
-                                onClick={() =>
-                                  setSteps((current) => {
-                                    const next = [...current];
-                                    [next[index - 1], next[index]] = [next[index], next[index - 1]];
-                                    return next;
-                                  })
-                                }
-                              >
-                                ↑
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="quiet"
-                                disabled={index === steps.length - 1}
-                                onClick={() =>
-                                  setSteps((current) => {
-                                    const next = [...current];
-                                    [next[index], next[index + 1]] = [next[index + 1], next[index]];
-                                    return next;
-                                  })
-                                }
-                              >
-                                ↓
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="quiet"
-                                onClick={() =>
-                                  setSteps((current) => current.filter((_, i) => i !== index))
-                                }
-                              >
-                                <Trash2 className="size-3.5" aria-hidden="true" />
-                              </Button>
-                            </div>
-                          </div>
-                          <StepFields
-                            step={step}
-                            columns={resolveColumnsAtStep(baseColumns, steps, index)}
-                            onChange={(next) => updateStep(index, next)}
-                            messages={messages}
-                          />
-                        </article>
-                      ))
-                    )}
-                  </div>
+                  <CleanStepsPanel
+                    steps={steps}
+                    baseColumns={baseColumns}
+                    messages={messages}
+                    disabled={busy}
+                    addOpen={addStepOpen}
+                    onAddOpenChange={setAddStepOpen}
+                    onChange={setSteps}
+                  />
                   <p className="shrink-0 border-t border-border px-4 py-2.5 text-[11px] leading-4 text-text-tertiary">
                     {messages.transform.registerHint}
                   </p>

@@ -193,6 +193,18 @@ function DatasetPicker({ title, hint, datasets, value, onChange, kindLabels, dis
 }) {
   const { messages } = useLanguage();
   const [expanded, setExpanded] = useState<Set<(typeof KIND_ORDER)[number]>>(() => new Set());
+  useEffect(() => {
+    const selected = datasets.find((item) => item.id === value);
+    if (!selected) return;
+    const kind = selected.kind as (typeof KIND_ORDER)[number];
+    if (!KIND_ORDER.includes(kind)) return;
+    setExpanded((current) => {
+      if (current.has(kind)) return current;
+      const next = new Set(current);
+      next.add(kind);
+      return next;
+    });
+  }, [datasets, value]);
   const groups = KIND_ORDER.map((kind) => ({ kind, items: datasets.filter((item) => item.kind === kind) }));
   return <section className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
     <PaneHeader title={title} description={hint} meta={messages.common.count(datasets.length)} />

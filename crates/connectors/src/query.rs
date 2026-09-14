@@ -8,7 +8,10 @@ use serde::Serialize;
 use sqlx::{Column, Executor};
 use storage::LiveConnection;
 
-use crate::extract::{tick_progress, tick_progress_at, with_sequence, with_sequence_header};
+use crate::extract::{
+    copy_postgres_to_file, postgres_copy_to_query, tick_progress, tick_progress_at, with_sequence,
+    with_sequence_header,
+};
 use crate::{
     driver_family, mssql_client, my_pool, oracle, pg_pool, quote_ident, sqlite_pool, stringify_ms,
     stringify_my, stringify_pg, stringify_sqlite, ConnectError, ExtractOptions,
@@ -111,6 +114,10 @@ pub async fn extract_query(
     }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+    if c.driver == "postgres" && !opts.add_sequence && postgres_copy_query_ok(&sql) {
+        let copy_sql = postgres_copy_to_query(&sql, opts.header, opts.delimiter, opts.quote);
+        return copy_postgres_to_file(c, &copy_sql, dest, opts.header, opts.quote, on_progress).await;
     }
     let mut wtr = WriterBuilder::new()
         .delimiter(opts.delimiter)
@@ -659,6 +666,13 @@ fn strip_trailing_semicolons(sql: &str) -> String {
         .to_string()
 }
 
+fn postgres_copy_query_ok(sql: &str) -> bool {
+    matches!(
+        first_keyword(sql).as_str(),
+        "select" | "with" | "values" | "table"
+    )
+}
+
 fn first_keyword(sql: &str) -> String {
     let rest = skip_trivia(sql);
     rest.split(|c: char| c.is_whitespace() || c == '(')
@@ -775,6 +789,9 @@ mod tests {
         );
         assert_eq!(sql_kind("UPDATE t SET a = 1"), SqlKind::Exec);
         assert!(normalize_sql("SELECT ';'").is_ok());
+        assert!(postgres_copy_query_ok("SELECT 1"));
+        assert!(postgres_copy_query_ok("WITH a AS (SELECT 1) SELECT * FROM a"));
+        assert!(!postgres_copy_query_ok("SHOW search_path"));
     }
 
     #[test]

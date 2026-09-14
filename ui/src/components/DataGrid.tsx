@@ -1,7 +1,10 @@
 import {
+  createContext,
   MouseEvent as ReactMouseEvent,
   ReactNode,
+  useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -9,6 +12,55 @@ import {
 import { cn } from "@/lib/cn";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { layout } from "@/lib/layout";
+
+export function nextGridSelection(
+  orderedIds: string[],
+  current: readonly string[],
+  anchor: string | null,
+  clicked: string,
+  mods: { shift: boolean; additive: boolean },
+): { selected: string[]; anchor: string } {
+  if (mods.shift && anchor) {
+    const from = orderedIds.indexOf(anchor);
+    const to = orderedIds.indexOf(clicked);
+    if (from >= 0 && to >= 0) {
+      const range = orderedIds.slice(Math.min(from, to), Math.max(from, to) + 1);
+      return {
+        selected: mods.additive ? [...new Set([...current, ...range])] : range,
+        anchor,
+      };
+    }
+  }
+  if (mods.additive) {
+    const next = new Set(current);
+    if (next.has(clicked)) next.delete(clicked);
+    else next.add(clicked);
+    return { selected: [...next], anchor: clicked };
+  }
+  return { selected: [clicked], anchor: clicked };
+}
+
+function orderedRowIds(row: HTMLTableRowElement): string[] {
+  const parent = row.parentElement;
+  if (!parent) return row.dataset.gridRowId ? [row.dataset.gridRowId] : [];
+  const ids: string[] = [];
+  for (const child of parent.children) {
+    if (child instanceof HTMLElement && child.dataset.gridRowId) ids.push(child.dataset.gridRowId);
+  }
+  return ids;
+}
+
+type GridSelectionApi = {
+  selected: Set<string>;
+  clickRow: (
+    id: string,
+    row: HTMLTableRowElement,
+    event: ReactMouseEvent,
+    extra?: { additive?: boolean },
+  ) => void;
+};
+
+const GridSelectionContext = createContext<GridSelectionApi | null>(null);
 
 function widthsFor(headers: string[], previous: number[] = []): number[] {
   return headers.map((_, index) => previous[index] ?? layout.grid.defaultColumnWidth);
@@ -82,12 +134,16 @@ export function DataGrid({
   className,
   columnWidths,
   empty,
+  selectedIds,
+  onSelectedIdsChange,
 }: {
   headers: string[];
   children: ReactNode;
   className?: string;
   columnWidths?: number[];
   empty?: ReactNode;
+  selectedIds?: string[];
+  onSelectedIdsChange?: (ids: string[]) => void;
 }) {
   const { messages } = useLanguage();
   const headerKey = headers.join("\u0001");
@@ -98,6 +154,27 @@ export function DataGrid({
   );
   const [active, setActive] = useState<number | null>(null);
   const drag = useRef<{ index: number; startX: number; startWidth: number } | null>(null);
+  const [uncontrolled, setUncontrolled] = useState<string[]>([]);
+  const picked = selectedIds ?? uncontrolled;
+  const pickedRef = useRef(picked);
+  pickedRef.current = picked;
+  const commitRef = useRef(onSelectedIdsChange ?? setUncontrolled);
+  commitRef.current = onSelectedIdsChange ?? setUncontrolled;
+  const anchorRef = useRef<string | null>(null);
+  const selection = useMemo<GridSelectionApi>(
+    () => ({
+      selected: new Set(picked),
+      clickRow(id, row, event, extra) {
+        const next = nextGridSelection(orderedRowIds(row), pickedRef.current, anchorRef.current, id, {
+          shift: event.shiftKey,
+          additive: extra?.additive || event.ctrlKey || event.metaKey,
+        });
+        anchorRef.current = next.anchor;
+        commitRef.current(next.selected);
+      },
+    }),
+    [picked],
+  );
 
   useEffect(() => {
     setWidths(
@@ -186,57 +263,60 @@ export function DataGrid({
 
   return (
     <div ref={wrapRef} className={cn("scroll-pane min-w-0 w-full overflow-auto bg-workspace dark:bg-raised", className)}>
-      <table
-        className="border-collapse border-b border-border text-[13px]"
-        style={{ width: tableMinWidth, minWidth: tableMinWidth, tableLayout: "fixed" }}
-      >
-        <colgroup>
-          {headers.map((header, index) => (
-            <col key={`${index}-${header}`} style={{ width: colWidths[index] }} />
-          ))}
-        </colgroup>
-        <thead className="sticky top-0 z-10">
-          <tr>
+      <GridSelectionContext.Provider value={selection}>
+        <table
+          className="w-full border-collapse border-b border-border text-[13px]"
+          style={{ width: "100%", minWidth: tableMinWidth, tableLayout: "fixed" }}
+        >
+          <colgroup>
             {headers.map((header, index) => (
-              <th
-                key={`${index}-${header}`}
-                className={cn(
-                  "group/th relative h-10 select-none overflow-hidden border-b border-border-strong bg-gradient-to-b from-raised to-subtle px-3 text-left text-[12px] font-semibold text-text-secondary",
-                  "shadow-[inset_0_1px_0_0_rgba(255,255,255,0.65)] dark:from-subtle dark:to-raised dark:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]",
-                  "transition-colors hover:text-text",
-                  index < headers.length - 1 && "border-r border-border",
-                  active === index && "text-text",
-                )}
-              >
-                <span className="block truncate">{header}</span>
-                <span
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label={messages.common.resizeColumn(header)}
-                  className="absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize"
-                  onMouseDown={(event) => onResizeStart(index, event)}
-                  onDoubleClick={() => {
-                    setWidths((prev) => {
-                      const copy = [...prev];
-                      copy[index] = columnWidths?.[index] ?? layout.grid.defaultColumnWidth;
-                      return copy;
-                    });
-                  }}
-                >
-                  <span
-                    className={cn(
-                      "absolute right-0 top-2.5 h-[calc(100%-1.25rem)] w-px bg-border",
-                      "group-hover/th:bg-text-tertiary",
-                      active === index && "bg-text-secondary",
-                    )}
-                  />
-                </span>
-              </th>
+              <col key={`${index}-${header}`} style={{ width: colWidths[index] }} />
             ))}
-          </tr>
-        </thead>
-        <tbody>{children}</tbody>
-      </table>
+          </colgroup>
+          <thead className="sticky top-0 z-10">
+            <tr>
+              {headers.map((header, index) => (
+                <th
+                  key={`${index}-${header}`}
+                  className={cn(
+                    "group/th relative h-10 select-none overflow-hidden border-b border-border-strong bg-gradient-to-b from-raised to-subtle px-3 text-left text-[12px] font-semibold text-text-secondary",
+                    "shadow-[inset_0_1px_0_0_rgba(255,255,255,0.65)] dark:from-subtle dark:to-raised dark:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]",
+                    "transition-colors hover:text-text",
+                    !header && "px-0 text-center",
+                    index < headers.length - 1 && "border-r border-border",
+                    active === index && "text-text",
+                  )}
+                >
+                  <span className="block truncate">{header}</span>
+                  <span
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={messages.common.resizeColumn(header)}
+                    className="absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize"
+                    onMouseDown={(event) => onResizeStart(index, event)}
+                    onDoubleClick={() => {
+                      setWidths((prev) => {
+                        const copy = [...prev];
+                        copy[index] = columnWidths?.[index] ?? layout.grid.defaultColumnWidth;
+                        return copy;
+                      });
+                    }}
+                  >
+                    <span
+                      className={cn(
+                        "absolute right-0 top-2.5 h-[calc(100%-1.25rem)] w-px bg-border",
+                        "group-hover/th:bg-text-tertiary",
+                        active === index && "bg-text-secondary",
+                      )}
+                    />
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>{children}</tbody>
+        </table>
+      </GridSelectionContext.Provider>
     </div>
   );
 }
@@ -255,28 +335,61 @@ export function GridRow({
   children,
   selected,
   onClick,
+  rowId,
 }: {
   children: ReactNode;
   selected?: boolean;
   onClick?: (event: ReactMouseEvent<HTMLTableRowElement>) => void;
+  rowId?: string;
 }) {
+  const autoId = useId();
+  const id = rowId ?? autoId;
+  const grid = useContext(GridSelectionContext);
   const [on, setOn] = useState(false);
-  const active = selected ?? on;
+  const active = Boolean(selected) || Boolean(grid?.selected.has(id)) || (selected === undefined && !grid && on);
+
+  function isInteractive(event: ReactMouseEvent) {
+    return Boolean((event.target as HTMLElement).closest("a, button, input, label"));
+  }
+
+  function selectCell(event: ReactMouseEvent) {
+    const node = (event.target as HTMLElement).closest("[data-grid-select]");
+    if (!(node instanceof HTMLElement) || !event.currentTarget.contains(node)) return null;
+    return node;
+  }
 
   return (
     <tr
+      data-grid-row-id={id}
+      aria-selected={active}
       className={cn(
         "group cursor-pointer border-b border-border/80 transition-colors duration-150",
         active && "bg-accent-subtle",
         !active && "odd:bg-surface even:bg-accent-subtle/55 hover:bg-accent-subtle dark:even:bg-white/4",
       )}
+      onMouseDown={(event) => {
+        if (selectCell(event) || event.shiftKey || event.ctrlKey || event.metaKey) {
+          if (!isInteractive(event) || selectCell(event)) event.preventDefault();
+          return;
+        }
+        if (isInteractive(event)) return;
+      }}
       onClick={(event) => {
-        if ((event.target as HTMLElement).closest("a, button, input, label")) return;
+        const select = selectCell(event);
+        if (select?.querySelector<HTMLInputElement>("input:disabled")) return;
+        if (!select && isInteractive(event)) return;
+        const modified = event.shiftKey || event.ctrlKey || event.metaKey;
+        if (grid && (select || modified || !onClick)) {
+          grid.clickRow(id, event.currentTarget, event, {
+            additive: Boolean(select) && !event.shiftKey,
+          });
+          if (select || modified) return;
+        }
         if (onClick) {
           onClick(event);
           return;
         }
-        if (selected !== undefined) return;
+        if (selected !== undefined || grid) return;
         setOn((value) => !value);
       }}
     >
@@ -291,24 +404,39 @@ export function GridCell({
   muted,
   warn,
   title,
+  select,
 }: {
   children: ReactNode;
   mono?: boolean;
   muted?: boolean;
   warn?: boolean;
   title?: string;
+  select?: boolean;
 }) {
   return (
     <td
+      data-grid-select={select || undefined}
       title={title}
       className={cn(
         "h-9 overflow-hidden text-ellipsis whitespace-nowrap border-r border-border/60 px-3 py-1.5 align-middle text-text last:border-r-0",
+        select && "px-0 text-center",
         mono && "technical",
         muted && "text-text-secondary",
         warn && "bg-warning-subtle text-warning",
       )}
     >
-      {children}
+      {select ? <span className="flex h-full items-center justify-center">{children}</span> : children}
     </td>
   );
+}
+
+if (import.meta.env.DEV) {
+  const ids = ["a", "b", "c", "d"];
+  console.assert(nextGridSelection(ids, [], null, "b", { shift: false, additive: false }).selected.join() === "b", "grid: click selects one");
+  console.assert(nextGridSelection(ids, ["b"], "b", "d", { shift: false, additive: true }).selected.join() === "b,d", "grid: ctrl adds");
+  console.assert(nextGridSelection(ids, ["b", "d"], "d", "d", { shift: false, additive: true }).selected.join() === "b", "grid: ctrl toggles off");
+  console.assert(nextGridSelection(ids, ["a"], "a", "c", { shift: true, additive: false }).selected.join() === "a,b,c", "grid: shift range");
+  console.assert(nextGridSelection(ids, ["d"], "a", "c", { shift: true, additive: true }).selected.join() === "d,a,b,c", "grid: shift+ctrl unions");
+  console.assert(nextGridSelection(ids, ["a"], "a", "c", { shift: true, additive: false }).anchor === "a", "grid: shift keeps anchor");
+  console.assert(nextGridSelection(ids, ["a"], "a", "b", { shift: false, additive: true }).selected.join() === "a,b", "grid: checkbox toggles add");
 }

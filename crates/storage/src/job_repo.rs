@@ -89,9 +89,40 @@ impl Store {
         Ok(rows)
     }
 
+    pub async fn requeue_failed_job(&self, id: &str) -> Result<(), StorageError> {
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let execution_id: String = sqlx::query_scalar(
+            "SELECT execution_id FROM execution_steps WHERE id = ? AND status = 'failed' AND kind = 'transform'",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| StorageError::Invalid("job is not waiting to retry".into()))?;
+        sqlx::query(
+            "UPDATE execution_steps SET status = 'queued', error_code = NULL, error_message = NULL,
+             started_at = NULL, finished_at = NULL, queued_at = ?
+             WHERE id = ? AND status = 'failed'",
+        )
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE executions SET status = 'queued', error_message = NULL, started_at = NULL, finished_at = NULL
+             WHERE id = ? AND source != 'workspace'",
+        )
+        .bind(execution_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn set_job_running(&self, id: &str, output_path: &str) -> Result<(), StorageError> {
         sqlx::query(
-            "UPDATE execution_steps SET status = ?, started_at = ?, output_path = ?, error_message = NULL WHERE id = ?",
+            "UPDATE execution_steps SET status = ?, started_at = ?, output_path = ?, error_message = NULL
+             WHERE id = ? AND status = 'queued'",
         )
         .bind("running")
         .bind(now_rfc3339())
@@ -103,12 +134,15 @@ impl Store {
     }
 
     pub async fn set_job_succeeded(&self, id: &str) -> Result<(), StorageError> {
-        sqlx::query("UPDATE execution_steps SET status = ?, finished_at = ? WHERE id = ?")
+        let changed = sqlx::query("UPDATE execution_steps SET status = ?, finished_at = ? WHERE id = ? AND status = 'running'")
             .bind("succeeded")
             .bind(now_rfc3339())
             .bind(id)
             .execute(&self.pool)
             .await?;
+        if changed.rows_affected() == 0 {
+            return Ok(());
+        }
         let job = self
             .get_job(id)
             .await?

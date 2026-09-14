@@ -9,6 +9,24 @@ const STEP_COLS: &str = "id, execution_id, workspace_chip_id, chip_id, kind, ext
     result_json, error_code, error_message, queued_at, started_at, finished_at";
 
 impl Store {
+    pub async fn step_is_canceled(&self, id: &str) -> Result<bool, StorageError> {
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM execution_steps WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(matches!(status.as_deref(), Some("canceled")))
+    }
+
+    pub async fn wait_until_step_canceled(&self, id: &str) {
+        loop {
+            if self.step_is_canceled(id).await.unwrap_or(true) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
     pub async fn create_standalone_load_step(
         &self,
         workspace_id: &str,

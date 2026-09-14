@@ -45,15 +45,17 @@
 
 저장된 활성 칩을 연결 의존 순으로 한 번에 하나씩 돈다. 내부 병렬은 없다.
 
-1. 레시피·연결을 모두 사전 검증한다. 오류가 있으면 단계는 만들되 큐에는 아무것도 넣지 않는다. 오류 칩은 실패, 나머지는 건너뜀.
+1. 레시피·연결을 모두 사전 검증하고 설정을 스냅샷에 고정한다. 오류 칩은 실패로 남기고 큐에 넣지 않는다. 검증을 통과한 칩은 이어서 순차 실행한다.
 2. 통과하면 설정·연결·검증 비교 옵션을 스냅샷에 고정한다.
 3. data 선은 **이번 실행에서 만든 결과만** 전달한다. 과거 성공 슬롯으로 대체하지 않는다.
 4. `on_success`는 성공, `on_error`는 실제 실패, `always`는 앞 칩이 처리된 뒤. 건너뜀은 실패가 아니다.
 5. 실제 실패가 하나면 전체는 실패다. 조건 건너뜀만으로는 전체를 실패로 만들지 않는다.
 
-`POST /api/workspaces/:id/run`과 스케줄러가 같은 `run_workspace_internal`을 쓴다. 이미 활성 전체 실행이 있으면 스케줄은 `skipped`다.
+`POST /api/workspaces/:id/run`은 `execution_id`와 `running`을 바로 돌려 주고, 스케줄러는 같은 `run_workspace_internal`로 끝날 때까지 기다린다. 이미 활성 전체 실행이 있으면 생성은 409, 스케줄은 `skipped`다.
 
-기동 시 미완료 워크스페이스 실행(`queued`/`running`)은 `EXECUTION_INTERRUPTED`로 닫는다. 자동 재개하지 않는다.
+실행 중 취소는 현재 칩을 `canceled`로 닫고 남은 queued 칩을 건너뛴다. 전체 실행도 `canceled`다. 캔버스 실행 버튼이 중단으로 바뀌고, 돌고 있는 칩을 우클릭해도 중단할 수 있다. 추출 스트림은 연결을 끊는다. Polars 변환과 Oracle 동기 fetch는 취소 표시 후에도 백그라운드에서 끝날 수 있다.
+
+기동 시 미완료 워크스페이스 실행(`queued`/`running`)과 그 leftover 칩, 그리고 돌고 있던 단독 `running`은 `EXECUTION_INTERRUPTED`로 닫는다. 워크스페이스 중간부터 자동 재개하지 않는다. 아직 `queued`인 단독 칩·추출·변환·적재는 그대로 두고 디스패처가 다시 집는다.
 
 칩 단독 `POST /api/chips/:id/run`은 `source='chip'`이다. 이력 화면은 둘을 분리한다. `GET /api/workspaces/:id/runs`는 `runs`와 `workspace_runs`를 같이 준다.
 
@@ -64,6 +66,7 @@
 - `PUT /api/workspaces/:id/save`
 - `GET/POST /api/workspaces/:id/chips`, `GET/PATCH/DELETE /api/chips/:id`
 - `POST /api/chips/:id/run`, `POST /api/workspaces/:id/run`
+- `POST /api/chip-runs/:id/cancel`, `POST /api/workspaces/:id/executions/:execution_id/cancel`
 - `GET /api/workspaces/:id/runs`, `GET /api/workspaces/:id/executions`
 - `GET /api/chip-runs/:id`, `GET /api/chip-runs/:id/logs`
 - `GET/POST /api/schedules`, `PATCH/DELETE /api/schedules/:id`
@@ -78,7 +81,7 @@
 
 ## 아직 없는 것
 
-재시도·취소, 워크스페이스 멤버 공유, DB COPY/Bulk, 대량 검증 리포트 파일.
+재시도, 워크스페이스 멤버 공유, Postgres 외 Bulk(upsert COPY 포함), 대량 검증 리포트 파일.
 
 ## 로컬 확인
 

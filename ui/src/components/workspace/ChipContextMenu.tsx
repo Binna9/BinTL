@@ -6,6 +6,7 @@ import {
   Pencil,
   Play,
   Settings2,
+  Square,
   Trash2,
   type LucideIcon,
 } from "lucide-react";
@@ -49,8 +50,10 @@ export function ChipContextMenu({
   menu,
   messages,
   busy,
+  running,
   onClose,
   onRun,
+  onStop,
   onOpenLog,
   onInfo,
   onProperties,
@@ -60,8 +63,10 @@ export function ChipContextMenu({
   menu: ChipContextMenuState | null;
   messages: Messages;
   busy?: boolean;
+  running?: boolean;
   onClose: () => void;
   onRun: (chip: Chip) => void;
+  onStop: (chip: Chip) => void;
   onOpenLog: (chip: Chip) => void;
   onInfo: (chip: Chip) => void;
   onProperties: (chip: Chip) => void;
@@ -103,11 +108,12 @@ export function ChipContextMenu({
   const chip = menu.chip;
   const items: MenuItem[] = [
     {
-      id: "run",
-      label: messages.workspace.chipMenuRun,
-      icon: Play,
-      disabled: busy,
-      onSelect: () => onRun(chip),
+      id: running ? "stop" : "run",
+      label: running ? messages.workspace.chipMenuStop : messages.workspace.chipMenuRun,
+      icon: running ? Square : Play,
+      tone: running ? "danger" : undefined,
+      disabled: running ? false : busy,
+      onSelect: () => (running ? onStop(chip) : onRun(chip)),
     },
     {
       id: "logs",

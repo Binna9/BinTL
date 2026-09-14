@@ -48,6 +48,7 @@ pub fn transition(from: JobStatus, to: JobStatus) -> Result<JobStatus, InvalidTr
         | (Failed, Running)
         | (Running, Succeeded)
         | (Running, Failed)
+        | (Running, Canceled)
         | (Queued, Canceled) => Ok(to),
         _ => Err(InvalidTransition { from, to }),
     }
@@ -72,7 +73,7 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
         .ok_or_else(|| RunError::State(format!("job {job_id} missing")))?;
     let from = JobStatus::parse(&job.status)
         .ok_or_else(|| RunError::State(format!("unknown status {}", job.status)))?;
-    if matches!(from, JobStatus::Running | JobStatus::Succeeded) {
+    if matches!(from, JobStatus::Running | JobStatus::Succeeded | JobStatus::Canceled) {
         return Ok(());
     }
     transition(from, JobStatus::Running).map_err(|e| RunError::State(e.to_string()))?;
@@ -91,94 +92,107 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
             .map_err(|error| RunError::Storage(error.into()))?;
     }
     store.set_job_running(job_id, &output_rel).await?;
-    store.append_log(job_id, "info", "job started").await?;
-
-    let spec = TransformSpec::parse_json(&job.spec_json)?;
-    let input = if let Some((conn_id, table)) = parse_db_source(&job.source_path) {
-        let live = store.live_connection(&conn_id).await?;
-        let csv_rel = storage::job_db_extract_rel(job_id);
-        let csv_path = store.resolve(&csv_rel);
-        store
-            .append_log(
-                job_id,
-                "info",
-                &format!("extract {}.{} {}", live.driver, live.name, table),
-            )
-            .await?;
-        let store_progress = store.clone();
-        let job_progress_id = job_id.to_string();
-        let on_progress = move |n: u64| {
-            let store = store_progress.clone();
-            let id = job_progress_id.clone();
-            tokio::spawn(async move {
-                let _ = store
-                    .append_log(&id, "info", &format!("extracting {n} rows"))
-                    .await;
-            });
-        };
-        let n = extract_table(
-            &live,
-            &table,
-            &csv_path,
-            &ExtractOptions::default(),
-            Some(&on_progress),
-        )
-        .await?;
-        store
-            .append_log(job_id, "info", &format!("extracted {n} rows"))
-            .await?;
-        csv_path
-    } else {
-        store.resolve(&job.source_path)
-    };
-    let output = store.resolve(&output_rel);
-
-    store
-        .append_log(
-            job_id,
-            "info",
-            &format!("transform {} -> {}", input.display(), output.display()),
-        )
-        .await?;
-
-    let dest = spec.dest.clone();
-    let csv_out = store.resolve(&format!("outputs/{job_id}/result.csv"));
-    let needs_csv = dest.is_some();
-    let engine_err = tokio::task::spawn_blocking(move || {
-        engine.transform(&input, &output, &spec)?;
-        if needs_csv {
-            PolarsEngine::export_csv(&output, &csv_out)?;
-        }
-        Ok::<(), EngineError>(())
-    })
-    .await
-    .map_err(|e| RunError::State(e.to_string()))?;
-    engine_err?;
-
-    if let Some(dest) = dest {
-        let live = store.live_connection(&dest.connection_id).await?;
-        let csv_path = store.resolve(&format!("outputs/{job_id}/result.csv"));
-        store
-            .append_log(
-                job_id,
-                "info",
-                &format!(
-                    "load {}.{} {} ({})",
-                    live.driver, dest.table, dest.mode, live.name
-                ),
-            )
-            .await?;
-        let n = load_table(&live, &dest.table, &csv_path, &dest.mode, &[], None, None).await?;
-        store
-            .append_log(job_id, "info", &format!("loaded {n} rows"))
-            .await?;
+    if store.step_is_canceled(job_id).await? {
+        return Err(RunError::State("canceled".into()));
     }
+    let work = async {
+        store.append_log(job_id, "info", "job started").await?;
 
-    transition(JobStatus::Running, JobStatus::Succeeded)
+        let spec = TransformSpec::parse_json(&job.spec_json)?;
+        let input = if let Some((conn_id, table)) = parse_db_source(&job.source_path) {
+            let live = store.live_connection(&conn_id).await?;
+            let csv_rel = storage::job_db_extract_rel(job_id);
+            let csv_path = store.resolve(&csv_rel);
+            store
+                .append_log(
+                    job_id,
+                    "info",
+                    &format!("extract {}.{} {}", live.driver, live.name, table),
+                )
+                .await?;
+            let store_progress = store.clone();
+            let job_progress_id = job_id.to_string();
+            let on_progress = move |n: u64| {
+                let store = store_progress.clone();
+                let id = job_progress_id.clone();
+                tokio::spawn(async move {
+                    let _ = store
+                        .append_log(&id, "info", &format!("extracting {n} rows"))
+                        .await;
+                });
+            };
+            let n = extract_table(
+                &live,
+                &table,
+                &csv_path,
+                &ExtractOptions::default(),
+                Some(&on_progress),
+            )
+            .await?;
+            store
+                .append_log(job_id, "info", &format!("extracted {n} rows"))
+                .await?;
+            csv_path
+        } else {
+            store.resolve(&job.source_path)
+        };
+        let output = store.resolve(&output_rel);
+
+        store
+            .append_log(
+                job_id,
+                "info",
+                &format!("transform {} -> {}", input.display(), output.display()),
+            )
+            .await?;
+
+        let dest = spec.dest.clone();
+        let csv_out = store.resolve(&format!("outputs/{job_id}/result.csv"));
+        let needs_csv = dest.is_some();
+        // ponytail: spawn_blocking cannot abort; cancel drops this future and Polars may finish in the background.
+        let engine_err = tokio::task::spawn_blocking(move || {
+            engine.transform(&input, &output, &spec)?;
+            if needs_csv {
+                PolarsEngine::export_csv(&output, &csv_out)?;
+            }
+            Ok::<(), EngineError>(())
+        })
+        .await
         .map_err(|e| RunError::State(e.to_string()))?;
-    store.append_log(job_id, "info", "job succeeded").await?;
-    store.complete_chip_run_for_job(job_id, &output_rel).await?;
-    Ok(())
+        engine_err?;
+
+        if let Some(dest) = dest {
+            let live = store.live_connection(&dest.connection_id).await?;
+            let csv_path = store.resolve(&format!("outputs/{job_id}/result.csv"));
+            store
+                .append_log(
+                    job_id,
+                    "info",
+                    &format!(
+                        "load {}.{} {} ({})",
+                        live.driver, dest.table, dest.mode, live.name
+                    ),
+                )
+                .await?;
+            let n = load_table(&live, &dest.table, &csv_path, &dest.mode, &[], None, None).await?;
+            store
+                .append_log(job_id, "info", &format!("loaded {n} rows"))
+                .await?;
+        }
+
+        if store.step_is_canceled(job_id).await? {
+            return Err(RunError::State("canceled".into()));
+        }
+        transition(JobStatus::Running, JobStatus::Succeeded)
+            .map_err(|e| RunError::State(e.to_string()))?;
+        store.append_log(job_id, "info", "job succeeded").await?;
+        store.complete_chip_run_for_job(job_id, &output_rel).await?;
+        Ok(())
+    };
+    tokio::select! {
+        _ = store.wait_until_step_canceled(job_id) => Err(RunError::State("canceled".into())),
+        result = work => result,
+    }
 }
 
 pub async fn execute(store: &Store, job_id: &str) -> Result<(), String> {
@@ -203,5 +217,9 @@ mod tests {
         );
         assert!(transition(JobStatus::Succeeded, JobStatus::Running).is_err());
         assert!(transition(JobStatus::Queued, JobStatus::Succeeded).is_err());
+        assert_eq!(
+            transition(JobStatus::Running, JobStatus::Canceled).unwrap(),
+            JobStatus::Canceled
+        );
     }
 }

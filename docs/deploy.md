@@ -314,7 +314,7 @@ sqlite3 /opt/bintl/data/etl.db ".backup '/backup/etl-$(date +%F).db'"
 | 설정 | 영향 |
 | --- | --- |
 | `max_upload_mb` | 단일 업로드 상한. Nginx `client_max_body_size`와 맞출 것 |
-| `max_concurrent_jobs` | 동시 변환·추출 워커 수. CPU·메모리에 맞게 조정 |
+| `max_concurrent_jobs` | 동시에 도는 추출·변환·적재·칩 워커 수. CPU·메모리에 맞게 조정 |
 | `data_dir` 디스크 | 추출·변환 산출물이 누적됨. 모니터링 필요 |
 
 변환·추출은 내부 워커(`spawn_blocking`)에서 실행된다. 대용량 작업 시 서버 RAM과 디스크 I/O를 고려한다.

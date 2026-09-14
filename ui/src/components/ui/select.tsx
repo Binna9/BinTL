@@ -139,7 +139,7 @@ export function Select({
       MENU_MAX_HEIGHT,
       Math.max(88, (openUp ? spaceAbove : spaceBelow) - 8),
     );
-    const width = Math.min(Math.max(rect.width, 168), window.innerWidth - 16);
+    const width = Math.min(rect.width, window.innerWidth - 16);
     let left = rect.left;
     if (left + width > window.innerWidth - 8) {
       left = Math.max(8, window.innerWidth - 8 - width);

@@ -142,9 +142,10 @@ export interface RunChipResponse {
 
 export interface RunWorkspaceResponse {
   ok: boolean;
-  status: "succeeded";
+  status: "running" | "succeeded" | "canceled" | "failed";
   workspace_id: string;
-  run_ids: string[];
+  execution_id?: string;
+  run_ids?: string[];
 }
 
 export interface ChipInputSlotResponse {

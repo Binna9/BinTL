@@ -10,6 +10,7 @@ mod config;
 mod error;
 mod execution_error;
 mod extract;
+mod dispatch;
 mod load;
 mod planned_input;
 mod schedule;
@@ -27,13 +28,13 @@ use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::Router;
 use clap::Parser;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Notify, Semaphore};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
-use crate::state::{AppState, ExecutionTask};
+use crate::state::AppState;
 
 #[derive(Parser)]
 #[command(name = "bintl", about = "BinTL ETL console")]
@@ -69,47 +70,16 @@ async fn main() {
     });
 
     let execution_permits = Arc::new(Semaphore::new(config.max_concurrent_jobs.max(1)));
-    let (execution_tx, mut execution_rx) = mpsc::channel::<ExecutionTask>(64);
-    let worker_store = store.clone();
-    let worker_tx = execution_tx.clone();
-    let _worker = tokio::spawn(async move {
-        while let Some(task) = execution_rx.recv().await {
-            let Ok(permit) = execution_permits.clone().acquire_owned().await else {
-                break;
-            };
-            let store = worker_store.clone();
-            let tx = worker_tx.clone();
-            tokio::spawn(async move {
-                let _permit = permit;
-                match task {
-                    ExecutionTask::Job(id) => {
-                        if let Err(error) = jobs::execute(&store, &id).await {
-                            tracing::error!(execution_step_id = id, %error, "transform execution failed");
-                            execution_error::record_transform_job_failure(&store, &id, &error)
-                                .await;
-                        }
-                    }
-                    ExecutionTask::Chip(id) => {
-                        if let Err(error) = chip::run_one(&store, &tx, &id).await {
-                            tracing::error!(execution_step_id = id, %error, "chip execution failed");
-                            let kind = store
-                                .get_chip_run(&id)
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|run| run.kind)
-                                .unwrap_or_else(|| "internal".into());
-                            execution_error::record_chip_failure(&store, &id, &kind, &error).await;
-                        }
-                    }
-                }
-            });
-        }
-    });
+    let dispatch = Arc::new(Notify::new());
+    tokio::spawn(dispatch::run_loop(
+        store.clone(),
+        dispatch.clone(),
+        execution_permits,
+    ));
 
     let state = AppState {
         store,
-        execution_tx,
+        dispatch,
         config: Arc::new(config),
     };
     tokio::spawn(schedule::scheduler_loop(state.clone()));

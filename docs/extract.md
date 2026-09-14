@@ -19,7 +19,9 @@
 
 `source.type`: `table` | `query` | `http`. 자격 증명은 `connection_id`만 저장한다.
 
-`connectors::extract_table` / `extract_query` / `extract_http`가 행을 스트림으로 CSV에 쓴다. 테이블 전체를 `fetch_all`로 올리지 않는다. 컬럼이 없으면 실패한다. 0행이어도 헤더만 남긴다. 구분자는 ASCII 한 글자 또는 `tab`. quote는 `"`.
+`connectors::extract_table` / `extract_query` / `extract_http`가 행을 스트림으로 CSV에 쓴다. 테이블 전체를 `fetch_all`로 올리지 않는다. **Postgres** 테이블 추출과 `SELECT`/`WITH` 쿼리는 `COPY TO STDOUT`이다. 시퀀스 컬럼을 붙이거나 `SHOW`류면 예전 행 스트림이다. 컬럼이 없으면 실패한다. 0행이어도 헤더만 남긴다. 구분자는 ASCII 한 글자 또는 `tab`. quote는 `"`.
+
+다른 DB bulk는 [bulk.md](bulk.md).
 
 테이블 식별은 `name` 또는 `schema.name`, `[A-Za-z0-9_]`만. 스키마 생략 시 postgres=`public`, mssql=`dbo`, oracle/tibero=접속 사용자(대문자).
 
@@ -47,6 +49,6 @@ EUC-KR 선택, quote UI, 서버 파일 에디터, parquet 추출, 추출 중 취
 
 ## ponytail 천장
 
-- csv write는 워커에서 동기 I/O. 런타임을 잠그면 `spawn_blocking`.
+- csv write는 워커에서 동기 I/O. 런타임을 잠그면 `spawn_blocking`. Postgres COPY는 async 청크 쓰기.
 - inspect/preview/extract가 커넥션을 따로 연다.
-- 셀 stringify는 일부 타입만. timestamp·bytea는 빈 칸이 될 수 있다.
+- 셀 stringify는 일부 타입만. timestamp·bytea는 빈 칸이 될 수 있다. Postgres COPY 추출은 DB CSV 포맷이라 stringify와 날짜 표현이 다를 수 있다.

@@ -94,34 +94,115 @@ async fn run_load(
         )
         .await?;
     let run_id = step.id;
-    state
+    state.wake();
+    wait_for_load_step(&state, &run_id).await?;
+    let result = state
         .store
-        .set_execution_step_running(&run_id, None)
-        .await?;
-    let scope_id = format!("standalone/{run_id}");
+        .get_load_result(&run_id)
+        .await?
+        .ok_or_else(|| AppError::bad("load result missing"))?;
+    Ok(Json(json!({
+        "ok": true,
+        "run_id": run_id,
+        "destination": result.destination,
+        "write_mode": result.write_mode,
+        "input_rows": result.input_rows,
+        "loaded_rows": result.loaded_rows,
+        "input_bytes": result.input_bytes,
+        "duration_ms": result.duration_ms,
+        "artifact_path": result.artifact_path,
+    })))
+}
+
+async fn wait_for_load_step(state: &AppState, run_id: &str) -> Result<(), AppError> {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let step = state
+            .store
+            .get_execution_step(run_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("load run not found"))?;
+        match step.status.as_str() {
+            "succeeded" => return Ok(()),
+            "canceled" => return Err(AppError::bad("canceled")),
+            "failed" => {
+                return Err(AppError::bad(
+                    step.error_message
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| "load failed".into()),
+                ));
+            }
+            "queued" | "running" => {}
+            other => {
+                return Err(AppError::bad(format!(
+                    "unexpected load status `{other}`"
+                )))
+            }
+        }
+    }
+}
+
+pub(crate) async fn run_queued(store: &storage::Store, id: &str) -> Result<(), String> {
+    let step = store
+        .get_execution_step(id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("load {id} missing"))?;
+    if step.status == "canceled" {
+        return Err("canceled".into());
+    }
+    if step.status != "queued" {
+        return Ok(());
+    }
+    let config: LoadConfig = serde_json::from_str(&step.definition_snapshot_json)
+        .map_err(|error| format!("invalid load snapshot: {error}"))?;
+    let dataset_id = config
+        .input_dataset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "input_dataset_id required".to_string())?;
+    let dataset = store
+        .get_dataset(dataset_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "input dataset not found".to_string())?;
+    let execution = store
+        .get_execution(&step.execution_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "load execution missing".to_string())?;
+    store
+        .set_execution_step_running(id, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    if store.step_is_canceled(id).await.unwrap_or(false) {
+        return Err("canceled".into());
+    }
+    let scope_id = format!("standalone/{id}");
     let result = match crate::chip::execute_load_config(
-        &state.store,
+        store,
         &config,
         &dataset,
-        &dataset.workspace_id,
+        &execution.workspace_id,
         &scope_id,
-        &run_id,
+        id,
     )
     .await
     {
         Ok(result) => result,
         Err(error) => {
-            let _ = state
-                .store
-                .finish_execution_step(&run_id, "failed", None, Some(&error))
-                .await;
-            return Err(AppError::bad(error));
+            if error != "canceled" {
+                let _ = store
+                    .finish_execution_step(id, "failed", None, Some(&error))
+                    .await;
+            }
+            return Err(error);
         }
     };
-    state
-        .store
+    store
         .insert_load_result(
-            &run_id,
+            id,
             &result.destination,
             &config.write_mode,
             dataset.row_count,
@@ -130,22 +211,13 @@ async fn run_load(
             result.duration_ms,
             result.artifact_path.as_deref(),
         )
-        .await?;
-    state
-        .store
-        .finish_execution_step(&run_id, "succeeded", None, None)
-        .await?;
-    Ok(Json(json!({
-        "ok": true,
-        "run_id": run_id,
-        "destination": result.destination,
-        "write_mode": config.write_mode,
-        "input_rows": dataset.row_count,
-        "loaded_rows": result.loaded_rows,
-        "input_bytes": result.input_bytes,
-        "duration_ms": result.duration_ms,
-        "artifact_path": result.artifact_path,
-    })))
+        .await
+        .map_err(|error| error.to_string())?;
+    store
+        .finish_execution_step(id, "succeeded", None, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 async fn last_load_run(

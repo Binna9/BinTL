@@ -2723,156 +2723,107 @@ a {
   max-width: 100%;
 }
 
-.dash-chart-legend {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  min-width: 6.5rem;
-}
-
-.dash-chart-legend-item {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.2rem 0;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  cursor: pointer;
-  outline: none;
-}
-
-.dash-chart-legend-item:hover {
-  color: var(--color-text);
-}
-
-.dash-chart-legend-item:focus-visible {
-  border-radius: 0.35rem;
-  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 35%, transparent);
-}
-
-.dash-chart-legend-item i {
-  display: block;
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 999px;
-  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 8%, transparent);
-}
-
-.dash-chart-legend-item[aria-pressed="false"] {
-  opacity: 0.42;
-}
-
-.dash-chart-legend-item[aria-pressed="false"] i {
-  background: var(--color-border-strong);
-}
-
-.dash-chart-legend-item[aria-pressed="false"] strong {
-  color: var(--color-text-tertiary);
-  text-decoration: line-through;
-}
-
-.dash-chart-legend-item strong {
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  color: var(--color-text);
-}
-
 .dash-rate {
   display: flex;
   height: 100%;
   min-height: 0;
-  align-items: center;
-  gap: 0.7rem;
+  flex-direction: column;
+  justify-content: space-evenly;
+  gap: 0.05rem;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+  list-style: none;
 }
 
-.dash-rate-stage {
-  position: relative;
-  display: grid;
+.dash-rate > li {
+  min-height: 0;
+}
+
+.dash-rate-row {
+  --dash-rate-tone: var(--color-text);
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.28rem;
+  padding: 0.22rem 0.3rem;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  outline: none;
+}
+
+.dash-rate-row:hover {
+  background: color-mix(in srgb, var(--dash-rate-tone) 9%, transparent);
+}
+
+.dash-rate-row:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dash-rate-tone) 40%, transparent);
+}
+
+.dash-rate-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.dash-rate-meta i {
+  display: block;
+  width: 0.5rem;
+  height: 0.5rem;
+  flex-shrink: 0;
+  align-self: center;
+  border-radius: 999px;
+  background: var(--dash-rate-tone);
+}
+
+.dash-rate-meta em {
   min-width: 0;
   flex: 1;
-  align-self: stretch;
-  place-items: center;
+  overflow: hidden;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.dash-rate-rings {
-  width: min(100%, 15.5rem);
-  height: auto;
-  max-height: 100%;
-  overflow: visible;
+.dash-rate-meta strong {
+  font-size: 1.2rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  color: var(--dash-rate-tone);
 }
 
-.dash-rate-track,
-.dash-rate-fill,
-.dash-rate-hit {
-  fill: none;
-  stroke-linecap: round;
+.dash-rate-meta strong span {
+  margin-left: 0.05em;
+  font-size: 0.72em;
+  font-weight: 650;
 }
 
 .dash-rate-track {
-  stroke: color-mix(in srgb, var(--dash-rate-tone) 18%, var(--color-subtle));
-  stroke-width: 9;
+  display: block;
+  height: 0.55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dash-rate-tone) 14%, var(--color-subtle));
 }
 
 .dash-rate-fill {
-  stroke: var(--dash-rate-tone);
-  stroke-width: 9;
-  transition: stroke-dasharray 0.72s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.dash-rate-hit {
-  stroke: transparent;
-  stroke-width: 13;
-  cursor: pointer;
-}
-
-.dash-rate-ring[data-off] {
-  opacity: 0.38;
-}
-
-.dash-rate-ring[data-off] .dash-rate-fill {
-  stroke: var(--color-border-strong);
-}
-
-.dash-rate-ring[data-hot] .dash-rate-track {
-  stroke: color-mix(in srgb, var(--dash-rate-tone) 30%, var(--color-subtle));
-}
-
-.dash-rate-ring[data-hot] .dash-rate-fill {
-  stroke-width: 10.5;
-}
-
-.dash-rate-center {
-  pointer-events: none;
-  position: absolute;
-  inset: 18% 18% 22%;
-  display: grid;
-  place-content: center;
-  text-align: center;
-}
-
-.dash-rate-center strong {
-  font-size: 1.55rem;
-  font-weight: 650;
-  letter-spacing: -0.045em;
-  line-height: 1;
-  color: var(--color-text);
-}
-
-.dash-rate-center strong span {
-  margin-left: 0.04em;
-  font-size: 0.68em;
-  color: var(--color-text-tertiary);
-}
-
-.dash-rate-center em {
-  margin-top: 0.28rem;
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 600;
-  color: var(--color-text-secondary);
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--dash-rate-tone);
+  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {

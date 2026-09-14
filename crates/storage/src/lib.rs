@@ -69,6 +69,8 @@ pub const REL_LOGS: &str = "logs";
 pub const REL_STAGING: &str = "staging";
 pub const REL_USER_IMAGES: &str = "user_images";
 pub const DEFAULT_WORKSPACE_ID: &str = "00000000-0000-0000-0000-000000000001";
+pub const EXECUTION_CANCELED: &str = "EXECUTION_CANCELED";
+pub const EXECUTION_CANCELED_MESSAGE: &str = "실행이 취소되었습니다.";
 
 const EXTRACT_KINDS: [&str; 3] = ["uploads", "databases", "api"];
 
@@ -461,9 +463,20 @@ async fn replace_workspace_edges(
                 )));
             }
         }
-        let key = (from_id.to_string(), to_id.to_string(), edge.kind.clone());
+        let slot = match edge.kind.as_str() {
+            "on_success" | "on_error" | "always" => "control",
+            other => other,
+        };
+        let key = (from_id.to_string(), to_id.to_string(), slot.to_string());
         if !seen.insert(key) {
-            return Err(StorageError::Invalid("duplicate chip edge".into()));
+            return Err(StorageError::Invalid(
+                if slot == "control" {
+                    "only one of on_success, on_error, or always is allowed between two chips"
+                        .into()
+                } else {
+                    "duplicate chip edge".into()
+                },
+            ));
         }
         let id = if edge.id.trim().is_empty() {
             Uuid::new_v4().to_string()
@@ -1181,6 +1194,37 @@ mod tests {
         assert_eq!(chips.len(), 2);
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].kind, "data");
+
+        let mixed_control = store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[extract.id.clone(), transform.id.clone()],
+                &[
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "on_success".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "on_error".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                ],
+                None,
+            )
+            .await;
+        assert!(
+            mixed_control.is_err(),
+            "one pair cannot hold both success and failure control edges"
+        );
 
         let placement_id = workspace_repo::workspace_chip_id(&workspace.id, &extract.id);
         sqlx::query(

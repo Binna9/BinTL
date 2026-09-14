@@ -1,6 +1,6 @@
 # BinTL SQLite 스키마
 
-기준일은 2026-09-13이다. 새 DB의 기준선은 `0001_schema.sql`이고, 스케줄은 `0002`/`0003`, 워크스페이스 실행 이력은 `0006`, 배치·스케줄 이름 유니크는 `0007`이다. SQLite는 WAL과 Foreign Key 검사를 사용한다.
+기준일은 2026-09-13이다. 새 DB의 기준선은 `0001_schema.sql`이고, 스케줄은 `0002`/`0003`, 워크스페이스 실행 이력은 `0006`, 배치·스케줄 이름 유니크는 `0007`, SQL 칩은 `0008`, 디스패치 시각은 `0009`이다. SQLite는 WAL과 Foreign Key 검사를 사용한다.
 
 ## 원칙
 
@@ -83,8 +83,8 @@ validation_rules -> validation_results -> data_files(source, target)
 
 ## 워크스페이스 전체 실행 이력
 
-`0006_workspace_execution_history.sql`부터 전체 실행은 `executions.source = 'workspace'` 한 건으로 기록하고, 실행한 칩의 `execution_steps.execution_id`를 공유한다. 칩 단독 실행은 `source = 'chip'`으로 구분한다. 전체 실행 상태와 종료 시각은 서버 조정 로직이 확정한다. 칩 상태 트리거는 `source != 'workspace'`인 실행만 갱신한다. 사전 검증·조건 생략도 단계는 만든 뒤 `failed`/`skipped`로 표시한다. 큐에는 넣지 않는다.
+`0006_workspace_execution_history.sql`부터 전체 실행은 `executions.source = 'workspace'` 한 건으로 기록하고, 실행한 칩의 `execution_steps.execution_id`를 공유한다. 칩 단독 실행은 `source = 'chip'`으로 구분한다. 전체 실행 상태와 종료 시각은 서버 조정 로직이 확정한다. 칩 상태 트리거는 `source != 'workspace'`인 실행만 갱신한다. 사전 검증에 실패한 칩은 단계를 만든 뒤 `failed`로 표시하고 큐에 넣지 않는다. 조건 생략은 `skipped`다.
 
 `GET /api/workspaces/{id}/runs`는 칩 단계 `runs`와 전체 실행 `workspace_runs`를 반환하며, 각 칩 단계에 `execution_id`, `execution_source`가 포함된다. `GET /api/workspaces/{id}/executions`는 전체 실행만 반환한다. 헤더는 최신 전체 실행 상태를 표시하므로 칩 단독 재실행의 영향을 받지 않는다. 실행 이력 화면은 칩 단독 실행과 워크스페이스 실행을 분리하고, 전체 실행 선택 시 해당 실행의 칩 및 로그를 조회한다.
 
-서버 재시작 시 미완료 전체 실행과 미완료 소속 칩은 중단 오류로 종료한다. 기존 기록은 전체 실행의 그룹 식별자가 없으므로 임의로 묶지 않고 기존 칩 실행 이력으로 유지한다.
+서버 재시작 시 미완료 전체 실행과 그 leftover 칩, 돌고 있던 단독 `running`은 중단 오류로 종료한다. 아직 `queued`인 단독 단계는 그대로 두어 디스패처가 다시 집는다. 워크스페이스 칩은 `dispatch_at`이 있을 때만 큐에서 고른다. 기존 기록은 전체 실행의 그룹 식별자가 없으므로 임의로 묶지 않고 기존 칩 실행 이력으로 유지한다.

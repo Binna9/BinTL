@@ -1,7 +1,7 @@
 import type { WorkspaceExecution } from "@/types/chip";
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Terminal, Workflow, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Square, Terminal, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -48,6 +48,7 @@ import {
   canvasPoint,
   chipFixedInputId,
   incomingDataChipId,
+  sameKindPairEdges,
   chipInMarquee,
   chipKindLabel,
   PINNED_WORKSPACE_KEY,
@@ -264,6 +265,14 @@ export function WorkspacePage() {
       ? parseExtractConfig(infoInputChip.config)?.outputFilename
       : undefined);
   const hasActiveRun = runs.some((run) => ACTIVE_STATUSES.has(run.status));
+  const [workspaceRunPending, setWorkspaceRunPending] = useState(false);
+  const workspaceRunning =
+    latestWorkspaceRun?.status === "running"
+    || latestWorkspaceRun?.status === "queued"
+    || runs.some((run) => run.execution_source === "workspace" && ACTIVE_STATUSES.has(run.status));
+  const canStopWorkspace = workspaceRunPending || workspaceRunning;
+  const canStopWorkspaceRef = useRef(false);
+  canStopWorkspaceRef.current = canStopWorkspace;
   const canvasWorld = useMemo(() => ({ width: CANVAS_W, height: CANVAS_H }), []);
 
   useEffect(() => {
@@ -423,15 +432,16 @@ export function WorkspacePage() {
         return;
       }
     }
-    const existing = edges.filter(
-      (edge) => edge.from_chip_id === fromId && edge.to_chip_id === toId,
-    );
+    const existing = sameKindPairEdges(edges, fromId, toId, kind);
     // Transform/load take one data input. A new wire replaces the previous
     // incoming data edge; the unique chip's standalone file stays as fallback.
     const incomingData = kind === "data" && to.kind !== "validation"
       ? edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === toId)
       : [];
-    if (existing.some((edge) => edge.kind === kind) && incomingData.every((edge) => edge.from_chip_id === fromId)) {
+    if (
+      existing.some((edge) => edge.kind === kind)
+      && incomingData.every((edge) => edge.from_chip_id === fromId)
+    ) {
       toastError(messages.workspace.edgeAlreadySame);
       return;
     }
@@ -752,7 +762,62 @@ export function WorkspacePage() {
         if (latest?.status === "failed") {
           throw new Error(latest.error_message || messages.workspace.runChipError);
         }
-        return;
+        return latest?.status;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+
+  async function stopWorkspace() {
+    if (!workspaceId) return;
+    try {
+      let executionId = latestWorkspaceRun
+        && ACTIVE_STATUSES.has(latestWorkspaceRun.status)
+        ? latestWorkspaceRun.id
+        : undefined;
+      if (!executionId) {
+        const response = await chipApi.listWorkspaceRuns(workspaceId, { silent: true });
+        executionId = response.runs.find((run) => ACTIVE_STATUSES.has(run.status))?.id;
+      }
+      if (!executionId) return;
+      await chipApi.cancelWorkspaceExecution(workspaceId, executionId);
+    } catch (reason) {
+      toastError(messages.workspace.stopError, reason);
+    }
+  }
+
+  async function stopChip(chip: Chip) {
+    const run = [...runs]
+      .filter((item) => item.chip_id === chip.id)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    if (!run || !ACTIVE_STATUSES.has(run.status)) return;
+    try {
+      await chipApi.cancelRun(run.id);
+    } catch (reason) {
+      toastError(messages.workspace.stopError, reason);
+    }
+  }
+
+  async function waitForWorkspaceExecution(executionId: string) {
+    if (!workspaceId) return;
+    for (;;) {
+      if (currentWorkspaceRef.current !== workspaceId) return;
+      const [executions, chipRuns] = await Promise.all([
+        chipApi.listWorkspaceRuns(workspaceId, { silent: true }),
+        chipApi.listRuns(workspaceId, { silent: true }),
+      ]);
+      setLatestWorkspaceRun(executions.runs[0] ?? null);
+      setRuns(chipRuns.runs);
+      const row = executions.runs.find((item) => item.id === executionId);
+      if (row && !ACTIVE_STATUSES.has(row.status)) {
+        if (
+          row.status === "succeeded"
+          || row.status === "failed"
+          || row.status === "canceled"
+        ) {
+          return row.status;
+        }
+        return "failed";
       }
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
@@ -776,13 +841,36 @@ export function WorkspacePage() {
     );
     if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
     setBusy(true);
+    setWorkspaceRunPending(true);
     const previousRunIds = new Set(runs.map((run) => run.id));
     try {
-      await chipApi.runWorkspace(workspaceId);
+      const result = await chipApi.runWorkspace(workspaceId);
+      if (currentWorkspaceRef.current !== workspaceId) return;
+      let status = result.status;
+      if (status === "running" && result.execution_id) {
+        status = (await waitForWorkspaceExecution(result.execution_id)) ?? status;
+      }
       if (currentWorkspaceRef.current !== workspaceId) return;
       const response = await chipApi.listRuns(workspaceId, { silent: true });
       setRuns(response.runs);
-      toastSuccess(messages.workspace.runWorkspaceCompleted);
+      if (status === "canceled") {
+        toastSuccess(messages.workspace.runWorkspaceCanceled);
+      } else if (status === "failed") {
+        const currentRuns = response.runs.filter((run) => !previousRunIds.has(run.id));
+        const failedNames = [...new Set(
+          currentRuns
+            .filter((run) => run.status === "failed")
+            .map((run) => chips.find((chip) => chip.id === run.chip_id)?.name)
+            .filter((name): name is string => Boolean(name)),
+        )];
+        toastError(
+          failedNames.length
+            ? messages.workspace.runFailedChips(failedNames.join(", "))
+            : messages.workspace.runChipError,
+        );
+      } else {
+        toastSuccess(messages.workspace.runWorkspaceCompleted);
+      }
     } catch (reason) {
       if (currentWorkspaceRef.current !== workspaceId) return;
       try {
@@ -805,6 +893,7 @@ export function WorkspacePage() {
         toastError(messages.workspace.runChipError, reason);
       }
     } finally {
+      setWorkspaceRunPending(false);
       setBusy(false);
     }
   }
@@ -822,8 +911,12 @@ export function WorkspacePage() {
     setBusy(true);
     try {
       await chipApi.run(chip.id, { workspace_id: workspaceId });
-      await waitForChipRun(chip.id);
-      toastSuccess(messages.workspace.runChipCompleted(chip.name));
+      const status = await waitForChipRun(chip.id);
+      if (status === "canceled") {
+        toastSuccess(messages.workspace.runChipCanceled(chip.name));
+      } else {
+        toastSuccess(messages.workspace.runChipCompleted(chip.name));
+      }
     } catch (reason) {
       toastError(messages.workspace.runChipError, reason);
     } finally {
@@ -1531,7 +1624,8 @@ export function WorkspacePage() {
     void requestSave();
   };
   requestRunRef.current = () => {
-    void runWorkspace();
+    if (canStopWorkspaceRef.current) void stopWorkspace();
+    else void runWorkspace();
   };
   resetCanvasRef.current = resetCanvas;
 
@@ -2041,12 +2135,24 @@ export function WorkspacePage() {
                 <Button
                   type="button"
                   className="w-full gap-2"
-                  disabled={busy || dirty || chips.length === 0}
-                  title={dirty ? messages.workspace.saveFirst : messages.workspace.runChip}
-                  onClick={() => void runWorkspace()}
+                  disabled={canStopWorkspace ? false : busy || dirty || chips.length === 0}
+                  title={
+                    canStopWorkspace
+                      ? messages.workspace.stopRun
+                      : dirty
+                        ? messages.workspace.saveFirst
+                        : messages.workspace.runChip
+                  }
+                  onClick={() => canStopWorkspace ? void stopWorkspace() : void runWorkspace()}
                 >
-                  <Play className="size-3.5" aria-hidden="true" />
-                  {busy ? messages.common.running : messages.workspace.runChip}
+                  {canStopWorkspace
+                    ? <Square className="size-3.5" aria-hidden="true" />
+                    : <Play className="size-3.5" aria-hidden="true" />}
+                  {canStopWorkspace
+                    ? messages.workspace.stopRun
+                    : busy
+                      ? messages.common.running
+                      : messages.workspace.runChip}
                 </Button>
                 <Button
                   type="button"
@@ -2589,8 +2695,15 @@ export function WorkspacePage() {
         menu={chipMenu}
         messages={messages}
         busy={busy}
+        running={Boolean(
+          chipMenu
+          && runs
+            .filter((run) => run.chip_id === chipMenu.chip.id)
+            .some((run) => ACTIVE_STATUSES.has(run.status)),
+        )}
         onClose={() => setChipMenu(null)}
         onRun={(chip) => void runSingleChip(chip)}
+        onStop={(chip) => void stopChip(chip)}
         onOpenLog={(chip) => void openChipRunLog(chip)}
         onInfo={setInfoChip}
         onProperties={openChipProperties}
@@ -2769,7 +2882,7 @@ export function WorkspacePage() {
                 <CanvasProducerSelect
                   chips={chips}
                   value={propsSourceChipId}
-                  excludeIds={[propsChip.id]}
+                  excludeIds={[propsChip.id, propsTargetChipId].filter(Boolean)}
                   messages={messages}
                   label={messages.workspace.validationSourceChip}
                   disabled={propsBusy}
@@ -2778,7 +2891,7 @@ export function WorkspacePage() {
                 <CanvasProducerSelect
                   chips={chips}
                   value={propsTargetChipId}
-                  excludeIds={[propsChip.id]}
+                  excludeIds={[propsChip.id, propsSourceChipId].filter(Boolean)}
                   messages={messages}
                   label={messages.workspace.validationTargetChip}
                   disabled={propsBusy}

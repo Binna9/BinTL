@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::Notify;
 
 use crate::config::Config;
-
-#[derive(Debug, Clone)]
-pub enum ExecutionTask {
-    Job(String),
-    Chip(String),
-}
 
 #[derive(Clone)]
 pub struct AppState {
     pub store: storage::Store,
-    pub execution_tx: mpsc::Sender<ExecutionTask>,
+    pub dispatch: Arc<Notify>,
     pub config: Arc<Config>,
+}
+
+impl AppState {
+    pub fn wake(&self) {
+        self.dispatch.notify_one();
+    }
 }

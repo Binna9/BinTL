@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::postgres::{PgConnectOptions, PgPoolCopyExt, PgPoolOptions, PgSslMode};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{MySql, Pool, Postgres, Row, Sqlite};
 use storage::LiveConnection;
@@ -532,7 +532,8 @@ fn clear_sql(family: &str, q: &str) -> String {
 }
 
 /// Streams bounded row batches so input size does not determine memory use.
-/// Native COPY/bulk writers can replace each family branch without changing callers.
+/// Postgres append/truncate/replace/recreate uses COPY FROM STDIN. Other
+/// drivers and Postgres upsert still batch INSERT/MERGE.
 /// New tables are created as TEXT columns from the CSV header.
 pub async fn load_table(
     c: &LiveConnection,
@@ -603,29 +604,42 @@ pub async fn load_table(
             if matches!(mode, "replace" | "truncate") {
                 sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
             }
-            loop {
-                let rows = read_csv_batch(&mut reader, 2_000)?;
-                if rows.is_empty() {
-                    break;
-                }
-                let row_start = n + 1;
-                let row_end = n + rows.len() as u64;
-                validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
-                insert_sqlx::<Postgres>(
+            if c.driver == "postgres" && mode != "upsert" {
+                n = copy_postgres_csv(
                     &pool,
-                    family,
                     &q,
                     &cols,
+                    &mut reader,
                     &column_rules,
-                    &rows,
-                    mode,
-                    conflict_keys,
                     null_marker,
+                    on_progress,
                 )
-                .await
-                .map_err(|error| load_batch_error(row_start, row_end, error))?;
-                n = row_end;
-                report_load_progress(on_progress, n);
+                .await?;
+            } else {
+                loop {
+                    let rows = read_csv_batch(&mut reader, 2_000)?;
+                    if rows.is_empty() {
+                        break;
+                    }
+                    let row_start = n + 1;
+                    let row_end = n + rows.len() as u64;
+                    validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                    insert_sqlx::<Postgres>(
+                        &pool,
+                        family,
+                        &q,
+                        &cols,
+                        &column_rules,
+                        &rows,
+                        mode,
+                        conflict_keys,
+                        null_marker,
+                    )
+                    .await
+                    .map_err(|error| load_batch_error(row_start, row_end, error))?;
+                    n = row_end;
+                    report_load_progress(on_progress, n);
+                }
             }
             pool.close().await;
         }
@@ -929,6 +943,84 @@ fn load_batch_error(row_start: u64, row_end: u64, error: ConnectError) -> Connec
     ))
 }
 
+const POSTGRES_COPY_NULL: &str = "\\N";
+
+fn postgres_copy_sql(q: &str, cols: &[String], null_string: &str) -> String {
+    let col_sql = cols
+        .iter()
+        .map(|c| quote_ident("postgres", c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "COPY {q} ({col_sql}) FROM STDIN WITH (FORMAT csv, NULL {}, FORCE_NULL ({col_sql}))",
+        sql_lit(null_string)
+    )
+}
+
+fn encode_copy_csv(
+    rows: &[Vec<String>],
+    rules: &[LoadColumnRule],
+    null_marker: Option<&str>,
+    null_string: &str,
+) -> Result<Vec<u8>, ConnectError> {
+    let mut writer = csv::WriterBuilder::new()
+        .quote_style(csv::QuoteStyle::Always)
+        .from_writer(Vec::new());
+    for row in rows {
+        writer.write_record(row.iter().enumerate().map(|(index, value)| {
+            if cell_is_null(value, &rules[index], null_marker) {
+                null_string
+            } else {
+                value.as_str()
+            }
+        }))?;
+    }
+    writer.flush()?;
+    Ok(writer.into_inner().map_err(|error| error.into_error())?)
+}
+
+async fn copy_postgres_csv(
+    pool: &Pool<Postgres>,
+    q: &str,
+    cols: &[String],
+    reader: &mut csv::Reader<std::fs::File>,
+    column_rules: &[LoadColumnRule],
+    null_marker: Option<&str>,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+) -> Result<u64, ConnectError> {
+    let null_string = null_marker.unwrap_or(POSTGRES_COPY_NULL);
+    let sql = postgres_copy_sql(q, cols, null_string);
+    let mut copy = pool.copy_in_raw(&sql).await?;
+    let mut n = 0u64;
+    let streamed = async {
+        loop {
+            let rows = read_csv_batch(reader, 2_000)?;
+            if rows.is_empty() {
+                break;
+            }
+            let row_start = n + 1;
+            let row_end = n + rows.len() as u64;
+            validate_empty_cells(&rows, column_rules, row_start, null_marker)?;
+            let buf = encode_copy_csv(&rows, column_rules, null_marker, null_string)
+                .map_err(|error| load_batch_error(row_start, row_end, error))?;
+            copy.send(buf)
+                .await
+                .map_err(|error| load_batch_error(row_start, row_end, error.into()))?;
+            n = row_end;
+            report_load_progress(on_progress, n);
+        }
+        Ok::<u64, ConnectError>(n)
+    }
+    .await;
+    match streamed {
+        Ok(n) => copy.finish().await.map_err(ConnectError::from).map(|_| n),
+        Err(error) => {
+            let _ = copy.abort("load failed").await;
+            Err(error)
+        }
+    }
+}
+
 async fn insert_sqlx<DB>(
     pool: &Pool<DB>,
     family: &str,
@@ -1132,6 +1224,47 @@ mod tests {
         assert_eq!(read_csv_batch(&mut reader, 2).unwrap().len(), 1);
         assert!(read_csv_batch(&mut reader, 2).unwrap().is_empty());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn postgres_copy_sql_uses_csv_stdin() {
+        let sql = postgres_copy_sql("\"public\".\"users\"", &["id".into(), "name".into()], "\\N");
+        assert_eq!(
+            sql,
+            "COPY \"public\".\"users\" (\"id\", \"name\") FROM STDIN WITH (FORMAT csv, NULL '\\N', FORCE_NULL (\"id\", \"name\"))"
+        );
+    }
+
+    #[test]
+    fn postgres_copy_keeps_empty_text_and_nulls_typed_empty() {
+        let rules = vec![
+            LoadColumnRule {
+                name: "id".into(),
+                empty_as_null: true,
+                nullable: true,
+                data_type: "int4".into(),
+            },
+            LoadColumnRule {
+                name: "name".into(),
+                empty_as_null: false,
+                nullable: true,
+                data_type: "text".into(),
+            },
+        ];
+        let bytes = encode_copy_csv(&[vec![String::new(), String::new()]], &rules, None, "\\N")
+            .unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(), "\"\\N\",\"\"\n");
+        let marked = encode_copy_csv(
+            &[vec!["\u{1e}BINTL_NULL\u{1e}".into(), "x".into()]],
+            &rules,
+            Some("\u{1e}BINTL_NULL\u{1e}"),
+            "\u{1e}BINTL_NULL\u{1e}",
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(marked).unwrap(),
+            "\"\u{1e}BINTL_NULL\u{1e}\",\"x\"\n"
+        );
     }
 
     #[test]

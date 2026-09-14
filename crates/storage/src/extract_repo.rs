@@ -164,7 +164,8 @@ impl Store {
 
     pub async fn set_extract_running(&self, id: &str) -> Result<(), StorageError> {
         sqlx::query(
-            "UPDATE execution_steps SET status = ?, started_at = ?, error_message = NULL WHERE id = ?",
+            "UPDATE execution_steps SET status = ?, started_at = ?, error_message = NULL
+             WHERE id = ? AND status = 'queued'",
         )
         .bind("running")
         .bind(now_rfc3339())
@@ -377,9 +378,10 @@ impl Store {
             .bind(id).bind(&file_id).execute(&mut *tx).await?;
         let result_json =
             serde_json::json!({"filename": filename, "data_file_id": file_id}).to_string();
-        sqlx::query(
+        let changed = sqlx::query(
             "UPDATE execution_steps SET status = 'succeeded', finished_at = ?, output_path = ?,
-            output_rows = ?, output_bytes = ?, result_json = ?, error_message = NULL WHERE id = ?",
+            output_rows = ?, output_bytes = ?, result_json = ?, error_message = NULL
+            WHERE id = ? AND status = 'running'",
         )
         .bind(&now)
         .bind(stored_path)
@@ -389,6 +391,9 @@ impl Store {
         .bind(id)
         .execute(&mut *tx)
         .await?;
+        if changed.rows_affected() == 0 {
+            return Err(StorageError::Invalid("extract is not running".into()));
+        }
         if let Some(parent) = linked.as_ref().filter(|parent| parent.run_id != id) {
             sqlx::query("INSERT OR REPLACE INTO execution_outputs (execution_step_id, port_name, data_file_id) VALUES (?, 'out', ?)")
                 .bind(&parent.run_id).bind(&file_id).execute(&mut *tx).await?;
@@ -444,7 +449,8 @@ impl Store {
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "UPDATE execution_steps SET status = ?, finished_at = ?, error_message = ? WHERE id = ?",
+            "UPDATE execution_steps SET status = ?, finished_at = ?, error_message = ?
+             WHERE id = ? AND status IN ('queued', 'running')",
         )
         .bind("failed")
         .bind(&now)

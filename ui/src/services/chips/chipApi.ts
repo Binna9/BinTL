@@ -47,6 +47,15 @@ export const chipApi = {
       silent: true,
       method: "POST",
     }),
+  cancelRun: (id: string) =>
+    httpRequest<{ ok: true; status: "canceled"; id: string }>(`/api/chip-runs/${id}/cancel`, {
+      method: "POST",
+    }),
+  cancelWorkspaceExecution: (workspaceId: string, executionId: string) =>
+    httpRequest<{ ok: true; status: "canceled"; id: string }>(
+      `/api/workspaces/${workspaceId}/executions/${executionId}/cancel`,
+      { method: "POST" },
+    ),
   listWorkspaceRuns: (workspaceId: string, init?: HttpRequestInit) =>
     httpRequest<{ runs: WorkspaceExecution[] }>(`/api/workspaces/${workspaceId}/executions`, init),
   listRuns: (workspaceId: string, init?: HttpRequestInit) =>

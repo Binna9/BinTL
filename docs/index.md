@@ -11,6 +11,7 @@
 | [extract.md](extract.md) | 커넥션 → 서버 파일 |
 | [transform.md](transform.md) | 파일 → parquet |
 | [load.md](load.md) | 파일 → DB 또는 서버 파일 |
+| [bulk.md](bulk.md) | Postgres COPY와 다른 DB 대량 추출·적재 |
 | [validation.md](validation.md) | 두 파일 비교 |
 | [schema.md](schema.md) | SQLite 테이블과 파일 레이아웃 |
 | [logging.md](logging.md) | execution_logs 정책 |

@@ -55,12 +55,6 @@ export function TransformFilesPage() {
     void refresh().catch((err) => toastError(messages.errors.workspace, err));
   }, [messages]);
 
-  function toggleOne(id: string) {
-    setSelected((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
-  }
-
   function toggleAll() {
     setSelected((current) => {
       const pageIds = new Set(pageFiles.map((item) => item.id));
@@ -167,23 +161,26 @@ export function TransformFilesPage() {
         <DataGrid
           headers={[...messages.transformFiles.headers]}
           columnWidths={[56, 280, 100, 96, 140, 110]}
+          selectedIds={selected}
+          onSelectedIdsChange={setSelected}
           empty={files.length === 0 ? <EmptyState icon={<NavIcon name="transformFiles" />} title={messages.empty.transformFiles} hint={messages.empty.transformFilesHint} /> : undefined}
         >
           {files.length === 0 ? null : pageFiles.map((item) => (
               <GridRow
                 key={item.id}
+                rowId={item.id}
                 selected={selectedSet.has(item.id)}
                 onClick={() => void openPreview(item)}
               >
-                <GridCell>
+                <GridCell select>
                   <input
-                    className="field-control"
+                    className="field-control pointer-events-none"
                     type="checkbox"
                     checked={selectedSet.has(item.id)}
                     disabled={busy}
-                    aria-label={item.filename}
-                    onChange={() => toggleOne(item.id)}
-                    onClick={(event) => event.stopPropagation()}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onChange={() => {}}
                   />
                 </GridCell>
                 <GridCell>{item.filename}</GridCell>

@@ -9,9 +9,9 @@
 운영 프로세스는 `bintl` 하나다. React 정적 산출물과 Axum API를 같은 바이너리가 제공한다.
 
 ```text
-React UI -> Axum API -> 인프로세스 실행 큐 -> jobs / chip 워커
-                         |                 -> engine / connectors
-                         |                 -> storage -> SQLite + files
+React UI -> Axum API -> SQLite queued steps -> dispatch loop -> jobs / chip / extract / load
+                         |                   -> engine / connectors
+                         |                   -> storage -> SQLite + files
                          -> auth/access
 ```
 
@@ -19,9 +19,9 @@ React UI -> Axum API -> 인프로세스 실행 큐 -> jobs / chip 워커
 - `connectors`는 Workspace 화면 상태를 모른다.
 - HTTP 핸들러에서 Polars collect나 대량 파일 CPU 작업을 직접 하지 않는다. `spawn_blocking` 또는 워커로 내린다.
 
-기동: `Config::load` → `Store::open`(빈 `users`면 `admin`/`admin`) → `recover_interrupted_executions` → `max_concurrent_jobs` 세마포어와 `mpsc` 큐(용량 64) → 스케줄러 루프.
+기동: `Config::load` → `Store::open`(빈 `users`면 `admin`/`admin`) → `recover_interrupted_executions` → `max_concurrent_jobs` 세마포어와 SQLite 디스패처 → 스케줄러 루프.
 
-큐 태스크는 `ExecutionTask::Job`(단독 변환)과 `ExecutionTask::Chip`(칩/전체 실행)이다. 재시작 시 메모리 큐는 사라지고, 미완료 실행(워크스페이스·칩·단독 페이지)은 오류로 닫는다. 자동 재개하지 않는다. 스케줄은 `source='workspace'`인 미완료 실행만 활성으로 본다.
+진짜 큐는 SQLite `execution_steps`다. 메모리 `Notify`는 깨우기만 한다. 디스패처는 `queued`를 `queued_at` 순으로 고른다. 워크스페이스 칩은 스냅샷만 있고 `dispatch_at`이 없으면 고르지 않는다. 조정 루프가 다음 칩일 때만 `dispatch_at`을 넣는다. 채널이 가득 차서 실패하지 않는다. 재시작 시 돌고 있던 `running`과 워크스페이스 leftover `queued`는 오류로 닫고, 단독 `queued`(칩·추출·변환·적재 페이지)는 그대로 두어 디스패처가 다시 집는다. 스케줄은 `source='workspace'`인 미완료 실행만 활성으로 본다.
 
 ## Rust workspace
 

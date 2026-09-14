@@ -27,14 +27,6 @@ async fn append_extract_log(
     }
 }
 
-pub fn spawn(store: Store, id: String) {
-    tokio::spawn(async move {
-        if let Err(err) = run(&store, &id).await {
-            tracing::error!(id, %err, "extract failed");
-        }
-    });
-}
-
 pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
     let row = store
         .get_extract(id)
@@ -48,6 +40,9 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
         .set_extract_running(id)
         .await
         .map_err(|e| e.to_string())?;
+    if store.step_is_canceled(id).await.unwrap_or(false) {
+        return Err("canceled".into());
+    }
     let started_context = serde_json::json!({
         "process": "extract",
         "stage": "read_source",
@@ -68,7 +63,23 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
         Some(&started_context),
     )
     .await;
-    if let Err(err) = extract_now(store, &row).await {
+    let result = tokio::select! {
+        _ = store.wait_until_step_canceled(id) => Err("canceled".into()),
+        result = extract_now(store, &row) => result,
+    };
+    if store.step_is_canceled(id).await.unwrap_or(false) {
+        append_extract_log(
+            store,
+            id,
+            "info",
+            "extract_canceled",
+            storage::EXECUTION_CANCELED_MESSAGE,
+            None,
+        )
+        .await;
+        return Err("canceled".into());
+    }
+    if let Err(err) = result {
         let failure = crate::execution_error::classify("extract", &err);
         let context = crate::execution_error::failure_context("extract", &err).to_string();
         let diagnostic = context

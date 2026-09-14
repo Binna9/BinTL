@@ -2,6 +2,7 @@ use super::*;
 use crate::config::Config;
 use std::sync::Arc;
 use storage::{NewConnection, WorkspaceSaveEdge};
+use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinHandle;
 
 struct Fixture {
@@ -9,7 +10,6 @@ struct Fixture {
     user: CurrentUser,
     workspace: String,
     connection: String,
-    receiver: Option<mpsc::Receiver<ExecutionTask>>,
 }
 
 impl Fixture {
@@ -38,7 +38,6 @@ impl Fixture {
             .await
             .unwrap()
             .id;
-        let (execution_tx, receiver) = mpsc::channel(64);
         let config = Arc::new(Config {
             bind: "127.0.0.1:0".parse().unwrap(),
             data_dir: root,
@@ -52,13 +51,12 @@ impl Fixture {
         Self {
             state: AppState {
                 store,
-                execution_tx,
+                dispatch: Arc::new(Notify::new()),
                 config,
             },
             user,
             workspace,
             connection,
-            receiver: Some(receiver),
         }
     }
 
@@ -117,37 +115,11 @@ impl Fixture {
             .unwrap();
     }
 
-    fn worker(&mut self) -> JoinHandle<()> {
-        let mut receiver = self.receiver.take().unwrap();
-        let state = self.state.clone();
-        tokio::spawn(async move {
-            while let Some(task) = receiver.recv().await {
-                match task {
-                    ExecutionTask::Chip(id) => {
-                        if let Err(error) = run_one(&state.store, &state.execution_tx, &id).await {
-                            let run = state.store.get_chip_run(&id).await.unwrap().unwrap();
-                            crate::execution_error::record_chip_failure(
-                                &state.store,
-                                &id,
-                                &run.kind,
-                                &error,
-                            )
-                            .await;
-                        }
-                    }
-                    ExecutionTask::Job(id) => {
-                        if let Err(error) = jobs::execute(&state.store, &id).await {
-                            crate::execution_error::record_transform_job_failure(
-                                &state.store,
-                                &id,
-                                &error,
-                            )
-                            .await;
-                        }
-                    }
-                }
-            }
-        })
+    fn worker(&self) -> JoinHandle<()> {
+        let store = self.state.store.clone();
+        let dispatch = self.state.dispatch.clone();
+        let permits = Arc::new(Semaphore::new(1));
+        tokio::spawn(crate::dispatch::run_loop(store, dispatch, permits))
     }
 
     async fn run(&self) -> Result<Vec<String>, AppError> {
@@ -201,8 +173,8 @@ fn edge(from: &ChipRow, to: &ChipRow, kind: &str, port: &str) -> WorkspaceSaveEd
 }
 
 #[tokio::test]
-async fn preflight_reports_all_errors_without_dispatching_valid_chips() {
-    let mut f = Fixture::new().await;
+async fn preflight_fails_invalid_chips_but_runs_valid_ones() {
+    let f = Fixture::new().await;
     let good = f.extract("Good", "SELECT 1 AS id").await;
     let bad = f
         .chip(
@@ -212,29 +184,60 @@ async fn preflight_reports_all_errors_without_dispatching_valid_chips() {
         )
         .await;
     let missing = f.transform("Missing input").await;
+    let worker = f.worker();
     let error = f.run().await.unwrap_err();
     assert!(error.message().contains("Missing extract"));
     assert!(error.message().contains("Missing input"));
-    assert!(matches!(
-        f.receiver.as_mut().unwrap().try_recv(),
-        Err(mpsc::error::TryRecvError::Empty)
-    ));
     let runs = f.runs().await;
+    assert_eq!(runs[&good.id].status, "succeeded");
+    assert!(runs[&good.id].output_dataset_id.is_some());
     assert_eq!(
         runs[&bad.id].error_code.as_deref(),
         Some("WORKSPACE_PREFLIGHT_FAILED")
     );
     assert_eq!(runs[&missing.id].status, "failed");
-    assert_eq!(chip_run_json(&runs[&good.id]).unwrap()["status"], "skipped");
-    assert!(runs
-        .values()
-        .all(|run| run.started_at.is_none() && run.finished_at.is_some()));
-    f.close(None).await;
+    assert!(runs[&missing.id].started_at.is_none());
+    f.close(Some(worker)).await;
+}
+
+#[tokio::test]
+async fn extract_runs_when_downstream_recipes_are_missing() {
+    let f = Fixture::new().await;
+    let extract = f.extract("추출-01", "SELECT 1 AS id").await;
+    let transform = f
+        .chip(
+            "변환-01",
+            "transform",
+            json!({"spec": {"version": 2, "steps": [], "sink": "parquet"}}),
+        )
+        .await;
+    let load = f.chip("적재-01", "load", json!({})).await;
+    f.connect(vec![
+        edge(&extract, &transform, "data", "in"),
+        edge(&transform, &load, "data", "in"),
+    ])
+    .await;
+    let worker = f.worker();
+    let error = f.run().await.unwrap_err();
+    assert!(error.message().contains("변환-01"));
+    assert!(error.message().contains("적재-01"));
+    let runs = f.runs().await;
+    assert_eq!(runs[&extract.id].status, "succeeded");
+    assert!(runs[&extract.id].output_dataset_id.is_some());
+    assert_eq!(
+        runs[&transform.id].error_code.as_deref(),
+        Some("WORKSPACE_PREFLIGHT_FAILED")
+    );
+    assert_eq!(
+        runs[&load.id].error_code.as_deref(),
+        Some("WORKSPACE_PREFLIGHT_FAILED")
+    );
+    f.close(Some(worker)).await;
 }
 
 #[tokio::test]
 async fn connected_chain_and_independent_chip_use_current_outputs() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let a = f.extract("Extract", "SELECT 1 AS id").await;
     let b = f.transform("Transform").await;
     let c = f.chip("Load", "load", json!({})).await;
@@ -262,7 +265,7 @@ async fn connected_chain_and_independent_chip_use_current_outputs() {
 
 #[tokio::test]
 async fn failure_skips_data_descendants_but_runs_error_and_independent_branches() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let a = f.extract("Failing", "SELECT * FROM missing_table").await;
     let b = f.transform("Blocked transform").await;
     let c = f.transform("Blocked descendant").await;
@@ -301,7 +304,7 @@ async fn failure_skips_data_descendants_but_runs_error_and_independent_branches(
 
 #[tokio::test]
 async fn validation_binds_both_current_outputs_and_never_falls_back_after_failure() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let a = f.extract("Source", "SELECT 1 AS id").await;
     let b = f.extract("Target", "SELECT 1 AS id").await;
     let v = f
@@ -350,89 +353,46 @@ async fn validation_binds_both_current_outputs_and_never_falls_back_after_failur
 
 #[tokio::test]
 async fn recipes_are_frozen_before_first_dispatch() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let a = f.extract("A", "SELECT 1 AS id").await;
     let b = f.extract("B", "SELECT 1 AS id").await;
-    let mut receiver = f.receiver.take().unwrap();
-    let state = f.state.clone();
-    let workspace = f.workspace.clone();
+    let worker = f.worker();
     let changed = f.extract_config("SELECT * FROM missing_table").to_string();
     let ids = [a.id.clone(), b.id.clone()];
-    let worker = tokio::spawn(async move {
-        let mut first = true;
-        while let Some(ExecutionTask::Chip(id)) = receiver.recv().await {
-            if first {
-                // Both snapshots exist before the worker sees the first task.
-                assert_eq!(
-                    state.store.list_chip_runs(&workspace).await.unwrap().len(),
-                    2
-                );
-                for chip_id in &ids {
-                    state
-                        .store
-                        .update_chip(chip_id, None, None, Some(&changed), None)
-                        .await
-                        .unwrap();
-                }
-                // Editing the saved graph must not suppress the remaining chip.
-                let current = state.store.get_chip_run(&id).await.unwrap().unwrap();
-                let other = ids
-                    .iter()
-                    .find(|chip_id| **chip_id != current.chip_id)
-                    .unwrap();
-                state
-                    .store
-                    .save_workspace(
-                        &workspace,
-                        r#"{"nodes":{}}"#,
-                        &ids,
-                        &[WorkspaceSaveEdge {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            from_chip_id: current.chip_id,
-                            to_chip_id: other.clone(),
-                            kind: "on_error".into(),
-                            from_port: "out".into(),
-                            to_port: "in".into(),
-                        }],
-                        None,
-                    )
-                    .await
-                    .unwrap();
-                first = false;
-            }
-            run_one(&state.store, &state.execution_tx, &id)
-                .await
-                .unwrap();
-        }
+    let running = tokio::spawn({
+        let state = f.state.clone();
+        let user = f.user.clone();
+        let workspace = f.workspace.clone();
+        async move { run_workspace_internal(&state, &user, &workspace).await }
     });
-    f.run().await.unwrap();
+    loop {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if f.state
+            .store
+            .list_chip_runs(&f.workspace)
+            .await
+            .unwrap()
+            .len()
+            >= 2
+        {
+            break;
+        }
+    }
+    for chip_id in &ids {
+        f.state
+            .store
+            .update_chip(chip_id, None, None, Some(&changed), None)
+            .await
+            .unwrap();
+    }
+    running.await.unwrap().unwrap();
     assert!(f.runs().await.values().all(|run| run.status == "succeeded"));
     f.close(Some(worker)).await;
 }
 
 #[tokio::test]
-async fn full_queue_finishes_steps_without_leaving_waiters() {
-    let mut f = Fixture::new().await;
-    f.extract("A", "SELECT 1 AS id").await;
-    f.extract("B", "SELECT 1 AS id").await;
-    let (sender, receiver) = mpsc::channel(1);
-    sender
-        .try_send(ExecutionTask::Job("occupied".into()))
-        .unwrap();
-    f.state.execution_tx = sender;
-    f.receiver = Some(receiver);
-    assert!(f.run().await.is_err());
-    assert!(f
-        .runs()
-        .await
-        .values()
-        .all(|run| run.status == "failed" && run.finished_at.is_some()));
-    f.close(None).await;
-}
-
-#[tokio::test]
 async fn disabled_upstream_is_rejected_before_any_work() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let a = f.extract("Disabled source", "SELECT 1 AS id").await;
     let b = f.transform("Consumer").await;
     f.connect(vec![edge(&a, &b, "data", "in")]).await;
@@ -442,10 +402,13 @@ async fn disabled_upstream_is_rejected_before_any_work() {
         .await
         .unwrap();
     assert!(f.run().await.unwrap_err().message().contains("inactive"));
-    assert!(matches!(
-        f.receiver.as_mut().unwrap().try_recv(),
-        Err(mpsc::error::TryRecvError::Empty)
-    ));
+    assert!(f
+        .state
+        .store
+        .list_dispatchable_steps(8)
+        .await
+        .unwrap()
+        .is_empty());
     let runs = f.runs().await;
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[&b.id].status, "failed");
@@ -454,7 +417,7 @@ async fn disabled_upstream_is_rejected_before_any_work() {
 
 #[tokio::test]
 async fn conditional_skip_is_successful_and_does_not_trigger_error_handler() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let a = f.extract("Success", "SELECT 1 AS id").await;
     let b = f.extract("Error handler", "SELECT 1 AS id").await;
     let c = f.extract("Error of skipped", "SELECT 1 AS id").await;
@@ -475,7 +438,7 @@ async fn conditional_skip_is_successful_and_does_not_trigger_error_handler() {
 
 #[tokio::test]
 async fn sql_chip_runs_without_output_and_rejects_data_edges() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let sql = f
         .chip(
             "DoSql",
@@ -508,7 +471,7 @@ async fn sql_chip_runs_without_output_and_rejects_data_edges() {
 
 #[tokio::test]
 async fn standalone_chip_still_uses_existing_queue_and_history_path() {
-    let mut f = Fixture::new().await;
+    let f = Fixture::new().await;
     let a = f.extract("Standalone", "SELECT 1 AS id").await;
     let worker = f.worker();
     let run = queue_chip_run(&f.state, &f.user, &a, &f.workspace, None, None)
@@ -532,4 +495,60 @@ async fn standalone_chip_still_uses_existing_queue_and_history_path() {
         .unwrap()
         .is_empty());
     f.close(Some(worker)).await;
+}
+
+#[tokio::test]
+async fn cancel_aborts_workspace_and_skips_remaining() {
+    let f = Fixture::new().await;
+    f.extract("A", "SELECT 1 AS id").await;
+    f.extract("B", "SELECT 1 AS id").await;
+    let run = tokio::spawn({
+        let state = f.state.clone();
+        let user = f.user.clone();
+        let workspace = f.workspace.clone();
+        async move { run_workspace_internal(&state, &user, &workspace).await }
+    });
+    let execution = loop {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        if let Some(row) = f
+            .state
+            .store
+            .list_workspace_executions(&f.workspace)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+        {
+            if row.status == "running" {
+                break row.id;
+            }
+        }
+    };
+    assert!(f
+        .state
+        .store
+        .cancel_workspace_execution(&execution)
+        .await
+        .unwrap());
+    let result = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("canceled workspace must finish")
+        .unwrap();
+    assert_eq!(result.unwrap_err().message(), "canceled");
+    assert_eq!(
+        f.state
+            .store
+            .get_execution(&execution)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "canceled"
+    );
+    assert!(f
+        .runs()
+        .await
+        .values()
+        .all(|run| run.status == "canceled"));
+    f.close(None).await;
 }

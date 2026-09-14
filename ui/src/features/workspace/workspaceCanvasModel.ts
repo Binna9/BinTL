@@ -375,6 +375,21 @@ export function visibleCanvasEdges(edges: ChipEdge[]): ChipEdge[] {
   return edges.filter((edge) => edge.kind !== "data");
 }
 
+/** Same pair + same slot. Success, failure, and always share one control slot. */
+export function sameKindPairEdges(
+  edges: ChipEdge[],
+  fromId: string,
+  toId: string,
+  kind: ChipEdgeKind,
+): ChipEdge[] {
+  const control = kind === "on_success" || kind === "on_error" || kind === "always";
+  return edges.filter((edge) => {
+    if (edge.from_chip_id !== fromId || edge.to_chip_id !== toId) return false;
+    if (edge.kind === kind) return true;
+    return control && (edge.kind === "on_success" || edge.kind === "on_error" || edge.kind === "always");
+  });
+}
+
 export function producerChips(chips: Chip[], excludeIds: Iterable<string> = []): Chip[] {
   const skip = new Set(excludeIds);
   return chips.filter((chip) =>
@@ -444,6 +459,15 @@ if (import.meta.env.DEV) {
   };
   const control: ChipEdge = { ...sample, id: "e2", kind: "on_success" };
   console.assert(visibleCanvasEdges([sample, control]).map((edge) => edge.id).join(",") === "e2", "canvas: hide data wires");
+  console.assert(
+    sameKindPairEdges([sample, control], "a", "b", "on_success").map((edge) => edge.id).join(",") === "e2",
+    "canvas: control connect ignores hidden data",
+  );
+  const failure: ChipEdge = { ...control, id: "e3", kind: "on_error" };
+  console.assert(
+    sameKindPairEdges([control, failure], "a", "b", "always").map((edge) => edge.id).sort().join(",") === "e2,e3",
+    "canvas: one control slot per pair",
+  );
   const replaced = attachHiddenDataEdges(
     [sample, control],
     [{ fromId: "c", toId: "b" }],

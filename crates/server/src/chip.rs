@@ -15,11 +15,11 @@ use std::time::{Duration, Instant};
 use storage::{
     ChipRow, ChipRunRow, RegisterExtractChip, RegisterLoadChip, RegisterTransformChip, Store,
 };
-use tokio::sync::mpsc;
+use tokio::sync::Notify;
 
 use crate::access::{self, CurrentUser};
 use crate::error::AppError;
-use crate::state::{AppState, ExecutionTask};
+use crate::state::AppState;
 
 const LOAD_NULL_MARKER: &str = "\u{1e}BINTL_NULL\u{1e}";
 
@@ -40,7 +40,12 @@ pub fn routes() -> Router<AppState> {
         .route("/api/workspaces/{id}/run", post(run_workspace))
         .route("/api/workspaces/{id}/runs", get(list_runs))
         .route("/api/workspaces/{id}/executions", get(list_workspace_runs))
+        .route(
+            "/api/workspaces/{id}/executions/{execution_id}/cancel",
+            post(cancel_workspace_run),
+        )
         .route("/api/chip-runs/{id}", get(get_run))
+        .route("/api/chip-runs/{id}/cancel", post(cancel_chip_run))
         .route("/api/chip-runs/{id}/logs", get(get_run_logs))
         .route(
             "/api/workspaces/{id}/chips/{chip_id}/input-slot",
@@ -845,20 +850,7 @@ async fn enqueue_chip_run(
             execution_id,
         )
         .await?;
-    if state
-        .execution_tx
-        .try_send(ExecutionTask::Chip(run.id.clone()))
-        .is_err()
-    {
-        let _ = state
-            .store
-            .set_chip_run_failed(&run.id, "chip queue full")
-            .await;
-        return Err(AppError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "chip queue full",
-        ));
-    }
+    state.wake();
     Ok(run)
 }
 
@@ -947,15 +939,37 @@ async fn run_workspace(
 ) -> Result<Json<Value>, AppError> {
     access::require_etl_run(&user)?;
     access::require_workspace(&state.store, &user, &workspace_id).await?;
-    let task_workspace_id = workspace_id.clone();
-    let run_ids = tokio::spawn(async move {
-        run_workspace_internal(&state, &user, &task_workspace_id).await
-    }).await.map_err(|error| AppError::bad(format!("workspace execution interrupted: {error}")))??;
+    let execution_id = state
+        .store
+        .create_workspace_execution(&workspace_id, user.id())
+        .await?;
+    let run_state = state.clone();
+    let run_user = user.clone();
+    let run_workspace_id = workspace_id.clone();
+    let run_execution_id = execution_id.clone();
+    tokio::spawn(async move {
+        if let Err(error) = finish_workspace_execution(
+            &run_state,
+            &run_user,
+            &run_workspace_id,
+            &run_execution_id,
+        )
+        .await
+        {
+            if error.message() != "canceled" {
+                tracing::error!(
+                    execution_id = run_execution_id,
+                    error = error.message(),
+                    "workspace execution failed"
+                );
+            }
+        }
+    });
     Ok(Json(json!({
         "ok": true,
-        "status": "succeeded",
+        "status": "running",
         "workspace_id": workspace_id,
-        "run_ids": run_ids,
+        "execution_id": execution_id,
     })))
 }
 
@@ -965,12 +979,38 @@ pub(crate) async fn run_workspace_internal(
     workspace_id: &str,
 ) -> Result<Vec<String>, AppError> {
     let execution_id = state.store.create_workspace_execution(workspace_id, &user.0.id).await?;
-    let result = workspace_execution::execute(state, user, workspace_id, &execution_id).await;
+    finish_workspace_execution(state, user, workspace_id, &execution_id).await
+}
+
+async fn finish_workspace_execution(
+    state: &AppState,
+    user: &CurrentUser,
+    workspace_id: &str,
+    execution_id: &str,
+) -> Result<Vec<String>, AppError> {
+    let result = workspace_execution::execute(state, user, workspace_id, execution_id).await;
+    let canceled = result.as_ref().is_err_and(|error| error.message() == "canceled")
+        || state
+            .store
+            .get_execution(execution_id)
+            .await?
+            .is_some_and(|row| row.status == "canceled");
     if result.is_err() {
-        state.store.skip_waiting_workspace_steps(&execution_id, "전체 실행이 중단되어 실행하지 않았습니다.").await?;
+        state.store.skip_waiting_workspace_steps(execution_id, "전체 실행이 중단되어 실행하지 않았습니다.").await?;
+    }
+    if canceled {
+        state
+            .store
+            .finish_workspace_execution_as(
+                execution_id,
+                "canceled",
+                Some(storage::EXECUTION_CANCELED_MESSAGE),
+            )
+            .await?;
+        return Err(AppError::bad("canceled"));
     }
     let error = result.as_ref().err().map(|error| error.message().to_string());
-    state.store.finish_workspace_execution(&execution_id, error.as_deref()).await?;
+    state.store.finish_workspace_execution(execution_id, error.as_deref()).await?;
     result
 }
 
@@ -999,6 +1039,64 @@ async fn list_workspace_runs(
     access::require_workspace(&state.store, &user, &workspace_id).await?;
     let runs = state.store.list_workspace_executions(&workspace_id).await?;
     Ok(Json(json!({ "runs": runs })))
+}
+
+async fn cancel_workspace_run(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((workspace_id, execution_id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    access::require_etl_run(&user)?;
+    access::require_workspace(&state.store, &user, &workspace_id).await?;
+    let execution = state
+        .store
+        .get_execution(&execution_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("workspace execution not found"))?;
+    if execution.workspace_id != workspace_id || execution.source != "workspace" {
+        return Err(AppError::not_found("workspace execution not found"));
+    }
+    if !state.store.cancel_workspace_execution(&execution_id).await? {
+        return Err(AppError::conflict("실행 중이 아닙니다"));
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "status": "canceled",
+        "id": execution_id,
+    })))
+}
+
+async fn cancel_chip_run(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    access::require_etl_run(&user)?;
+    let run = state
+        .store
+        .get_chip_run(&id)
+        .await?
+        .ok_or_else(|| AppError::not_found("chip run not found"))?;
+    access::require_workspace(&state.store, &user, &run.workspace_id).await?;
+    if !matches!(run.status.as_str(), "queued" | "running") {
+        return Err(AppError::conflict("실행 중이 아닙니다"));
+    }
+    let canceled = if run.execution_source == "workspace" {
+        state
+            .store
+            .cancel_workspace_execution(&run.execution_id)
+            .await?
+    } else {
+        state.store.cancel_execution_step(&run.id).await?
+    };
+    if !canceled {
+        return Err(AppError::conflict("실행 중이 아닙니다"));
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "status": "canceled",
+        "id": id,
+    })))
 }
 
 async fn get_run(
@@ -1113,6 +1211,7 @@ async fn wait_for_chip_run(state: &AppState, run_id: &str) -> Result<(), AppErro
             .ok_or_else(|| AppError::not_found("chip run not found"))?;
         match current.status.as_str() {
             "succeeded" => return Ok(()),
+            "canceled" => return Err(AppError::bad("canceled")),
             "failed" => {
                 let message = current
                     .error_message
@@ -1704,7 +1803,7 @@ fn reject_forbidden_config(value: &Value) -> Result<(), AppError> {
 
 pub(crate) async fn run_one(
     store: &Store,
-    execution_tx: &mpsc::Sender<ExecutionTask>,
+    dispatch: &Notify,
     run_id: &str,
 ) -> Result<(), String> {
     let run = store
@@ -1712,6 +1811,9 @@ pub(crate) async fn run_one(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("chip run {run_id} missing"))?;
+    if run.status == "canceled" {
+        return Err("canceled".into());
+    }
     if run.status != "queued" {
         return Ok(());
     }
@@ -1725,38 +1827,47 @@ pub(crate) async fn run_one(
         )
         .await
         .map_err(|error| error.to_string())?;
-    let result = match run.kind.as_str() {
-        "extract" => run_extract(store, &run).await,
-        "transform" => {
-            store
-                .set_chip_run_running(run_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            run_transform(store, execution_tx, &run).await
+    let work = async {
+        match run.kind.as_str() {
+            "extract" => run_extract(store, &run).await,
+            "transform" => {
+                store
+                    .set_chip_run_running(run_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                run_transform(store, dispatch, &run).await
+            }
+            "load" => {
+                store
+                    .set_chip_run_running(run_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                run_load(store, &run).await
+            }
+            "validation" => {
+                store
+                    .set_chip_run_running(run_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                run_validation(store, &run).await
+            }
+            "sql" => {
+                store
+                    .set_chip_run_running(run_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                run_sql_chip(store, &run).await
+            }
+            kind => Err(format!("unsupported chip kind {kind}")),
         }
-        "load" => {
-            store
-                .set_chip_run_running(run_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            run_load(store, &run).await
-        }
-        "validation" => {
-            store
-                .set_chip_run_running(run_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            run_validation(store, &run).await
-        }
-        "sql" => {
-            store
-                .set_chip_run_running(run_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            run_sql_chip(store, &run).await
-        }
-        kind => Err(format!("unsupported chip kind {kind}")),
     };
+    let result = tokio::select! {
+        _ = store.wait_until_step_canceled(run_id) => Err("canceled".into()),
+        result = work => result,
+    };
+    if store.step_is_canceled(run_id).await.unwrap_or(false) {
+        return Err("canceled".into());
+    }
     match &result {
         Ok(()) => {
             store
@@ -2502,7 +2613,7 @@ async fn run_extract(store: &Store, run: &ChipRunRow) -> Result<(), String> {
 
 async fn run_transform(
     store: &Store,
-    execution_tx: &mpsc::Sender<ExecutionTask>,
+    dispatch: &Notify,
     run: &ChipRunRow,
 ) -> Result<(), String> {
     let config: TransformConfig = serde_json::from_str(&run.config_snapshot_json)
@@ -2559,14 +2670,7 @@ async fn run_transform(
         .attach_chip_run_job(&run.id, &job.id)
         .await
         .map_err(|error| error.to_string())?;
-    if execution_tx
-        .try_send(ExecutionTask::Job(job.id.clone()))
-        .is_err()
-    {
-        let error = "job queue full";
-        let _ = store.fail_chip_run_for_job(&job.id, error).await;
-        return Err(error.into());
-    }
+    dispatch.notify_one();
     Ok(())
 }
 

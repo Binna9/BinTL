@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useId, useMemo, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Search, Trash2, Check } from "lucide-react";
 import { columnWidthsForContent, DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
@@ -89,33 +89,39 @@ function ColumnPickerList({
   return (
     <div
       className={cn(
-        "flex w-full flex-col overflow-hidden rounded-lg border border-border bg-surface",
-        fill ? "h-full min-h-0 flex-1" : null,
-        className ?? "max-w-[18rem]",
+        "flex w-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-surface",
+        fill ? "h-full flex-1" : null,
+        className ?? "w-full",
       )}
     >
       {showSearch || multiple ? (
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-2.5 py-1.5">
+        <div className="flex shrink-0 items-center gap-2 border-b border-border bg-raised px-2 py-2">
           {showSearch ? (
-            <input
-              className="field-control h-7 min-w-0 flex-1 text-[12px]"
-              value={query}
-              placeholder={messages.transform.searchColumns}
-              onChange={(event) => setQuery(event.target.value)}
-            />
+            <div className="group flex h-8 min-w-0 flex-1 items-center overflow-hidden rounded-lg border border-border bg-surface focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+              <span className="grid h-full w-8 shrink-0 place-items-center text-text-tertiary group-focus-within:text-accent">
+                <Search className="size-3.5" aria-hidden="true" />
+              </span>
+              <input
+                type="search"
+                className="min-w-0 flex-1 bg-transparent pr-2.5 text-[13px] text-text outline-none placeholder:text-text-tertiary"
+                value={query}
+                placeholder={messages.transform.searchColumns}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </div>
           ) : null}
           {multiple ? (
-            <span className="shrink-0 text-[11px] tabular-nums text-text-tertiary">
+            <span className="shrink-0 rounded-full bg-accent-subtle px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">
               {messages.transform.selectedColumns(selectedCount, columns.length)}
             </span>
           ) : null}
         </div>
       ) : null}
       {multiple ? (
-        <div className="flex items-center gap-3 border-b border-border px-2.5 py-1">
+        <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
           <button
             type="button"
-            className="text-[11px] font-medium text-accent disabled:text-text-tertiary"
+            className="rounded-md px-2 py-1 text-[12px] font-semibold text-accent hover:bg-accent-subtle disabled:text-text-tertiary disabled:hover:bg-transparent"
             disabled={visibleSelected === visible.length || visible.length === 0}
             onClick={selectVisible}
           >
@@ -123,7 +129,7 @@ function ColumnPickerList({
           </button>
           <button
             type="button"
-            className="text-[11px] font-medium text-text-secondary disabled:text-text-tertiary"
+            className="rounded-md px-2 py-1 text-[12px] font-semibold text-text-secondary hover:bg-subtle disabled:text-text-tertiary disabled:hover:bg-transparent"
             disabled={visibleSelected === 0 || selectedCount <= minSelected}
             onClick={deselectVisible}
           >
@@ -134,39 +140,53 @@ function ColumnPickerList({
       <ul
         className={cn(
           "scroll-pane m-0 min-h-0 list-none overflow-y-auto p-0",
-          fill ? "flex-1" : "max-h-52",
+          fill ? "flex-1" : "max-h-72",
         )}
       >
         {visible.length === 0 ? (
-          <li className="px-3 py-2 text-xs text-text-tertiary">{messages.transform.noMatchingColumns}</li>
+          <li className="px-3 py-3 text-[13px] text-text-secondary">{messages.transform.noMatchingColumns}</li>
         ) : (
           visible.map((column) => {
             const active = selected.has(column.name);
             const extra = badge?.(column);
             return (
-              <li key={column.name} className="border-b border-border last:border-b-0">
+              <li key={column.name} className="border-b border-border/80 last:border-b-0">
                 <label
                   className={cn(
-                    "flex cursor-pointer items-center gap-2 px-2.5 py-1.5 select-none",
+                    "flex cursor-pointer items-center gap-2.5 px-3 py-2 select-none",
                     selectableClass(active),
                   )}
                   title={column.dtype ? `${column.name} (${column.dtype})` : column.name}
                 >
                   <input
-                    className="field-control mt-0.5 shrink-0"
+                    className="sr-only"
                     type={multiple ? "checkbox" : "radio"}
                     name={multiple ? undefined : groupId}
                     checked={active}
                     onChange={() => onToggle(column.name)}
                   />
+                  <span
+                    className={cn(
+                      "grid size-4 shrink-0 place-items-center rounded border",
+                      !multiple && "rounded-full",
+                      active
+                        ? "border-accent bg-accent text-white"
+                        : "border-border-strong bg-surface text-transparent",
+                    )}
+                    aria-hidden="true"
+                  >
+                    <Check className="size-3" />
+                  </span>
                   <span className="min-w-0 flex-1 overflow-hidden">
-                    <span className="block truncate text-xs font-medium text-text">{column.name}</span>
+                    <span className="block truncate text-[13px] font-semibold text-text">{column.name}</span>
                     {extra ? (
-                      <span className="block truncate text-[11px] text-accent">{extra}</span>
+                      <span className="mt-0.5 block truncate text-[12px] font-medium text-accent">{extra}</span>
                     ) : null}
                   </span>
                   {column.dtype ? (
-                    <span className="shrink-0 font-mono text-[10px] text-text-tertiary">{column.dtype}</span>
+                    <span className="shrink-0 rounded-md bg-subtle px-1.5 py-0.5 font-mono text-[10px] font-medium text-text-secondary">
+                      {column.dtype}
+                    </span>
                   ) : null}
                 </label>
               </li>
@@ -184,6 +204,7 @@ export function ColumnChipPicker({
   emptyLabel,
   onChange,
   minSelected = 1,
+  fill = false,
   className,
 }: {
   columns: DatasetColumn[];
@@ -191,6 +212,7 @@ export function ColumnChipPicker({
   emptyLabel: string;
   onChange: (columns: string[]) => void;
   minSelected?: number;
+  fill?: boolean;
   className?: string;
 }) {
   const kept = new Set(value);
@@ -211,6 +233,7 @@ export function ColumnChipPicker({
       selected={kept}
       multiple
       minSelected={minSelected}
+      fill={fill}
       className={className}
       onToggle={toggle}
       onSetSelected={onChange}
@@ -720,7 +743,7 @@ export function FilterStepFields({
       : null;
 
   return (
-    <div className="grid items-start gap-3 md:grid-cols-3">
+    <div className="grid items-start gap-3 min-[42rem]:grid-cols-3">
       <StepPane label={messages.common.columns}>
         <ColumnChipSinglePicker
           fill
@@ -750,7 +773,7 @@ export function FilterStepFields({
                   commit(column, item, value);
                 }}
                 className={cn(
-                  "flex min-w-0 items-center justify-center rounded-md border px-2 text-center text-xs font-semibold leading-tight transition-colors",
+                  "flex min-w-0 items-center justify-center rounded-md border px-2 text-center text-[12px] font-semibold leading-tight whitespace-nowrap transition-colors",
                   active
                     ? "border-accent bg-accent-subtle text-accent"
                     : "border-border bg-surface text-text-secondary hover:bg-subtle",
@@ -861,7 +884,7 @@ export function DeriveStepFields({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid items-start gap-3 md:grid-cols-3">
+      <div className="grid items-start gap-3 min-[42rem]:grid-cols-3">
         <StepPane label={messages.transform.deriveLeftLabel}>
           <ColumnChipSinglePicker
             fill

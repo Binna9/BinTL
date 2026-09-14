@@ -17,15 +17,17 @@ import { cn } from "@/lib/cn";
 import { fmtWhen } from "@/lib/format";
 import { toastError } from "@/lib/notifications";
 import { usePagination } from "@/lib/pagination";
+import { chipKindLabel } from "@/features/workspace/workspaceCanvasModel";
 import { chipApi } from "@/services/chips/chipApi";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
-import type { ChipRun, WorkspaceExecution } from "@/types/chip";
+import type { ChipKind, ChipRun, WorkspaceExecution } from "@/types/chip";
 
 type RunRow = ChipRun & { workspaceName: string; chipName: string };
 type WorkspaceRunRow = WorkspaceExecution & { workspaceName: string };
 type TimeFilter = "all" | "today" | "7d" | "30d";
 
 const RUN_STATUSES = ["queued", "running", "succeeded", "failed", "skipped", "canceled"] as const;
+const CHIP_KINDS = ["extract", "transform", "load", "validation", "sql"] as const;
 
 function historyTab(value: string | null): "chip" | "workspace" {
   return value === "workspace" ? "workspace" : "chip";
@@ -33,6 +35,10 @@ function historyTab(value: string | null): "chip" | "workspace" {
 
 function historyStatus(value: string | null) {
   return RUN_STATUSES.includes(value as (typeof RUN_STATUSES)[number]) ? value! : "all";
+}
+
+function historyKind(value: string | null): "all" | ChipKind {
+  return CHIP_KINDS.includes(value as ChipKind) ? (value as ChipKind) : "all";
 }
 
 function runAt(run: { started_at?: string | null; created_at: string }) {
@@ -56,6 +62,7 @@ export function WorkspaceRunsPage() {
   const [searchParams] = useSearchParams();
   const tabParam = historyTab(searchParams.get("tab"));
   const statusParam = historyStatus(searchParams.get("status"));
+  const kindParam = historyKind(searchParams.get("kind"));
   const [activeTab, setActiveTab] = useState<"chip" | "workspace">(tabParam);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [workspaceRuns, setWorkspaceRuns] = useState<WorkspaceRunRow[]>([]);
@@ -65,6 +72,7 @@ export function WorkspaceRunsPage() {
   const [logText, setLogText] = useState("");
   const [chipQuery, setChipQuery] = useState("");
   const [chipStatus, setChipStatus] = useState(tabParam === "chip" ? statusParam : "all");
+  const [chipKind, setChipKind] = useState<"all" | ChipKind>(tabParam === "chip" ? kindParam : "all");
   const [workspaceQuery, setWorkspaceQuery] = useState("");
   const [workspaceStatus, setWorkspaceStatus] = useState(tabParam === "workspace" ? statusParam : "all");
   const [workspaceTime, setWorkspaceTime] = useState<TimeFilter>("all");
@@ -99,8 +107,11 @@ export function WorkspaceRunsPage() {
     setLogRun(null);
     setSelectedId(null);
     if (tabParam === "workspace") setWorkspaceStatus(statusParam);
-    else setChipStatus(statusParam);
-  }, [statusParam, tabParam]);
+    else {
+      setChipStatus(statusParam);
+      setChipKind(kindParam);
+    }
+  }, [kindParam, statusParam, tabParam]);
 
   useEffect(() => {
     let stopped = false;
@@ -135,9 +146,10 @@ export function WorkspaceRunsPage() {
     const query = chipQuery.trim().toLocaleLowerCase();
     return runs.filter((run) =>
       (!query || run.chipName.toLocaleLowerCase().includes(query))
-      && (chipStatus === "all" || run.status === chipStatus),
+      && (chipStatus === "all" || run.status === chipStatus)
+      && (chipKind === "all" || run.kind === chipKind),
     );
-  }, [chipQuery, chipStatus, runs]);
+  }, [chipKind, chipQuery, chipStatus, runs]);
   const visibleWorkspaceRuns = useMemo(() => {
     const query = workspaceQuery.trim().toLocaleLowerCase();
     return workspaceRuns.filter((run) =>
@@ -205,6 +217,8 @@ export function WorkspaceRunsPage() {
           queryPlaceholder={messages.chipRuns.searchChipPlaceholder}
           status={chipStatus}
           onStatus={setChipStatus}
+          kind={chipKind}
+          onKind={setChipKind}
         />
         <ChipRunGrid
           rows={chipRuns}
@@ -212,7 +226,7 @@ export function WorkspaceRunsPage() {
           status={status}
           onViewLog={setLogRun}
           filterEmpty={chipRuns.length === 0 && runs.length > 0}
-          resetKey={`${chipQuery}|${chipStatus}`}
+          resetKey={`${chipQuery}|${chipStatus}|${chipKind}`}
         />
         </>}
       </Panel>
@@ -412,6 +426,8 @@ function RunFilterBar({
   queryPlaceholder,
   status,
   onStatus,
+  kind,
+  onKind,
   time,
   onTime,
 }: {
@@ -421,6 +437,8 @@ function RunFilterBar({
   queryPlaceholder: string;
   status: string;
   onStatus: (value: string) => void;
+  kind?: "all" | ChipKind;
+  onKind?: (value: "all" | ChipKind) => void;
   time?: TimeFilter;
   onTime?: (value: TimeFilter) => void;
 }) {
@@ -453,6 +471,20 @@ function RunFilterBar({
           ]}
         />
       </div>
+      {kind && onKind ? (
+        <div className="flex items-center text-xs text-text-secondary">
+          <span className="sr-only">{messages.chips.kindFilter}</span>
+          <Select
+            className="h-8 min-w-[7.5rem]"
+            value={kind}
+            onChange={(value) => onKind(historyKind(value))}
+            options={[
+              { value: "all", label: messages.chips.allKinds },
+              ...CHIP_KINDS.map((value) => ({ value, label: chipKindLabel(value, messages) })),
+            ]}
+          />
+        </div>
+      ) : null}
       {time && onTime ? (
         <div className="flex items-center text-xs text-text-secondary">
           <span className="sr-only">{messages.chipRuns.timeFilter}</span>
@@ -490,4 +522,6 @@ if (import.meta.env.DEV) {
   console.assert(!matchesTimeFilter(new Date(start.getTime() - 3_600_000).toISOString(), "today", noon), "time filter: today excludes yesterday");
   console.assert(matchesTimeFilter("2026-09-07T12:00:00.000Z", "7d", noon), "time filter: 7d includes day 6");
   console.assert(!matchesTimeFilter("2026-08-01T12:00:00.000Z", "30d", noon), "time filter: 30d excludes old");
+  console.assert(historyKind("load") === "load", "history kind: load");
+  console.assert(historyKind("nope") === "all", "history kind: unknown is all");
 }

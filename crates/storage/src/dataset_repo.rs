@@ -234,7 +234,8 @@ impl Store {
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "UPDATE execution_steps SET status = 'failed', finished_at = ?, error_code = ?, error_message = ? WHERE id = ?",
+            "UPDATE execution_steps SET status = 'failed', finished_at = ?, error_code = ?, error_message = ?
+             WHERE id = ? AND status IN ('queued', 'running')",
         )
         .bind(&now)
         .bind(error_code)

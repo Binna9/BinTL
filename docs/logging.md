@@ -394,8 +394,8 @@ DB batch 적재 실패에서 드라이버가 단일 행을 제공하지 않으�
 
 ## 워크스페이스 실행과 칩 단독 실행 구분
 
-전체 실행은 `executions.source='workspace'`인 한 실행 아래 칩 단계를 연결한다. 개별 실행은 `source='chip'`이다. 로그는 두 경우 모두 `execution_logs.execution_step_id`로 저장하며, 전체 실행 상세에서는 선택한 `execution_id`에 속한 칩만 표시한다. 전체 실행은 모든 대상 처리가 종료된 뒤 성공/실패를 확정한다. 실행 중 페이지를 떠나도 서버 작업은 계속되며 서버 재시작으로 중단된 전체 실행은 실패로 복구한다.
+전체 실행은 `executions.source='workspace'`인 한 실행 아래 칩 단계를 연결한다. 개별 실행은 `source='chip'`이다. 로그는 두 경우 모두 `execution_logs.execution_step_id`로 저장하며, 전체 실행 상세에서는 선택한 `execution_id`에 속한 칩만 표시한다. 전체 실행은 모든 대상 처리가 종료된 뒤 성공/실패를 확정한다. 실행 중 페이지를 떠나도 서버 작업은 계속된다. 서버 재시작으로 중단된 전체 실행과 돌고 있던 단계는 실패로 복구하고, 아직 대기 중이던 단독 queued는 재개한다.
 
-전체 실행은 첫 칩을 큐에 보내기 전에 모든 대상의 설정 스냅샷을 저장한다. 첫 단계의 `workspace_plan` 로그 context에는 고정된 연결과 칩 식별 정보가 들어간다. 사전 검증 오류는 `WORKSPACE_PREFLIGHT_FAILED`로 기록하며 실제 작업은 시작하지 않는다.
+전체 실행은 첫 칩을 큐에 보내기 전에 모든 대상의 설정 스냅샷을 저장한다. 첫 단계의 `workspace_plan` 로그 context에는 고정된 연결과 칩 식별 정보가 들어간다. 사전 검증 오류는 `WORKSPACE_PREFLIGHT_FAILED`로 기록하며, 검증을 통과한 칩은 이어서 실행한다.
 
 건너뜀은 기존 DB 상태 제약을 유지하기 위해 `status='canceled'`, `error_code='WORKSPACE_STEP_SKIPPED'`로 저장한다. 칩 실행 API와 화면에서는 이를 `skipped` / 건너뜀으로 표시한다. `started_at`은 비어 있고 `finished_at`, 사유, `skipped` 로그를 남긴다. 일반 취소는 계속 `canceled`로 표시한다. 검증의 두 데이터 입력은 대상 `in`(ordinal 0), 원본 `source`(ordinal 1)로 기록한다.

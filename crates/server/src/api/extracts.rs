@@ -168,7 +168,7 @@ pub(super) async fn create_api_extract(
             output_filename,
         )
         .await?;
-    crate::extract::spawn(state.store.clone(), row.id.clone());
+    state.wake();
     Ok((
         StatusCode::CREATED,
         Json(serde_json::to_value(row).unwrap()),
@@ -241,7 +241,7 @@ pub(super) async fn create_database_extract(
             output_filename,
         )
         .await?;
-    crate::extract::spawn(state.store.clone(), row.id.clone());
+    state.wake();
     Ok((
         StatusCode::CREATED,
         Json(serde_json::to_value(row).unwrap()),

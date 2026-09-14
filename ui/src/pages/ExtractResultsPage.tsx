@@ -77,12 +77,6 @@ export function ExtractResultsPage() {
     [preview],
   );
 
-  function toggleOne(id: string) {
-    setSelected((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
-  }
-
   function toggleAll() {
     setSelected((current) => {
       const pageIds = new Set(pageExtracts.map((extract) => extract.id));
@@ -191,6 +185,8 @@ export function ExtractResultsPage() {
         <DataGrid
           headers={[...messages.extracts.headers]}
           columnWidths={[56, 180, 72, 130, 220, 96, 100, 130, 110]}
+          selectedIds={selected}
+          onSelectedIdsChange={setSelected}
           empty={extracts.length === 0 ? <EmptyState icon={<NavIcon name="extracts" />} title={messages.empty.extracts} hint={messages.empty.extractsHint} /> : undefined}
         >
           {extracts.length === 0 ? null : (
@@ -201,18 +197,19 @@ export function ExtractResultsPage() {
               return (
                 <GridRow
                   key={extract.id}
+                  rowId={extract.id}
                   selected={selectedSet.has(extract.id)}
                   onClick={() => void openPreview(extract)}
                 >
-                  <GridCell>
+                  <GridCell select>
                     <input
-                      className="field-control"
+                      className="field-control pointer-events-none"
                       type="checkbox"
                       checked={selectedSet.has(extract.id)}
                       disabled={busy}
-                      aria-label={name}
-                      onChange={() => toggleOne(extract.id)}
-                      onClick={(event) => event.stopPropagation()}
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      onChange={() => {}}
                     />
                   </GridCell>
                   <GridCell>{name}</GridCell>

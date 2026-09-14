@@ -83,12 +83,6 @@ export function ChipsPage() {
 
   const activeCount = useMemo(() => chips.filter((chip) => chip.active).length, [chips]);
 
-  function toggleOne(id: string) {
-    setSelected((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
-  }
-
   function toggleAll() {
     setSelected((current) => {
       const pageIds = new Set(pageChips.map((chip) => chip.id));
@@ -229,6 +223,8 @@ export function ChipsPage() {
         <DataGrid
           headers={[...messages.chips.headers]}
           columnWidths={[56, 200, 88, 72, 88, 140]}
+          selectedIds={selected}
+          onSelectedIdsChange={setSelected}
           empty={
             loading ? <EmptyState title={messages.common.loading} />
             : chips.length === 0 ? <EmptyState icon={<NavIcon name="chips" />} title={messages.chips.empty} hint={messages.chips.emptyHint} />
@@ -237,15 +233,16 @@ export function ChipsPage() {
           }
         >
           {loading || chips.length === 0 || visibleChips.length === 0 ? null : pageChips.map((chip) => (
-              <GridRow key={chip.id} selected={selectedSet.has(chip.id)}>
-                <GridCell>
+              <GridRow key={chip.id} rowId={chip.id} selected={selectedSet.has(chip.id)}>
+                <GridCell select>
                   <input
-                    className="field-control"
+                    className="field-control pointer-events-none"
                     type="checkbox"
                     checked={selectedSet.has(chip.id)}
                     disabled={busy}
-                    aria-label={chip.name}
-                    onChange={() => toggleOne(chip.id)}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onChange={() => {}}
                   />
                 </GridCell>
                 <GridCell>

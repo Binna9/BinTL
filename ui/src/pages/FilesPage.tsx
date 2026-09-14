@@ -189,12 +189,6 @@ export function FilesPage() {
     setSelected([]);
   }
 
-  function toggleStoredOne(id: string) {
-    setStoredSelected((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
-  }
-
   function toggleStoredAll() {
     setStoredSelected((current) => {
       const pageIds = new Set(pageFiles.map((file) => file.id));
@@ -405,23 +399,26 @@ export function FilesPage() {
         <DataGrid
           headers={[...messages.files.headers]}
           columnWidths={[80, 220, 120, 140, 280]}
+          selectedIds={storedSelected}
+          onSelectedIdsChange={setStoredSelected}
           empty={files.length === 0 ? <EmptyState icon={<NavIcon name="files" />} title={messages.empty.uploads} hint={messages.empty.uploadsHint} /> : undefined}
         >
           {files.length === 0 ? null : pageFiles.map((file) => (
               <GridRow
                 key={`${file.id}-${file.filename}`}
+                rowId={file.id}
                 selected={storedSelectedSet.has(file.id)}
                 onClick={() => void openPreview(file)}
               >
-                <GridCell>
+                <GridCell select>
                   <input
-                    className="field-control"
+                    className="field-control pointer-events-none"
                     type="checkbox"
                     checked={storedSelectedSet.has(file.id)}
                     disabled={busy}
-                    aria-label={file.filename}
-                    onChange={() => toggleStoredOne(file.id)}
-                    onClick={(event) => event.stopPropagation()}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onChange={() => {}}
                   />
                 </GridCell>
                 <GridCell>{file.filename}</GridCell>
