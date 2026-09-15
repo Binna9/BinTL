@@ -49,8 +49,8 @@ impl Store {
         active: bool,
     ) -> Result<ValidationRuleRow, StorageError> {
         let name = required_text(name, "validation rule name")?;
-        require_config_json(keys_json)?;
-        require_config_json(columns_json)?;
+        require_json_string_array(keys_json, "keys")?;
+        require_json_string_array(columns_json, "columns")?;
         let now = now_rfc3339();
         let id = id
             .map(str::to_string)
@@ -144,5 +144,33 @@ impl Store {
             query = query.bind(owner_user_id);
         }
         Ok(query.fetch_all(&self.pool).await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn save_rule_accepts_key_and_column_arrays() {
+        let root = std::env::temp_dir().join(format!("bintl-validation-rule-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-secret").await.unwrap();
+        let user = store.ensure_bootstrap().await.unwrap();
+        let row = store
+            .save_validation_rule(
+                None,
+                &user.id,
+                "pair by id",
+                "",
+                r#"["id"]"#,
+                r#"[]"#,
+                true,
+                true,
+                true,
+            )
+            .await
+            .expect("keys/columns are JSON arrays, not chip config objects");
+        assert_eq!(row.keys_json, r#"["id"]"#);
+        assert_eq!(row.columns_json, "[]");
     }
 }

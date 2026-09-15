@@ -63,8 +63,8 @@ export const chipApi = {
   getRun: (id: string) => httpRequest<ChipRun>(`/api/chip-runs/${id}`),
   getRunLogs: (id: string, init?: HttpRequestInit) =>
     httpRequest<ChipRunLogsResponse>(`/api/chip-runs/${id}/logs`, init),
-  getInputSlot: (workspaceId: string, chipId: string) =>
+  getInputSlot: (workspaceId: string, chipId: string, port?: "source" | "target") =>
     httpRequest<ChipInputSlotResponse>(
-      `/api/workspaces/${workspaceId}/chips/${chipId}/input-slot`,
+      `/api/workspaces/${workspaceId}/chips/${chipId}/input-slot${port ? `?port=${port}` : ""}`,
     ),
 };

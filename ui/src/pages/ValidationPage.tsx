@@ -5,6 +5,7 @@ import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Button } from "@/components/ui/button";
+import { ColumnChips } from "@/components/ColumnChips";
 import { FormField } from "@/components/ui/form-field";
 import { Select } from "@/components/ui/select";
 import { AppDialog } from "@/components/AppDialog";
@@ -17,7 +18,33 @@ import { cn } from "@/lib/cn";
 import { selectableClass } from "@/lib/selectable";
 import { KIND_APPEARANCE, KIND_ORDER, datasetFromSlot } from "@/features/transform/transformEditorModel";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import type { ChipInputSlotResponse } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function toggleList(list: string[], value: string): string[] {
+  return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+}
+
+function storedFileId(id: string): string {
+  return !id || id.startsWith("contract:") ? "" : id;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : [];
+}
+
+function slotColumns(slot: ChipInputSlotResponse | null): string[] {
+  if (!slot) return [];
+  const dataset = slot.dataset as Dataset | undefined;
+  return unique([
+    ...(slot.columns?.map((column) => column.name) ?? []),
+    ...(dataset?.columns?.map((column) => column.name) ?? []),
+  ]);
+}
 
 export function ValidationPage() {
   const navigate = useNavigate();
@@ -31,10 +58,14 @@ export function ValidationPage() {
   const [ruleId, setRuleId] = useState("");
   const [sourceId, setSourceId] = useState("");
   const [targetId, setTargetId] = useState("");
-  const [keys, setKeys] = useState("");
-  const [columns, setColumns] = useState("");
+  const [keys, setKeys] = useState<string[]>([]);
+  const [columns, setColumns] = useState<string[]>([]);
+  const [fileColumns, setFileColumns] = useState<string[]>([]);
+  const [sourceSlot, setSourceSlot] = useState<ChipInputSlotResponse | null>(null);
+  const [targetSlot, setTargetSlot] = useState<ChipInputSlotResponse | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [busy, setBusy] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -52,57 +83,87 @@ export function ValidationPage() {
           const savedRule = ruleResult.rules.find((rule) => rule.id === savedRuleId);
           setRuleId(savedRuleId);
           setSourceId(typeof config.source_data_file_id === "string" ? config.source_data_file_id : "");
-          setKeys(savedRule ? savedRule.keys.join(", ") : Array.isArray(config.keys) ? config.keys.filter((v): v is string => typeof v === "string").join(", ") : "");
-          setColumns(savedRule ? savedRule.columns.join(", ") : Array.isArray(config.columns) ? config.columns.filter((v): v is string => typeof v === "string").join(", ") : "");
+          setKeys(savedRule ? savedRule.keys : stringList(config.keys));
+          setColumns(savedRule ? savedRule.columns : stringList(config.columns));
           return;
         }
-        const [chip, slot, workspace, workspaceChips] = await Promise.all([
+        const emptySlot: ChipInputSlotResponse = { mode: "unwired" };
+        const [chip, target, workspace, workspaceChips, source] = await Promise.all([
           chipApi.get(editorChipId),
-          chipApi.getInputSlot(workspaceId, editorChipId),
+          chipApi.getInputSlot(workspaceId, editorChipId).catch(() => emptySlot),
           workspaceApi.get(workspaceId),
           chipApi.list(workspaceId),
+          chipApi.getInputSlot(workspaceId, editorChipId, "source").catch(() => emptySlot),
         ]);
         if (cancelled) return;
         const config = chip.config;
         const savedRuleId = typeof config.validation_rule_id === "string" ? config.validation_rule_id : "";
         const savedRule = ruleResult.rules.find((rule) => rule.id === savedRuleId);
         setRuleId(savedRuleId);
+        setKeys(savedRule ? savedRule.keys : stringList(config.keys));
+        setColumns(savedRule ? savedRule.columns : stringList(config.columns));
+        setSourceSlot(source);
+        setTargetSlot(target);
         const incoming = (workspace.edges ?? []).filter((edge) => edge.kind === "data" && edge.to_chip_id === editorChipId);
         const sourceEdge = incoming.find((edge) => edge.to_port === "source") ?? incoming[0];
         const targetEdge = incoming.find((edge) => edge.to_port === "target") ?? incoming[1];
         const connectedDatasetId = (edge: typeof sourceEdge) => edge
           ? workspaceChips.chips.find((item) => item.id === edge.from_chip_id)?.output?.dataset_id ?? ""
           : "";
-        setSourceId(connectedDatasetId(sourceEdge) || (typeof config.source_data_file_id === "string" ? config.source_data_file_id : ""));
-        setKeys(savedRule ? savedRule.keys.join(", ") : Array.isArray(config.keys) ? config.keys.filter((v): v is string => typeof v === "string").join(", ") : "");
-        setColumns(savedRule ? savedRule.columns.join(", ") : Array.isArray(config.columns) ? config.columns.filter((v): v is string => typeof v === "string").join(", ") : "");
-        const slotDataset = datasetFromSlot(slot);
-        if (slotDataset) {
-          setDatasets((current) => current.some((item) => item.id === slotDataset.id) ? current : [...current, slotDataset]);
-          setTargetId(connectedDatasetId(targetEdge) || slotDataset.id);
-        } else {
-          setTargetId("");
-        }
+        const sourceDataset = datasetFromSlot(source);
+        const targetDataset = datasetFromSlot(target);
+        setDatasets((current) => {
+          const next = [...current];
+          for (const dataset of [sourceDataset, targetDataset]) {
+            if (dataset && !next.some((item) => item.id === dataset.id)) next.push(dataset);
+          }
+          return next;
+        });
+        setSourceId(sourceDataset?.id || connectedDatasetId(sourceEdge) || (typeof config.source_data_file_id === "string" ? config.source_data_file_id : ""));
+        setTargetId(targetDataset?.id || connectedDatasetId(targetEdge) || "");
       } catch (error) {
         toastError(t.loadError, error);
       }
     })();
     return () => { cancelled = true; };
   }, [editorChipId, t.loadError, workspaceId]);
+
+  useEffect(() => {
+    const ids = unique([storedFileId(sourceId), storedFileId(targetId)]);
+    if (!ids.length) {
+      setFileColumns([]);
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(ids.map((id) => datasetApi.inspect(id, 1, true).catch(() => null))).then((results) => {
+      if (cancelled) return;
+      setFileColumns(unique(results.flatMap((item) => item?.dataset.columns.map((column) => column.name) ?? [])));
+    });
+    return () => { cancelled = true; };
+  }, [sourceId, targetId]);
+
   const kindLabels = useMemo<Record<string, string>>(() => ({
     upload: messages.transform.kindUpload,
     database: messages.transform.kindDatabase,
     api: messages.transform.kindApi,
     transform: messages.transform.kindTransform,
   }), [messages.transform]);
+  const sourceWired = canvasMode && sourceSlot?.mode !== "unwired";
+  const targetWired = canvasMode && targetSlot?.mode !== "unwired";
+  const sourceFileId = storedFileId(sourceId);
+  const targetFileId = storedFileId(targetId);
+  const columnChoices = unique([...slotColumns(sourceSlot), ...slotColumns(targetSlot), ...fileColumns, ...keys, ...columns]);
+  const canSave = Boolean((ruleId || keys.length) && !busy);
+  const canRun = Boolean(sourceFileId && targetFileId && sourceFileId !== targetFileId && (ruleId || keys.length) && !busy);
+
   async function run() {
+    if (!canRun) return;
     setBusy(true);
     try {
       const response = await validationApi.run({
-        source_data_file_id: sourceId, target_data_file_id: targetId,
+        source_data_file_id: sourceFileId, target_data_file_id: targetFileId,
         validation_rule_id: ruleId || undefined,
-        keys: keys.split(",").map((v) => v.trim()).filter(Boolean),
-        columns: columns.split(",").map((v) => v.trim()).filter(Boolean),
+        keys, columns,
       });
       setReport(response.report);
     } catch (error) { toastError(t.runError, error); } finally { setBusy(false); }
@@ -114,9 +175,8 @@ export function ValidationPage() {
       await chipApi.update(editorChipId, {
         config: {
           validation_rule_id: ruleId || undefined,
-          source_data_file_id: sourceId,
-          keys: keys.split(",").map((v) => v.trim()).filter(Boolean),
-          columns: columns.split(",").map((v) => v.trim()).filter(Boolean),
+          source_data_file_id: sourceFileId,
+          keys, columns,
           compare_row_count: true,
           compare_schema: true,
         },
@@ -136,20 +196,20 @@ export function ValidationPage() {
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-2 overflow-hidden">
         <aside className="grid h-full min-h-0 min-w-0 grid-cols-2 overflow-hidden border-r border-border">
           <div className="min-h-0 min-w-0 overflow-hidden border-r border-border">
-            <DatasetPicker title={t.source} datasets={datasets} value={sourceId} onChange={setSourceId} kindLabels={kindLabels} />
+            <DatasetPicker title={t.source} datasets={datasets} value={sourceId} onChange={setSourceId} kindLabels={kindLabels} disabled={sourceWired} hint={sourceWired ? t.sourceFromCanvas : undefined} />
           </div>
           <div className="min-h-0 min-w-0 overflow-hidden">
-            <DatasetPicker title={t.target} datasets={datasets} value={targetId} onChange={setTargetId} kindLabels={kindLabels} disabled={canvasMode} hint={canvasMode ? t.targetFromCanvas : undefined} />
+            <DatasetPicker title={t.target} datasets={datasets} value={targetId} onChange={setTargetId} kindLabels={kindLabels} disabled={targetWired} hint={targetWired ? t.targetFromCanvas : undefined} />
           </div>
         </aside>
         <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
           <PanelHeader
             title={t.settings}
-            description={t.hint}
+            description={canvasMode ? t.canvasHint : t.hint}
             actions={
               <Button
                 variant="primary"
-                disabled={busy || !sourceId || !targetId || sourceId === targetId || (!ruleId && !keys.trim())}
+                disabled={!canRun}
                 onClick={() => void run()}
               >
                 <Play className="size-3.5" />
@@ -159,11 +219,32 @@ export function ValidationPage() {
           />
           <PanelBody className="scroll-pane min-h-0 flex-1 overflow-auto bg-raised">
             <div className="mx-auto grid max-w-3xl gap-5 rounded-2xl border border-border bg-surface p-6 shadow-sm">
-          <FormField label={t.rule}><Select value={ruleId} options={rules.map((rule) => ({ value: rule.id, label: `${rule.name} · v${rule.revision}` }))} placeholder={t.customRule} onChange={(id) => { setRuleId(id); const rule = rules.find((item) => item.id === id); if (rule) { setKeys(rule.keys.join(", ")); setColumns(rule.columns.join(", ")); } }} /></FormField>
-          <FormField label={t.keys} hint={ruleId ? t.ruleOverrides : t.keysHint}><input disabled={Boolean(ruleId)} className="field-control technical" value={keys} onChange={(e) => setKeys(e.target.value)} /></FormField>
-          <FormField label={t.columns} hint={ruleId ? t.ruleOverrides : t.columnsHint}><input disabled={Boolean(ruleId)} className="field-control technical" value={columns} onChange={(e) => setColumns(e.target.value)} /></FormField>
+          <FormField label={t.rule}><Select value={ruleId} options={rules.map((rule) => ({ value: rule.id, label: `${rule.name} · v${rule.revision}` }))} placeholder={t.customRule} onChange={(id) => { setRuleId(id); const rule = rules.find((item) => item.id === id); if (rule) { setKeys(rule.keys); setColumns(rule.columns); } }} /></FormField>
+          <FormField label={t.keys} hint={ruleId ? t.ruleOverrides : canvasMode ? t.canvasKeysHint : t.keysHint}>
+            <ColumnChips
+              choices={columnChoices}
+              selected={keys}
+              empty={t.noConnectedColumns}
+              disabled={Boolean(ruleId)}
+              onToggle={(name) => setKeys((current) => {
+                const next = toggleList(current, name);
+                setColumns((cols) => cols.filter((column) => !next.includes(column)));
+                return next;
+              })}
+            />
+          </FormField>
+          <FormField label={t.columns} hint={ruleId ? t.ruleOverrides : t.columnsHint}>
+            <ColumnChips
+              choices={columnChoices}
+              selected={columns}
+              disabledNames={keys}
+              empty={t.noConnectedColumns}
+              disabled={Boolean(ruleId)}
+              onToggle={(name) => setColumns((current) => toggleList(current, name))}
+            />
+          </FormField>
           <div className="flex justify-end gap-2">
-            {editingChip ? <Button disabled={busy || (!ruleId && !keys.trim())} onClick={() => void save()}><Save className="size-3.5" />{messages.common.save}</Button> : null}
+            {editingChip ? <Button disabled={!canSave} onClick={() => void save()}><Save className="size-3.5" />{messages.common.save}</Button> : null}
           </div>
             </div>
           </PanelBody>

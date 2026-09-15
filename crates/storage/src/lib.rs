@@ -354,6 +354,13 @@ fn require_config_json(config_json: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
+fn require_json_string_array(raw: &str, field: &str) -> Result<(), StorageError> {
+    serde_json::from_str::<Vec<String>>(raw).map_err(|error| {
+        StorageError::Invalid(format!("{field} must be a JSON string array: {error}"))
+    })?;
+    Ok(())
+}
+
 pub(crate) fn empty_workspace_snapshot() -> &'static str {
     r#"{"layout":{},"chips":[],"edges":[]}"#
 }

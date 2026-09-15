@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use odbc_api::buffers::TextRowSet;
 use odbc_api::{environment, Connection, ConnectionOptions, Cursor, ResultSetMetadata};
 use storage::LiveConnection;
@@ -7,6 +9,18 @@ use crate::{quote_ident, sql_lit, ConnectError, LoadColumnRule};
 const LOGIN_TIMEOUT_SEC: u32 = 8;
 const BATCH_ROWS: usize = 500;
 const MAX_TEXT: usize = 4096;
+
+#[derive(Debug, Clone, Default)]
+pub struct OdbcSettings {
+    pub oracle_driver: Option<String>,
+    pub tibero_driver: Option<String>,
+}
+
+static ODBC: OnceLock<OdbcSettings> = OnceLock::new();
+
+pub fn configure_odbc(settings: OdbcSettings) {
+    let _ = ODBC.set(settings);
+}
 
 pub(crate) fn map_odbc(error: odbc_api::Error) -> ConnectError {
     ConnectError::Invalid(error.to_string())
@@ -50,12 +64,28 @@ fn brace(value: &str) -> String {
     format!("{{{}}}", value.replace('}', "}}"))
 }
 
+fn is_driver_lib(name: &str) -> bool {
+    let name = name.trim();
+    name.contains('/')
+        || name.contains('\\')
+        || name.ends_with(".so")
+        || name.to_ascii_lowercase().ends_with(".dll")
+}
+
+fn driver_attr(name: &str) -> String {
+    if is_driver_lib(name) {
+        odbc_api::escape_attribute_value(name).into_owned()
+    } else {
+        brace(name)
+    }
+}
+
 pub(crate) fn connection_string(c: &LiveConnection, driver_name: &str) -> String {
     let uid = odbc_api::escape_attribute_value(&c.username);
     let pwd = odbc_api::escape_attribute_value(&c.password);
     let host = odbc_api::escape_attribute_value(&c.host);
     let database = odbc_api::escape_attribute_value(&c.database);
-    let driver = brace(driver_name);
+    let driver = driver_attr(driver_name);
     if vendor(&c.driver) == "tibero" {
         format!(
             "Driver={driver};SERVER={host};PORT={};DB={database};UID={uid};PWD={pwd};",
@@ -69,18 +99,33 @@ pub(crate) fn connection_string(c: &LiveConnection, driver_name: &str) -> String
     }
 }
 
+fn nonempty(value: Option<&str>) -> Option<String> {
+    value.map(str::trim).filter(|value| !value.is_empty()).map(|value| value.to_string())
+}
+
 fn env_driver(vendor: &str) -> Option<String> {
     let key = if vendor == "tibero" {
         "BINTL_TIBERO_ODBC_DRIVER"
     } else {
         "BINTL_ORACLE_ODBC_DRIVER"
     };
-    std::env::var(key).ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+    nonempty(std::env::var(key).ok().as_deref())
+}
+
+fn configured_driver(vendor: &str) -> Option<String> {
+    env_driver(vendor).or_else(|| {
+        let settings = ODBC.get()?;
+        if vendor == "tibero" {
+            settings.tibero_driver.clone()
+        } else {
+            settings.oracle_driver.clone()
+        }
+    })
 }
 
 fn resolve_driver(c: &LiveConnection) -> Result<String, ConnectError> {
     let vendor = vendor(&c.driver);
-    if let Some(name) = pick_driver(vendor, &[], env_driver(vendor).as_deref()) {
+    if let Some(name) = pick_driver(vendor, &[], configured_driver(vendor).as_deref()) {
         return Ok(name);
     }
     let env = environment().map_err(|error| {
@@ -96,7 +141,7 @@ fn resolve_driver(c: &LiveConnection) -> Result<String, ConnectError> {
         .collect();
     pick_driver(vendor, &installed, None).ok_or_else(|| {
         ConnectError::Invalid(format!(
-            "no {vendor} ODBC driver found. Install the vendor ODBC driver, or set BINTL_{}_ODBC_DRIVER to its exact name.",
+            "no {vendor} ODBC driver found. Install the vendor ODBC driver, or set odbc.{vendor}_driver in config.toml (or BINTL_{}_ODBC_DRIVER) to its exact name or .so/.dll path.",
             vendor.to_ascii_uppercase()
         ))
     })
@@ -432,6 +477,10 @@ mod tests {
         assert!(tibero.contains("SERVER=db.local"));
         assert!(tibero.contains("PORT=8629"));
         assert!(tibero.contains("DB=ORCL"));
+
+        let path = connection_string(&live("tibero"), "/opt/tibero6/client/lib/libtbodbc.so");
+        assert!(path.contains("Driver=/opt/tibero6/client/lib/libtbodbc.so"));
+        assert!(!path.contains("Driver={/opt/tibero6/client/lib/libtbodbc.so}"));
     }
 
     #[test]

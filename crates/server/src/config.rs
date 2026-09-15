@@ -3,6 +3,16 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct OdbcFileConfig {
+    #[serde(default)]
+    pub oracle_driver: Option<String>,
+    #[serde(default)]
+    pub tibero_driver: Option<String>,
+    #[serde(default)]
+    pub sys_ini: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileConfig {
     pub bind: String,
@@ -14,6 +24,8 @@ pub struct FileConfig {
     pub encryption_secret: Option<String>,
     #[serde(default)]
     pub skip_auth: bool,
+    #[serde(default)]
+    odbc: OdbcFileConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +77,8 @@ impl Config {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| file.session_secret.clone());
 
+        apply_odbc(&file.odbc);
+
         Ok(Self {
             bind,
             data_dir: file.data_dir,
@@ -79,5 +93,82 @@ impl Config {
 
     pub fn max_upload_bytes(&self) -> usize {
         (self.max_upload_mb as usize).saturating_mul(1024 * 1024)
+    }
+}
+
+fn nonempty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn apply_odbc(odbc: &OdbcFileConfig) {
+    connectors::configure_odbc(connectors::OdbcSettings {
+        oracle_driver: nonempty(odbc.oracle_driver.as_deref()),
+        tibero_driver: nonempty(odbc.tibero_driver.as_deref()),
+    });
+    if let Some(sys_ini) = nonempty(odbc.sys_ini.as_deref()) {
+        set_env_if_unset("ODBCSYSINI", &sys_ini);
+    }
+}
+
+fn set_env_if_unset(key: &str, value: &str) {
+    if std::env::var_os(key).is_some() {
+        return;
+    }
+    // SAFETY: Config::load runs once at startup, before any Oracle/Tibero connect.
+    unsafe { std::env::set_var(key, value) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_odbc_section() {
+        let file: FileConfig = toml::from_str(
+            r#"
+bind = "127.0.0.1:1"
+data_dir = "."
+max_upload_mb = 1
+max_concurrent_jobs = 1
+session_secret = "x"
+[odbc]
+tibero_driver = "/opt/tibero6/client/lib/libtbodbc.so"
+oracle_driver = "Oracle 21c ODBC driver"
+sys_ini = "/opt/tibero6/client/config"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            file.odbc.tibero_driver.as_deref(),
+            Some("/opt/tibero6/client/lib/libtbodbc.so")
+        );
+        assert_eq!(
+            file.odbc.oracle_driver.as_deref(),
+            Some("Oracle 21c ODBC driver")
+        );
+        assert_eq!(
+            file.odbc.sys_ini.as_deref(),
+            Some("/opt/tibero6/client/config")
+        );
+    }
+
+    #[test]
+    fn odbc_section_is_optional() {
+        let file: FileConfig = toml::from_str(
+            r#"
+bind = "127.0.0.1:1"
+data_dir = "."
+max_upload_mb = 1
+max_concurrent_jobs = 1
+session_secret = "x"
+"#,
+        )
+        .unwrap();
+        assert!(file.odbc.tibero_driver.is_none());
+        assert!(file.odbc.oracle_driver.is_none());
+        assert!(file.odbc.sys_ini.is_none());
     }
 }

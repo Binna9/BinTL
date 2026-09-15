@@ -13,7 +13,9 @@ cd "$ROOT"
 bash scripts/build-ui.sh
 
 if command -v cross >/dev/null 2>&1; then
-  cross build --release --target "$TARGET" -p "$PKG"
+  # Host ~/.cargo/config.toml may pin Windows CC (w64devkit). Cargo [env] applies
+  # that inside the container if CC is unset, and the Windows path is not there.
+  CC=gcc AR=ar CXX=g++ cross build --release --target "$TARGET" -p "$PKG"
 else
   rustup target add "$TARGET"
   cargo build --release --target "$TARGET" -p "$PKG"

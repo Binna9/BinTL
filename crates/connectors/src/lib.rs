@@ -16,6 +16,7 @@ mod query;
 mod spreadsheet;
 
 pub use catalog::{catalog_layout, list_databases, list_relations, list_schemas, CatalogItem};
+pub use oracle::{configure_odbc, OdbcSettings};
 pub use extract::{extract_table, parse_delimiter, sniff_delimiter, ExtractOptions};
 pub use http_extract::{
     extract_http, parse_http_spec, ping_http, preview_http, HttpKv, HttpPreview, HttpRequestSpec,

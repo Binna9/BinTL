@@ -10,7 +10,7 @@ BinTL은 **설치형 단일 바이너리**다. 운영 환경에서는 `bintl` �
 - API와 정적 UI를 Axum이 함께 서빙한다.
 - SQLite(`data/etl.db`)와 파일 산출물은 `data_dir` 아래에 저장된다.
 - Rust, Python, JVM, 외부 DB 패키지를 서버에 설치하지 않는다. (SQLite는 bundled, TLS는 rustls)
-- 예외: Oracle/Tibero 커넥션은 호스트에 unixODBC(또는 Windows ODBC)와 벤더 ODBC 드라이버가 있어야 한다. 드라이버 이름은 환경마다 다르면 `BINTL_ORACLE_ODBC_DRIVER` / `BINTL_TIBERO_ODBC_DRIVER`로 지정한다.
+- 예외: Oracle/Tibero 커넥션은 호스트에 unixODBC(또는 Windows ODBC)와 벤더 ODBC 드라이버가 있어야 한다. 드라이버를 자동으로 못 찾으면 `config.toml`의 `[odbc]`에서 등록 이름 또는 `.so`/`.dll` 경로를 지정한다. 환경변수 `BINTL_ORACLE_ODBC_DRIVER` / `BINTL_TIBERO_ODBC_DRIVER`가 있으면 그 값이 우선한다.
 
 ```
 브라우저 ──► (선택) Nginx/Caddy ──► bintl:8080
@@ -121,6 +121,11 @@ max_concurrent_jobs = 2
 session_secret = "랜덤-긴-문자열"   # 반드시 변경
 # encryption_secret = "다른-랜덤-문자열"  # 선택. 없으면 session_secret과 같다
 skip_auth = false
+
+# [odbc]
+# oracle_driver = "서버 odbcinst.ini에 나온 Oracle 드라이버 이름"
+# tibero_driver = "서버 odbcinst.ini에 나온 Tibero 드라이버 이름"
+# sys_ini = "/etc"                                  # odbcinst.ini 디렉터리
 ```
 
 ### 환경 변수 (설정 파일보다 우선)
@@ -133,6 +138,9 @@ skip_auth = false
 | `ETL_ENCRYPTION_SECRET` | 커넥션 암호 키. 없으면 `session_secret` |
 | `ETL_SKIP_AUTH` | `true`면 API 인증 생략 (**운영 금지**) |
 | `ETL_UI_DIR` | embed 대신 이 폴더의 정적 UI 서빙 |
+| `BINTL_ORACLE_ODBC_DRIVER` | Oracle ODBC 등록 이름 또는 `.so`/`.dll` 경로. `odbc.oracle_driver`보다 우선 |
+| `BINTL_TIBERO_ODBC_DRIVER` | Tibero ODBC 등록 이름 또는 `.so`/`.dll` 경로. `odbc.tibero_driver`보다 우선 |
+| `ODBCSYSINI` | unixODBC `odbcinst.ini` 디렉터리. `odbc.sys_ini`보다 우선 |
 
 비밀 값은 systemd `EnvironmentFile`이나 시크릿 매니저로 주입하는 편이 안전하다.
 
@@ -344,6 +352,7 @@ sqlite3 /opt/bintl/data/etl.db ".backup '/backup/etl-$(date +%F).db'"
 | `session_secret is empty` | 설정 또는 `ETL_SESSION_SECRET` 누락 |
 | 업로드 413 | `max_upload_mb`, Nginx `client_max_body_size` |
 | 로그인 안 됨 | `skip_auth`, 쿠키(도메인·HTTPS), `session_secret` 변경 여부 |
+| Oracle/Tibero `no … ODBC driver found` | `[odbc]`의 `oracle_driver` / `tibero_driver`에 등록 이름 또는 `.so` 경로. `odbcinst.ini`가 `/etc`가 아니면 `sys_ini` |
 | 마이그레이션 오류 | `journalctl -u bintl`, `data/etl.db` 권한·손상 여부 |
 
 로그 레벨: `RUST_LOG=info` (기본). 상세 디버그는 `RUST_LOG=debug,bintl=trace`.

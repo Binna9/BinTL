@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -1177,14 +1177,26 @@ async fn get_run_logs(
     Ok(Json(json!({ "id": id, "text": text })))
 }
 
+#[derive(Deserialize)]
+struct InputSlotQuery {
+    port: Option<String>,
+}
+
 async fn get_input_slot(
     State(state): State<AppState>,
     user: CurrentUser,
     Path((workspace_id, chip_id)): Path<(String, String)>,
+    Query(query): Query<InputSlotQuery>,
 ) -> Result<Json<Value>, AppError> {
     Ok(Json(
-        crate::planned_input::get_transform_input_slot(&state, &user, &workspace_id, &chip_id)
-            .await?,
+        crate::planned_input::get_transform_input_slot(
+            &state,
+            &user,
+            &workspace_id,
+            &chip_id,
+            query.port.as_deref(),
+        )
+        .await?,
     ))
 }
 

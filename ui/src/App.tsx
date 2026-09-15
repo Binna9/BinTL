@@ -9,6 +9,7 @@ import { TopSubmenu } from "@/components/TopSubmenu";
 import { SessionProvider } from "@/hooks/auth/useSession";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
+import { isWorkspaceCanvasPath } from "@/lib/navigation";
 
 const ConnectionsPage = lazy(() => import("@/pages/ConnectionsPage").then((module) => ({ default: module.ConnectionsPage })));
 const ExtractResultsPage = lazy(() => import("@/pages/ExtractResultsPage").then((module) => ({ default: module.ExtractResultsPage })));
@@ -34,13 +35,7 @@ const ValidationResultsPage = lazy(() => import("@/pages/ValidationResultsPage")
 function ConsoleShell() {
   const loc = useRenderLocation();
   const onSearchPage = loc.pathname === "/search";
-  const studio =
-    !onSearchPage &&
-    (loc.pathname === "/workspace" ||
-      (loc.pathname.startsWith("/workspace/")
-        && !loc.pathname.startsWith("/workspace/runs")
-        && !loc.pathname.includes("/transform")
-        && !loc.pathname.includes("/load")));
+  const studio = !onSearchPage && isWorkspaceCanvasPath(loc.pathname);
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="sticky top-0 z-40 grid h-[4.75rem] shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border bg-surface px-5 shadow-[0_2px_5px_rgba(15,23,42,0.06)] dark:shadow-[0_2px_6px_rgba(0,0,0,0.28)]">

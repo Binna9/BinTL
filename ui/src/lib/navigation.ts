@@ -24,3 +24,15 @@ export function redirectToLogin(): void {
   if (location.pathname === "/login") return;
   appNavigate("/login", { replace: true });
 }
+
+/** Full-bleed canvas only — not chip editors under `/workspace/:id/chips/:id/{extract|...}`. */
+export function isWorkspaceCanvasPath(pathname: string): boolean {
+  if (pathname === "/workspace") return true;
+  if (pathname.startsWith("/workspace/runs")) return false;
+  return /^\/workspace\/[^/]+(?:\/chips\/[^/]+)?$/.test(pathname);
+}
+
+export function workspaceCanvasId(pathname: string): string | null {
+  if (pathname === "/workspace" || !isWorkspaceCanvasPath(pathname)) return null;
+  return pathname.match(/^\/workspace\/([^/]+)/)?.[1] ?? null;
+}

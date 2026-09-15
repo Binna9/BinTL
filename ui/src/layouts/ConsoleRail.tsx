@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { MenuSidebar, type MenuItem } from "@/components/ui/menu";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { isWorkspaceCanvasPath } from "@/lib/navigation";
 
 const iconClassName = "h-full w-full";
 
@@ -37,11 +38,7 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
           to: "/workspace",
           label: messages.nav.workspaceCanvas,
           icon: <LayoutTemplate className={iconClassName} />,
-          isActive: (pathname) =>
-            pathname === "/workspace" ||
-            (pathname.startsWith("/workspace/")
-              && !pathname.startsWith("/workspace/runs")
-              && !pathname.includes("/transform")),
+          isActive: (pathname) => isWorkspaceCanvasPath(pathname),
         },
         {
           to: "/chips",

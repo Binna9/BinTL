@@ -435,6 +435,7 @@ pub async fn get_transform_input_slot(
     user: &CurrentUser,
     workspace_id: &str,
     transform_chip_id: &str,
+    port: Option<&str>,
 ) -> Result<Value, AppError> {
     crate::access::require_workspace(&state.store, user, workspace_id).await?;
     let chip = crate::access::require_chip(&state.store, user, transform_chip_id).await?;
@@ -446,14 +447,27 @@ pub async fn get_transform_input_slot(
         .filter(|edge| edge.to_chip_id == transform_chip_id && edge.kind == "data")
         .collect::<Vec<_>>();
     let incoming = if chip.kind == "validation" {
+        let want = match port {
+            Some("source") => "source",
+            _ => "target",
+        };
         incoming_edges
             .iter()
-            .find(|edge| edge.to_port == "target")
-            .or_else(|| incoming_edges.last())
+            .find(|edge| edge.to_port == want)
+            .or_else(|| {
+                if want == "target" {
+                    incoming_edges.last()
+                } else {
+                    None
+                }
+            })
     } else {
         incoming_edges.first()
     };
     let Some(edge) = incoming else {
+        if port == Some("source") {
+            return Ok(json!({ "mode": "unwired" }));
+        }
         if let Some(fixed) = slot_from_fixed_dataset(state, user, &chip).await? {
             return Ok(fixed);
         }
@@ -483,6 +497,20 @@ pub async fn get_transform_input_slot(
             "source_chip_kind": source_kind,
             "delimiter": dataset.delimiter.clone().unwrap_or_else(|| ",".into()),
             "dataset": crate::transform::dataset_json_public(&state.store, &dataset),
+        }));
+    }
+    // Validation SOURCE must not overwrite the consumer's target planned contract.
+    if chip.kind == "validation" && edge.to_port == "source" {
+        let schema = planned_schema_for_chip(state, workspace_id, &edge.from_chip_id).await?;
+        return Ok(json!({
+            "mode": "connected",
+            "source_chip_id": edge.from_chip_id,
+            "source_chip_name": source_name,
+            "source_chip_kind": source_kind,
+            "dataset_id": format!("contract:{workspace_id}:{transform_chip_id}:source"),
+            "delimiter": schema.delimiter,
+            "has_header": schema.header,
+            "columns": schema.columns,
         }));
     }
     let planned = ensure_planned_input_for_transform(

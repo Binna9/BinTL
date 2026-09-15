@@ -7,16 +7,10 @@ import {
   type ReactNode,
 } from "react";
 import { useLocation, type Location } from "react-router-dom";
+import { workspaceCanvasId } from "@/lib/navigation";
 import { withViewTransition } from "@/lib/viewTransition";
 
 const RenderLocationContext = createContext<Location | null>(null);
-
-/** Same workspace canvas: `/workspace/:id` ↔ `/workspace/:id/chips/:chipId`. */
-function workspaceCanvasId(pathname: string): string | null {
-  if (pathname.startsWith("/workspace/runs")) return null;
-  const match = pathname.match(/^\/workspace\/([^/]+)(?:\/chips\/[^/]+)?$/);
-  return match?.[1] ?? null;
-}
 
 export function ViewTransitionLocationProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
