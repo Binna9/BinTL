@@ -53,13 +53,13 @@ export function OpsCard({
   hint: string;
   bar?: number;
 }) {
-  const glow = tone === "blue" ? "#6b8094" : tone === "green" ? "#6a8074" : "#8a7373";
+  const glow = tone === "blue" ? "#3b8bff" : tone === "green" ? "#34d399" : "#f87171";
   const ink =
     tone === "blue"
-      ? "text-[#4a5a6a] dark:text-[#b8c2cc]"
+      ? "text-[#1769c2] dark:text-[#6aaaef]"
       : tone === "green"
-        ? "text-[#4a5c52] dark:text-[#b4c4ba]"
-        : "text-[#6a5555] dark:text-[#c8b6b6]";
+        ? "text-[#287a4b] dark:text-[#5fd0a8]"
+        : "text-[#c43835] dark:text-[#ee817d]";
 
   return (
     <Link

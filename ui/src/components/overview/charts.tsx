@@ -137,7 +137,7 @@ export function TrendChart({ days, hidden = [] }: { days: DayPoint[]; hidden?: C
             label: messages.overview.extract,
             values: days.map((day) => day.extract),
             color: palette.accent,
-            fillTop: 0.1,
+            fillTop: 0.28,
             dash: undefined,
             fill: true,
             point: 3.2,
@@ -147,7 +147,7 @@ export function TrendChart({ days, hidden = [] }: { days: DayPoint[]; hidden?: C
             label: messages.overview.transform,
             values: days.map((day) => day.transform),
             color: palette.success,
-            fillTop: 0.08,
+            fillTop: 0.22,
             dash: undefined,
             fill: true,
             point: 3.2,
@@ -268,7 +268,7 @@ export function AssetsChart({
   items,
   totalLabel,
 }: {
-  items: Array<{ label: string; value: number; to: string }>;
+  items: Array<{ label: string; value: number; accent: string; to: string }>;
   totalLabel: string;
 }) {
   const navigate = useNavigate();
@@ -281,8 +281,8 @@ export function AssetsChart({
       datasets: [
         {
           data: items.map((item) => item.value),
-          backgroundColor: items.map(() => alpha(palette.ink, 0.28)),
-          hoverBackgroundColor: items.map(() => alpha(palette.ink, 0.42)),
+          backgroundColor: items.map((item) => alpha(item.accent, 0.88)),
+          hoverBackgroundColor: items.map((item) => item.accent),
           borderRadius: 8,
           borderSkipped: false,
           barThickness: 18,
@@ -290,7 +290,7 @@ export function AssetsChart({
         },
       ],
     }),
-    [items, palette.ink],
+    [items],
   );
 
   const options = useMemo<ChartOptions<"bar">>(
