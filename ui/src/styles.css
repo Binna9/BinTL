@@ -2625,17 +2625,25 @@ a {
 }
 
 .ops-shell {
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: #e8e6e8;
 }
 
 .ops-shell-inner {
-  background: transparent;
-  color: var(--color-text);
+  background: #f7f6f7;
+  color: #1a191a;
 }
 
 .ops-shell-inner::before {
-  display: none;
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    55% 50% at 0% 0%,
+    color-mix(in srgb, var(--ops-glow) 18%, transparent),
+    transparent 62%
+  );
 }
 
 .ops-shell-inner > * {
@@ -2644,21 +2652,26 @@ a {
 }
 
 .ops-shell-glow {
-  display: none;
+  background: var(--ops-glow);
+  opacity: 0.16;
 }
 
 :root.dark .ops-shell {
-  background: var(--color-raised);
+  background: #3d3c3d;
 }
 
 :root.dark .ops-shell-inner {
-  color: var(--color-text);
-  opacity: 1;
+  background: #323132;
+  color: #ffffff;
+  opacity: 0.9;
 }
 
-:root.dark .ops-shell-inner::before,
-:root.dark .ops-shell-glow {
+:root.dark .ops-shell-inner::before {
   display: none;
+}
+
+:root.dark .ops-shell-glow {
+  opacity: 0.28;
 }
 
 .asset-tile {
