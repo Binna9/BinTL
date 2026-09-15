@@ -39,6 +39,7 @@ export function PanelHeader({
   description,
   actions,
   icon,
+  iconMuted = false,
   className,
   onPointerDown,
 }: {
@@ -46,6 +47,7 @@ export function PanelHeader({
   description?: string;
   actions?: ReactNode;
   icon?: ReactNode;
+  iconMuted?: boolean;
   className?: string;
   onPointerDown?: HTMLAttributes<HTMLElement>["onPointerDown"];
 }) {
@@ -59,7 +61,12 @@ export function PanelHeader({
     >
       <div className="flex min-w-0 items-center gap-2.5">
         {icon ? (
-          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-accent-subtle text-accent">
+          <span
+            className={cn(
+              "grid size-7 shrink-0 place-items-center rounded-lg",
+              iconMuted ? "bg-subtle text-text-secondary" : "bg-accent-subtle text-accent",
+            )}
+          >
             {icon}
           </span>
         ) : null}

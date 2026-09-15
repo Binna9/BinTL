@@ -53,13 +53,13 @@ export function OpsCard({
   hint: string;
   bar?: number;
 }) {
-  const glow = tone === "blue" ? "#3b8bff" : tone === "green" ? "#34d399" : "#f87171";
+  const glow = tone === "blue" ? "#6b8094" : tone === "green" ? "#6a8074" : "#8a7373";
   const ink =
     tone === "blue"
-      ? "text-[#1769c2] dark:text-[#6aaaef]"
+      ? "text-[#4a5a6a] dark:text-[#b8c2cc]"
       : tone === "green"
-        ? "text-[#287a4b] dark:text-[#5fd0a8]"
-        : "text-[#c43835] dark:text-[#ee817d]";
+        ? "text-[#4a5c52] dark:text-[#b4c4ba]"
+        : "text-[#6a5555] dark:text-[#c8b6b6]";
 
   return (
     <Link
@@ -100,29 +100,21 @@ export function OpsCard({
 
 export function AssetTile({
   to,
-  accent,
   icon,
   label,
   value,
   hint,
 }: {
   to: string;
-  accent: string;
   icon: ReactNode;
   label: string;
   value: string;
   hint: string;
 }) {
   return (
-    <Link to={to} className="asset-tile" style={{ "--asset-accent": accent } as CSSProperties}>
+    <Link to={to} className="asset-tile">
       <span className="flex items-center justify-between gap-2">
-        <span
-          className="grid size-8 place-items-center rounded-lg"
-          style={{
-            background: "color-mix(in srgb, var(--asset-accent) 16%, transparent)",
-            color: "var(--asset-accent)",
-          }}
-        >
+        <span className="grid size-8 place-items-center rounded-lg bg-subtle text-text-secondary">
           {icon}
         </span>
         <ChevronRight className="size-3.5 text-text-tertiary" />

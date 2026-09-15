@@ -6,10 +6,10 @@ import { useDashboard } from "@/hooks/overview/DashboardContext";
 import type { ChipKind } from "@/types/chip";
 
 const TONE: Record<ChipKind, string> = {
-  extract: "var(--theme-accent)",
-  transform: "var(--theme-success)",
-  load: "var(--theme-warning)",
-  sql: "var(--theme-text)",
+  extract: "var(--theme-text)",
+  transform: "var(--theme-text-secondary)",
+  load: "var(--theme-text-secondary)",
+  sql: "var(--theme-text-tertiary)",
   validation: "var(--theme-text-tertiary)",
 };
 

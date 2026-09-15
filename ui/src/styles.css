@@ -2625,25 +2625,17 @@ a {
 }
 
 .ops-shell {
-  background: #e8e6e8;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
 }
 
 .ops-shell-inner {
-  background: #f7f6f7;
-  color: #1a191a;
+  background: transparent;
+  color: var(--color-text);
 }
 
 .ops-shell-inner::before {
-  content: "";
-  pointer-events: none;
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: radial-gradient(
-    55% 50% at 0% 0%,
-    color-mix(in srgb, var(--ops-glow) 18%, transparent),
-    transparent 62%
-  );
+  display: none;
 }
 
 .ops-shell-inner > * {
@@ -2652,26 +2644,21 @@ a {
 }
 
 .ops-shell-glow {
-  background: var(--ops-glow);
-  opacity: 0.16;
-}
-
-:root.dark .ops-shell {
-  background: #3d3c3d;
-}
-
-:root.dark .ops-shell-inner {
-  background: #323132;
-  color: #ffffff;
-  opacity: 0.9;
-}
-
-:root.dark .ops-shell-inner::before {
   display: none;
 }
 
+:root.dark .ops-shell {
+  background: var(--color-raised);
+}
+
+:root.dark .ops-shell-inner {
+  color: var(--color-text);
+  opacity: 1;
+}
+
+:root.dark .ops-shell-inner::before,
 :root.dark .ops-shell-glow {
-  opacity: 0.28;
+  display: none;
 }
 
 .asset-tile {
@@ -2698,15 +2685,15 @@ a {
   content: "";
   position: absolute;
   inset: 0 auto 0 0;
-  width: 3px;
-  background: var(--asset-accent);
+  width: 2px;
+  background: var(--color-border-strong);
 }
 
 .asset-tile:hover {
   z-index: 1;
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--asset-accent) 45%, var(--color-border));
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--asset-accent) 14%, transparent);
+  transform: translateY(-1px);
+  border-color: var(--color-border-strong);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text) 8%, transparent);
 }
 
 :root.dark .asset-tile {
@@ -2833,21 +2820,16 @@ a {
 }
 
 .dash-scope {
-  --dash-scope-accent: #287a4b;
   position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr;
   isolation: isolate;
   min-width: 12.25rem;
   padding: 3px;
+  border: 1px solid var(--color-border);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text) 6%, var(--color-subtle));
-  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--color-text) 8%, transparent);
-}
-
-.dash-scope[data-scope="workspace"],
-.dash-scope[data-scope="shared"] {
-  --dash-scope-accent: #1769c2;
+  background: var(--color-subtle);
+  box-shadow: none;
 }
 
 .dash-scope-thumb {
@@ -2857,13 +2839,11 @@ a {
   left: 3px;
   z-index: 0;
   width: calc(50% - 3px);
+  border: 1px solid var(--color-border);
   border-radius: 999px;
-  background: var(--dash-scope-accent);
-  box-shadow: none;
-  transition:
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    background 0.28s ease,
-    box-shadow 0.28s ease;
+  background: var(--color-surface);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text) 8%, transparent);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .dash-scope[data-scope="workspace"] .dash-scope-thumb,
@@ -2899,11 +2879,11 @@ a {
 }
 
 .dash-scope-btn[aria-selected="true"] {
-  color: #fff;
+  color: var(--color-text);
 }
 
 .dash-scope-btn:focus-visible {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dash-scope-accent) 45%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-text) 22%, transparent);
   border-radius: 999px;
 }
 
@@ -2911,14 +2891,9 @@ a {
   transition: none;
 }
 
-:root.dark .dash-scope[data-scope="chip"],
-:root.dark .dash-scope[data-scope="mine"] {
-  --dash-scope-accent: #2f8a58;
-}
-
-:root.dark .dash-scope[data-scope="workspace"],
-:root.dark .dash-scope[data-scope="shared"] {
-  --dash-scope-accent: #2b6fb3;
+:root.dark .dash-scope-thumb {
+  background: var(--color-raised);
+  border-color: var(--color-border-strong);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3097,8 +3072,8 @@ a {
 }
 
 .dash-start:hover {
-  border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
-  background: var(--color-accent-subtle);
+  border-color: var(--color-border-strong);
+  background: var(--color-subtle);
 }
 
 .dash-start-icon {
@@ -3109,7 +3084,7 @@ a {
   place-items: center;
   border-radius: 0.7rem;
   background: var(--color-surface);
-  color: var(--color-accent);
+  color: var(--color-text-secondary);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text) 8%, transparent);
 }
 
@@ -3127,31 +3102,11 @@ a {
   pointer-events: none;
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(
-      ellipse 85% 60% at 0% 0%,
-      color-mix(in srgb, var(--color-accent) 11%, transparent),
-      transparent 58%
-    ),
-    radial-gradient(
-      ellipse 70% 55% at 100% 100%,
-      color-mix(in srgb, var(--color-success) 9%, transparent),
-      transparent 54%
-    );
+  background: none;
 }
 
 :root.dark .dash-canvas-wash {
-  background:
-    radial-gradient(
-      ellipse 85% 60% at 0% 0%,
-      color-mix(in srgb, var(--color-accent) 18%, transparent),
-      transparent 58%
-    ),
-    radial-gradient(
-      ellipse 75% 58% at 100% 108%,
-      color-mix(in srgb, var(--color-success) 12%, transparent),
-      transparent 52%
-    );
+  background: none;
 }
 
 :root.dark .dash-canvas {

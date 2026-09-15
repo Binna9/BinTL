@@ -31,25 +31,21 @@ export function AssetsWidget() {
     {
       label: messages.overview.workspaces,
       value: assets.workspaces,
-      accent: "#1769c2",
       to: "/workspace",
     },
     {
       label: messages.overview.activeChips,
       value: assets.chips,
-      accent: "#287a4b",
       to: "/chips",
     },
     {
       label: messages.overview.datasets,
       value: assets.datasets,
-      accent: "#9a6700",
       to: "/transform",
     },
     {
       label: messages.overview.connectionsAsset,
       value: assets.connections,
-      accent: "#c43835",
       to: "/connections",
     },
   ];
