@@ -166,18 +166,41 @@ pub async fn list_schemas(
         }
         "mysql" | "sqlite" => Ok(Vec::new()),
         "oracle" => oracle::with_conn(&live, |conn| {
-            let (_, rows) = oracle::query_rows(
-                conn,
-                "SELECT username FROM all_users
-                 WHERE username NOT IN (
-                   'SYS','SYSTEM','OUTLN','DIP','ORACLE_OCM','DBSNMP','APPQOSSYS',
+            if let oracle::OraConn::Jdbc(jdbc) = conn {
+                let names = crate::tibero_jdbc::schemas(jdbc)?;
+                return Ok(names
+                    .into_iter()
+                    .map(|name| CatalogItem {
+                        name,
+                        kind: "schema",
+                        current: None,
+                    })
+                    .collect());
+            }
+            const HIDDEN: &str = "'SYS','SYSTEM','OUTLN','DIP','ORACLE_OCM','DBSNMP','APPQOSSYS',
                    'GSMADMIN_INTERNAL','GSMCATUSER','GSMUSER','SYSDG','SYSBACKUP',
                    'SYSKM','SYSRAC','AUDSYS','XS$NULL','OJVMSYS','LBACSYS','DVSYS',
                    'DVF','GGSYS','XDB','ANONYMOUS','CTXSYS','MDSYS','OLAPSYS','WMSYS',
                    'ORDSYS','ORDDATA','SI_INFORMTN_SCHEMA','FLOWS_FILES',
-                   'APEX_PUBLIC_USER','SYSCAT','SYSGIS'
-                 )
-                 ORDER BY 1",
+                   'APEX_PUBLIC_USER','SYSCAT','SYSGIS'";
+            let sys_all = format!(
+                "SELECT USERNAME FROM SYS.ALL_USERS WHERE USERNAME NOT IN ({HIDDEN}) ORDER BY 1"
+            );
+            let all = format!(
+                "SELECT USERNAME FROM ALL_USERS WHERE USERNAME NOT IN ({HIDDEN}) ORDER BY 1"
+            );
+            let dba = format!(
+                "SELECT USERNAME FROM SYS.DBA_USERS WHERE USERNAME NOT IN ({HIDDEN}) ORDER BY 1"
+            );
+            let (_, rows) = oracle::query_rows_any(
+                conn,
+                &[
+                    sys_all.as_str(),
+                    all.as_str(),
+                    dba.as_str(),
+                    "SELECT USERNAME FROM USER_USERS",
+                    "SELECT USER FROM DUAL",
+                ],
             )?;
             Ok(rows
                 .into_iter()
@@ -293,13 +316,51 @@ pub async fn list_relations(
             let schema = schema.ok_or_else(|| ConnectError::Invalid("schema required".into()))?;
             let schema = schema.to_ascii_uppercase();
             oracle::with_conn(&live, |conn| {
-                let sql = format!(
-                    "SELECT table_name, 'TABLE' FROM all_tables WHERE owner = '{schema}'
-                     UNION ALL
-                     SELECT view_name, 'VIEW' FROM all_views WHERE owner = '{schema}'
-                     ORDER BY 1"
-                );
-                let (_, rows) = oracle::query_rows(conn, &sql)?;
+                if let oracle::OraConn::Jdbc(jdbc) = conn {
+                    return Ok(crate::tibero_jdbc::relations(jdbc, &schema)?
+                        .into_iter()
+                        .map(|(name, kind)| CatalogItem {
+                            name,
+                            kind: if kind == "view" { "view" } else { "table" },
+                            current: None,
+                        })
+                        .collect());
+                }
+                let table_sqls = [
+                    format!("SELECT TABLE_NAME, 'TABLE' FROM SYS.DBA_TABLES WHERE OWNER = '{schema}'"),
+                    format!("SELECT TABLE_NAME, 'TABLE' FROM SYS.ALL_TABLES WHERE OWNER = '{schema}'"),
+                    format!("SELECT TABLE_NAME, 'TABLE' FROM DBA_TABLES WHERE OWNER = '{schema}'"),
+                    format!("SELECT TABLE_NAME, 'TABLE' FROM ALL_TABLES WHERE OWNER = '{schema}'"),
+                    "SELECT TABLE_NAME, 'TABLE' FROM SYS.USER_TABLES".to_string(),
+                    "SELECT TABLE_NAME, 'TABLE' FROM USER_TABLES".to_string(),
+                    "SELECT OBJECT_NAME, 'TABLE' FROM USER_OBJECTS WHERE OBJECT_TYPE = 'TABLE'".to_string(),
+                    "SELECT TNAME, 'TABLE' FROM TAB WHERE TABTYPE = 'TABLE'".to_string(),
+                ];
+                let view_sqls = [
+                    format!("SELECT VIEW_NAME, 'VIEW' FROM SYS.DBA_VIEWS WHERE OWNER = '{schema}'"),
+                    format!("SELECT VIEW_NAME, 'VIEW' FROM SYS.ALL_VIEWS WHERE OWNER = '{schema}'"),
+                    format!("SELECT VIEW_NAME, 'VIEW' FROM DBA_VIEWS WHERE OWNER = '{schema}'"),
+                    format!("SELECT VIEW_NAME, 'VIEW' FROM ALL_VIEWS WHERE OWNER = '{schema}'"),
+                    "SELECT VIEW_NAME, 'VIEW' FROM SYS.USER_VIEWS".to_string(),
+                    "SELECT VIEW_NAME, 'VIEW' FROM USER_VIEWS".to_string(),
+                    "SELECT OBJECT_NAME, 'VIEW' FROM USER_OBJECTS WHERE OBJECT_TYPE = 'VIEW'".to_string(),
+                    "SELECT TNAME, 'VIEW' FROM TAB WHERE TABTYPE = 'VIEW'".to_string(),
+                ];
+                let table_refs: Vec<&str> = table_sqls.iter().map(|s| s.as_str()).collect();
+                let view_refs: Vec<&str> = view_sqls.iter().map(|s| s.as_str()).collect();
+                let mut rows = Vec::new();
+                let mut last = None;
+                match oracle::query_rows_any(conn, &table_refs) {
+                    Ok((_, batch)) => rows.extend(batch),
+                    Err(error) => last = Some(error),
+                }
+                match oracle::query_rows_any(conn, &view_refs) {
+                    Ok((_, batch)) => rows.extend(batch),
+                    Err(error) => last = Some(error),
+                }
+                if rows.is_empty() {
+                    return Err(last.unwrap_or_else(|| ConnectError::Invalid("no tables found".into())));
+                }
                 Ok(rows
                     .into_iter()
                     .filter_map(|row| {

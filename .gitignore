@@ -15,3 +15,6 @@
 # OpenWiki in-progress checkpoint. Durable wiki + Claims stay tracked.
 openwiki/.run.json
 
+/crates/connectors/vendor/tibero/*.jar
+/config.toml
+

@@ -14,12 +14,22 @@ const MAX_TEXT: usize = 4096;
 pub struct OdbcSettings {
     pub oracle_driver: Option<String>,
     pub tibero_driver: Option<String>,
+    pub tibero_jdbc: Option<String>,
 }
 
 static ODBC: OnceLock<OdbcSettings> = OnceLock::new();
 
 pub fn configure_odbc(settings: OdbcSettings) {
     let _ = ODBC.set(settings);
+}
+
+pub(crate) fn configured_tibero_jdbc() -> Option<String> {
+    nonempty(ODBC.get()?.tibero_jdbc.as_deref())
+}
+
+pub(crate) enum OraConn<'a> {
+    Odbc(Connection<'a>),
+    Jdbc(crate::tibero_jdbc::JdbcConn),
 }
 
 pub(crate) fn map_odbc(error: odbc_api::Error) -> ConnectError {
@@ -161,14 +171,19 @@ fn open_conn(c: &LiveConnection) -> Result<Connection<'static>, ConnectError> {
     .map_err(map_odbc)
 }
 
-/// Sync ODBC on a Tokio worker. Callers stay on the async path.
+/// Sync ODBC (Oracle) or JDBC (Tibero) on a Tokio worker. Callers stay on the async path.
 pub(crate) fn with_conn<T>(
     c: &LiveConnection,
-    f: impl FnOnce(&Connection<'_>) -> Result<T, ConnectError>,
+    f: impl FnOnce(&OraConn<'_>) -> Result<T, ConnectError>,
 ) -> Result<T, ConnectError> {
     tokio::task::block_in_place(|| {
-        let conn = open_conn(c)?;
-        f(&conn)
+        if vendor(&c.driver) == "tibero" {
+            let conn = crate::tibero_jdbc::open(c)?;
+            f(&OraConn::Jdbc(conn))
+        } else {
+            let conn = open_conn(c)?;
+            f(&OraConn::Odbc(conn))
+        }
     })
 }
 
@@ -180,6 +195,16 @@ fn cell(batch: &TextRowSet, col: usize, row: usize) -> String {
 }
 
 pub(crate) fn query_rows(
+    conn: &OraConn<'_>,
+    sql: &str,
+) -> Result<(Vec<String>, Vec<Vec<String>>), ConnectError> {
+    match conn {
+        OraConn::Jdbc(conn) => return crate::tibero_jdbc::query_rows(conn, sql),
+        OraConn::Odbc(conn) => query_rows_odbc(conn, sql),
+    }
+}
+
+fn query_rows_odbc(
     conn: &Connection<'_>,
     sql: &str,
 ) -> Result<(Vec<String>, Vec<Vec<String>>), ConnectError> {
@@ -207,14 +232,35 @@ pub(crate) fn query_rows(
     Ok((columns, rows))
 }
 
-pub(crate) fn exec(conn: &Connection<'_>, sql: &str) -> Result<u64, ConnectError> {
+pub(crate) fn query_rows_any(
+    conn: &OraConn<'_>,
+    sqls: &[&str],
+) -> Result<(Vec<String>, Vec<Vec<String>>), ConnectError> {
+    let mut last = None;
+    for sql in sqls {
+        match query_rows(conn, sql) {
+            Ok(rows) => return Ok(rows),
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| ConnectError::Invalid("no catalog query succeeded".into())))
+}
+
+pub(crate) fn exec(conn: &OraConn<'_>, sql: &str) -> Result<u64, ConnectError> {
+    match conn {
+        OraConn::Jdbc(conn) => return crate::tibero_jdbc::exec(conn, sql),
+        OraConn::Odbc(conn) => exec_odbc(conn, sql),
+    }
+}
+
+fn exec_odbc(conn: &Connection<'_>, sql: &str) -> Result<u64, ConnectError> {
     let mut stmt = conn.preallocate().map_err(map_odbc)?;
     let cursor = stmt.execute(sql, ()).map_err(map_odbc)?;
     drop(cursor);
     Ok(stmt.row_count().map_err(map_odbc)?.unwrap_or(0) as u64)
 }
 
-pub(crate) fn exec_ignore(conn: &Connection<'_>, sql: &str, needles: &[&str]) -> Result<(), ConnectError> {
+pub(crate) fn exec_ignore(conn: &OraConn<'_>, sql: &str, needles: &[&str]) -> Result<(), ConnectError> {
     match exec(conn, sql) {
         Ok(_) => Ok(()),
         Err(error) => {
@@ -228,7 +274,7 @@ pub(crate) fn exec_ignore(conn: &Connection<'_>, sql: &str, needles: &[&str]) ->
     }
 }
 
-pub(crate) fn set_current_schema(conn: &Connection<'_>, schema: &str) -> Result<(), ConnectError> {
+pub(crate) fn set_current_schema(conn: &OraConn<'_>, schema: &str) -> Result<(), ConnectError> {
     exec(
         conn,
         &format!(
@@ -240,6 +286,18 @@ pub(crate) fn set_current_schema(conn: &Connection<'_>, schema: &str) -> Result<
 }
 
 pub(crate) fn stream_query(
+    conn: &OraConn<'_>,
+    sql: &str,
+    on_columns: impl FnMut(&[String]) -> Result<(), ConnectError>,
+    on_row: impl FnMut(&[String]) -> Result<(), ConnectError>,
+) -> Result<u64, ConnectError> {
+    match conn {
+        OraConn::Jdbc(conn) => return crate::tibero_jdbc::stream_query(conn, sql, on_columns, on_row),
+        OraConn::Odbc(conn) => stream_query_odbc(conn, sql, on_columns, on_row),
+    }
+}
+
+fn stream_query_odbc(
     conn: &Connection<'_>,
     sql: &str,
     mut on_columns: impl FnMut(&[String]) -> Result<(), ConnectError>,
@@ -287,7 +345,7 @@ fn missing_table_needles() -> &'static [&'static str] {
 }
 
 pub(crate) fn prepare_table(
-    conn: &Connection<'_>,
+    conn: &OraConn<'_>,
     create: &str,
     drop: Option<&str>,
     clear: Option<&str>,
@@ -305,7 +363,7 @@ pub(crate) fn prepare_table(
 }
 
 pub(crate) fn insert_rows(
-    conn: &Connection<'_>,
+    conn: &OraConn<'_>,
     q: &str,
     cols: &[String],
     column_rules: &[LoadColumnRule],

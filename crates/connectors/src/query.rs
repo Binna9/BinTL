@@ -654,7 +654,7 @@ pub fn apply_preview_limit(family: &str, sql: &str, limit: u64) -> String {
         "show" | "explain" | "pragma" | "describe" | "desc" | "table" => sql.to_string(),
         "select" | "with" | "values" => match family {
             "mssql" => sql.to_string(),
-            "oracle" => format!("SELECT * FROM (\n{sql}\n) preview FETCH FIRST {limit} ROWS ONLY"),
+            "oracle" => format!("SELECT * FROM (\n{sql}\n) WHERE ROWNUM <= {limit}"),
             _ => format!("SELECT * FROM (\n{sql}\n) AS _bintl_preview LIMIT {limit}"),
         },
         _ => sql.to_string(),
@@ -804,8 +804,9 @@ mod tests {
         let ms = apply_preview_limit("mssql", "SELECT * FROM dbo.t", 50);
         assert_eq!(ms, "SELECT * FROM dbo.t");
         let oracle = apply_preview_limit("oracle", "SELECT * FROM hr.emp", 20);
-        assert!(oracle.contains("FETCH FIRST 20 ROWS ONLY"));
+        assert!(oracle.contains("ROWNUM <= 20"));
         assert!(oracle.contains("hr.emp"));
+        assert!(!oracle.contains("preview FETCH FIRST"));
     }
 
     #[tokio::test]

@@ -283,45 +283,81 @@ pub async fn list_columns(
             let schema = schema_or_user(family, &parsed, &c.username).to_ascii_uppercase();
             let table = parsed.table.to_ascii_uppercase();
             oracle::with_conn(c, |conn| {
-                let sql = format!(
+                if let oracle::OraConn::Jdbc(jdbc) = conn {
+                    return Ok(crate::tibero_jdbc::columns(jdbc, &schema, &table)?
+                        .into_iter()
+                        .map(|col| ColumnInfo {
+                            ordinal: col.ordinal,
+                            name: col.name,
+                            data_type: col.data_type,
+                            nullable: col.nullable,
+                            default_value: None,
+                            max_length: col.max_length,
+                            numeric_precision: None,
+                            numeric_scale: col.numeric_scale,
+                            primary_key: false,
+                            extra: None,
+                            comment: col.comment,
+                        })
+                        .collect());
+                }
+                let all = format!(
                     "SELECT
-                        c.column_id,
-                        c.column_name,
+                        c.COLUMN_ID,
+                        c.COLUMN_NAME,
                         CASE
-                          WHEN c.data_type IN ('VARCHAR2','NVARCHAR2','CHAR','NCHAR','RAW')
-                               AND c.data_length IS NOT NULL
-                            THEN c.data_type || '(' || c.data_length || ')'
-                          WHEN c.data_type = 'NUMBER' AND c.data_precision IS NOT NULL
-                            THEN c.data_type || '(' || c.data_precision || ',' || NVL(c.data_scale, 0) || ')'
-                          ELSE c.data_type
+                          WHEN c.DATA_TYPE IN ('VARCHAR2','NVARCHAR2','CHAR','NCHAR','RAW')
+                               AND c.DATA_LENGTH IS NOT NULL
+                            THEN c.DATA_TYPE || '(' || c.DATA_LENGTH || ')'
+                          WHEN c.DATA_TYPE = 'NUMBER' AND c.DATA_PRECISION IS NOT NULL
+                            THEN c.DATA_TYPE || '(' || c.DATA_PRECISION || ',' || NVL(c.DATA_SCALE, 0) || ')'
+                          ELSE c.DATA_TYPE
                         END,
-                        c.nullable,
+                        c.NULLABLE,
                         NULL,
-                        c.data_length,
-                        c.data_precision,
-                        c.data_scale,
-                        CASE WHEN p.column_name IS NULL THEN 'N' ELSE 'Y' END,
+                        c.DATA_LENGTH,
+                        c.DATA_PRECISION,
+                        c.DATA_SCALE,
+                        CASE WHEN p.COLUMN_NAME IS NULL THEN 'N' ELSE 'Y' END,
                         NULL,
-                        cc.comments
-                     FROM all_tab_columns c
+                        cc.COMMENTS
+                     FROM SYS.ALL_TAB_COLUMNS c
                      LEFT JOIN (
-                       SELECT cols.column_name
-                       FROM all_constraints cons
-                       JOIN all_cons_columns cols
-                         ON cons.owner = cols.owner
-                        AND cons.constraint_name = cols.constraint_name
-                       WHERE cons.constraint_type = 'P'
-                         AND cons.owner = '{schema}'
-                         AND cons.table_name = '{table}'
-                     ) p ON p.column_name = c.column_name
-                     LEFT JOIN all_col_comments cc
-                       ON cc.owner = c.owner
-                      AND cc.table_name = c.table_name
-                      AND cc.column_name = c.column_name
-                     WHERE c.owner = '{schema}' AND c.table_name = '{table}'
-                     ORDER BY c.column_id"
+                       SELECT cols.COLUMN_NAME
+                       FROM SYS.ALL_CONSTRAINTS cons
+                       JOIN SYS.ALL_CONS_COLUMNS cols
+                         ON cons.OWNER = cols.OWNER
+                        AND cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME
+                       WHERE cons.CONSTRAINT_TYPE = 'P'
+                         AND cons.OWNER = '{schema}'
+                         AND cons.TABLE_NAME = '{table}'
+                     ) p ON p.COLUMN_NAME = c.COLUMN_NAME
+                     LEFT JOIN SYS.ALL_COL_COMMENTS cc
+                       ON cc.OWNER = c.OWNER
+                      AND cc.TABLE_NAME = c.TABLE_NAME
+                      AND cc.COLUMN_NAME = c.COLUMN_NAME
+                     WHERE c.OWNER = '{schema}' AND c.TABLE_NAME = '{table}'
+                     ORDER BY c.COLUMN_ID"
                 );
-                let (_, rows) = oracle::query_rows(conn, &sql)?;
+                let pub_all = all.replace("SYS.ALL_", "ALL_");
+                let user = format!(
+                    "SELECT
+                        COLUMN_ID,
+                        COLUMN_NAME,
+                        DATA_TYPE,
+                        NULLABLE,
+                        NULL,
+                        DATA_LENGTH,
+                        DATA_PRECISION,
+                        DATA_SCALE,
+                        'N',
+                        NULL,
+                        NULL
+                     FROM USER_TAB_COLUMNS
+                     WHERE TABLE_NAME = '{table}'
+                     ORDER BY COLUMN_ID"
+                );
+                let (_, rows) = oracle::query_rows_any(conn, &[all.as_str(), pub_all.as_str(), user.as_str()])?;
                 Ok(rows
                     .into_iter()
                     .map(|row| {
@@ -412,7 +448,7 @@ pub async fn preview_table(
                 .collect()
         }
         "oracle" => oracle::with_conn(c, |conn| {
-            let sql = format!("SELECT * FROM {q} FETCH FIRST {limit} ROWS ONLY");
+            let sql = format!("SELECT * FROM {q} WHERE ROWNUM <= {limit}");
             let (_, rows) = oracle::query_rows(conn, &sql)?;
             Ok(rows)
         })?,

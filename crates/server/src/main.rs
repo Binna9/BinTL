@@ -39,7 +39,7 @@ use crate::state::AppState;
 #[derive(Parser)]
 #[command(name = "bintl", about = "BinTL ETL console")]
 struct Cli {
-    #[arg(long)]
+    #[arg(long, default_value = "config.toml")]
     config: std::path::PathBuf,
 }
 

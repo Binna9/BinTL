@@ -13,11 +13,12 @@
 ## 실행 (운영 / 수락 테스트 A)
 
 ```bash
+cp -n config.example.toml config.toml   # 최초 1회. config.toml은 커밋하지 않는다
 just ui
-cargo run -p bintl -- --config config.example.toml
+cargo run -p bintl -- --config config.toml
 # 또는 릴리스 바이너리
 just build
-./target/release/bintl --config config.example.toml
+./target/release/bintl --config config.toml
 ```
 
 ```bash
@@ -40,7 +41,7 @@ curl -s localhost:8080/api/health
 터미널 1:
 
 ```bash
-cargo run -p bintl -- --config config.example.toml
+cargo run -p bintl -- --config config.toml
 ```
 
 터미널 2:
@@ -135,7 +136,7 @@ just ui              # ui/dist
 just build           # 호스트 타깃 + embed UI
 just build-target T  # cross 또는 cargo --target
 just dist T          # ui + build-target → dist/<T>/bintl
-just run             # ui 빌드 후 예제 설정으로 기동
+just run             # ui 빌드 후 config.toml으로 기동
 just test
 ```
 

@@ -14,6 +14,7 @@ mod inspect;
 mod oracle;
 mod query;
 mod spreadsheet;
+mod tibero_jdbc;
 
 pub use catalog::{catalog_layout, list_databases, list_relations, list_schemas, CatalogItem};
 pub use oracle::{configure_odbc, OdbcSettings};
@@ -355,16 +356,48 @@ pub async fn list_tables(c: &LiveConnection) -> Result<Vec<String>, ConnectError
                 .collect())
         }
         "oracle" => oracle::with_conn(c, |conn| {
-            let (_, rows) = oracle::query_rows(
-                conn,
-                "SELECT owner || '.' || table_name FROM all_tables
-                 WHERE owner NOT IN ('SYS','SYSTEM')
-                 UNION ALL
-                 SELECT owner || '.' || view_name FROM all_views
-                 WHERE owner NOT IN ('SYS','SYSTEM')
-                 ORDER BY 1",
-            )?;
-            Ok(rows.into_iter().filter_map(|row| row.into_iter().next()).collect())
+            let mut names = Vec::new();
+            let mut last = None;
+            for sql in [
+                "SELECT OWNER || '.' || TABLE_NAME FROM SYS.DBA_TABLES WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || TABLE_NAME FROM SYS.ALL_TABLES WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || TABLE_NAME FROM DBA_TABLES WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || TABLE_NAME FROM ALL_TABLES WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT USER || '.' || TABLE_NAME FROM SYS.USER_TABLES",
+                "SELECT USER || '.' || TABLE_NAME FROM USER_TABLES",
+                "SELECT USER || '.' || OBJECT_NAME FROM USER_OBJECTS WHERE OBJECT_TYPE = 'TABLE'",
+                "SELECT TNAME FROM TAB WHERE TABTYPE = 'TABLE'",
+            ] {
+                match oracle::query_rows(conn, sql) {
+                    Ok((_, rows)) => {
+                        names.extend(rows.into_iter().filter_map(|row| row.into_iter().next()));
+                        break;
+                    }
+                    Err(error) => last = Some(error),
+                }
+            }
+            for sql in [
+                "SELECT OWNER || '.' || VIEW_NAME FROM SYS.DBA_VIEWS WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || VIEW_NAME FROM SYS.ALL_VIEWS WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || VIEW_NAME FROM DBA_VIEWS WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || VIEW_NAME FROM ALL_VIEWS WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT USER || '.' || VIEW_NAME FROM USER_VIEWS",
+                "SELECT USER || '.' || OBJECT_NAME FROM USER_OBJECTS WHERE OBJECT_TYPE = 'VIEW'",
+            ] {
+                match oracle::query_rows(conn, sql) {
+                    Ok((_, rows)) => {
+                        names.extend(rows.into_iter().filter_map(|row| row.into_iter().next()));
+                        break;
+                    }
+                    Err(error) => last = Some(error),
+                }
+            }
+            if names.is_empty() {
+                if let Some(error) = last {
+                    return Err(error);
+                }
+            }
+            Ok(names)
         }),
         other => Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }

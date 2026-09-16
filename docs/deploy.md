@@ -111,7 +111,7 @@ just build
 
 ## 3. 설정 (`config.toml`)
 
-저장소의 `config.example.toml`을 복사해 운영 값으로 바꾼다.
+저장소의 `config.example.toml`을 복사해 `config.toml`로 둔다. 개발·운영 모두 이 파일을 읽고, `config.toml`은 커밋하지 않는다.
 
 ```toml
 bind = "127.0.0.1:8080"      # 역프록시 뒤면 localhost만 열기

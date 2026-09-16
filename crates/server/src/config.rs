@@ -10,6 +10,8 @@ struct OdbcFileConfig {
     #[serde(default)]
     pub tibero_driver: Option<String>,
     #[serde(default)]
+    pub tibero_jdbc: Option<String>,
+    #[serde(default)]
     pub sys_ini: Option<String>,
 }
 
@@ -107,6 +109,8 @@ fn apply_odbc(odbc: &OdbcFileConfig) {
     connectors::configure_odbc(connectors::OdbcSettings {
         oracle_driver: nonempty(odbc.oracle_driver.as_deref()),
         tibero_driver: nonempty(odbc.tibero_driver.as_deref()),
+        tibero_jdbc: nonempty(std::env::var("BINTL_TIBERO_JDBC_JAR").ok().as_deref())
+            .or_else(|| nonempty(odbc.tibero_jdbc.as_deref())),
     });
     if let Some(sys_ini) = nonempty(odbc.sys_ini.as_deref()) {
         set_env_if_unset("ODBCSYSINI", &sys_ini);
@@ -137,6 +141,7 @@ session_secret = "x"
 [odbc]
 tibero_driver = "/opt/tibero6/client/lib/libtbodbc.so"
 oracle_driver = "Oracle 21c ODBC driver"
+tibero_jdbc = "/opt/tibero6/client/lib/jar/tibero6-jdbc.jar"
 sys_ini = "/opt/tibero6/client/config"
 "#,
         )
@@ -148,6 +153,10 @@ sys_ini = "/opt/tibero6/client/config"
         assert_eq!(
             file.odbc.oracle_driver.as_deref(),
             Some("Oracle 21c ODBC driver")
+        );
+        assert_eq!(
+            file.odbc.tibero_jdbc.as_deref(),
+            Some("/opt/tibero6/client/lib/jar/tibero6-jdbc.jar")
         );
         assert_eq!(
             file.odbc.sys_ini.as_deref(),
@@ -169,6 +178,7 @@ session_secret = "x"
         .unwrap();
         assert!(file.odbc.tibero_driver.is_none());
         assert!(file.odbc.oracle_driver.is_none());
+        assert!(file.odbc.tibero_jdbc.is_none());
         assert!(file.odbc.sys_ini.is_none());
     }
 }
