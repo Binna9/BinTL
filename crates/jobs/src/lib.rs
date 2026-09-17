@@ -186,7 +186,10 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
         transition(JobStatus::Running, JobStatus::Succeeded)
             .map_err(|e| RunError::State(e.to_string()))?;
         store.append_log(job_id, "info", "job succeeded").await?;
-        store.complete_chip_run_for_job(job_id, &output_rel).await?;
+        let row_count = PolarsEngine::file_row_count(&store.resolve(&output_rel)).map(|n| n as i64);
+        store
+            .complete_chip_run_for_job(job_id, &output_rel, row_count)
+            .await?;
         Ok(())
     };
     tokio::select! {

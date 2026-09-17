@@ -2,37 +2,6 @@ use crate::models::*;
 use crate::*;
 
 impl Store {
-    pub async fn insert_job(
-        &self,
-        source_path: &str,
-        spec_json: &str,
-        workspace_id: &str,
-    ) -> Result<JobRow, StorageError> {
-        self.require_workspace(workspace_id).await?;
-        let execution_id = Uuid::new_v4().to_string();
-        let id = Uuid::new_v4().to_string();
-        let created_at = now_rfc3339();
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("INSERT INTO executions (id, workspace_id, source, status, created_at) VALUES (?, ?, 'transform_page', 'queued', ?)")
-            .bind(&execution_id).bind(workspace_id).bind(&created_at).execute(&mut *tx).await?;
-        sqlx::query(
-            "INSERT INTO execution_steps (id, execution_id, kind, definition_revision,
-                     definition_snapshot_json, source_path, status, queued_at)
-                     VALUES (?, ?, 'transform', 1, ?, ?, 'queued', ?)",
-        )
-        .bind(&id)
-        .bind(&execution_id)
-        .bind(spec_json)
-        .bind(source_path)
-        .bind(&created_at)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        self.get_job(&id)
-            .await?
-            .ok_or_else(|| StorageError::NotFound("job disappeared after insert".into()))
-    }
-
     pub async fn insert_transform_job(
         &self,
         source_path: &str,

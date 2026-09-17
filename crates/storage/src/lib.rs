@@ -1420,6 +1420,7 @@ mod tests {
         assert!(admin_files.iter().any(|file| file.filename == "b.csv"));
         assert_eq!(analyst_files.len(), 1);
         assert_eq!(analyst_files[0].filename, "b.csv");
+        assert_eq!(analyst_files[0].workspace_id, analyst_home);
 
         let analyst_workspaces = store
             .list_visible_workspaces(Some(&analyst_scope))
@@ -1599,8 +1600,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(left, extract_id);
+        let def = store
+            .get_extract_definition(&extract_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(def.workspace_id.is_empty());
         assert!(store.get_workspace(&ws.id).await.unwrap().is_none());
         assert!(store.get_dataset(&upload.id).await.unwrap().is_none());
+        assert!(!store.resolve(&upload.stored_path).exists());
         let moved: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM data_files WHERE workspace_id = ? OR id = ?",
         )
@@ -1610,6 +1618,14 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(moved, 0);
+        let search_left: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM search_documents WHERE workspace_id = ?",
+        )
+        .bind(&ws.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(search_left, 0);
 
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);

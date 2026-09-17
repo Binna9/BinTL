@@ -16,6 +16,7 @@ import {
   type TransformPlaceDraft,
 } from "@/components/workspace/ChipPlaceDialog";
 import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
+import { WorkspaceRunReportDialog } from "@/components/workspace/WorkspaceRunReportDialog";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
@@ -209,6 +210,7 @@ export function WorkspacePage() {
   const [infoChip, setInfoChip] = useState<Chip | null>(null);
   const [logChipId, setLogChipId] = useState<string | null>(null);
   const [logText, setLogText] = useState("");
+  const [runReport, setRunReport] = useState<{ status: string; title: string; runs: ChipRun[] } | null>(null);
   const [propsChip, setPropsChip] = useState<Chip | null>(null);
   const activeLogChip = logChipId ? chips.find((chip) => chip.id === logChipId) ?? null : null;
   const [propsName, setPropsName] = useState("");
@@ -759,9 +761,6 @@ export function WorkspacePage() {
       setRuns(response.runs);
       const latest = response.runs.find((run) => run.chip_id === chipId);
       if (!latest || !ACTIVE_STATUSES.has(latest.status)) {
-        if (latest?.status === "failed") {
-          throw new Error(latest.error_message || messages.workspace.runChipError);
-        }
         return latest?.status;
       }
       await new Promise((resolve) => setTimeout(resolve, 400));
@@ -823,6 +822,17 @@ export function WorkspacePage() {
     }
   }
 
+  async function presentRunReport(title: string, status: string, reportRuns: ChipRun[]) {
+    if (reportRuns.length === 0) return;
+    try {
+      const datasetResponse = await datasetApi.list({ silent: true });
+      setDatasets(datasetResponse.datasets);
+    } catch {
+      // Keep the last catalog; run metrics still render.
+    }
+    setRunReport({ title, status, runs: reportRuns });
+  }
+
   async function runWorkspace() {
     if (!workspaceId) return;
     if (dirty) {
@@ -853,12 +863,14 @@ export function WorkspacePage() {
       if (currentWorkspaceRef.current !== workspaceId) return;
       const response = await chipApi.listRuns(workspaceId, { silent: true });
       setRuns(response.runs);
+      const reportRuns = result.execution_id
+        ? response.runs.filter((run) => run.execution_id === result.execution_id)
+        : response.runs.filter((run) => !previousRunIds.has(run.id));
       if (status === "canceled") {
         toastSuccess(messages.workspace.runWorkspaceCanceled);
       } else if (status === "failed") {
-        const currentRuns = response.runs.filter((run) => !previousRunIds.has(run.id));
         const failedNames = [...new Set(
-          currentRuns
+          reportRuns
             .filter((run) => run.status === "failed")
             .map((run) => chips.find((chip) => chip.id === run.chip_id)?.name)
             .filter((name): name is string => Boolean(name)),
@@ -871,6 +883,7 @@ export function WorkspacePage() {
       } else {
         toastSuccess(messages.workspace.runWorkspaceCompleted);
       }
+      await presentRunReport(messages.workspace.runReportTitle, status, reportRuns);
     } catch (reason) {
       if (currentWorkspaceRef.current !== workspaceId) return;
       try {
@@ -889,6 +902,7 @@ export function WorkspacePage() {
             : messages.workspace.runChipError,
           reason,
         );
+        await presentRunReport(messages.workspace.runReportTitle, "failed", currentRuns);
       } catch {
         toastError(messages.workspace.runChipError, reason);
       }
@@ -912,10 +926,24 @@ export function WorkspacePage() {
     try {
       await chipApi.run(chip.id, { workspace_id: workspaceId });
       const status = await waitForChipRun(chip.id);
-      if (status === "canceled") {
+      if (currentWorkspaceRef.current !== workspaceId) return;
+      const response = await chipApi.listRuns(workspaceId, { silent: true });
+      setRuns(response.runs);
+      const latest = response.runs.find((run) => run.chip_id === chip.id);
+      const outcome = status || latest?.status;
+      if (outcome === "canceled") {
         toastSuccess(messages.workspace.runChipCanceled(chip.name));
+      } else if (outcome === "failed") {
+        toastError(latest?.error_message || messages.workspace.runChipError);
       } else {
         toastSuccess(messages.workspace.runChipCompleted(chip.name));
+      }
+      if (latest) {
+        await presentRunReport(
+          messages.workspace.runReportChipTitle(chip.name),
+          outcome || latest.status,
+          [latest],
+        );
       }
     } catch (reason) {
       toastError(messages.workspace.runChipError, reason);
@@ -2720,6 +2748,17 @@ export function WorkspacePage() {
           setLogChipId(null);
           setLogText("");
         }}
+      />
+
+      <WorkspaceRunReportDialog
+        open={Boolean(runReport)}
+        title={runReport?.title ?? messages.workspace.runReportTitle}
+        status={runReport?.status ?? "succeeded"}
+        chips={chips}
+        runs={runReport?.runs ?? []}
+        datasets={datasets}
+        onClose={() => setRunReport(null)}
+        onViewLog={(chip) => void openChipRunLog(chip)}
       />
 
       <AppDialog

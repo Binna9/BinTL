@@ -752,11 +752,26 @@ impl Store {
         &self,
         id: &str,
     ) -> Result<(), StorageError> {
+        self.set_chip_run_succeeded_with_result(id, None, None).await
+    }
+
+    pub async fn set_chip_run_succeeded_with_result(
+        &self,
+        id: &str,
+        result_json: Option<&str>,
+        output_rows: Option<i64>,
+    ) -> Result<(), StorageError> {
+        if let Some(raw) = result_json {
+            require_config_json(raw)?;
+        }
         let result = sqlx::query(
-            "UPDATE execution_steps SET status = 'succeeded', error_message = NULL, finished_at = ?
+            "UPDATE execution_steps SET status = 'succeeded', error_message = NULL, finished_at = ?,
+                 result_json = COALESCE(?, result_json), output_rows = COALESCE(?, output_rows)
              WHERE id = ? AND status = 'running'",
         )
         .bind(now_rfc3339())
+        .bind(result_json)
+        .bind(output_rows)
         .bind(id)
         .execute(&self.pool)
         .await?;

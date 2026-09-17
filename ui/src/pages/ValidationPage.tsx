@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ChevronRight, FileSpreadsheet, Play, Save, ShieldCheck } from "lucide-react";
+import { ArrowLeft, BookmarkPlus, ChevronRight, FileSpreadsheet, Play, Settings2, ShieldCheck } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
@@ -7,10 +7,9 @@ import { PaneHeader } from "@/components/ui/pane-header";
 import { Button } from "@/components/ui/button";
 import { ColumnChips } from "@/components/ColumnChips";
 import { FormField } from "@/components/ui/form-field";
-import { Select } from "@/components/ui/select";
 import { AppDialog } from "@/components/AppDialog";
 import { datasetApi } from "@/services/transform/datasetApi";
-import { validationApi, type ValidationReport, type ValidationRule } from "@/services/validation/validationApi";
+import { validationApi, type ValidationReport } from "@/services/validation/validationApi";
 import { chipApi } from "@/services/chips/chipApi";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
 import { toastError, toastSuccess } from "@/lib/notifications";
@@ -18,6 +17,8 @@ import { cn } from "@/lib/cn";
 import { selectableClass } from "@/lib/selectable";
 import { KIND_APPEARANCE, KIND_ORDER, datasetFromSlot } from "@/features/transform/transformEditorModel";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { nextSequencedChipName } from "@/lib/chipSequence";
+import { isChipNameConflict } from "@/services/httpClient";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
@@ -33,10 +34,6 @@ function storedFileId(id: string): string {
   return !id || id.startsWith("contract:") ? "" : id;
 }
 
-function stringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : [];
-}
-
 function slotColumns(slot: ChipInputSlotResponse | null): string[] {
   if (!slot) return [];
   const dataset = slot.dataset as Dataset | undefined;
@@ -44,6 +41,23 @@ function slotColumns(slot: ChipInputSlotResponse | null): string[] {
     ...(slot.columns?.map((column) => column.name) ?? []),
     ...(dataset?.columns?.map((column) => column.name) ?? []),
   ]);
+}
+
+function listedColumns(datasets: Dataset[], id: string): string[] {
+  return datasets.find((item) => item.id === id)?.columns.map((column) => column.name) ?? [];
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : [];
+}
+
+function boolFlag(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function keepKnown(values: string[], choices: string[]): string[] {
+  if (!choices.length) return values;
+  return values.filter((value) => choices.includes(value));
 }
 
 export function ValidationPage() {
@@ -54,37 +68,40 @@ export function ValidationPage() {
   const { messages } = useLanguage();
   const t = messages.validation;
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [rules, setRules] = useState<ValidationRule[]>([]);
-  const [ruleId, setRuleId] = useState("");
   const [sourceId, setSourceId] = useState("");
   const [targetId, setTargetId] = useState("");
   const [keys, setKeys] = useState<string[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
+  const [compareRowCount, setCompareRowCount] = useState(true);
+  const [compareSchema, setCompareSchema] = useState(true);
   const [fileColumns, setFileColumns] = useState<string[]>([]);
   const [sourceSlot, setSourceSlot] = useState<ChipInputSlotResponse | null>(null);
   const [targetSlot, setTargetSlot] = useState<ChipInputSlotResponse | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [registerName, setRegisterName] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [draftRowCount, setDraftRowCount] = useState(true);
+  const [draftSchema, setDraftSchema] = useState(true);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const [result, ruleResult] = await Promise.all([datasetApi.list(), validationApi.listRules()]);
+        const result = await datasetApi.list();
         if (cancelled) return;
         setDatasets(result.datasets.filter((item) => item.available && (!workspaceId || item.workspace_id === workspaceId)));
-        setRules(ruleResult.rules.filter((rule) => rule.active));
         if (!editorChipId) return;
         if (!workspaceId) {
           const chip = await chipApi.get(editorChipId);
           if (cancelled) return;
           const config = chip.config;
-          const savedRuleId = typeof config.validation_rule_id === "string" ? config.validation_rule_id : "";
-          const savedRule = ruleResult.rules.find((rule) => rule.id === savedRuleId);
-          setRuleId(savedRuleId);
           setSourceId(typeof config.source_data_file_id === "string" ? config.source_data_file_id : "");
-          setKeys(savedRule ? savedRule.keys : stringList(config.keys));
-          setColumns(savedRule ? savedRule.columns : stringList(config.columns));
+          setKeys(stringList(config.keys));
+          setColumns(stringList(config.columns));
+          setCompareRowCount(boolFlag(config.compare_row_count, true));
+          setCompareSchema(boolFlag(config.compare_schema, true));
           return;
         }
         const emptySlot: ChipInputSlotResponse = { mode: "unwired" };
@@ -97,11 +114,10 @@ export function ValidationPage() {
         ]);
         if (cancelled) return;
         const config = chip.config;
-        const savedRuleId = typeof config.validation_rule_id === "string" ? config.validation_rule_id : "";
-        const savedRule = ruleResult.rules.find((rule) => rule.id === savedRuleId);
-        setRuleId(savedRuleId);
-        setKeys(savedRule ? savedRule.keys : stringList(config.keys));
-        setColumns(savedRule ? savedRule.columns : stringList(config.columns));
+        setKeys(stringList(config.keys));
+        setColumns(stringList(config.columns));
+        setCompareRowCount(boolFlag(config.compare_row_count, true));
+        setCompareSchema(boolFlag(config.compare_schema, true));
         setSourceSlot(source);
         setTargetSlot(target);
         const incoming = (workspace.edges ?? []).filter((edge) => edge.kind === "data" && edge.to_chip_id === editorChipId);
@@ -152,46 +168,147 @@ export function ValidationPage() {
   const targetWired = canvasMode && targetSlot?.mode !== "unwired";
   const sourceFileId = storedFileId(sourceId);
   const targetFileId = storedFileId(targetId);
-  const columnChoices = unique([...slotColumns(sourceSlot), ...slotColumns(targetSlot), ...fileColumns, ...keys, ...columns]);
-  const canSave = Boolean((ruleId || keys.length) && !busy);
-  const canRun = Boolean(sourceFileId && targetFileId && sourceFileId !== targetFileId && (ruleId || keys.length) && !busy);
+  const columnChoices = unique([
+    ...slotColumns(sourceSlot),
+    ...slotColumns(targetSlot),
+    ...listedColumns(datasets, sourceId),
+    ...listedColumns(datasets, targetId),
+    ...fileColumns,
+  ]);
+  const columnKey = columnChoices.join("\0");
+  const pickerEmpty = canvasMode ? t.noConnectedColumns : t.noFileColumns;
+  const chipKeys = keepKnown(keys, columnChoices);
+  const chipColumns = keepKnown(columns, columnChoices);
+  const canSave = Boolean(editingChip && chipKeys.length && !busy && (sourceWired || sourceFileId));
+  const canRun = Boolean(!editingChip && sourceFileId && targetFileId && sourceFileId !== targetFileId && chipKeys.length && !busy);
+  const canRegister = Boolean(!editingChip && sourceFileId && chipKeys.length && !busy);
+
+  useEffect(() => {
+    if (!columnChoices.length) return;
+    setKeys((current) => keepKnown(current, columnChoices));
+    setColumns((current) => keepKnown(current, columnChoices));
+  }, [columnKey]);
+
+  function validationConfig() {
+    return {
+      source_data_file_id: sourceFileId,
+      keys: chipKeys,
+      columns: chipColumns,
+      compare_row_count: compareRowCount,
+      compare_schema: compareSchema,
+    };
+  }
 
   async function run() {
     if (!canRun) return;
     setBusy(true);
     try {
       const response = await validationApi.run({
-        source_data_file_id: sourceFileId, target_data_file_id: targetFileId,
-        validation_rule_id: ruleId || undefined,
-        keys, columns,
+        target_data_file_id: targetFileId,
+        ...validationConfig(),
       });
       setReport(response.report);
-    } catch (error) { toastError(t.runError, error); } finally { setBusy(false); }
-  }
-  async function save() {
-    if (!editorChipId) return;
-    setBusy(true);
-    try {
-      await chipApi.update(editorChipId, {
-        config: {
-          validation_rule_id: ruleId || undefined,
-          source_data_file_id: sourceFileId,
-          keys, columns,
-          compare_row_count: true,
-          compare_schema: true,
-        },
-      });
-      toastSuccess(t.saved);
-      navigate(workspaceId ? `/workspace/${workspaceId}` : "/chips");
     } catch (error) {
-      toastError(t.saveError, error);
+      toastError(t.runError, error);
     } finally {
       setBusy(false);
     }
   }
+
+  async function saveChip() {
+    if (!editorChipId) return;
+    setBusy(true);
+    try {
+      await chipApi.update(editorChipId, { config: validationConfig() });
+      toastSuccess(t.appliedToChip);
+      navigate(workspaceId ? `/workspace/${workspaceId}` : "/chips");
+    } catch (error) {
+      toastError(t.applyError, error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openDetails() {
+    setDraftRowCount(compareRowCount);
+    setDraftSchema(compareSchema);
+    setDetailOpen(true);
+  }
+
+  function applyDetails() {
+    setCompareRowCount(draftRowCount);
+    setCompareSchema(draftSchema);
+    setDetailOpen(false);
+  }
+
+  const detailSummary = [
+    compareRowCount ? t.compareRows : null,
+    compareSchema ? t.compareSchema : null,
+  ].filter((item): item is string => Boolean(item)).join(" · ") || t.noExtraChecks;
+
+  async function openRegister() {
+    try {
+      const catalog = await chipApi.listCatalog();
+      setRegisterName(nextSequencedChipName(
+        catalog.chips,
+        messages.workspace.defaultValidationChipName,
+        (chip) => chip.kind === "validation",
+      ));
+    } catch {
+      setRegisterName(messages.workspace.defaultValidationChipName(1));
+    }
+    setRegisterOpen(true);
+  }
+
+  async function registerChip() {
+    if (!canRegister || !registerName.trim()) return;
+    setBusy(true);
+    try {
+      await chipApi.register({
+        name: registerName.trim(),
+        kind: "validation",
+        config: validationConfig(),
+      });
+      setRegisterOpen(false);
+      toastSuccess(t.chipRegistered);
+    } catch (error) {
+      if (isChipNameConflict(error)) toastError(messages.workspace.duplicateChipName);
+      else toastError(t.registerError, error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const headerActions = (
+    <>
+      {editingChip ? (
+        <Button variant="quiet" onClick={() => navigate(workspaceId ? `/workspace/${workspaceId}` : "/chips")}>
+          <ArrowLeft className="size-3.5" />
+          {workspaceId ? t.backToWorkspace : messages.chips.backToChips}
+        </Button>
+      ) : null}
+      {editingChip ? (
+        <Button variant="primary" disabled={!canSave} onClick={() => void saveChip()}>
+          <BookmarkPlus className="size-3.5" />
+          {busy ? messages.common.saving : t.applyToChip}
+        </Button>
+      ) : (
+        <>
+          <Button variant="secondary" disabled={!canRegister} onClick={() => void openRegister()}>
+            <BookmarkPlus className="size-3.5" />
+            {t.registerChip}
+          </Button>
+          <Button variant="primary" disabled={!canRun} onClick={() => void run()}>
+            <Play className="size-3.5" />
+            {busy ? messages.common.running : messages.common.run}
+          </Button>
+        </>
+      )}
+    </>
+  );
+
   return <PageShell>
-    <PageHeader iconName="validation" eyebrow={t.eyebrow} title={t.title} description={t.description}
-      actions={editingChip ? <Button variant="quiet" onClick={() => navigate(workspaceId ? `/workspace/${workspaceId}` : "/chips")}><ArrowLeft className="size-3.5" />{workspaceId ? t.backToWorkspace : messages.chips.backToChips}</Button> : undefined} />
+    <PageHeader iconName="validation" eyebrow={t.eyebrow} title={t.title} description={t.description} actions={headerActions} />
     <Panel tall className="overflow-hidden">
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-2 overflow-hidden">
         <aside className="grid h-full min-h-0 min-w-0 grid-cols-2 overflow-hidden border-r border-border">
@@ -203,49 +320,42 @@ export function ValidationPage() {
           </div>
         </aside>
         <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-          <PanelHeader
-            title={t.settings}
-            description={canvasMode ? t.canvasHint : t.hint}
-            actions={
-              <Button
-                variant="primary"
-                disabled={!canRun}
-                onClick={() => void run()}
-              >
-                <Play className="size-3.5" />
-                {busy ? messages.common.running : messages.common.run}
-              </Button>
-            }
-          />
+          <PanelHeader title={t.settings} description={canvasMode ? t.canvasHint : t.hint} />
           <PanelBody className="scroll-pane min-h-0 flex-1 overflow-auto bg-raised">
             <div className="mx-auto grid max-w-3xl gap-5 rounded-2xl border border-border bg-surface p-6 shadow-sm">
-          <FormField label={t.rule}><Select value={ruleId} options={rules.map((rule) => ({ value: rule.id, label: `${rule.name} · v${rule.revision}` }))} placeholder={t.customRule} onChange={(id) => { setRuleId(id); const rule = rules.find((item) => item.id === id); if (rule) { setKeys(rule.keys); setColumns(rule.columns); } }} /></FormField>
-          <FormField label={t.keys} hint={ruleId ? t.ruleOverrides : canvasMode ? t.canvasKeysHint : t.keysHint}>
-            <ColumnChips
-              choices={columnChoices}
-              selected={keys}
-              empty={t.noConnectedColumns}
-              disabled={Boolean(ruleId)}
-              onToggle={(name) => setKeys((current) => {
-                const next = toggleList(current, name);
-                setColumns((cols) => cols.filter((column) => !next.includes(column)));
-                return next;
-              })}
-            />
-          </FormField>
-          <FormField label={t.columns} hint={ruleId ? t.ruleOverrides : t.columnsHint}>
-            <ColumnChips
-              choices={columnChoices}
-              selected={columns}
-              disabledNames={keys}
-              empty={t.noConnectedColumns}
-              disabled={Boolean(ruleId)}
-              onToggle={(name) => setColumns((current) => toggleList(current, name))}
-            />
-          </FormField>
-          <div className="flex justify-end gap-2">
-            {editingChip ? <Button disabled={!canSave} onClick={() => void save()}><Save className="size-3.5" />{messages.common.save}</Button> : null}
-          </div>
+              <FormField label={t.keys} hint={canvasMode ? t.canvasKeysHint : t.keysHint}>
+                <ColumnChips
+                  choices={columnChoices}
+                  selected={chipKeys}
+                  empty={pickerEmpty}
+                  onToggle={(name) => setKeys((current) => {
+                    const next = toggleList(current, name);
+                    setColumns((cols) => cols.filter((column) => !next.includes(column)));
+                    return next;
+                  })}
+                />
+              </FormField>
+              <FormField label={t.columns} hint={t.columnsHint}>
+                <ColumnChips
+                  choices={columnChoices}
+                  selected={chipColumns}
+                  disabledNames={chipKeys}
+                  empty={pickerEmpty}
+                  onToggle={(name) => setColumns((current) => toggleList(current, name))}
+                />
+              </FormField>
+              <button
+                type="button"
+                className="flex w-full items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-left"
+                onClick={openDetails}
+              >
+                <Settings2 className="size-4 shrink-0 text-text-tertiary" aria-hidden="true" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-text">{t.detailSettings}</span>
+                  <span className="mt-0.5 block text-[11px] leading-4 text-text-tertiary">{detailSummary}</span>
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-text-tertiary" aria-hidden="true" />
+              </button>
             </div>
           </PanelBody>
         </section>
@@ -260,7 +370,79 @@ export function ValidationPage() {
         {report.samples.length ? <pre className="max-h-60 overflow-auto rounded-xl bg-workspace p-4 text-xs text-white">{report.samples.join("\n")}</pre> : null}
       </div> : null}
     </AppDialog>
+    <AppDialog
+      open={detailOpen}
+      title={t.detailSettings}
+      icon={<Settings2 className="size-4 text-accent" aria-hidden="true" />}
+      className="w-[min(28rem,92vw)]"
+      minWidth={360}
+      minHeight={280}
+      onClose={() => setDetailOpen(false)}
+      footer={
+        <>
+          <Button variant="secondary" onClick={() => setDetailOpen(false)}>{messages.common.cancel}</Button>
+          <Button variant="primary" onClick={applyDetails}>{messages.common.save}</Button>
+        </>
+      }
+    >
+      <div className="grid gap-3 p-4">
+        <p className="text-[11px] leading-5 text-text-tertiary">{t.detailHint}</p>
+        <CheckOption label={t.compareRows} hint={t.compareRowsHint} checked={draftRowCount} onChange={setDraftRowCount} />
+        <CheckOption label={t.compareSchema} hint={t.compareSchemaHint} checked={draftSchema} onChange={setDraftSchema} />
+      </div>
+    </AppDialog>
+    <AppDialog
+      open={registerOpen}
+      title={t.registerChip}
+      icon={<BookmarkPlus className="size-4 text-accent" aria-hidden="true" />}
+      className="w-[min(22rem,92vw)]"
+      minWidth={320}
+      minHeight={220}
+      onClose={() => setRegisterOpen(false)}
+      footer={
+        <>
+          <Button variant="secondary" onClick={() => setRegisterOpen(false)}>{messages.common.cancel}</Button>
+          <Button variant="primary" disabled={!registerName.trim() || !canRegister} onClick={() => void registerChip()}>
+            {busy ? messages.common.saving : t.registerChip}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-3 p-4">
+        <p className="text-[11px] leading-5 text-text-tertiary">{t.registerHint}</p>
+        <FormField label={messages.workspace.chipName}>
+          <input className="field-control" value={registerName} autoFocus onChange={(event) => setRegisterName(event.target.value)} />
+        </FormField>
+      </div>
+    </AppDialog>
   </PageShell>;
+}
+
+function CheckOption({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
+      <input
+        type="checkbox"
+        className="mt-0.5"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span>
+        <span className="block text-sm text-text">{label}</span>
+        <span className="mt-0.5 block text-[11px] leading-4 text-text-tertiary">{hint}</span>
+      </span>
+    </label>
+  );
 }
 
 function DatasetPicker({ title, hint, datasets, value, onChange, kindLabels, disabled = false }: {

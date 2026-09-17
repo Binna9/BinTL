@@ -46,6 +46,24 @@ fn yes() -> bool {
     true
 }
 
+/// A saved rule is a preset. Request/chip keys win; the rule fills only when keys are empty.
+pub(crate) fn apply_rule_defaults(
+    keys: &mut Vec<String>,
+    columns: &mut Vec<String>,
+    compare_row_count: &mut bool,
+    compare_schema: &mut bool,
+    rule: &ValidationRuleRow,
+) -> Result<(), AppError> {
+    if keys.iter().any(|key| !key.trim().is_empty()) {
+        return Ok(());
+    }
+    *keys = serde_json::from_str(&rule.keys_json).map_err(|e| AppError::bad(e.to_string()))?;
+    *columns = serde_json::from_str(&rule.columns_json).map_err(|e| AppError::bad(e.to_string()))?;
+    *compare_row_count = rule.compare_row_count != 0;
+    *compare_schema = rule.compare_schema != 0;
+    Ok(())
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/validations/run", post(run_validation))
@@ -221,12 +239,16 @@ async fn run_validation(
         if rule.active == 0 {
             return Err(AppError::bad("validation rule is inactive"));
         }
-        body.keys =
-            serde_json::from_str(&rule.keys_json).map_err(|e| AppError::bad(e.to_string()))?;
-        body.columns =
-            serde_json::from_str(&rule.columns_json).map_err(|e| AppError::bad(e.to_string()))?;
-        body.compare_row_count = rule.compare_row_count != 0;
-        body.compare_schema = rule.compare_schema != 0;
+        apply_rule_defaults(
+            &mut body.keys,
+            &mut body.columns,
+            &mut body.compare_row_count,
+            &mut body.compare_schema,
+            &rule,
+        )?;
+    }
+    if body.keys.iter().all(|key| key.trim().is_empty()) {
+        return Err(AppError::bad("at least one validation key required"));
     }
     let source =
         crate::access::require_dataset(&state.store, &user, &body.source_data_file_id).await?;
@@ -273,4 +295,45 @@ async fn run_validation(
         )
         .await?;
     Ok(Json(json!({"result_id": result.id, "report": report})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(keys: &str, columns: &str, rows: i64, schema: i64) -> ValidationRuleRow {
+        ValidationRuleRow {
+            id: "r1".into(),
+            owner_user_id: "u1".into(),
+            name: "pair".into(),
+            description: String::new(),
+            keys_json: keys.into(),
+            columns_json: columns.into(),
+            compare_row_count: rows,
+            compare_schema: schema,
+            active: 1,
+            revision: 1,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn rule_fills_only_when_keys_are_empty() {
+        let saved = rule(r#"["id"]"#, r#"["name"]"#, 0, 0);
+        let mut keys = vec!["order_id".into()];
+        let mut columns = vec!["amount".into()];
+        let mut rows = true;
+        let mut schema = true;
+        apply_rule_defaults(&mut keys, &mut columns, &mut rows, &mut schema, &saved).unwrap();
+        assert_eq!(keys, ["order_id"]);
+        assert_eq!(columns, ["amount"]);
+        assert!(rows && schema);
+
+        keys.clear();
+        apply_rule_defaults(&mut keys, &mut columns, &mut rows, &mut schema, &saved).unwrap();
+        assert_eq!(keys, ["id"]);
+        assert_eq!(columns, ["name"]);
+        assert!(!rows && !schema);
+    }
 }

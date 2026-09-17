@@ -12,12 +12,17 @@ import { NavIcon } from "@/components/ui/nav-icons";
 import { AppDialog } from "@/components/AppDialog";
 import { PaginationBar } from "@/components/PaginationBar";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
+import { SplitLayout } from "@/layouts/SplitLayout";
 import { ActionAnchor, Button } from "@/components/ui/button";
 import { MetaField } from "@/components/ui/meta-field";
 import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
+import { WorkspaceFileCatalog } from "@/components/workspace/WorkspaceFileCatalog";
+import { filterItemsByFileTree, type FileTreeSelection } from "@/features/workspace/fileWorkspaceTree";
+import { useWorkspaceTree } from "@/hooks/workspace/useWorkspaceTree";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtWhen } from "@/lib/format";
+import { layout } from "@/lib/layout";
 import { usePagination } from "@/lib/pagination";
 import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { datasetApi } from "@/services/transform/datasetApi";
@@ -25,6 +30,8 @@ import type { Dataset, FramePreview } from "@/types/dataset";
 
 export function TransformFilesPage() {
   const { messages } = useLanguage();
+  const { folders, workspaces } = useWorkspaceTree();
+  const [treeSelection, setTreeSelection] = useState<FileTreeSelection>({ type: "all" });
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
@@ -36,8 +43,19 @@ export function TransformFilesPage() {
     () => datasets.filter((item) => item.kind === "transform"),
     [datasets],
   );
+  const visibleFiles = useMemo(
+    () => filterItemsByFileTree(files, treeSelection, folders, workspaces),
+    [files, folders, treeSelection, workspaces],
+  );
+  const catalogFiles = useMemo(
+    () => files.map((item) => ({ id: item.id, name: item.filename, workspace_id: item.workspace_id })),
+    [files],
+  );
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const paging = usePagination(files);
+  const paging = usePagination(
+    visibleFiles,
+    treeSelection.type === "all" ? "all" : `${treeSelection.type}:${treeSelection.id}`,
+  );
   const pageFiles = paging.items;
   const allSelected = pageFiles.length > 0 && pageFiles.every((item) => selectedSet.has(item.id));
   const previewHeaders = preview?.columns.map((column) => column.name) ?? [];
@@ -125,8 +143,24 @@ export function TransformFilesPage() {
         title={messages.transformFiles.title}
         description={messages.transformFiles.description}
       />
-      <Panel>
-        <Toolbar>
+      <Panel tall className="overflow-hidden">
+        <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.sidebar]}>
+          <WorkspaceFileCatalog
+            folders={folders}
+            workspaces={workspaces}
+            files={catalogFiles}
+            selection={treeSelection}
+            activeFileId={previewing?.id}
+            onSelect={setTreeSelection}
+            onFileClick={(id) => {
+              const item = files.find((file) => file.id === id);
+              if (!item) return;
+              setTreeSelection({ type: "workspace", id: item.workspace_id });
+              void openPreview(item);
+            }}
+          />
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
               <input
@@ -140,7 +174,7 @@ export function TransformFilesPage() {
               <span>{messages.transformFiles.resultFiles}</span>
             </label>
             <span className="rounded-full bg-subtle px-2 py-0.5 text-[10px] font-semibold tabular-nums text-text-secondary">
-              {messages.common.count(files.length)}
+              {messages.common.count(visibleFiles.length)}
             </span>
             <span className="ml-1 border-l border-border pl-3 text-xs font-normal text-text-tertiary">
               {messages.transformFiles.resultHint}
@@ -159,13 +193,14 @@ export function TransformFilesPage() {
           </ToolbarGroup>
         </Toolbar>
         <DataGrid
+          className="min-h-0 flex-1"
           headers={[...messages.transformFiles.headers]}
           columnWidths={[56, 280, 100, 96, 140, 110]}
           selectedIds={selected}
           onSelectedIdsChange={setSelected}
-          empty={files.length === 0 ? <EmptyState icon={<NavIcon name="transformFiles" />} title={messages.empty.transformFiles} hint={messages.empty.transformFilesHint} /> : undefined}
+          empty={visibleFiles.length === 0 ? <EmptyState icon={<NavIcon name="transformFiles" />} title={files.length === 0 ? messages.empty.transformFiles : messages.workspace.fileCatalogEmpty} hint={files.length === 0 ? messages.empty.transformFilesHint : undefined} /> : undefined}
         >
-          {files.length === 0 ? null : pageFiles.map((item) => (
+          {visibleFiles.length === 0 ? null : pageFiles.map((item) => (
               <GridRow
                 key={item.id}
                 rowId={item.id}
@@ -215,6 +250,8 @@ export function TransformFilesPage() {
           onPageChange={paging.setPage}
           onPageSizeChange={paging.setPageSize}
         />
+          </div>
+        </SplitLayout>
       </Panel>
 
       <AppDialog

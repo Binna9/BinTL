@@ -23,6 +23,15 @@ export function fmtWhen(iso: string): string {
   return iso.replace("T", " ").replace(/\.\d+Z$/, "Z").slice(0, 19);
 }
 
+export function runDurationMs(
+  started?: string | null,
+  finished?: string | null,
+): number | null {
+  if (!started || !finished) return null;
+  const ms = Date.parse(finished) - Date.parse(started);
+  return Number.isFinite(ms) && ms >= 0 ? ms : null;
+}
+
 export function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;

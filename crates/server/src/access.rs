@@ -122,14 +122,17 @@ pub async fn require_workspace(
         .await?)
 }
 
-pub async fn write_workspace(
+pub async fn require_write_workspace(
     store: &storage::Store,
     user: &CurrentUser,
     requested: Option<String>,
 ) -> Result<String, AppError> {
-    Ok(store
-        .resolve_write_workspace(&user.scope(requested))
-        .await?)
+    let workspace_id = requested
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::bad("workspace_id required"))?;
+    require_workspace(store, user, &workspace_id).await?;
+    Ok(workspace_id)
 }
 
 pub async fn require_folder(

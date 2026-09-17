@@ -688,6 +688,11 @@ impl PolarsEngine {
         Ok(())
     }
 
+    /// Fast parquet footer row count. Used after a transform write.
+    pub fn file_row_count(path: &Path) -> Option<u64> {
+        parquet_row_count(path)
+    }
+
     /// Schema + sample rows. Does not apply transform steps.
     pub fn inspect(
         &self,

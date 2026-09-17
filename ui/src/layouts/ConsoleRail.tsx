@@ -110,7 +110,6 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       isActive: (pathname) => pathname.startsWith("/validation") || /^\/workspace\/[^/]+\/chips\/[^/]+\/validation$/.test(pathname),
       children: [
         { to: "/validation", label: messages.validation.runTitle, icon: <ShieldCheck className={iconClassName} />, end: true },
-        { to: "/validation/rules", label: messages.validation.rulesTitle, icon: <ListChecks className={iconClassName} /> },
         { to: "/validation/results", label: messages.validation.resultsTitle, icon: <History className={iconClassName} /> },
       ],
     },

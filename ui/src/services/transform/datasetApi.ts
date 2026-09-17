@@ -1,4 +1,4 @@
-import { httpRequest } from "@/services/httpClient";
+import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
 import type {
   Dataset,
   DatasetInspectResponse,
@@ -8,7 +8,7 @@ import type {
 import type { TransformSpecV2 } from "@/types/transform";
 
 export const datasetApi = {
-  list: () => httpRequest<DatasetListResponse>("/api/datasets"),
+  list: (init?: HttpRequestInit) => httpRequest<DatasetListResponse>("/api/datasets", init),
   get: (id: string) => httpRequest<Dataset>(`/api/datasets/${id}`),
   inspect: (id: string, limit = 200, silent = false) =>
     httpRequest<DatasetInspectResponse>(`/api/datasets/${id}/inspect?limit=${limit}`, {

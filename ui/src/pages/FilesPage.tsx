@@ -14,14 +14,21 @@ import { FileDropzone } from "@/components/files/FileDropzone";
 import { AppDialog } from "@/components/AppDialog";
 import { PaginationBar } from "@/components/PaginationBar";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
+import { SplitLayout } from "@/layouts/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { MetaField } from "@/components/ui/meta-field";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
+import { WorkspaceFileCatalog } from "@/components/workspace/WorkspaceFileCatalog";
+import { WorkspacePickDialog } from "@/components/workspace/WorkspacePickDialog";
+import { filterItemsByFileTree, type FileTreeSelection } from "@/features/workspace/fileWorkspaceTree";
 import { useFiles } from "@/hooks/files/useFiles";
+import { useWorkspacePick } from "@/hooks/workspace/useWorkspacePick";
+import { useWorkspaceTree } from "@/hooks/workspace/useWorkspaceTree";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtDelimiterGlyph } from "@/lib/format";
 import { setGlobalLoadingStatus } from "@/lib/globalLoading";
+import { layout } from "@/lib/layout";
 import { usePagination } from "@/lib/pagination";
 import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { fileApi } from "@/services/files/fileApi";
@@ -61,6 +68,9 @@ function saveAsName(original: string, requested: string): string {
 export function FilesPage() {
   const { messages } = useLanguage();
   const { files, refreshFiles } = useFiles();
+  const { folders, workspaces } = useWorkspaceTree();
+  const workspacePick = useWorkspacePick();
+  const [treeSelection, setTreeSelection] = useState<FileTreeSelection>({ type: "all" });
   const [busy, setBusy] = useState(false);
   const [readingWorkbook, setReadingWorkbook] = useState(false);
   const [savingWorkbook, setSavingWorkbook] = useState(false);
@@ -72,10 +82,21 @@ export function FilesPage() {
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  const visibleFiles = useMemo(
+    () => filterItemsByFileTree(files, treeSelection, folders, workspaces),
+    [files, folders, treeSelection, workspaces],
+  );
+  const catalogFiles = useMemo(
+    () => files.map((file) => ({ id: file.id, name: file.filename, workspace_id: file.workspace_id })),
+    [files],
+  );
   const allSelected = queue.length > 0 && selected.length === queue.length;
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const storedSelectedSet = useMemo(() => new Set(storedSelected), [storedSelected]);
-  const paging = usePagination(files);
+  const paging = usePagination(
+    visibleFiles,
+    treeSelection.type === "all" ? "all" : `${treeSelection.type}:${treeSelection.id}`,
+  );
   const pageFiles = paging.items;
   const allStoredSelected = pageFiles.length > 0 && pageFiles.every((file) => storedSelectedSet.has(file.id));
   const previewWidths = useMemo(
@@ -145,6 +166,10 @@ export function FilesPage() {
   ) {
     const workbook = workbooks[0];
     if (!workbook) return;
+    const workspaceId = await workspacePick.pick(
+      treeSelection.type === "workspace" ? treeSelection.id : undefined,
+    );
+    if (!workspaceId) return;
     setSavingWorkbook(true);
     setGlobalLoadingStatus({
       label: messages.files.savingSheets,
@@ -153,6 +178,7 @@ export function FilesPage() {
     try {
       await fileApi.commitWorkbook(workbook.staging_id, sheets, {
         ...options,
+        workspaceId,
         onProgress: (progress) => {
           setGlobalLoadingStatus({
             label: messages.files.savingSheets,
@@ -250,11 +276,15 @@ export function FilesPage() {
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (queue.length === 0) return;
+    const workspaceId = await workspacePick.pick(
+      treeSelection.type === "workspace" ? treeSelection.id : undefined,
+    );
+    if (!workspaceId) return;
 
     setBusy(true);
     try {
       for (const item of queue) {
-        await fileApi.uploadFile(item.file, saveAsName(item.file.name, item.name));
+        await fileApi.uploadFile(item.file, saveAsName(item.file.name, item.name), workspaceId);
         setQueue((current) => current.filter((queued) => queued.id !== item.id));
         setSelected((current) => current.filter((id) => id !== item.id));
       }
@@ -363,7 +393,23 @@ export function FilesPage() {
         </PanelBody>
       </Panel>
 
-      <Panel>
+      <Panel tall className="overflow-hidden">
+        <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.sidebar]}>
+          <WorkspaceFileCatalog
+            folders={folders}
+            workspaces={workspaces}
+            files={catalogFiles}
+            selection={treeSelection}
+            activeFileId={previewing?.id}
+            onSelect={setTreeSelection}
+            onFileClick={(id) => {
+              const file = files.find((item) => item.id === id);
+              if (!file) return;
+              setTreeSelection({ type: "workspace", id: file.workspace_id });
+              void openPreview(file);
+            }}
+          />
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -378,7 +424,7 @@ export function FilesPage() {
               <span>{messages.files.stored}</span>
             </label>
             <span className="rounded-full bg-subtle px-2 py-0.5 text-[10px] font-semibold tabular-nums text-text-secondary">
-              {messages.common.count(files.length)}
+              {messages.common.count(visibleFiles.length)}
             </span>
             <span className="ml-1 border-l border-border pl-3 text-xs font-normal text-text-tertiary">
               {messages.files.storedHint}
@@ -397,13 +443,14 @@ export function FilesPage() {
           </ToolbarGroup>
         </Toolbar>
         <DataGrid
+          className="min-h-0 flex-1"
           headers={[...messages.files.headers]}
           columnWidths={[80, 220, 120, 140, 280]}
           selectedIds={storedSelected}
           onSelectedIdsChange={setStoredSelected}
-          empty={files.length === 0 ? <EmptyState icon={<NavIcon name="files" />} title={messages.empty.uploads} hint={messages.empty.uploadsHint} /> : undefined}
+          empty={visibleFiles.length === 0 ? <EmptyState icon={<NavIcon name="files" />} title={files.length === 0 ? messages.empty.uploads : messages.workspace.fileCatalogEmpty} hint={files.length === 0 ? messages.empty.uploadsHint : undefined} /> : undefined}
         >
-          {files.length === 0 ? null : pageFiles.map((file) => (
+          {visibleFiles.length === 0 ? null : pageFiles.map((file) => (
               <GridRow
                 key={`${file.id}-${file.filename}`}
                 rowId={file.id}
@@ -438,6 +485,8 @@ export function FilesPage() {
           onPageChange={paging.setPage}
           onPageSizeChange={paging.setPageSize}
         />
+          </div>
+        </SplitLayout>
       </Panel>
 
       <ExcelSheetDialog
@@ -446,6 +495,7 @@ export function FilesPage() {
         onClose={() => void closeWorkbook()}
         onSave={(sheets, options) => void saveWorkbookSheets(sheets, options)}
       />
+      <WorkspacePickDialog {...workspacePick.dialogProps} />
 
       <AppDialog
         open={Boolean(previewing)}

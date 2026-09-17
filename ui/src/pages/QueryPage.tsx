@@ -43,6 +43,8 @@ import { extractApi } from "@/services/extract/extractApi";
 import { queryApi } from "@/services/query/queryApi";
 import { chipApi } from "@/services/chips/chipApi";
 import { isChipNameConflict } from "@/services/httpClient";
+import { WorkspacePickDialog } from "@/components/workspace/WorkspacePickDialog";
+import { useWorkspacePick } from "@/hooks/workspace/useWorkspacePick";
 import type { CatalogSelection } from "@/types/connection";
 import type { ExtractRecord } from "@/types/extract";
 import type { QueryResult } from "@/types/query";
@@ -111,6 +113,7 @@ export function QueryPage() {
   const { workspaceId, editorChipId } = useParams<{ workspaceId: string; editorChipId: string }>();
   const editingChip = Boolean(editorChipId);
   const returnWorkspaceId = workspaceId ?? (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
+  const workspacePick = useWorkspacePick();
 
   function leaveEditor() {
     if (returnWorkspaceId) {
@@ -497,6 +500,10 @@ export function QueryPage() {
 
   async function onExtract() {
     if (!browseId) return;
+    const dest = editingChip && workspaceId
+      ? workspaceId
+      : await workspacePick.pick(returnWorkspaceId);
+    if (!dest) return;
     setExtracting(true);
     try {
       const created = await extractApi.createExtract({
@@ -507,6 +514,7 @@ export function QueryPage() {
         delimiter,
         header,
         add_sequence: addSequence,
+        workspace_id: dest,
         ...(exportName.trim() ? { filename: exportName.trim() } : {}),
       });
       setExtractId(created.id);
@@ -1168,6 +1176,7 @@ export function QueryPage() {
         text={[queryLog, extractLog].filter(Boolean).join("\n\n")}
         onClose={() => setIsLogOpen(false)}
       />
+      <WorkspacePickDialog {...workspacePick.dialogProps} />
     </PageShell>
   );
 }

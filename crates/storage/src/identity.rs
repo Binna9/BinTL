@@ -395,21 +395,6 @@ impl Store {
         Err(StorageError::NotFound("workspace not found".into()))
     }
 
-    pub async fn resolve_write_workspace(&self, scope: &DataScope) -> Result<String, StorageError> {
-        if let Some(workspace_id) = scope.workspace_id.as_deref() {
-            self.require_workspace_access(&scope.user_id, scope.admin, workspace_id)
-                .await?;
-            return Ok(workspace_id.to_string());
-        }
-        let owned = self.list_visible_workspaces(Some(scope)).await?;
-        let Some(workspace) = owned.first() else {
-            return Err(StorageError::Invalid(
-                "workspace required: create a workspace first".into(),
-            ));
-        };
-        Ok(workspace.id.clone())
-    }
-
     pub fn workspace_scope_sql(scope: &DataScope, column: &str) -> (String, Vec<String>) {
         if let Some(workspace_id) = &scope.workspace_id {
             (format!("AND {column} = ?"), vec![workspace_id.clone()])

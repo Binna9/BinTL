@@ -158,11 +158,6 @@ impl Store {
         if found.is_none() {
             return Err(StorageError::NotFound("workspace not found".into()));
         }
-        let file_ids: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM data_files WHERE workspace_id = ?")
-                .bind(id)
-                .fetch_all(&mut *tx)
-                .await?;
         let stored_paths: Vec<String> =
             sqlx::query_scalar("SELECT stored_path FROM data_files WHERE workspace_id = ?")
                 .bind(id)
@@ -197,6 +192,11 @@ impl Store {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
+            if let Some(parent) = resolved.parent() {
+                if parent.starts_with(&self.data_dir) && parent != self.data_dir {
+                    let _ = tokio::fs::remove_dir(parent).await;
+                }
+            }
         }
         for rel in [
             chip_slot::REL_CHIP_OUTPUTS.to_string(),
@@ -208,10 +208,13 @@ impl Store {
                 Err(error) => return Err(error.into()),
             }
         }
-        for file_id in file_ids {
-            let _ = self.delete_search_document("data_file", &file_id).await;
-        }
-        let _ = self.delete_search_document("workspace", id).await;
+        let _ = sqlx::query(
+            "DELETE FROM search_documents WHERE workspace_id = ? OR (entity_type = 'workspace' AND entity_id = ?)",
+        )
+        .bind(id)
+        .bind(id)
+        .execute(&self.pool)
+        .await;
         Ok(())
     }
 

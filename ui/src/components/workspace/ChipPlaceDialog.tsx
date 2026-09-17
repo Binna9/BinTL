@@ -1193,7 +1193,7 @@ export function ChipPlaceDialog({
           onClose={onClose}
           onPlace={onPlaceCatalog}
           onPlaceEmpty={onPlaceNewValidation}
-          onRegister={() => { onClose(); navigate("/validation/rules"); }}
+          onRegister={() => { onClose(); navigate("/validation"); }}
           dragHandleRef={dragHandleRef}
         />
       )}

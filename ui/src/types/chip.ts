@@ -82,6 +82,9 @@ export interface ChipRun {
   output_dataset_id?: string | null;
   error_code?: string | null;
   error_message?: string | null;
+  input_rows?: number | null;
+  output_rows?: number | null;
+  result?: Record<string, unknown> | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -126,6 +129,7 @@ export interface RegisterChipRequest {
   transform_id?: string;
   load_definition_id?: string;
   output_filename?: string;
+  config?: ChipConfig;
 }
 
 export interface RunChipRequest {

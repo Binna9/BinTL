@@ -19,16 +19,3 @@ export interface EtlJobLog {
 }
 
 export type EtlJobRun = EtlJob & { logs: EtlJobLog[] };
-
-export interface CreateEtlJobRequest {
-  file_id?: string;
-  extract_id?: string;
-  connection_id?: string;
-  table?: string;
-  dest_connection_id?: string;
-  dest_table?: string;
-  mode?: string;
-  select?: string[];
-  filter?: string;
-  rename?: Record<string, string>;
-}

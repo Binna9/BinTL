@@ -332,6 +332,9 @@ pub struct ChipRunRow {
     pub legacy_job_id: Option<String>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    pub input_rows: Option<i64>,
+    pub output_rows: Option<i64>,
+    pub result_json: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -441,7 +444,15 @@ pub(crate) const CHIP_RUN_COLS: &str =
         (SELECT o.data_file_id FROM execution_outputs o WHERE o.execution_step_id = s.id LIMIT 1) AS output_dataset_id,
         CASE WHEN s.kind = 'extract' THEN s.id END AS legacy_extract_id,
         CASE WHEN s.kind = 'transform' THEN s.id END AS legacy_job_id,
-        s.error_code, s.error_message, s.queued_at AS created_at, s.started_at, s.finished_at";
+        s.error_code, s.error_message, s.input_rows,
+        COALESCE(
+            s.output_rows,
+            (SELECT d.row_count FROM execution_outputs o INNER JOIN data_files d ON d.id = o.data_file_id
+             WHERE o.execution_step_id = s.id LIMIT 1),
+            (SELECT c.output_rows FROM execution_steps c
+             WHERE c.id = json_extract(s.result_json, '$.child_step_id'))
+        ) AS output_rows,
+        s.result_json, s.queued_at AS created_at, s.started_at, s.finished_at";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct JobLogRow {
@@ -458,6 +469,7 @@ pub struct FileMeta {
     pub filename: String,
     pub size: u64,
     pub stored_path: String,
+    pub workspace_id: String,
 }
 
 #[derive(Debug, Clone)]

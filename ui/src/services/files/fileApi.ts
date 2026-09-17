@@ -18,10 +18,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 export const fileApi = {
   getFiles: () => httpRequest<FileListResponse>("/api/files"),
-  uploadFile: (file: File, filename?: string) => {
+  uploadFile: (file: File, filename?: string, workspaceId?: string) => {
     const body = new FormData();
     const name = filename?.trim();
     if (name) body.append("filename", name);
+    if (workspaceId?.trim()) body.append("workspace_id", workspaceId.trim());
     body.append("file", file);
     return httpRequest<StoredFile>("/api/files", { method: "POST", body });
   },
@@ -40,6 +41,7 @@ export const fileApi = {
       delimiter?: string;
       header?: boolean;
       addSequence?: boolean;
+      workspaceId?: string;
       onProgress?: (progress: WorkbookCommitProgress) => void;
     },
   ) => {
@@ -55,6 +57,7 @@ export const fileApi = {
           delimiter: options?.delimiter?.trim() || ",",
           header: options?.header ?? true,
           add_sequence: options?.addSequence ?? false,
+          ...(options?.workspaceId?.trim() ? { workspace_id: options.workspaceId.trim() } : {}),
         }),
       },
       (event) => {

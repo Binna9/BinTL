@@ -12,16 +12,21 @@ import { NavIcon } from "@/components/ui/nav-icons";
 import { AppDialog } from "@/components/AppDialog";
 import { PaginationBar } from "@/components/PaginationBar";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
+import { SplitLayout } from "@/layouts/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
 import { ActionAnchor, Button } from "@/components/ui/button";
 import { LiveDot } from "@/components/ui/live-dot";
 import { MetaField } from "@/components/ui/meta-field";
 import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
+import { WorkspaceFileCatalog } from "@/components/workspace/WorkspaceFileCatalog";
+import { filterItemsByFileTree, type FileTreeSelection } from "@/features/workspace/fileWorkspaceTree";
 import { isExtractActive, useExtracts } from "@/hooks/extract/useExtracts";
+import { useWorkspaceTree } from "@/hooks/workspace/useWorkspaceTree";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
+import { layout } from "@/lib/layout";
 import { usePagination } from "@/lib/pagination";
 import { fmtDelimiterGlyph, fmtSqlPreview, fmtWhen } from "@/lib/format";
 import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
@@ -61,14 +66,32 @@ function extractOrigin(extract: ExtractRecord, messages: Messages): { text: stri
 export function ExtractResultsPage() {
   const { messages } = useLanguage();
   const { extracts, refreshExtracts } = useExtracts();
+  const { folders, workspaces } = useWorkspaceTree();
+  const [treeSelection, setTreeSelection] = useState<FileTreeSelection>({ type: "all" });
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [previewing, setPreviewing] = useState<ExtractRecord | null>(null);
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  const visibleExtracts = useMemo(
+    () => filterItemsByFileTree(extracts, treeSelection, folders, workspaces),
+    [extracts, folders, treeSelection, workspaces],
+  );
+  const catalogFiles = useMemo(
+    () =>
+      extracts.map((extract) => ({
+        id: extract.id,
+        name: extractFilename(extract),
+        workspace_id: extract.workspace_id,
+      })),
+    [extracts],
+  );
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const paging = usePagination(extracts);
+  const paging = usePagination(
+    visibleExtracts,
+    treeSelection.type === "all" ? "all" : `${treeSelection.type}:${treeSelection.id}`,
+  );
   const pageExtracts = paging.items;
   const allSelected = pageExtracts.length > 0 && pageExtracts.every((extract) => selectedSet.has(extract.id));
   const activeCount = extracts.filter((extract) => isExtractActive(extract.status)).length;
@@ -149,7 +172,23 @@ export function ExtractResultsPage() {
         actions={activeCount > 0 ? <LiveDot label={messages.extracts.generating(activeCount)} /> : null}
       />
 
-      <Panel>
+      <Panel tall className="overflow-hidden">
+        <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.sidebar]}>
+          <WorkspaceFileCatalog
+            folders={folders}
+            workspaces={workspaces}
+            files={catalogFiles}
+            selection={treeSelection}
+            activeFileId={previewing?.id}
+            onSelect={setTreeSelection}
+            onFileClick={(id) => {
+              const extract = extracts.find((item) => item.id === id);
+              if (!extract) return;
+              setTreeSelection({ type: "workspace", id: extract.workspace_id });
+              void openPreview(extract);
+            }}
+          />
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -164,7 +203,7 @@ export function ExtractResultsPage() {
               <span>{messages.extracts.resultFiles}</span>
             </label>
             <span className="rounded-full bg-subtle px-2 py-0.5 text-[10px] font-semibold tabular-nums text-text-secondary">
-              {messages.common.count(extracts.length)}
+              {messages.common.count(visibleExtracts.length)}
             </span>
             <span className="ml-1 border-l border-border pl-3 text-xs font-normal text-text-tertiary">
               {messages.extracts.resultHint}
@@ -183,13 +222,14 @@ export function ExtractResultsPage() {
           </ToolbarGroup>
         </Toolbar>
         <DataGrid
+          className="min-h-0 flex-1"
           headers={[...messages.extracts.headers]}
           columnWidths={[56, 180, 72, 130, 220, 96, 100, 130, 110]}
           selectedIds={selected}
           onSelectedIdsChange={setSelected}
-          empty={extracts.length === 0 ? <EmptyState icon={<NavIcon name="extracts" />} title={messages.empty.extracts} hint={messages.empty.extractsHint} /> : undefined}
+          empty={visibleExtracts.length === 0 ? <EmptyState icon={<NavIcon name="extracts" />} title={extracts.length === 0 ? messages.empty.extracts : messages.workspace.fileCatalogEmpty} hint={extracts.length === 0 ? messages.empty.extractsHint : undefined} /> : undefined}
         >
-          {extracts.length === 0 ? null : (
+          {visibleExtracts.length === 0 ? null : (
             pageExtracts.map((extract) => {
               const kind = kindOf(extract);
               const origin = extractOrigin(extract, messages);
@@ -274,6 +314,8 @@ export function ExtractResultsPage() {
           onPageChange={paging.setPage}
           onPageSizeChange={paging.setPageSize}
         />
+          </div>
+        </SplitLayout>
       </Panel>
 
       <AppDialog

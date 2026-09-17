@@ -139,6 +139,7 @@ impl Store {
         &self,
         job_id: &str,
         stored_path: &str,
+        row_count: Option<i64>,
     ) -> Result<Option<String>, StorageError> {
         let run = sqlx::query_as::<_, ChipRunRow>(&format!(
             "SELECT {CHIP_RUN_COLS} FROM execution_steps s INNER JOIN executions e ON e.id=s.execution_id
@@ -189,7 +190,7 @@ impl Store {
                 &display_name,
                 stored_path,
                 Some(size),
-                None,
+                row_count,
                 None,
                 None,
                 None,
@@ -197,10 +198,12 @@ impl Store {
             .await?;
         let result = sqlx::query(
             "UPDATE execution_steps SET status = 'succeeded', error_message = NULL,
-                 finished_at = ?, result_json=json_set(COALESCE(result_json, '{}'), '$.output_data_file_id', ?)
+                 finished_at = ?, output_rows = COALESCE(?, output_rows),
+                 result_json=json_set(COALESCE(result_json, '{}'), '$.output_data_file_id', ?)
              WHERE id = ? AND status = 'running'",
         )
         .bind(&now)
+        .bind(row_count)
         .bind(&dataset_id)
         .bind(&run.id)
         .execute(&mut *tx)

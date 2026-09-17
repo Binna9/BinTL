@@ -180,6 +180,11 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
     const columns = Array.isArray(chip.config.columns)
       ? chip.config.columns.filter((value): value is string => typeof value === "string")
       : [];
+    const on = (value: unknown) => typeof value === "boolean" ? value : true;
+    const checks = [
+      on(chip.config.compare_row_count) ? messages.validation.compareRows : null,
+      on(chip.config.compare_schema) ? messages.validation.compareSchema : null,
+    ].filter((item): item is string => Boolean(item));
     return <DetailStack>
       <DetailSection icon={ShieldCheck} title={messages.workspace.placeValidationTitle}>
         <DetailRow label={messages.validation.source}>{datasetName || messages.chips.detailUnset}</DetailRow>
@@ -188,6 +193,7 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
       <DetailSection icon={Settings2} title={messages.validation.keys} tone="success">
         <DetailRow label={messages.validation.keys}>{keys.join(", ") || messages.chips.detailUnset}</DetailRow>
         <DetailRow label={messages.validation.columns}>{columns.join(", ") || messages.validation.columnsHint}</DetailRow>
+        <DetailRow label={messages.validation.detailSettings}>{checks.join(" · ") || messages.validation.noExtraChecks}</DetailRow>
       </DetailSection>
     </DetailStack>;
   }

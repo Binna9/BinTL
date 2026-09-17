@@ -16,15 +16,15 @@ use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use connectors::{
-    catalog_layout, db_source_path, export_sheet_to_csv, list_columns, list_databases,
-    list_relations, list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter,
-    parse_http_spec, parse_ident, parse_table, preview_http, preview_table, run_sql,
-    sniff_delimiter, spreadsheet_format, sql_kind, test_connection, with_database, HttpKv,
-    HttpRequestSpec, SqlKind,
+    catalog_layout, export_sheet_to_csv, list_columns, list_databases, list_relations,
+    list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter, parse_http_spec,
+    parse_ident, parse_table, preview_http, preview_table, run_sql, sniff_delimiter,
+    spreadsheet_format, sql_kind, test_connection, with_database, HttpKv, HttpRequestSpec,
+    SqlKind,
 };
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashSet};
+use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::Path as FsPath;
 
 use crate::access::{self, CurrentUser};
@@ -81,7 +81,7 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
             "/api/extracts/{id}",
             get(get_extract).delete(delete_extract),
         )
-        .route("/api/jobs", post(create_job).get(list_jobs))
+        .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/run", post(run_job))
         .route("/api/jobs/{id}/result", get(job_result))

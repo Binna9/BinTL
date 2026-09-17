@@ -67,6 +67,12 @@ struct PatchTransformBody {
     input_chip_id: Option<String>,
 }
 
+#[derive(Default, Deserialize)]
+struct RunTransformBody {
+    #[serde(default)]
+    workspace_id: Option<String>,
+}
+
 fn clamp_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(200).clamp(1, 200)
 }
@@ -642,6 +648,7 @@ async fn run_transform(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<String>,
+    Json(body): Json<RunTransformBody>,
 ) -> Result<Json<Value>, AppError> {
     access::require_transform_run(&user)?;
     let transform = access::require_transform(&state.store, &user, &id).await?;
@@ -656,6 +663,23 @@ async fn run_transform(
     }
     let spec_value: Value = serde_json::from_str(&transform.spec_json).unwrap_or(json!({}));
     let spec = hydrate_v2_spec(&state, &user, &spec_value, &dataset).await?;
+    let workspace_id = match body
+        .workspace_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(workspace_id) => {
+            access::require_workspace(&state.store, &user, &workspace_id).await?;
+            workspace_id
+        }
+        None => {
+            if transform.workspace_id.trim().is_empty() {
+                return Err(AppError::bad("workspace_id required"));
+            }
+            access::require_workspace(&state.store, &user, &transform.workspace_id).await?;
+            transform.workspace_id.clone()
+        }
+    };
     let job = state
         .store
         .insert_transform_job(
@@ -663,7 +687,7 @@ async fn run_transform(
             &spec_to_json(&spec)?,
             &transform.id,
             &dataset.id,
-            &transform.workspace_id,
+            &workspace_id,
         )
         .await?;
     state.wake();

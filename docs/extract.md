@@ -39,7 +39,7 @@
 
 ## API / 화면
 
-커넥션 browse·컬럼·미리보기·SQL은 inspect/query. `POST /api/extracts`는 레거시 단독 실행. `/extracts` 목록은 호환용이다. 반복 작업은 캔버스 칩.
+커넥션 browse·컬럼·미리보기·SQL은 inspect/query. `POST /api/extracts`는 레거시 단독 실행이고 `workspace_id`가 필요하다. 파일은 그 워크스페이스 칸에 붙는다. `/extracts` 목록은 작업구분 트리로 본다. 반복 작업은 캔버스 칩.
 
 `GET /api/extracts/:id/logs`와 칩 로그는 모두 `execution_logs`다.
 

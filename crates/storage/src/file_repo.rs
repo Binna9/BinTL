@@ -43,6 +43,7 @@ impl Store {
             filename,
             size: bytes.len() as u64,
             stored_path: rel,
+            workspace_id: workspace_id.to_string(),
         })
     }
 
@@ -118,6 +119,7 @@ impl Store {
                 filename: row.filename,
                 size: row.size_bytes.unwrap_or(0) as u64,
                 stored_path: row.stored_path,
+                workspace_id: row.workspace_id,
             })
             .collect())
     }
@@ -148,11 +150,17 @@ impl Store {
 
     pub async fn get_upload(&self, id: &str) -> Result<FileMeta, StorageError> {
         let (filename, _, size) = self.first_upload_file(id).await?;
+        let workspace_id = self
+            .get_dataset(id)
+            .await?
+            .map(|row| row.workspace_id)
+            .unwrap_or_default();
         Ok(FileMeta {
             id: id.to_string(),
             filename: filename.clone(),
             size,
             stored_path: upload_rel(id, &filename),
+            workspace_id,
         })
     }
 

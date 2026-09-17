@@ -56,6 +56,8 @@ import { chipApi } from "@/services/chips/chipApi";
 import { datasetApi } from "@/services/transform/datasetApi";
 import { transformApi } from "@/services/transform/transformApi";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
+import { WorkspacePickDialog } from "@/components/workspace/WorkspacePickDialog";
+import { useWorkspacePick } from "@/hooks/workspace/useWorkspacePick";
 import type { Dataset, DatasetColumn, FramePreview } from "@/types/dataset";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type {
@@ -95,6 +97,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     canvasDraft?: unknown;
   } | null;
   const newWorkspaceChip = Boolean(workspaceId && !chipId && searchParams.get("new_chip") === "1");
+  const workspacePick = useWorkspacePick();
   const draftInitializedRef = useRef(false);
   const delimiterLockedRef = useRef(false);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -819,6 +822,10 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   }
 
   async function exportResult() {
+    const dest = editingChip && workspaceId
+      ? workspaceId
+      : await workspacePick.pick(workspaceId ?? selected?.workspace_id);
+    if (!dest) return;
     let exportTransformId = transformId;
     if (editingChip) {
       exportTransformId = await saveTransformDefinition({ returnToWorkspace: false });
@@ -826,7 +833,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     if (!exportTransformId) return;
     setBusy(true);
     try {
-      const run = await transformApi.run(exportTransformId);
+      const run = await transformApi.run(exportTransformId, dest);
       navigate(`/jobs/${run.id}`);
     } catch (err) {
       toastError(messages.errors.runJob, err);
@@ -1596,6 +1603,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
           </dl>
         </div>
       </AppDialog>
+      <WorkspacePickDialog {...workspacePick.dialogProps} />
     </PageShell>
   );
 }

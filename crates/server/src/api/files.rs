@@ -49,7 +49,7 @@ pub(super) async fn upload_file(
     let delimiter_raw = sniff_delimiter(&data).unwrap_or_else(|| ",".into());
     let delimiter = parse_delimiter(&delimiter_raw)?;
     validate_csv(&data, delimiter)?;
-    let workspace_id = access::write_workspace(&state.store, &user, workspace_id).await?;
+    let workspace_id = access::require_write_workspace(&state.store, &user, workspace_id).await?;
     let meta = state
         .store
         .save_upload(
@@ -65,6 +65,7 @@ pub(super) async fn upload_file(
         "filename": meta.filename,
         "size": meta.size,
         "stored_path": meta.stored_path,
+        "workspace_id": meta.workspace_id,
     })))
 }
 
@@ -172,7 +173,7 @@ pub(super) async fn commit_spreadsheet(
     let delimiter = parse_delimiter(&delimiter_raw)?;
     let header = body.header.unwrap_or(true);
     let add_sequence = body.add_sequence.unwrap_or(false);
-    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
+    let workspace_id = access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
     let path = staged.path.clone();
     let available = tokio::task::spawn_blocking({
         let path = path.clone();

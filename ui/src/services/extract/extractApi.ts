@@ -12,7 +12,7 @@ interface ExtractListResponse {
 }
 
 export const extractApi = {
-  getExtracts: (limit = 50, init?: HttpRequestInit) =>
+  getExtracts: (limit = 200, init?: HttpRequestInit) =>
     httpRequest<ExtractListResponse>(`/api/extracts?limit=${limit}`, init),
   getExtract: (extractId: string) =>
     httpRequest<ExtractRecord>(`/api/extracts/${extractId}`),

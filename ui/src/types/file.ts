@@ -3,6 +3,7 @@ export interface StoredFile {
   filename: string;
   size: number;
   stored_path: string;
+  workspace_id: string;
 }
 
 export interface WorkbookSheet {

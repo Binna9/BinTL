@@ -98,6 +98,8 @@ struct RegisterChipBody {
     load_definition_id: Option<String>,
     #[serde(default)]
     output_filename: Option<String>,
+    #[serde(default)]
+    config: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,9 +324,22 @@ async fn register_chip(
                 })
                 .await?
         }
+        "validation" => {
+            let raw = body.config.unwrap_or_else(|| json!({}));
+            let config = validate_validation_config(&state.store, "", raw).await?;
+            if config.keys.is_empty() {
+                return Err(AppError::bad("at least one validation key required"));
+            }
+            let config_json =
+                serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?;
+            state
+                .store
+                .register_validation_chip(user.id(), name, &config_json)
+                .await?
+        }
         _ => {
             return Err(AppError::bad(
-                "chip kind must be extract, transform, or load",
+                "chip kind must be extract, transform, load, or validation",
             ))
         }
     };
@@ -1481,6 +1496,9 @@ fn chip_run_json(row: &ChipRunRow) -> Result<Value, AppError> {
         "legacy_job_id": row.legacy_job_id,
         "error_code": row.error_code,
         "error_message": row.error_message,
+        "input_rows": row.input_rows,
+        "output_rows": row.output_rows,
+        "result": row.result_json.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()),
         "created_at": row.created_at,
         "started_at": row.started_at,
         "finished_at": row.finished_at,
@@ -1609,7 +1627,7 @@ async fn validate_validation_config(
             .get_dataset(&config.source_data_file_id)
             .await?
             .ok_or_else(|| AppError::not_found("validation source data file not found"))?;
-        if source.workspace_id != workspace_id {
+        if !workspace_id.is_empty() && source.workspace_id != workspace_id {
             return Err(AppError::bad(
                 "validation source belongs to another workspace",
             ));
@@ -1948,8 +1966,19 @@ async fn run_sql_chip(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         )
         .await
         .map_err(|error| error.to_string())?;
+    let result_json = serde_json::json!({
+        "kind": outcome.kind,
+        "row_count": outcome.row_count,
+        "elapsed_ms": outcome.elapsed_ms,
+        "truncated": outcome.truncated,
+    })
+    .to_string();
     store
-        .set_chip_run_succeeded_without_output(&run.id)
+        .set_chip_run_succeeded_with_result(
+            &run.id,
+            Some(&result_json),
+            Some(outcome.row_count as i64),
+        )
         .await
         .map_err(|error| error.to_string())
 }
@@ -1957,9 +1986,7 @@ async fn run_sql_chip(store: &Store, run: &ChipRunRow) -> Result<(), String> {
 async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     let mut config: ValidationConfig = serde_json::from_str(&run.config_snapshot_json)
         .map_err(|error| format!("invalid validation config snapshot: {error}"))?;
-    let frozen_rule = run.execution_source == "workspace" && serde_json::from_str::<Value>(&run.config_snapshot_json)
-        .ok().and_then(|value| value["workspace_rule_snapshot"].as_bool()).unwrap_or(false);
-    if let Some(rule_id) = config.validation_rule_id.as_deref().filter(|_| !frozen_rule) {
+    if let Some(rule_id) = config.validation_rule_id.as_deref() {
         let rule = store
             .get_validation_rule(rule_id)
             .await
@@ -1968,10 +1995,17 @@ async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         if rule.active == 0 {
             return Err("validation rule is inactive".into());
         }
-        config.keys = serde_json::from_str(&rule.keys_json).map_err(|e| e.to_string())?;
-        config.columns = serde_json::from_str(&rule.columns_json).map_err(|e| e.to_string())?;
-        config.compare_row_count = rule.compare_row_count != 0;
-        config.compare_schema = rule.compare_schema != 0;
+        crate::validation::apply_rule_defaults(
+            &mut config.keys,
+            &mut config.columns,
+            &mut config.compare_row_count,
+            &mut config.compare_schema,
+            &rule,
+        )
+        .map_err(|error| error.message().to_string())?;
+    }
+    if config.keys.iter().all(|key| key.trim().is_empty()) {
+        return Err("at least one validation key required".into());
     }
     let target_id = run
         .input_dataset_id

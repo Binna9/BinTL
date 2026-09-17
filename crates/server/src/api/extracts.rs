@@ -146,7 +146,7 @@ pub(super) async fn create_api_extract(
     };
     let delimiter = body.delimiter.unwrap_or_else(|| ",".into());
     parse_delimiter(&delimiter).map_err(|e| AppError::bad(e.to_string()))?;
-    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
+    let workspace_id = access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
     let output_filename = body
         .filename
         .as_deref()
@@ -219,7 +219,7 @@ pub(super) async fn create_database_extract(
         }
         None => None,
     };
-    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
+    let workspace_id = access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
     let output_filename = body
         .filename
         .as_deref()

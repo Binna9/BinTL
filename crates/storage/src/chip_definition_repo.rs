@@ -113,14 +113,14 @@ impl Store {
         &self,
         id: &str,
     ) -> Result<Option<ExtractDefinitionRow>, StorageError> {
-        Ok(sqlx::query_as::<_, ExtractDefinitionRow>(&format!(
+        Ok(sqlx::query_as::<_, ExtractDefinitionRow>(
             "SELECT e.id, e.name, e.source_type AS kind, e.connection_id, e.source_json,
                     e.output_filename,
                     COALESCE(e.delimiter, ',') AS delimiter, COALESCE(e.has_header, 1) AS header,
                     e.add_sequence,
-                    COALESCE((SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id = wc.chip_id WHERE c.extract_id = e.id LIMIT 1), '{DEFAULT_WORKSPACE_ID}') AS workspace_id,
-                    e.created_at, e.updated_at FROM extracts e WHERE e.id = ?"
-        ))
+                    COALESCE((SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id = wc.chip_id WHERE c.extract_id = e.id LIMIT 1), '') AS workspace_id,
+                    e.created_at, e.updated_at FROM extracts e WHERE e.id = ?",
+        )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?)
@@ -508,6 +508,37 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        search::sync_search_best_effort(self, "chip", self.sync_search_chip(&id)).await;
+        self.get_chip(&id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("chip disappeared after insert".into()))
+    }
+
+    pub async fn register_validation_chip(
+        &self,
+        owner_user_id: &str,
+        name: &str,
+        config_json: &str,
+    ) -> Result<ChipRow, StorageError> {
+        let name = required_text(name, "chip name")?;
+        self.ensure_chip_name_available(owner_user_id, name, None)
+            .await?;
+        require_config_json(config_json)?;
+        let id = Uuid::new_v4().to_string();
+        let now = now_rfc3339();
+        sqlx::query(
+            "INSERT INTO chips
+             (id, owner_user_id, name, kind, config_json, revision, active, created_at, updated_at)
+             VALUES (?, ?, ?, 'validation', ?, 1, 1, ?, ?)",
+        )
+        .bind(&id)
+        .bind(owner_user_id)
+        .bind(name)
+        .bind(config_json)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
         search::sync_search_best_effort(self, "chip", self.sync_search_chip(&id)).await;
         self.get_chip(&id)
             .await?

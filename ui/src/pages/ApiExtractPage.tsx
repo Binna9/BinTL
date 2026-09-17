@@ -28,6 +28,8 @@ import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extract/extractApi";
 import { chipApi } from "@/services/chips/chipApi";
 import { isChipNameConflict } from "@/services/httpClient";
+import { WorkspacePickDialog } from "@/components/workspace/WorkspacePickDialog";
+import { useWorkspacePick } from "@/hooks/workspace/useWorkspacePick";
 import type { ExtractRecord, HttpKv, HttpPreviewResponse, HttpSource } from "@/types/extract";
 import { inferredHttpAuthMode } from "@/types/connection";
 
@@ -180,6 +182,7 @@ export function ApiExtractPage() {
   const { workspaceId, editorChipId } = useParams<{ workspaceId: string; editorChipId: string }>();
   const editingChip = Boolean(editorChipId);
   const returnWorkspaceId = workspaceId ?? (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
+  const workspacePick = useWorkspacePick();
 
   function leaveEditor() {
     if (returnWorkspaceId) {
@@ -387,6 +390,10 @@ export function ApiExtractPage() {
 
   async function onExtract() {
     if (!browseId) return;
+    const dest = editingChip && workspaceId
+      ? workspaceId
+      : await workspacePick.pick(returnWorkspaceId);
+    if (!dest) return;
     setExtracting(true);
     try {
       const source = buildSource();
@@ -398,6 +405,7 @@ export function ApiExtractPage() {
         header,
         add_sequence: addSequence,
         filename: effectiveOutputName,
+        workspace_id: dest,
       });
       setExtractId(created.id);
       setExtractRow(created);
@@ -916,6 +924,8 @@ export function ApiExtractPage() {
           </dl>
         </div>
       </AppDialog>
+
+      <WorkspacePickDialog {...workspacePick.dialogProps} />
 
     </PageShell>
   );

@@ -22,7 +22,7 @@ export interface ValidationResult {
 export type SaveValidationRule = Omit<ValidationRule, "id" | "revision" | "created_at" | "updated_at">;
 
 export const validationApi = {
-  run: (body: { source_data_file_id: string; target_data_file_id: string; validation_rule_id?: string; keys: string[]; columns: string[] }) =>
+  run: (body: { source_data_file_id: string; target_data_file_id: string; validation_rule_id?: string; keys: string[]; columns: string[]; compare_row_count?: boolean; compare_schema?: boolean }) =>
     httpRequest<{ result_id: string; report: ValidationReport }>("/api/validations/run", { method: "POST", body: JSON.stringify(body) }),
   listRules: () => httpRequest<{ rules: ValidationRule[] }>("/api/validation-rules"),
   createRule: (body: SaveValidationRule) => httpRequest<ValidationRule>("/api/validation-rules", { method: "POST", body: JSON.stringify(body) }),

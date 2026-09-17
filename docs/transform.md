@@ -32,13 +32,14 @@ v2 스텝: `select`, `drop`, `rename`, `filter`, `derive`, `trim`, `replace`, `s
 
 `POST /api/transforms/:id/run`과 칩 변환은 queued 변환 단계를 만든 뒤 같은 디스패처가 `jobs::execute`로 돌린다. v1 dest가 있으면 jobs가 CSV를 내보낸 뒤 connectors 적재를 이어서 호출할 수 있다. 새 레시피에 dest를 넣지 않는다.
 
-`/api/datasets`, `/api/jobs`는 호환 경로다. 물리 `datasets`/`jobs` 테이블은 없다.
+`/api/datasets`와 `GET /api/jobs`, `POST /api/jobs/:id/run`, `GET /api/jobs/:id/result`는 호환 경로다. 물리 `datasets`/`jobs` 테이블은 없다. 단독 폼으로 잡을 만드는 `POST /api/jobs`는 없다.
 
 ## 화면
 
 - 워크스페이스 모드: 업스트림 칩, 스텝, 미리보기, 저장
-- 단독 `/transform`: 업로드·추출 파일을 고를 수 있다. 새 반복 작업은 칩으로 저장한다
-- `/history`, `/jobs/:id`: 레거시 실행 상세
+- 단독 `/transform`: 업로드·추출 파일을 고를 수 있다. 새 반복 작업은 칩으로 저장한다. 결과 내보내기는 작업구분 팝업으로 워크스페이스를 고른다
+- `/jobs/:id`: 단독 변환 내보내기 실행 상세
+- `/history`: 워크스페이스·칩 실행 이력
 
 ## 하지 않는 것
 

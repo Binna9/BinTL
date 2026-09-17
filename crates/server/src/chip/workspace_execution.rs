@@ -158,14 +158,15 @@ async fn prepare_config(
                     .get_validation_rule(rule_id)
                     .await?
                     .ok_or_else(|| AppError::not_found("validation rule not found"))?;
-                validated.keys = serde_json::from_str(&rule.keys_json)
-                    .map_err(|e| AppError::bad(e.to_string()))?;
-                validated.columns = serde_json::from_str(&rule.columns_json)
-                    .map_err(|e| AppError::bad(e.to_string()))?;
-                validated.compare_row_count = rule.compare_row_count != 0;
-                validated.compare_schema = rule.compare_schema != 0;
+                crate::validation::apply_rule_defaults(
+                    &mut validated.keys,
+                    &mut validated.columns,
+                    &mut validated.compare_row_count,
+                    &mut validated.compare_schema,
+                    &rule,
+                )?;
             }
-            if validated.keys.is_empty() {
+            if validated.keys.iter().all(|key| key.trim().is_empty()) {
                 return Err(AppError::bad("at least one validation key required"));
             }
             if incoming.len() == 1 {
