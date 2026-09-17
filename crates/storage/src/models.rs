@@ -120,7 +120,11 @@ pub(crate) const JOB_COLS: &str = "s.id, s.status, COALESCE(s.source_path, '') A
         s.output_path, s.definition_snapshot_json AS spec_json, s.error_message,
         s.queued_at AS created_at, s.started_at, s.finished_at, s.kind, s.transform_id,
         (SELECT i.data_file_id FROM execution_inputs i WHERE i.execution_step_id = s.id ORDER BY i.ordinal LIMIT 1) AS dataset_id,
-        e.workspace_id";
+        e.workspace_id, s.output_rows AS row_count,
+        COALESCE(
+          (SELECT d.filename FROM data_files d WHERE d.id = s.id),
+          (SELECT t.output_filename_template FROM transforms t WHERE t.id = s.transform_id)
+        ) AS filename";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct JobRow {
@@ -137,6 +141,8 @@ pub struct JobRow {
     pub transform_id: Option<String>,
     pub dataset_id: Option<String>,
     pub workspace_id: String,
+    pub row_count: Option<i64>,
+    pub filename: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]

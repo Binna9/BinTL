@@ -8,6 +8,10 @@ export interface EtlJob {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  kind?: string;
+  filename?: string | null;
+  row_count?: number | null;
+  workspace_id?: string;
 }
 
 export interface EtlJobLog {

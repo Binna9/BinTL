@@ -268,6 +268,7 @@ async fn run_validation(
         columns: body.columns,
         compare_row_count: body.compare_row_count,
         compare_schema: body.compare_schema,
+        ignore_extra_keys: false,
     };
     let report: ValidationReport = tokio::task::spawn_blocking(move || {
         PolarsEngine.validate_files(

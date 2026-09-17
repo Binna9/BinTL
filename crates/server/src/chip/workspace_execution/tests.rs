@@ -159,6 +159,69 @@ impl Fixture {
         self.state.store.pool.close().await;
         std::fs::remove_dir_all(&self.state.config.data_dir).unwrap();
     }
+
+    async fn sqlite_file(&self, name: &str) -> String {
+        let path = self.state.config.data_dir.join(format!("{name}.sqlite"));
+        std::fs::File::create(&path).unwrap();
+        self.state
+            .store
+            .insert_connection(NewConnection {
+                http_auth: None,
+                name: name.into(),
+                driver: "sqlite".into(),
+                host: String::new(),
+                port: 0,
+                database: path.to_string_lossy().into(),
+                username: String::new(),
+                password: String::new(),
+                ssl: false,
+            })
+            .await
+            .unwrap()
+            .id
+    }
+
+    async fn load_db(
+        &self,
+        name: &str,
+        connection_id: &str,
+        table: &str,
+        write_mode: &str,
+    ) -> ChipRow {
+        let chip = self.chip(name, "load", json!({})).await;
+        let spec = json!({
+            "destination": {
+                "type": "database",
+                "connection_id": connection_id,
+                "table": table
+            },
+            "write_mode": write_mode
+        });
+        let load = self
+            .state
+            .store
+            .insert_load_definition(self.user.id(), name, "database", &spec.to_string())
+            .await
+            .unwrap();
+        self.state
+            .store
+            .bind_chip_to_load(&chip.id, &load.id)
+            .await
+            .unwrap();
+        self.state.store.get_chip(&chip.id).await.unwrap().unwrap()
+    }
+
+    async fn exec_sql(&self, connection_id: &str, sql: &str) {
+        let live = self
+            .state
+            .store
+            .live_connection(connection_id)
+            .await
+            .unwrap();
+        connectors::run_sql(&live, sql, 1000, None, None)
+            .await
+            .unwrap();
+    }
 }
 
 fn edge(from: &ChipRow, to: &ChipRow, kind: &str, port: &str) -> WorkspaceSaveEdge {
@@ -551,4 +614,124 @@ async fn cancel_aborts_workspace_and_skips_remaining() {
         .values()
         .all(|run| run.status == "canceled"));
     f.close(None).await;
+}
+
+#[tokio::test]
+async fn load_cannot_feed_transform() {
+    let f = Fixture::new().await;
+    let src = f.extract("Source", "SELECT 1 AS id").await;
+    let load = f.load_db("Load", &f.connection, "dest", "replace").await;
+    let transform = f.transform("Consumer").await;
+    let chips = f.state.store.list_chips(&f.workspace).await.unwrap();
+    let error = f
+        .state
+        .store
+        .save_workspace(
+            &f.workspace,
+            r#"{"nodes":{}}"#,
+            &chips.iter().map(|chip| chip.id.clone()).collect::<Vec<_>>(),
+            &[
+                edge(&src, &load, "data", "in"),
+                edge(&load, &transform, "data", "in"),
+            ],
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("validation TARGET"));
+    f.close(None).await;
+}
+
+#[tokio::test]
+async fn failed_load_skips_validation() {
+    let f = Fixture::new().await;
+    let expected = f.extract("Expected", "SELECT 1 AS id").await;
+    let bad = f.extract("Broken", "SELECT * FROM missing_table").await;
+    let dest = f.sqlite_file("dest").await;
+    let load = f.load_db("Load", &dest, "dest", "replace").await;
+    let v = f
+        .chip(
+            "Compare",
+            "validation",
+            json!({"source_data_file_id": "", "keys": ["id"]}),
+        )
+        .await;
+    f.connect(vec![
+        edge(&bad, &load, "data", "in"),
+        edge(&expected, &v, "data", "source"),
+        edge(&load, &v, "data", "target"),
+    ])
+    .await;
+    let worker = f.worker();
+    assert!(f.run().await.is_err());
+    let runs = f.runs().await;
+    assert_eq!(runs[&bad.id].status, "failed");
+    assert_eq!(chip_run_json(&runs[&load.id]).unwrap()["status"], "skipped");
+    assert_eq!(chip_run_json(&runs[&v.id]).unwrap()["status"], "skipped");
+    f.close(Some(worker)).await;
+}
+
+#[tokio::test]
+async fn validation_against_append_load_ignores_extra_keys() {
+    let f = Fixture::new().await;
+    let dest = f.sqlite_file("dest").await;
+    f.exec_sql(&dest, "CREATE TABLE dest (id TEXT, name TEXT)")
+        .await;
+    f.exec_sql(&dest, "INSERT INTO dest (id, name) VALUES ('99', 'old')")
+        .await;
+    let expected = f
+        .extract("Expected", "SELECT 1 AS id, 'new' AS name")
+        .await;
+    let load = f.load_db("Load", &dest, "dest", "append").await;
+    let v = f
+        .chip(
+            "Compare",
+            "validation",
+            json!({"source_data_file_id": "", "keys": ["id"], "columns": ["name"]}),
+        )
+        .await;
+    f.connect(vec![
+        edge(&expected, &load, "data", "in"),
+        edge(&expected, &v, "data", "source"),
+        edge(&load, &v, "data", "target"),
+    ])
+    .await;
+    let worker = f.worker();
+    f.run().await.unwrap();
+    let runs = f.runs().await;
+    assert_eq!(runs[&load.id].status, "succeeded");
+    assert_eq!(runs[&v.id].status, "succeeded");
+    f.close(Some(worker)).await;
+}
+
+#[tokio::test]
+async fn validation_against_load_table_fails_on_value_mismatch() {
+    let f = Fixture::new().await;
+    let dest = f.sqlite_file("dest").await;
+    let expected = f
+        .extract("Expected", "SELECT 1 AS id, 'right' AS name")
+        .await;
+    let loaded = f
+        .extract("Loaded", "SELECT 1 AS id, 'wrong' AS name")
+        .await;
+    let load = f.load_db("Load", &dest, "dest", "replace").await;
+    let v = f
+        .chip(
+            "Compare",
+            "validation",
+            json!({"source_data_file_id": "", "keys": ["id"], "columns": ["name"]}),
+        )
+        .await;
+    f.connect(vec![
+        edge(&loaded, &load, "data", "in"),
+        edge(&expected, &v, "data", "source"),
+        edge(&load, &v, "data", "target"),
+    ])
+    .await;
+    let worker = f.worker();
+    assert!(f.run().await.is_err());
+    let runs = f.runs().await;
+    assert_eq!(runs[&load.id].status, "succeeded");
+    assert_eq!(runs[&v.id].status, "failed");
+    f.close(Some(worker)).await;
 }

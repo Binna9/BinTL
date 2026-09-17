@@ -478,6 +478,8 @@ pub struct ValidationSpec {
     pub compare_row_count: bool,
     #[serde(default = "validation_true")]
     pub compare_schema: bool,
+    #[serde(default)]
+    pub ignore_extra_keys: bool,
 }
 
 fn validation_true() -> bool {
@@ -636,16 +638,20 @@ impl PolarsEngine {
                 .take(20)
                 .map(|key| format!("extra: {}", key.join(" | "))),
         );
-        samples.extend(
-            mismatched
+        samples.extend(mismatched.iter().take(20).map(|(key, value)| {
+            let other = target_map.get(*key).expect("mismatch requires a target row");
+            let diffs = compare_columns
                 .iter()
-                .take(20)
-                .map(|(key, _)| format!("mismatch: {}", key.join(" | "))),
-        );
+                .zip(value.iter().zip(other.iter()))
+                .filter(|(_, (left, right))| left != right)
+                .map(|(column, (left, right))| format!("{column} {left} vs {right}"))
+                .collect::<Vec<_>>();
+            format!("mismatch: {} | {}", key.join(" | "), diffs.join(", "))
+        }));
         let passed = (!spec.compare_row_count || source_df.height() == target_df.height())
             && (!spec.compare_schema || schema_matches)
             && missing.is_empty()
-            && extra.is_empty()
+            && (spec.ignore_extra_keys || extra.is_empty())
             && mismatched.is_empty()
             && duplicate_source_keys == 0
             && duplicate_target_keys == 0;
@@ -1506,6 +1512,7 @@ mod tests {
                     columns: vec!["name".into(), "amount".into()],
                     compare_row_count: true,
                     compare_schema: true,
+                    ignore_extra_keys: false,
                 },
             )
             .unwrap();
@@ -1528,7 +1535,34 @@ mod tests {
         assert!(report
             .samples
             .iter()
-            .any(|sample| sample.starts_with("mismatch:")));
+            .any(|sample| sample.contains("mismatch:") && sample.contains("amount") && sample.contains("vs")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validation_can_ignore_extra_keys() {
+        let dir = tmp("validation-extra");
+        let source = dir.join("source.csv");
+        let target = dir.join("target.csv");
+        fs::write(&source, "id,name\n1,alpha\n").unwrap();
+        fs::write(&target, "id,name\n1,alpha\n9,old\n").unwrap();
+        let report = PolarsEngine
+            .validate_files(
+                &source,
+                &target,
+                &TransformSpec::identity(),
+                &TransformSpec::identity(),
+                &ValidationSpec {
+                    keys: vec!["id".into()],
+                    columns: vec!["name".into()],
+                    compare_row_count: false,
+                    compare_schema: true,
+                    ignore_extra_keys: true,
+                },
+            )
+            .unwrap();
+        assert!(report.passed);
+        assert_eq!(report.extra_keys, 1);
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -48,7 +48,14 @@ impl Store {
             None => (String::new(), Vec::new()),
         };
         let sql = format!(
-            "SELECT {JOB_COLS} FROM execution_steps s INNER JOIN executions e ON e.id = s.execution_id WHERE s.kind = 'transform' {extra} ORDER BY s.queued_at DESC LIMIT ?"
+            "SELECT {JOB_COLS} FROM execution_steps s INNER JOIN executions e ON e.id = s.execution_id
+             WHERE s.kind = 'transform'
+               AND NOT EXISTS (
+                 SELECT 1 FROM execution_steps parent
+                 WHERE json_extract(parent.result_json, '$.child_step_id') = s.id
+               )
+               {extra}
+             ORDER BY s.queued_at DESC LIMIT ?"
         );
         let mut query = sqlx::query_as::<_, JobRow>(&sql);
         for value in &binds {
@@ -119,10 +126,15 @@ impl Store {
         Ok(())
     }
 
-    pub async fn set_job_succeeded(&self, id: &str) -> Result<(), StorageError> {
-        let changed = sqlx::query("UPDATE execution_steps SET status = ?, finished_at = ? WHERE id = ? AND status = 'running'")
+    pub async fn set_job_succeeded(
+        &self,
+        id: &str,
+        row_count: Option<i64>,
+    ) -> Result<(), StorageError> {
+        let changed = sqlx::query("UPDATE execution_steps SET status = ?, finished_at = ?, output_rows = COALESCE(?, output_rows) WHERE id = ? AND status = 'running'")
             .bind("succeeded")
             .bind(now_rfc3339())
+            .bind(row_count)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -157,7 +169,7 @@ impl Store {
                     size_bytes: size,
                     delimiter: None,
                     has_header: None,
-                    row_count: None,
+                    row_count,
                     workspace_id: Some(job.workspace_id),
                 })
                 .await?;

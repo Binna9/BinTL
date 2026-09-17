@@ -22,6 +22,13 @@ pub async fn sync_workspace_planned_inputs(
         if to_chip.kind != "transform" && to_chip.kind != "load" && to_chip.kind != "validation" {
             continue;
         }
+        let from_chip = match state.store.get_chip(&edge.from_chip_id).await? {
+            Some(chip) => chip,
+            None => continue,
+        };
+        if from_chip.kind == "load" {
+            continue;
+        }
         let _ = ensure_planned_input_for_transform(
             state,
             workspace_id,
@@ -479,6 +486,15 @@ pub async fn get_transform_input_slot(
         None => String::new(),
     };
     let source_kind = source_chip.as_ref().map(|chip| chip.kind.as_str());
+    if source_kind == Some("load") {
+        return load_validation_slot(
+            state,
+            source_chip.as_ref().expect("load chip"),
+            &edge.from_chip_id,
+            &source_name,
+        )
+        .await;
+    }
     if let Some(materialized) = state
         .store
         .latest_chip_output_for_workspace(workspace_id, &edge.from_chip_id)
@@ -529,6 +545,52 @@ pub async fn get_transform_input_slot(
         "delimiter": planned["delimiter"],
         "has_header": planned["has_header"],
         "columns": planned["columns"],
+    }))
+}
+
+async fn load_validation_slot(
+    state: &AppState,
+    chip: &storage::ChipRow,
+    chip_id: &str,
+    source_name: &str,
+) -> Result<Value, AppError> {
+    let raw = state
+        .store
+        .resolve_chip_config_json(chip)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let config: crate::load::LoadConfig =
+        serde_json::from_str(&raw).map_err(|error| AppError::bad(error.to_string()))?;
+    let (destination, columns) = match config.destination {
+        crate::load::LoadDestination::Database {
+            connection_id,
+            database,
+            table,
+        } => {
+            let columns = match state.store.live_connection(&connection_id).await {
+                Ok(base) => {
+                    let live = with_database(&base, database.as_deref());
+                    list_columns(&live, &table)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|column| json!({ "name": column.name, "type": column.data_type }))
+                        .collect::<Vec<_>>()
+                }
+                Err(_) => Vec::new(),
+            };
+            (table, columns)
+        }
+        crate::load::LoadDestination::File { filename, .. } => (filename, Vec::new()),
+    };
+    Ok(json!({
+        "mode": "connected",
+        "source_chip_id": chip_id,
+        "source_chip_name": source_name,
+        "source_chip_kind": "load",
+        "destination": destination,
+        "write_mode": config.write_mode,
+        "columns": columns,
     }))
 }
 

@@ -14,8 +14,8 @@ import { isWorkspaceCanvasPath } from "@/lib/navigation";
 const ConnectionsPage = lazy(() => import("@/pages/ConnectionsPage").then((module) => ({ default: module.ConnectionsPage })));
 const ExtractResultsPage = lazy(() => import("@/pages/ExtractResultsPage").then((module) => ({ default: module.ExtractResultsPage })));
 const ApiExtractPage = lazy(() => import("@/pages/ApiExtractPage").then((module) => ({ default: module.ApiExtractPage })));
+const ExportHistoryPage = lazy(() => import("@/pages/ExportHistoryPage").then((module) => ({ default: module.ExportHistoryPage })));
 const FilesPage = lazy(() => import("@/pages/FilesPage").then((module) => ({ default: module.FilesPage })));
-const JobRunPage = lazy(() => import("@/pages/JobRunPage").then((module) => ({ default: module.JobRunPage })));
 const LoadPage = lazy(() => import("@/pages/LoadPage").then((module) => ({ default: module.LoadPage })));
 const OverviewPage = lazy(() => import("@/pages/OverviewPage").then((module) => ({ default: module.OverviewPage })));
 const QueryPage = lazy(() => import("@/pages/QueryPage").then((module) => ({ default: module.QueryPage })));
@@ -103,8 +103,9 @@ function ConsoleShell() {
               <Route path="/validation/results" element={<ValidationResultsPage />} />
               <Route path="/workspace/:workspaceId/chips/:editorChipId/validation" element={<ValidationPage />} />
               <Route path="/history" element={<WorkspaceRunsPage />} />
-              <Route path="/jobs" element={<Navigate to="/history" replace />} />
-              <Route path="/jobs/:id" element={<JobRunPage />} />
+              <Route path="/history/exports" element={<ExportHistoryPage />} />
+              <Route path="/jobs" element={<Navigate to="/history/exports" replace />} />
+              <Route path="/jobs/:id" element={<Navigate to="/history/exports" replace />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>

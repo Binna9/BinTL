@@ -117,6 +117,23 @@ pub fn parse_ident(raw: &str) -> Result<&str, ConnectError> {
     Ok(raw)
 }
 
+pub fn table_select_sql(
+    driver: &str,
+    table: &str,
+    columns: &[String],
+) -> Result<String, ConnectError> {
+    let family = driver_family(driver)?;
+    let from = qualified(family, &parse_table(table)?);
+    if columns.is_empty() {
+        return Ok(format!("SELECT * FROM {from}"));
+    }
+    let mut quoted = Vec::with_capacity(columns.len());
+    for column in columns {
+        quoted.push(quote_ident(family, parse_ident(column)?));
+    }
+    Ok(format!("SELECT {} FROM {from}", quoted.join(", ")))
+}
+
 pub fn with_database(c: &LiveConnection, database: Option<&str>) -> LiveConnection {
     let Some(database) = database.map(str::trim).filter(|s| !s.is_empty()) else {
         return c.clone();
@@ -1209,6 +1226,14 @@ mod tests {
         assert_eq!(outln.table, "OL$");
         assert_eq!(parse_table("SYS.USER$").unwrap().table, "USER$");
         assert_eq!(parse_table("COL#").unwrap().table, "COL#");
+        assert_eq!(
+            table_select_sql("sqlite", "dest", &["id".into(), "name".into()]).unwrap(),
+            "SELECT \"id\", \"name\" FROM \"dest\""
+        );
+        assert_eq!(
+            table_select_sql("postgres", "public.t", &[]).unwrap(),
+            "SELECT * FROM \"public\".\"t\""
+        );
     }
 
     #[test]

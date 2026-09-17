@@ -87,10 +87,18 @@ async fn prepare_config(
             .ok_or_else(|| {
                 AppError::bad("input connection references an inactive or missing chip")
             })?;
-        if edge.kind == "data" && !matches!(source.kind.as_str(), "extract" | "transform") {
-            return Err(AppError::bad(
-                "data connections require an extract or transform output",
-            ));
+        if edge.kind == "data" {
+            let load_target = chip.kind == "validation"
+                && source.kind == "load"
+                && edge.to_port != "source";
+            if load_target {
+                continue;
+            }
+            if !matches!(source.kind.as_str(), "extract" | "transform") {
+                return Err(AppError::bad(
+                    "data connections require an extract or transform output",
+                ));
+            }
         }
     }
     if incoming.len() > if chip.kind == "validation" { 2 } else { 1 } {
@@ -147,6 +155,24 @@ async fn prepare_config(
             if incoming.is_empty() {
                 return Err(AppError::bad("validation target input is not connected"));
             }
+            let load_targets = incoming
+                .iter()
+                .filter(|edge| {
+                    chips
+                        .iter()
+                        .find(|source| source.id == edge.from_chip_id)
+                        .is_some_and(|source| source.kind == "load")
+                })
+                .collect::<Vec<_>>();
+            if load_targets.len() > 1 {
+                return Err(AppError::bad("validation can use only one load chip"));
+            }
+            if load_targets
+                .iter()
+                .any(|edge| edge.to_port == "source")
+            {
+                return Err(AppError::bad("load chips can only be the validation TARGET"));
+            }
             if incoming.len() == 2 {
                 config["source_data_file_id"] = json!("");
             }
@@ -173,6 +199,9 @@ async fn prepare_config(
                 require_input(state, user, workspace_id, &validated.source_data_file_id).await?;
             }
             config = serde_json::to_value(validated).map_err(|e| AppError::bad(e.to_string()))?;
+            if let Some(edge) = load_targets.first() {
+                config["target_load_chip_id"] = json!(edge.from_chip_id);
+            }
             config["workspace_rule_snapshot"] = json!(true);
         }
         "sql" => {
@@ -288,10 +317,13 @@ pub(super) async fn execute(
             continue;
         }
         let incoming = data_edges(chip, &edges);
-        if let Some(edge) = incoming
-            .iter()
-            .find(|edge| !outputs.contains_key(&edge.from_chip_id))
-        {
+        if let Some(edge) = incoming.iter().find(|edge| {
+            let from = ordered.iter().find(|source| source.id == edge.from_chip_id);
+            match from.map(|source| source.kind.as_str()) {
+                Some("load") => outcomes.get(&edge.from_chip_id) != Some(&Outcome::Succeeded),
+                _ => !outputs.contains_key(&edge.from_chip_id),
+            }
+        }) {
             let source = ordered
                 .iter()
                 .find(|source| source.id == edge.from_chip_id)
@@ -313,17 +345,27 @@ pub(super) async fn execute(
         } else {
             None
         };
-        let input = incoming
-            .last()
-            .and_then(|edge| outputs.get(&edge.from_chip_id))
-            .map(String::as_str)
-            .or_else(|| {
-                if chip.kind == "transform" {
-                    config["input_dataset_id"].as_str()
-                } else {
-                    None
-                }
-            });
+        let target_is_load = incoming.last().is_some_and(|edge| {
+            ordered
+                .iter()
+                .find(|source| source.id == edge.from_chip_id)
+                .is_some_and(|source| source.kind == "load")
+        });
+        let input = if target_is_load {
+            None
+        } else {
+            incoming
+                .last()
+                .and_then(|edge| outputs.get(&edge.from_chip_id))
+                .map(String::as_str)
+                .or_else(|| {
+                    if chip.kind == "transform" {
+                        config["input_dataset_id"].as_str()
+                    } else {
+                        None
+                    }
+                })
+        };
         let result = async {
             if let Some(id) = input {
                 require_input(state, user, workspace_id, id).await?;

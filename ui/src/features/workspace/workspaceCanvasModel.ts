@@ -365,9 +365,12 @@ export function wireTone(kind: ChipEdgeKind): "is-data" | "is-success" | "is-err
 
 /** Data wires carry a materialized dataset into transform, load, or validation. */
 export function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
+  if (toKind === "validation") {
+    return fromKind === "extract" || fromKind === "transform" || fromKind === "load";
+  }
   return (
     (fromKind === "extract" || fromKind === "transform")
-    && (toKind === "transform" || toKind === "load" || toKind === "validation")
+    && (toKind === "transform" || toKind === "load")
   );
 }
 
@@ -394,6 +397,13 @@ export function producerChips(chips: Chip[], excludeIds: Iterable<string> = []):
   const skip = new Set(excludeIds);
   return chips.filter((chip) =>
     (chip.kind === "extract" || chip.kind === "transform") && !skip.has(chip.id),
+  );
+}
+
+export function validationTargetChips(chips: Chip[], excludeIds: Iterable<string> = []): Chip[] {
+  const skip = new Set(excludeIds);
+  return chips.filter((chip) =>
+    (chip.kind === "extract" || chip.kind === "transform" || chip.kind === "load") && !skip.has(chip.id),
   );
 }
 
@@ -480,4 +490,7 @@ if (import.meta.env.DEV) {
     && !replaced.some((edge) => edge.id === "e1"),
     "canvas: replace hidden data input",
   );
+  console.assert(canHaveDataEdge("load", "validation"), "canvas: load may feed validation");
+  console.assert(!canHaveDataEdge("load", "transform"), "canvas: load may not feed transform");
+  console.assert(!canHaveDataEdge("load", "load"), "canvas: load may not feed load");
 }

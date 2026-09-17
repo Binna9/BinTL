@@ -428,10 +428,21 @@ export function WorkspacePage() {
         toastError(messages.workspace.edgeAlreadySame);
         return;
       }
-      validationPort = incoming.length === 0 ? "source" : "target";
-      if (incoming.some((edge) => edge.to_port === validationPort) || incoming.length >= 2) {
-        toastError(messages.workspace.validationInputsFull);
-        return;
+      const sourceTaken = incoming.some((edge) => edge.to_port === "source");
+      const targetTaken = incoming.some((edge) => edge.to_port === "target")
+        || (incoming.length === 1 && incoming[0].to_port !== "source");
+      if (from.kind === "load") {
+        validationPort = "target";
+        if (targetTaken) {
+          toastError(messages.workspace.validationInputsFull);
+          return;
+        }
+      } else {
+        validationPort = !sourceTaken ? "source" : "target";
+        if (sourceTaken && targetTaken) {
+          toastError(messages.workspace.validationInputsFull);
+          return;
+        }
       }
     }
     const existing = sameKindPairEdges(edges, fromId, toId, kind);
@@ -1040,6 +1051,13 @@ export function WorkspacePage() {
     if (!propsChip || !workspaceId) return;
     const name = propsName.trim();
     if (!name) return;
+    if (propsChip.kind === "validation") {
+      const sourceChip = chips.find((chip) => chip.id === propsSourceChipId);
+      if (sourceChip?.kind === "load") {
+        toastError(messages.workspace.validationSourceMustBeFile);
+        return;
+      }
+    }
     const nextEdges = propsDataEdges(propsChip, edges);
     const edgesChanged = nextEdges !== edges;
     if (isDraftChipId(propsChip.id)) {
@@ -2659,6 +2677,7 @@ export function WorkspacePage() {
         catalogChips={catalogChips}
         datasets={datasets}
         canvasChips={chips}
+        canvasEdges={edges}
         canvasChipIds={new Set(chips.map((chip) => chip.id))}
         defaultTransformName={nextSequencedChipName(
           [...catalogChips, ...chips],
@@ -2917,7 +2936,7 @@ export function WorkspacePage() {
             ) : null}
             {propsChip?.kind === "validation" ? (
               <div className="space-y-3">
-                <p className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.inputChipHint}</p>
+                <p className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.validationConfigureHint}</p>
                 <CanvasProducerSelect
                   chips={chips}
                   value={propsSourceChipId}
@@ -2933,8 +2952,16 @@ export function WorkspacePage() {
                   excludeIds={[propsChip.id, propsSourceChipId].filter(Boolean)}
                   messages={messages}
                   label={messages.workspace.validationTargetChip}
+                  kinds={["extract", "transform", "load"]}
                   disabled={propsBusy}
-                  onChange={setPropsTargetChipId}
+                  onChange={(id) => {
+                    setPropsTargetChipId(id);
+                    if (propsSourceChipId || !id) return;
+                    const chip = chips.find((item) => item.id === id);
+                    if (chip?.kind !== "load") return;
+                    const input = incomingDataChipId(edges, id);
+                    if (input) setPropsSourceChipId(input);
+                  }}
                 />
               </div>
             ) : null}

@@ -3,8 +3,9 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use connectors::{
-    load_table, normalize_sql, parse_delimiter, parse_http_spec, parse_ident, parse_table, run_sql,
-    sniff_delimiter, sql_kind, with_database, HttpKv, HttpRequestSpec, SqlKind,
+    extract_query, extract_table, load_table, normalize_sql, parse_delimiter, parse_http_spec,
+    parse_ident, parse_table, run_sql, sniff_delimiter, sql_kind, table_select_sql, with_database,
+    ExtractOptions, HttpKv, HttpRequestSpec, SqlKind,
 };
 use engine::{Engine, PolarsEngine, TransformSpec, ValidationSpec};
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use storage::{
-    ChipRow, ChipRunRow, RegisterExtractChip, RegisterLoadChip, RegisterTransformChip, Store,
+    ChipRow, ChipRunRow, DatasetUpsert, RegisterExtractChip, RegisterLoadChip,
+    RegisterTransformChip, Store,
 };
 use tokio::sync::Notify;
 
@@ -188,6 +190,8 @@ struct ValidationConfig {
     #[serde(default)]
     validation_rule_id: Option<String>,
     source_data_file_id: String,
+    #[serde(default)]
+    target_load_chip_id: Option<String>,
     #[serde(default)]
     keys: Vec<String>,
     #[serde(default)]
@@ -589,6 +593,7 @@ async fn queue_validation_chip_run(
         .into_iter()
         .filter(|edge| edge.kind == "data" && edge.to_chip_id == chip.id)
         .collect::<Vec<_>>();
+    let mut load_target_id: Option<String> = None;
     let connected_pair = if data_edges.len() == 2 {
         let source_edge = data_edges
             .iter()
@@ -604,22 +609,53 @@ async fn queue_validation_chip_run(
                     &data_edges[0]
                 }
             });
+        let source_chip = state
+            .store
+            .get_chip(&source_edge.from_chip_id)
+            .await?
+            .ok_or_else(|| AppError::bad("validation source chip not found"))?;
+        if source_chip.kind == "load" {
+            return Err(AppError::bad("load chips can only be the validation TARGET"));
+        }
+        let target_chip = state
+            .store
+            .get_chip(&target_edge.from_chip_id)
+            .await?
+            .ok_or_else(|| AppError::bad("validation target chip not found"))?;
         let source_id = state
             .store
             .latest_chip_output_for_workspace(workspace_id, &source_edge.from_chip_id)
             .await?
             .ok_or_else(|| AppError::bad("validation source chip has no materialized output"))?;
-        let target_id = state
-            .store
-            .latest_chip_output_for_workspace(workspace_id, &target_edge.from_chip_id)
-            .await?
-            .ok_or_else(|| AppError::bad("validation target chip has no materialized output"))?;
         raw["source_data_file_id"] = json!(source_id);
-        Some(target_id)
+        if target_chip.kind == "load" {
+            load_target_id = Some(target_chip.id);
+            None
+        } else {
+            let target_id = state
+                .store
+                .latest_chip_output_for_workspace(workspace_id, &target_edge.from_chip_id)
+                .await?
+                .ok_or_else(|| AppError::bad("validation target chip has no materialized output"))?;
+            Some(target_id)
+        }
+    } else if let Some(edge) = data_edges.first() {
+        let from = state
+            .store
+            .get_chip(&edge.from_chip_id)
+            .await?
+            .ok_or_else(|| AppError::bad("validation target chip not found"))?;
+        if from.kind == "load" && edge.to_port != "source" {
+            load_target_id = Some(from.id);
+        }
+        None
     } else {
         None
     };
-    let config = validate_validation_config(&state.store, workspace_id, raw).await?;
+    let mut config = validate_validation_config(&state.store, workspace_id, raw).await?;
+    if let Some(load_id) = load_target_id {
+        config.target_load_chip_id = Some(load_id);
+    }
     if config.source_data_file_id.is_empty()
         || (config.keys.is_empty()
             && config
@@ -633,21 +669,28 @@ async fn queue_validation_chip_run(
         ));
     }
     access::require_dataset(&state.store, user, &config.source_data_file_id).await?;
-    let target_id = match connected_pair {
-        Some(id) => id,
-        None => {
-            crate::planned_input::resolve_materialized_transform_input(
-                state,
-                user,
-                workspace_id,
-                &chip.id,
-                requested_input,
-                None,
-            )
-            .await?
-        }
+    let target_id = if config.target_load_chip_id.is_some() {
+        None
+    } else {
+        Some(match connected_pair {
+            Some(id) => id,
+            None => {
+                crate::planned_input::resolve_materialized_transform_input(
+                    state,
+                    user,
+                    workspace_id,
+                    &chip.id,
+                    requested_input,
+                    None,
+                )
+                .await?
+            }
+        })
     };
-    if target_id == config.source_data_file_id {
+    if target_id
+        .as_deref()
+        .is_some_and(|id| id == config.source_data_file_id)
+    {
         return Err(AppError::bad("source and target data files must differ"));
     }
     let resolved_config = serde_json::to_string(&config).map_err(|error| {
@@ -658,7 +701,7 @@ async fn queue_validation_chip_run(
         chip,
         workspace_id,
         &resolved_config,
-        Some(&target_id),
+        target_id.as_deref(),
         execution_id,
     )
     .await
@@ -2007,20 +2050,39 @@ async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     if config.keys.iter().all(|key| key.trim().is_empty()) {
         return Err("at least one validation key required".into());
     }
-    let target_id = run
-        .input_dataset_id
-        .as_deref()
-        .ok_or_else(|| "validation target input missing".to_string())?;
     let source = store
         .get_dataset(&config.source_data_file_id)
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "validation source data file not found".to_string())?;
-    let target = store
-        .get_dataset(target_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "validation target data file not found".to_string())?;
+    let (target, ignore_extra_keys, compare_row_count, compare_schema) =
+        if let Some(load_chip_id) = config.target_load_chip_id.as_deref() {
+            let loaded = materialize_load_target(
+                store,
+                run,
+                load_chip_id,
+                &config.keys,
+                &config.columns,
+            )
+            .await?;
+            (
+                loaded.dataset,
+                loaded.ignore_extra_keys,
+                config.compare_row_count && !loaded.ignore_extra_keys,
+                false,
+            )
+        } else {
+            let target_id = run
+                .input_dataset_id
+                .as_deref()
+                .ok_or_else(|| "validation target input missing".to_string())?;
+            let target = store
+                .get_dataset(target_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "validation target data file not found".to_string())?;
+            (target, false, config.compare_row_count, config.compare_schema)
+        };
     let source_path = store.resolve(&source.stored_path);
     let target_path = store.resolve(&target.stored_path);
     let source_read = TransformSpec::identity()
@@ -2028,10 +2090,11 @@ async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
     let target_read = TransformSpec::identity()
         .with_read(target.delimiter, target.has_header.map(|value| value != 0));
     let spec = ValidationSpec {
-        keys: config.keys,
-        columns: config.columns,
-        compare_row_count: config.compare_row_count,
-        compare_schema: config.compare_schema,
+        keys: config.keys.clone(),
+        columns: config.columns.clone(),
+        compare_row_count,
+        compare_schema,
+        ignore_extra_keys,
     };
     let report = tokio::task::spawn_blocking(move || {
         PolarsEngine.validate_files(
@@ -2081,13 +2144,134 @@ async fn run_validation(store: &Store, run: &ChipRunRow) -> Result<(), String> {
             config.validation_rule_id.as_deref(),
             Some(&run.id),
             &config.source_data_file_id,
-            target_id,
+            &target.id,
             report.passed,
             &result_json,
         )
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+struct LoadTargetReadback {
+    dataset: storage::DatasetRow,
+    ignore_extra_keys: bool,
+}
+
+async fn materialize_load_target(
+    store: &Store,
+    run: &ChipRunRow,
+    load_chip_id: &str,
+    keys: &[String],
+    columns: &[String],
+) -> Result<LoadTargetReadback, String> {
+    let load_config = load_config_for_validation(store, run, load_chip_id).await?;
+    let ignore_extra_keys = matches!(load_config.write_mode.as_str(), "append" | "upsert");
+    let rel = format!("staging/validation-{}.csv", run.id);
+    let dest = store.resolve(&rel);
+    match load_config.destination {
+        crate::load::LoadDestination::Database {
+            connection_id,
+            database,
+            table,
+        } => {
+            let base = store
+                .live_connection(&connection_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let live = with_database(&base, database.as_deref());
+            let select_cols = unique_idents(keys, columns);
+            let opts = ExtractOptions::default();
+            if select_cols.is_empty() {
+                extract_table(&live, &table, &dest, &opts, None)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            } else {
+                let sql = table_select_sql(&live.driver, &table, &select_cols)
+                    .map_err(|error| error.to_string())?;
+                extract_query(&live, &sql, &dest, &opts, None)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        crate::load::LoadDestination::File { filename, .. } => {
+            let file_rel = format!("loads/{}/{load_chip_id}/{filename}", run.workspace_id);
+            let source = store.resolve(&file_rel);
+            if !source.is_file() {
+                return Err("load destination file is missing".into());
+            }
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            tokio::fs::copy(&source, &dest)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    let size = tokio::fs::metadata(&dest)
+        .await
+        .ok()
+        .and_then(|meta| i64::try_from(meta.len()).ok());
+    let dataset = store
+        .upsert_dataset(&DatasetUpsert {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: "database".into(),
+            extract_id: None,
+            filename: format!("validation-readback-{}.csv", run.id),
+            stored_path: rel,
+            size_bytes: size,
+            delimiter: Some(",".into()),
+            has_header: Some(true),
+            row_count: None,
+            workspace_id: Some(run.workspace_id.clone()),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(LoadTargetReadback {
+        dataset,
+        ignore_extra_keys,
+    })
+}
+
+async fn load_config_for_validation(
+    store: &Store,
+    run: &ChipRunRow,
+    load_chip_id: &str,
+) -> Result<crate::load::LoadConfig, String> {
+    let runs = store
+        .list_chip_runs(&run.workspace_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(load_run) = runs.iter().find(|item| {
+        item.execution_id == run.execution_id && item.chip_id == load_chip_id
+    }) {
+        return serde_json::from_str(&load_run.config_snapshot_json)
+            .map_err(|error| format!("invalid load config snapshot: {error}"));
+    }
+    let chip = store
+        .get_chip(load_chip_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "load chip not found".to_string())?;
+    let raw = store
+        .resolve_chip_config_json(&chip)
+        .await
+        .map_err(|error| error.to_string())?;
+    serde_json::from_str(&raw).map_err(|error| format!("invalid load config: {error}"))
+}
+
+fn unique_idents(keys: &[String], columns: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in keys.iter().chain(columns) {
+        let name = name.trim();
+        if name.is_empty() || out.iter().any(|item| item == name) {
+            continue;
+        }
+        out.push(name.to_string());
+    }
+    out
 }
 
 async fn run_load(store: &Store, run: &ChipRunRow) -> Result<(), String> {

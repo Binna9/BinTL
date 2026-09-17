@@ -33,6 +33,6 @@ export const extractApi = {
   previewExtract: (extractId: string, limit = 200) =>
     httpRequest<FilePreview>(`/api/extracts/${extractId}/preview?limit=${limit}`),
   getDownloadUrl: (extractId: string) => `/api/extracts/${extractId}/file`,
-  getLogs: (extractId: string) =>
-    httpRequest<{ id: string; text: string }>(`/api/extracts/${extractId}/logs`),
+  getLogs: (extractId: string, init?: HttpRequestInit) =>
+    httpRequest<{ id: string; text: string }>(`/api/extracts/${extractId}/logs`, init),
 };

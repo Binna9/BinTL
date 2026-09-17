@@ -54,6 +54,7 @@ import {
   type TransformEditorSection,
 } from "@/lib/transformEditor";
 import { chipApi } from "@/services/chips/chipApi";
+import { jobApi } from "@/services/jobs/jobApi";
 import { datasetApi } from "@/services/transform/datasetApi";
 import { transformApi } from "@/services/transform/transformApi";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
@@ -819,8 +820,24 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     setBusy(true);
     try {
       const run = await transformApi.run(exportTransformId, dest);
-      toastSuccess(t.resultExported);
-      navigate(`/jobs/${run.id}`);
+      let job = await jobApi.getJobRun(run.id);
+      while (job.status === "queued" || job.status === "running") {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        job = await jobApi.getJobRun(run.id);
+      }
+      if (job.status !== "succeeded") {
+        toastError(messages.errors.runJob, job.error_message);
+        return;
+      }
+      const dataset = await datasetApi.get(run.id, { silent: true }).catch(() => null);
+      const rows = dataset?.row_count ?? resultPreview?.row_count ?? 0;
+      const link = document.createElement("a");
+      link.href = jobApi.getResultUrl(run.id);
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toastSuccess(t.exportComplete, t.exportDone(rows));
     } catch (err) {
       toastError(messages.errors.runJob, err);
     } finally {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, BookmarkPlus, ChevronRight, FileSpreadsheet, Play, Settings2, ShieldCheck } from "lucide-react";
+import { ArrowLeft, BookmarkPlus, ChevronRight, FileOutput, FileSpreadsheet, Play, Settings2, ShieldCheck } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
@@ -166,15 +166,31 @@ export function ValidationPage() {
   }), [messages.transform]);
   const sourceWired = canvasMode && sourceSlot?.mode !== "unwired";
   const targetWired = canvasMode && targetSlot?.mode !== "unwired";
+  const targetIsLoad = canvasMode && targetSlot?.source_chip_kind === "load";
   const sourceFileId = storedFileId(sourceId);
   const targetFileId = storedFileId(targetId);
-  const columnChoices = unique([
+  const sourceColumns = unique([
     ...slotColumns(sourceSlot),
-    ...slotColumns(targetSlot),
     ...listedColumns(datasets, sourceId),
-    ...listedColumns(datasets, targetId),
-    ...fileColumns,
   ]);
+  const targetColumns = unique([
+    ...slotColumns(targetSlot),
+    ...listedColumns(datasets, targetId),
+  ]);
+  const columnChoices = unique(
+    targetIsLoad
+      ? [
+          ...(targetColumns.length
+            ? sourceColumns.filter((name) => targetColumns.includes(name))
+            : sourceColumns),
+          ...fileColumns,
+        ]
+      : [
+          ...sourceColumns,
+          ...targetColumns,
+          ...fileColumns,
+        ],
+  );
   const columnKey = columnChoices.join("\0");
   const pickerEmpty = canvasMode ? t.noConnectedColumns : t.noFileColumns;
   const chipKeys = keepKnown(keys, columnChoices);
@@ -313,10 +329,14 @@ export function ValidationPage() {
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-2 overflow-hidden">
         <aside className="grid h-full min-h-0 min-w-0 grid-cols-2 overflow-hidden border-r border-border">
           <div className="min-h-0 min-w-0 overflow-hidden border-r border-border">
-            <DatasetPicker title={t.source} datasets={datasets} value={sourceId} onChange={setSourceId} kindLabels={kindLabels} disabled={sourceWired} hint={sourceWired ? t.sourceFromCanvas : undefined} />
+            <DatasetPicker title={t.source} datasets={datasets} value={sourceId} onChange={setSourceId} kindLabels={kindLabels} disabled={sourceWired} />
           </div>
           <div className="min-h-0 min-w-0 overflow-hidden">
-            <DatasetPicker title={t.target} datasets={datasets} value={targetId} onChange={setTargetId} kindLabels={kindLabels} disabled={targetWired} hint={targetWired ? t.targetFromCanvas : undefined} />
+            {targetIsLoad ? (
+              <LoadTargetPane slot={targetSlot} />
+            ) : (
+              <DatasetPicker title={t.target} datasets={datasets} value={targetId} onChange={setTargetId} kindLabels={kindLabels} disabled={targetWired} />
+            )}
           </div>
         </aside>
         <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
@@ -418,6 +438,50 @@ export function ValidationPage() {
   </PageShell>;
 }
 
+function writeModeLabel(mode: string, messages: ReturnType<typeof useLanguage>["messages"]): string {
+  if (mode === "append") return messages.load.append;
+  if (mode === "replace" || mode === "truncate") return messages.load.truncate;
+  if (mode === "upsert") return messages.load.upsert;
+  if (mode === "recreate") return messages.load.recreate;
+  return mode;
+}
+
+function LoadTargetPane({ slot }: { slot: ChipInputSlotResponse | null }) {
+  const { messages } = useLanguage();
+  const t = messages.validation;
+  const mode = slot?.write_mode?.trim() ?? "";
+  return (
+    <section className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
+      <PaneHeader title={t.target} />
+      <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface p-3">
+        <div className="rounded-xl border border-warning/30 bg-warning-subtle/40 p-3">
+          <div className="flex items-center gap-2">
+            <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-warning-subtle text-warning">
+              <FileOutput className="size-4" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-text">{slot?.source_chip_name || t.loadChip}</p>
+              <p className="mt-0.5 truncate text-[11px] text-text-tertiary">{t.loadChip}</p>
+            </div>
+          </div>
+          <dl className="mt-3 grid gap-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-text-tertiary">{t.loadDestination}</dt>
+              <dd className="min-w-0 truncate font-medium text-text">{slot?.destination || "—"}</dd>
+            </div>
+            {mode ? (
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-text-tertiary">{messages.load.writeMode}</dt>
+                <dd className="font-medium text-text">{writeModeLabel(mode, messages)}</dd>
+              </div>
+            ) : null}
+          </dl>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function CheckOption({
   label,
   hint,
@@ -445,9 +509,8 @@ function CheckOption({
   );
 }
 
-function DatasetPicker({ title, hint, datasets, value, onChange, kindLabels, disabled = false }: {
+function DatasetPicker({ title, datasets, value, onChange, kindLabels, disabled = false }: {
   title: string;
-  hint?: string;
   datasets: Dataset[];
   value: string;
   onChange: (id: string) => void;
@@ -470,7 +533,7 @@ function DatasetPicker({ title, hint, datasets, value, onChange, kindLabels, dis
   }, [datasets, value]);
   const groups = KIND_ORDER.map((kind) => ({ kind, items: datasets.filter((item) => item.kind === kind) }));
   return <section className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
-    <PaneHeader title={title} description={hint} meta={messages.common.count(datasets.length)} />
+    <PaneHeader title={title} meta={messages.common.count(datasets.length)} />
     <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface p-2">
       <div className="space-y-2">
         {groups.map(({ kind, items }) => {

@@ -20,12 +20,12 @@ import {
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { Button } from "@/components/ui/button";
-import { chipKindLabel, producerChips } from "@/features/workspace/workspaceCanvasModel";
+import { chipKindLabel, incomingDataChipId, producerChips, validationTargetChips } from "@/features/workspace/workspaceCanvasModel";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
 import { selectableClass } from "@/lib/selectable";
-import type { Chip } from "@/types/chip";
+import type { Chip, ChipEdge } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
 export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "sql";
@@ -43,7 +43,8 @@ export type EmptyConsumerDraft = {
   targetChipId?: string;
 };
 
-const PRODUCER_KIND_ORDER = ["extract", "transform"] as const;
+const PRODUCER_KIND_ORDER = ["extract", "transform", "load"] as const;
+type ProducerSelectKind = (typeof PRODUCER_KIND_ORDER)[number];
 
 const PRODUCER_KIND_APPEARANCE = {
   extract: {
@@ -60,6 +61,13 @@ const PRODUCER_KIND_APPEARANCE = {
     count: "bg-success/15 text-success",
     iconWrap: "bg-success-subtle text-success ring-1 ring-inset ring-success/20",
   },
+  load: {
+    icon: FileOutput,
+    frame: "border-warning/25",
+    header: "bg-warning-subtle text-warning",
+    count: "bg-warning/15 text-warning",
+    iconWrap: "bg-warning-subtle text-warning ring-1 ring-inset ring-warning/20",
+  },
 } as const;
 
 const EMPTY_NAME_DIALOG_CLASS = "flex max-h-[min(32rem,86vh)] w-[min(24rem,calc(100vw-1.5rem))] min-w-0 max-w-full";
@@ -72,6 +80,7 @@ export function CanvasProducerSelect({
   messages,
   label,
   disabled,
+  kinds,
   onChange,
 }: {
   chips: Chip[];
@@ -80,17 +89,22 @@ export function CanvasProducerSelect({
   messages: Messages;
   label: string;
   disabled?: boolean;
+  kinds?: readonly ProducerSelectKind[];
   onChange: (id: string) => void;
 }) {
   const skip = useMemo(() => new Set(excludeIds ?? []), [excludeIds]);
-  const options = useMemo(() => producerChips(chips), [chips]);
+  const allowed = kinds ?? (["extract", "transform"] as const);
+  const options = useMemo(() => {
+    const listed = allowed.includes("load") ? validationTargetChips(chips) : producerChips(chips);
+    return listed.filter((chip) => allowed.includes(chip.kind as ProducerSelectKind));
+  }, [allowed, chips]);
   const grouped = useMemo(
     () =>
-      PRODUCER_KIND_ORDER.map((kind) => ({
+      PRODUCER_KIND_ORDER.filter((kind) => allowed.includes(kind)).map((kind) => ({
         kind,
         items: options.filter((chip) => chip.kind === kind),
       })),
-    [options],
+    [allowed, options],
   );
 
   return (
@@ -846,10 +860,10 @@ function TransformNewPanel({
   );
 }
 
-function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChips, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
+function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChips, canvasEdges, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
   kind?: "load" | "validation" | "sql"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
   emptyChipLabel?: string; catalogHint?: string; registerLabel?: string; submitLabel?: string;
-  chips: Chip[]; canvasChips: Chip[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
+  chips: Chip[]; canvasChips: Chip[]; canvasEdges?: ChipEdge[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
   hideEmpty?: boolean;
   onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty?: (draft: EmptyConsumerDraft) => void; onRegister: () => void;
   dragHandleRef: RefObject<HTMLDivElement | null>;
@@ -1000,8 +1014,16 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
                   excludeIds={sourceChipId ? [sourceChipId] : undefined}
                   messages={messages}
                   label={messages.workspace.validationTargetChip}
+                  kinds={["extract", "transform", "load"]}
                   disabled={busy}
-                  onChange={setTargetChipId}
+                  onChange={(id) => {
+                    setTargetChipId(id);
+                    if (sourceChipId || !id) return;
+                    const chip = canvasChips.find((item) => item.id === id);
+                    if (chip?.kind !== "load") return;
+                    const input = incomingDataChipId(canvasEdges ?? [], id);
+                    if (input) setSourceChipId(input);
+                  }}
                 />
               </div>
             </>
@@ -1032,6 +1054,7 @@ export function ChipPlaceDialog({
   catalogChips,
   datasets,
   canvasChips,
+  canvasEdges,
   canvasChipIds,
   defaultTransformName,
   defaultLoadName,
@@ -1054,6 +1077,7 @@ export function ChipPlaceDialog({
   catalogChips: Chip[];
   datasets: Dataset[];
   canvasChips: Chip[];
+  canvasEdges?: ChipEdge[];
   canvasChipIds: Set<string>;
   defaultTransformName: string;
   defaultLoadName: string;
@@ -1136,6 +1160,7 @@ export function ChipPlaceDialog({
         <LoadCatalogPanel
           chips={catalogChips}
           canvasChips={canvasChips}
+          canvasEdges={canvasEdges}
           canvasChipIds={canvasChipIds}
           defaultName={defaultLoadName}
           occupiedNames={occupiedNames}
@@ -1163,6 +1188,7 @@ export function ChipPlaceDialog({
           submitLabel={messages.workspace.pickChipPlace}
           chips={catalogChips}
           canvasChips={canvasChips}
+          canvasEdges={canvasEdges}
           canvasChipIds={canvasChipIds}
           defaultName={defaultSqlName}
           occupiedNames={occupiedNames}
@@ -1185,6 +1211,7 @@ export function ChipPlaceDialog({
           registerLabel={messages.workspace.registerValidationFirst}
           chips={catalogChips}
           canvasChips={canvasChips}
+          canvasEdges={canvasEdges}
           canvasChipIds={canvasChipIds}
           defaultName={defaultValidationName}
           occupiedNames={occupiedNames}

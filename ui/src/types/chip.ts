@@ -158,6 +158,8 @@ export interface ChipInputSlotResponse {
   source_chip_id?: string;
   source_chip_name?: string;
   source_chip_kind?: ChipKind;
+  destination?: string;
+  write_mode?: string;
   status?: string;
   delimiter?: string;
   has_header?: boolean;

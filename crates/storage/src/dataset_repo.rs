@@ -149,7 +149,7 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         let Some(run) = run else {
-            self.set_job_succeeded(job_id).await?;
+            self.set_job_succeeded(job_id, row_count).await?;
             return Ok(None);
         };
         if run.status != "running" {

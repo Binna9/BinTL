@@ -438,7 +438,12 @@ async fn replace_workspace_edges(
         let to = chips_by_id.get(to_id).ok_or_else(|| {
             StorageError::Invalid("chip edge must end at a chip in this workspace".into())
         })?;
-        validate_edge_kind(&edge.kind, from.kind.as_str(), to.kind.as_str())?;
+        validate_edge_kind(
+            &edge.kind,
+            from.kind.as_str(),
+            to.kind.as_str(),
+            edge.to_port.trim(),
+        )?;
         let from_port = {
             let value = edge.from_port.trim();
             if value.is_empty() {
@@ -455,6 +460,9 @@ async fn replace_workspace_edges(
                 value.to_string()
             }
         };
+        if edge.kind == "data" && to.kind == "validation" && from.kind == "load" {
+            to_port = "target".into();
+        }
         if edge.kind == "data" && to.kind == "validation" {
             if !matches!(to_port.as_str(), "source" | "target") {
                 let source_used = pairs.iter().any(|(_, _, target, edge_kind, _, port)| {
@@ -543,9 +551,22 @@ async fn replace_workspace_edges(
     .await?)
 }
 
-fn validate_edge_kind(kind: &str, from_kind: &str, to_kind: &str) -> Result<(), StorageError> {
+fn validate_edge_kind(
+    kind: &str,
+    from_kind: &str,
+    to_kind: &str,
+    to_port: &str,
+) -> Result<(), StorageError> {
     match kind {
         "data" => {
+            if from_kind == "load" {
+                if to_kind != "validation" || to_port == "source" {
+                    return Err(StorageError::Invalid(
+                        "load chips can only be the validation TARGET".into(),
+                    ));
+                }
+                return Ok(());
+            }
             if !matches!(from_kind, "extract" | "transform") {
                 return Err(StorageError::Invalid(
                     "data edges must start from extract or transform".into(),
@@ -998,9 +1019,14 @@ mod tests {
         std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
         std::fs::write(&abs, b"parquet").unwrap();
         store.set_job_running(&job.id, &rel).await.unwrap();
-        store.set_job_succeeded(&job.id).await.unwrap();
+        store.set_job_succeeded(&job.id, Some(12)).await.unwrap();
         let dataset = store.get_dataset(&job.id).await.unwrap().unwrap();
         assert_eq!(dataset.filename, "transform-SYS.DR$UDEF_PREFERENCE.csv");
+        assert_eq!(dataset.row_count, Some(12));
+        let listed = store.list_jobs(20, None).await.unwrap();
+        let listed = listed.iter().find(|row| row.id == job.id).unwrap();
+        assert_eq!(listed.filename.as_deref(), Some("transform-SYS.DR$UDEF_PREFERENCE.csv"));
+        assert_eq!(listed.row_count, Some(12));
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
     }
