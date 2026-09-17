@@ -11,15 +11,10 @@ pub struct NamedRef {
 
 #[derive(Debug, Clone, Default)]
 pub struct DatasetDeleteUsage {
-    pub transform_recipes: Vec<NamedRef>,
     pub chips: Vec<NamedRef>,
 }
 
 impl DatasetDeleteUsage {
-    pub fn is_blocked(&self) -> bool {
-        !self.transform_recipes.is_empty() || !self.chips.is_empty()
-    }
-
     pub fn chip_block_message(&self) -> String {
         let names = self
             .chips
@@ -28,19 +23,6 @@ impl DatasetDeleteUsage {
             .collect::<Vec<_>>()
             .join(", ");
         format!("Cannot delete: registered workspace chip(s): {names}. Remove the chip first.")
-    }
-
-    pub fn conflict_message(&self) -> String {
-        if !self.chips.is_empty() {
-            return self.chip_block_message();
-        }
-        let names = self
-            .transform_recipes
-            .iter()
-            .map(|item| format!("\"{}\"", item.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("Cannot delete dataset: still used by transform definition(s): {names}.")
     }
 }
 
@@ -138,11 +120,6 @@ pub async fn dataset_delete_usage(
         return Ok(DatasetDeleteUsage::default());
     }
     let placeholders = placeholders(dataset_ids.len());
-    let transform_sql = format!(
-        "SELECT id, name FROM transforms WHERE default_input_file_id IN ({placeholders}) ORDER BY name"
-    );
-    let transform_recipes = fetch_named_refs(pool, &transform_sql, dataset_ids).await?;
-
     let chip_sql = format!(
         "SELECT DISTINCT c.id, c.name
          FROM chips c
@@ -169,21 +146,7 @@ pub async fn dataset_delete_usage(
     }
     chips.sort_by(|a, b| a.name.cmp(&b.name));
 
-    Ok(DatasetDeleteUsage {
-        transform_recipes,
-        chips,
-    })
-}
-
-pub async fn ensure_datasets_deletable(
-    pool: &SqlitePool,
-    dataset_ids: &[String],
-) -> Result<(), StorageError> {
-    let usage = dataset_delete_usage(pool, dataset_ids).await?;
-    if usage.is_blocked() {
-        return Err(StorageError::Conflict(usage.conflict_message()));
-    }
-    Ok(())
+    Ok(DatasetDeleteUsage { chips })
 }
 
 pub async fn ensure_datasets_deletable_by_chips(
@@ -374,6 +337,61 @@ mod tests {
 
         store.delete_upload(&upload.id).await.unwrap();
         assert!(store.get_dataset(&upload.id).await.unwrap().is_none());
+        assert!(store.list_transforms(None).await.unwrap().is_empty());
+
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn delete_transform_dataset_cascades_orphan_recipes() {
+        let root = std::env::temp_dir().join(format!("bintl-delete-guard-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-session-secret").await.unwrap();
+        let admin = store.ensure_bootstrap().await.unwrap();
+        let workspace = store
+            .list_visible_workspaces(Some(&crate::DataScope::for_user(&admin)))
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .id;
+        let file = store
+            .upsert_dataset(&crate::DatasetUpsert {
+                id: Uuid::new_v4().to_string(),
+                kind: "transform".into(),
+                extract_id: None,
+                filename: "transform-SYS.DR$UDEF_PREFERENCE.csv".into(),
+                stored_path: format!("outputs/{}/result.parquet", Uuid::new_v4()),
+                size_bytes: Some(8),
+                delimiter: None,
+                has_header: Some(true),
+                row_count: Some(1),
+                workspace_id: Some(workspace),
+            })
+            .await
+            .unwrap();
+        store
+            .insert_transform(
+                "transform-02-SYS.DR$UDEF_PREFERENCE.csv",
+                &file.id,
+                r#"{"version":2,"steps":[],"sink":"parquet"}"#,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .insert_transform(
+                "transform-02-SYS.DR$UDEF_PREFERENCE.csv",
+                &file.id,
+                r#"{"version":2,"steps":[],"sink":"parquet"}"#,
+                None,
+            )
+            .await
+            .unwrap();
+
+        store.delete_transform_dataset(&file.id).await.unwrap();
+        assert!(store.get_dataset(&file.id).await.unwrap().is_none());
         assert!(store.list_transforms(None).await.unwrap().is_empty());
 
         store.pool.close().await;

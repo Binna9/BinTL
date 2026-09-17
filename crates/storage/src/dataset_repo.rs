@@ -63,11 +63,16 @@ impl Store {
                 "only transform data files can be deleted here".into(),
             ));
         }
-        delete_guard::ensure_datasets_deletable(&self.pool, &[id.to_string()]).await?;
+        let dataset_ids = [id.to_string()];
+        // Canvas chips still block. Orphan recipes are not listed as chips, so
+        // they cascade like upload deletion instead of trapping the file.
+        delete_guard::ensure_datasets_deletable_by_chips(&self.pool, &dataset_ids).await?;
 
         let path = self.resolve(&row.stored_path);
         let outputs_root = self.data_dir.join(REL_OUTPUTS);
         let mut tx = self.pool.begin().await?;
+        let transform_ids =
+            delete_guard::delete_transforms_for_datasets(&mut tx, &dataset_ids).await?;
         sqlx::query("UPDATE workspace_chip_outputs SET current_data_file_id = NULL WHERE current_data_file_id = ?")
             .bind(id)
             .execute(&mut *tx)
@@ -83,6 +88,9 @@ impl Store {
             return Err(StorageError::NotFound("dataset not found".into()));
         }
         tx.commit().await?;
+        for transform_id in &transform_ids {
+            let _ = self.delete_search_document("transform", transform_id).await;
+        }
 
         if let Some(parent) = path.parent() {
             let remove = if parent == outputs_root {
