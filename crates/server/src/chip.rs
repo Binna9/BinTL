@@ -510,7 +510,7 @@ async fn update_chip(
             .chip_workspace_hint(&id)
             .await
             .map_err(|error| AppError::bad(error.to_string()))?;
-        if workspace_id.is_none() && kind != "sql" && kind != "serve" {
+        if workspace_id.is_none() && kind != "sql" && kind != "serve" && kind != "script" {
             return Err(AppError::bad("chip is not placed on a workspace"));
         }
         let config = if kind == "serve" {
@@ -594,6 +594,7 @@ async fn queue_chip_run(
         }
         "sql" => queue_sql_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await,
         "serve" => crate::serve::queue_serve_chip_run(state, user, chip, workspace_id, execution_id).await,
+        "script" => queue_script_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await,
         _ => {
             access::require_workspace(&state.store, user, workspace_id).await?;
             if chip.active == 0 {
@@ -827,6 +828,66 @@ async fn queue_sql_chip_run(
     let config_raw =
         serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?;
     enqueue_chip_run(state, chip, workspace_id, &config_raw, None, execution_id).await
+}
+
+async fn queue_script_chip_run(
+    state: &AppState,
+    user: &CurrentUser,
+    chip: &ChipRow,
+    workspace_id: &str,
+    requested_input: Option<String>,
+    execution_id: Option<&str>,
+) -> Result<ChipRunRow, AppError> {
+    access::require_workspace(&state.store, user, workspace_id).await?;
+    if chip.active == 0 {
+        return Err(AppError::conflict("chip is inactive"));
+    }
+    if chip.kind != "script" {
+        return Err(AppError::bad("expected script chip"));
+    }
+    let config_raw = state
+        .store
+        .resolve_chip_config_json(chip)
+        .await
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let config: Value = serde_json::from_str(&config_raw)
+        .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
+    reject_forbidden_config(&config)?;
+    let config = crate::script::validate_script_config(&state.store, config).await?;
+    let config_raw =
+        serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?;
+    let edges = state.store.list_chip_edges(workspace_id).await?;
+    let incoming = edges
+        .iter()
+        .filter(|edge| edge.kind == "data" && edge.to_chip_id == chip.id)
+        .count();
+    if incoming > 1 {
+        return Err(AppError::bad("too many data inputs"));
+    }
+    let dataset_id = if incoming == 0 && requested_input.is_none() {
+        None
+    } else {
+        Some(
+            crate::planned_input::resolve_materialized_transform_input(
+                state,
+                user,
+                workspace_id,
+                &chip.id,
+                requested_input,
+                None,
+            )
+            .await?,
+        )
+    };
+    enqueue_chip_run(
+        state,
+        chip,
+        workspace_id,
+        &config_raw,
+        dataset_id.as_deref(),
+        execution_id,
+    )
+    .await
 }
 
 async fn queue_extract_chip_run(
@@ -1616,8 +1677,9 @@ pub(crate) async fn validate_config(
         "serve" => crate::serve::validate_serve_config(store, None, config, None, false)
             .await
             .map(|(value, _)| value),
+        "script" => crate::script::validate_script_config(store, config).await,
         _ => Err(AppError::bad(
-            "chip kind must be extract, transform, load, validation, sql, or serve",
+            "chip kind must be extract, transform, load, validation, sql, serve, or script",
         )),
     }
 }
@@ -1974,6 +2036,13 @@ pub(crate) async fn run_one(
                     .await
                     .map_err(|error| error.to_string())?;
                 run_sql_chip(store, &run).await
+            }
+            "script" => {
+                store
+                    .set_chip_run_running(run_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                crate::script::run_script_chip(store, &run).await
             }
             "serve" => {
                 let config: Value = serde_json::from_str(&run.config_snapshot_json)

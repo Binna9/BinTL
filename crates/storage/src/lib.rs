@@ -1,3 +1,4 @@
+mod chip_copy;
 mod chip_definition_repo;
 mod chip_run_repo;
 pub mod chip_slot;
@@ -29,6 +30,7 @@ pub use identity::{
 };
 pub use user_images::DEFAULT_USER_IMAGE_REL;
 pub use models::*;
+pub use chip_copy::next_copy_slug;
 pub use process_log::{
     clean_process_logs, safe_log_id, ProcessLog, LOG_AREAS, LOG_QUERY,
 };
@@ -340,10 +342,10 @@ fn trimmed_optional(value: Option<&str>) -> Option<&str> {
 fn validate_chip_kind(kind: &str) -> Result<(), StorageError> {
     if !matches!(
         kind,
-        "extract" | "transform" | "load" | "validation" | "sql" | "serve"
+        "extract" | "transform" | "load" | "validation" | "sql" | "serve" | "script"
     ) {
         return Err(StorageError::Invalid(
-            "chip kind must be extract, transform, load, validation, sql, or serve".into(),
+            "chip kind must be extract, transform, load, validation, sql, serve, or script".into(),
         ));
     }
     Ok(())
@@ -584,14 +586,14 @@ fn validate_edge_kind(
                 }
                 return Ok(());
             }
-            if !matches!(from_kind, "extract" | "transform") {
+            if !matches!(from_kind, "extract" | "transform" | "script") {
                 return Err(StorageError::Invalid(
-                    "data edges must start from extract or transform".into(),
+                    "data edges must start from extract, transform, or script".into(),
                 ));
             }
-            if !matches!(to_kind, "transform" | "load" | "validation" | "serve") {
+            if !matches!(to_kind, "transform" | "load" | "validation" | "serve" | "script") {
                 return Err(StorageError::Invalid(
-                    "data edges must end at transform, load, validation, or serve".into(),
+                    "data edges must end at transform, load, validation, serve, or script".into(),
                 ));
             }
             Ok(())
@@ -2204,6 +2206,166 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(search_left, 0);
+
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn paste_chips_clones_definitions_internal_edges_and_skips_outputs() {
+        let (root, store, admin) = test_store().await;
+        let source = store
+            .insert_workspace("Copy src", None, &admin.id, None)
+            .await
+            .unwrap();
+        let target = store
+            .insert_workspace("Copy dest", None, &admin.id, None)
+            .await
+            .unwrap();
+        let connection = store
+            .insert_connection(NewConnection {
+                http_auth: None,
+                name: "copy-connection".into(),
+                driver: "sqlite".into(),
+                host: String::new(),
+                port: 0,
+                database: ":memory:".into(),
+                username: String::new(),
+                password: String::new(),
+                ssl: false,
+            })
+            .await
+            .unwrap();
+        let extract = store
+            .register_extract_chip(&RegisterExtractChip {
+                name: "Users".into(),
+                owner_user_id: admin.id.clone(),
+                workspace_id: Some(source.id.clone()),
+                kind: "database".into(),
+                connection_id: connection.id,
+                source_json: r#"{"type":"query","sql":"SELECT 1"}"#.into(),
+                delimiter: ",".into(),
+                header: true,
+                add_sequence: false,
+                output_filename: Some("users.csv".into()),
+                place_on_workspace: true,
+            })
+            .await
+            .unwrap();
+        let transform = store
+            .insert_chip(
+                &admin.id,
+                &source.id,
+                "Clean",
+                "transform",
+                r#"{"spec":{"version":2,"steps":[],"sink":"parquet"}}"#,
+            )
+            .await
+            .unwrap();
+        let leftover = store
+            .insert_chip(
+                &admin.id,
+                &source.id,
+                "Skip me",
+                "sql",
+                r#"{"sql":"SELECT 1"}"#,
+            )
+            .await
+            .unwrap();
+        let source_version = store.get_workspace(&source.id).await.unwrap().unwrap().version;
+        store
+            .save_workspace(
+                &source.id,
+                &format!(
+                    r#"{{"nodes":{{"{}":{{"x":10,"y":20}},"{}":{{"x":110,"y":20}},"{}":{{"x":210,"y":20}}}}}}"#,
+                    extract.id, transform.id, leftover.id
+                ),
+                &[
+                    extract.id.clone(),
+                    transform.id.clone(),
+                    leftover.id.clone(),
+                ],
+                &[
+                    WorkspaceSaveEdge {
+                        id: Uuid::new_v4().to_string(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "data".into(),
+                        from_port: "right".into(),
+                        to_port: "left".into(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: Uuid::new_v4().to_string(),
+                        from_chip_id: leftover.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "on_success".into(),
+                        from_port: "right".into(),
+                        to_port: "left".into(),
+                    },
+                ],
+                Some(source_version),
+            )
+            .await
+            .unwrap();
+        let extract_binding = store.get_chip_binding(&extract.id).await.unwrap().unwrap();
+        let target_version = store.get_workspace(&target.id).await.unwrap().unwrap().version;
+        let pasted = store
+            .paste_chips(
+                &target.id,
+                ChipPasteInput {
+                    source_workspace_id: source.id.clone(),
+                    chip_ids: vec![extract.id.clone(), transform.id.clone()],
+                    origin_x: 40.0,
+                    origin_y: 80.0,
+                    expected_version: target_version,
+                    serve_configs: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(pasted.chips.len(), 2);
+        let copied_extract = pasted
+            .chips
+            .iter()
+            .find(|chip| chip.kind == "extract")
+            .unwrap();
+        let copied_transform = pasted
+            .chips
+            .iter()
+            .find(|chip| chip.kind == "transform")
+            .unwrap();
+        assert_eq!(copied_extract.name, "Users copy");
+        assert_eq!(copied_transform.name, "Clean copy");
+        assert_ne!(copied_extract.id, extract.id);
+        let copied_binding = store
+            .get_chip_binding(&copied_extract.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(copied_binding.ref_id, extract_binding.ref_id);
+        assert_eq!(pasted.edges.len(), 1);
+        assert_eq!(pasted.edges[0].from_chip_id, copied_extract.id);
+        assert_eq!(pasted.edges[0].to_chip_id, copied_transform.id);
+        assert_eq!(pasted.edges[0].kind, "data");
+        let placed: (f64, f64) = sqlx::query_as(
+            "SELECT x, y FROM workspace_chips WHERE workspace_id = ? AND chip_id = ?",
+        )
+        .bind(&target.id)
+        .bind(&copied_extract.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(placed, (40.0, 80.0));
+        let output_files: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM data_files WHERE workspace_id = ?",
+        )
+        .bind(&target.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(output_files, 0);
+        let source_chips = store.list_chips(&source.id).await.unwrap();
+        assert_eq!(source_chips.len(), 3);
 
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);

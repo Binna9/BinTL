@@ -66,10 +66,12 @@ export type DashboardModel = {
   sqlCount: number;
   validationCount: number;
   serveCount: number;
+  scriptCount: number;
   extractRate: number | null;
   transformRate: number | null;
   loadRate: number | null;
   sqlRate: number | null;
   validationRate: number | null;
   serveRate: number | null;
+  scriptRate: number | null;
 };

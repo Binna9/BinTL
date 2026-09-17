@@ -16,6 +16,7 @@ mod planned_input;
 mod schedule;
 mod search;
 mod serve;
+mod script;
 mod state;
 mod transform;
 mod ui;

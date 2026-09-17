@@ -51,7 +51,7 @@ pub async fn ensure_planned_input_for_transform(
         .get_chip(upstream_chip_id)
         .await?
         .ok_or_else(|| AppError::not_found("chip not found"))?;
-    if upstream.kind != "extract" && upstream.kind != "transform" {
+    if upstream.kind != "extract" && upstream.kind != "transform" && upstream.kind != "script" {
         return Err(AppError::bad("upstream chip must produce data"));
     }
     let upstream_name = chip_input_display_name(&state.store, &upstream, workspace_id).await?;
@@ -159,6 +159,15 @@ async fn planned_schema_for_chip(
                     .await?
                     .ok_or_else(|| AppError::not_found("input dataset not found"))?;
                 break schema_from_dataset(&dataset);
+            }
+            "script" => {
+                break PlannedSchema {
+                    kind: "transform".into(),
+                    columns: Vec::new(),
+                    delimiter: ",".into(),
+                    header: true,
+                    source_extract_definition_id: None,
+                };
             }
             _ => return Err(AppError::bad("upstream chip must produce data")),
         }

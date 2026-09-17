@@ -740,6 +740,32 @@ impl PolarsEngine {
         let truncated = sampled >= PREVIEW_READ_CAP || sampled > limit;
         Ok(dataframe_to_preview(df, None, limit).with_truncated(truncated))
     }
+
+    pub fn records_from_file(path: &Path, limit: usize) -> Result<Vec<serde_json::Value>, EngineError> {
+        let limit = limit.max(1);
+        let mut df = read_any(path, &TransformSpec::identity(), Some(limit))?;
+        if df.height() > limit {
+            df = df.slice(0, limit);
+        }
+        dataframe_to_records(df)
+    }
+
+    pub fn write_records(rows: &[serde_json::Value], output: &Path) -> Result<u64, EngineError> {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if rows.is_empty() {
+            write_parquet(DataFrame::empty(), output)?;
+            return Ok(0);
+        }
+        let buf = serde_json::to_vec(rows)
+            .map_err(|error| EngineError::Spec(format!("script rows are not JSON: {error}")))?;
+        let cursor = std::io::Cursor::new(buf);
+        let df = JsonReader::new(cursor).finish()?;
+        let count = df.height() as u64;
+        write_parquet(df, output)?;
+        Ok(count)
+    }
 }
 
 fn execute_recipe(
@@ -1420,6 +1446,17 @@ fn dataframe_to_preview(df: DataFrame, row_count: Option<u64>, limit: usize) -> 
     }
 }
 
+fn dataframe_to_records(mut df: DataFrame) -> Result<Vec<serde_json::Value>, EngineError> {
+    if df.height() == 0 {
+        return Ok(Vec::new());
+    }
+    let mut buf = Vec::new();
+    JsonWriter::new(&mut buf)
+        .with_json_format(JsonFormat::Json)
+        .finish(&mut df)?;
+    serde_json::from_slice(&buf).map_err(|error| EngineError::Spec(format!("json rows: {error}")))
+}
+
 fn any_to_string(value: AnyValue<'_>) -> String {
     match value {
         AnyValue::Null => String::new(),
@@ -1482,6 +1519,17 @@ mod tests {
         let text = String::from_utf8(csv).unwrap();
         assert!(text.contains("a,b"));
         assert!(text.contains("1,2"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn records_roundtrip_parquet() {
+        let dir = tmp("records");
+        let out = dir.join("out.parquet");
+        let rows = vec![serde_json::json!({"id": 1, "name": "a"})];
+        assert_eq!(PolarsEngine::write_records(&rows, &out).unwrap(), 1);
+        let back = PolarsEngine::records_from_file(&out, 10).unwrap();
+        assert_eq!(back[0]["name"], "a");
         let _ = fs::remove_dir_all(&dir);
     }
 

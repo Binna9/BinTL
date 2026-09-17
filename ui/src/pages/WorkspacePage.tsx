@@ -1,7 +1,7 @@
 import type { WorkspaceExecution } from "@/types/chip";
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Globe, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Square, Terminal, Workflow, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, Braces, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Globe, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Square, Terminal, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -17,6 +17,7 @@ import {
 } from "@/components/workspace/ChipPlaceDialog";
 import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
 import { ServeChipEditorDialog } from "@/components/workspace/ServeChipEditorDialog";
+import { ScriptChipEditorDialog } from "@/components/workspace/ScriptChipEditorDialog";
 import { WorkspaceRunReportDialog } from "@/components/workspace/WorkspaceRunReportDialog";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
@@ -36,7 +37,7 @@ import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { Dataset } from "@/types/dataset";
 import type { Chip, ChipEdge, ChipEdgeKind, ChipRun } from "@/types/chip";
 import { DRAFT_CHIP_ID_PREFIX, chipEditorPath, isDraftChipId } from "@/types/chip";
-import type { Workspace, WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
+import type { SaveWorkspaceResponse, Workspace, WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
 import {
   ACTIVE_STATUSES,
   CANVAS_H,
@@ -62,6 +63,7 @@ import {
   clampMarqueePoint,
   clampPoint,
   cloneCanvas,
+  appendCanvasUndo,
   edgeGeometry,
   edgeInMarquee,
   fallbackPoint,
@@ -84,6 +86,11 @@ import {
   type Point,
   type PortSide,
 } from "@/features/workspace/workspaceCanvasModel";
+import {
+  chipSelectionBbox,
+  currentChipClipboard,
+  rememberChipClipboard,
+} from "@/features/workspace/chipClipboard";
 
 import {
   EdgeWire,
@@ -120,14 +127,18 @@ export function WorkspacePage() {
     (location.state as { canvasDraft?: CanvasSnapshot & { workspaceId: string } } | null)
       ?.canvasDraft,
   );
-  const savedIdsRef = useRef(new Set<string>());
   const savedDraftIdMapRef = useRef(new Map<string, string>());
   const confirmingSaveRef = useRef(false);
   const dirtyRef = useRef(false);
   const busyRef = useRef(false);
   const requestSaveRef = useRef<() => void>(() => {});
   const requestRunRef = useRef<() => void>(() => {});
-  const resetCanvasRef = useRef<() => void>(() => {});
+  const undoCanvasRef = useRef<() => void>(() => {});
+  const redoCanvasRef = useRef<() => void>(() => {});
+  const undoStackRef = useRef<CanvasSnapshot[]>([]);
+  const redoStackRef = useRef<CanvasSnapshot[]>([]);
+  const pasteCountRef = useRef(0);
+  const workspaceVersionRef = useRef(1);
   const dragGhostRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
     id: string;
@@ -139,6 +150,7 @@ export function WorkspacePage() {
     additive: boolean;
     wasSelected: boolean;
     origins: Record<string, Point>;
+    duplicate: boolean;
   } | null>(null);
   const panRef = useRef<{
     pointerId: number;
@@ -168,6 +180,8 @@ export function WorkspacePage() {
   chipsRef.current = chips;
   const [catalogChips, setCatalogChips] = useState<Chip[]>([]);
   const [edges, setEdges] = useState<ChipEdge[]>([]);
+  const edgesRef = useRef(edges);
+  edgesRef.current = edges;
   const [runs, setRuns] = useState<ChipRun[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [positions, setPositions] = useState<Record<string, Point>>({});
@@ -210,6 +224,7 @@ export function WorkspacePage() {
   } | null>(null);
   const lastPlaceKindRef = useRef<ChipPlaceKind>("extract");
   const [sqlEditor, setSqlEditor] = useState<{ chip: Chip | null } | null>(null);
+  const [scriptEditor, setScriptEditor] = useState<{ chip: Chip | null } | null>(null);
   const [serveEditor, setServeEditor] = useState<Chip | null>(null);
   const [chipMenu, setChipMenu] = useState<ChipContextMenuState | null>(null);
   const [infoChip, setInfoChip] = useState<Chip | null>(null);
@@ -298,7 +313,6 @@ export function WorkspacePage() {
     nextEdges: ChipEdge[],
   ) {
     savedRef.current = cloneCanvas(nextChips, nextPositions, nextEdges);
-    savedIdsRef.current = new Set(nextChips.map((chip) => chip.id));
     dirtyRef.current = false;
     setDirty(false);
   }
@@ -344,6 +358,52 @@ export function WorkspacePage() {
     setDirty(dirtyNow);
   }
 
+  function snapshotNow(positions = positionsRef.current): CanvasSnapshot {
+    return cloneCanvas(chipsRef.current, positions, edgesRef.current);
+  }
+
+  function pushUndo(snapshot?: CanvasSnapshot) {
+    undoStackRef.current = appendCanvasUndo(undoStackRef.current, snapshot ?? snapshotNow());
+    redoStackRef.current = [];
+  }
+
+  function clearHistory() {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+  }
+
+  function applyCanvasSnapshot(snapshot: CanvasSnapshot) {
+    const next = cloneCanvas(snapshot.chips, snapshot.positions, snapshot.edges);
+    dragRef.current = null;
+    chipsRef.current = next.chips;
+    positionsRef.current = next.positions;
+    edgesRef.current = next.edges;
+    setChips(next.chips);
+    setPositions(next.positions);
+    setEdges(next.edges);
+    setSelectedChipIds((ids) => ids.filter((id) => next.chips.some((chip) => chip.id === id)));
+    setSelectedEdgeIds((ids) => ids.filter((id) => next.edges.some((edge) => edge.id === id)));
+    markDirty(next.chips, next.positions, next.edges);
+  }
+
+  function undoCanvas() {
+    const stack = undoStackRef.current;
+    if (stack.length === 0) return;
+    const previous = stack[stack.length - 1];
+    undoStackRef.current = stack.slice(0, -1);
+    redoStackRef.current = appendCanvasUndo(redoStackRef.current, snapshotNow());
+    applyCanvasSnapshot(previous);
+  }
+
+  function redoCanvas() {
+    const stack = redoStackRef.current;
+    if (stack.length === 0) return;
+    const next = stack[stack.length - 1];
+    redoStackRef.current = stack.slice(0, -1);
+    undoStackRef.current = appendCanvasUndo(undoStackRef.current, snapshotNow());
+    applyCanvasSnapshot(next);
+  }
+
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!dirtyRef.current) return;
@@ -380,6 +440,7 @@ export function WorkspacePage() {
   function dropEdgesLocally(edgeIdsToDrop: string[]) {
     if (edgeIdsToDrop.length === 0) return;
     const dropSet = new Set(edgeIdsToDrop);
+    pushUndo();
     const nextEdges = edges.filter((edge) => !dropSet.has(edge.id));
     setEdges(nextEdges);
     setSelectedEdgeIds((current) => current.filter((id) => !dropSet.has(id)));
@@ -477,6 +538,7 @@ export function WorkspacePage() {
       );
       if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
     }
+    pushUndo();
     const fromPoint = positionsRef.current[fromId] ?? fallbackPoint(0);
     const toPoint = positionsRef.current[toId] ?? fallbackPoint(0);
     const route = routeSides(fromPoint, toPoint);
@@ -561,9 +623,10 @@ export function WorkspacePage() {
       setRuns([]);
       setLatestWorkspaceRun(null);
       setPositions({});
-      setSelectedChipIds([]);
-      setSelectedEdgeIds([]);
-      rememberSaved([], {}, []);
+        setSelectedChipIds([]);
+        setSelectedEdgeIds([]);
+        rememberSaved([], {}, []);
+        clearHistory();
       pendingViewRef.current = null;
       return;
     }
@@ -591,6 +654,7 @@ export function WorkspacePage() {
           workspace.id,
         );
         pendingViewRef.current = workspace.layout.view ?? { x: 0, y: 0 };
+        workspaceVersionRef.current = workspace.version;
         setChips(chipResponse.chips);
         setEdges(nextEdges);
         applyRunList(runResponse.runs, runResponse.workspace_runs);
@@ -599,6 +663,7 @@ export function WorkspacePage() {
         setSelectedChipIds([]);
         setSelectedEdgeIds([]);
         rememberSaved(chipResponse.chips, nextPositions, nextEdges);
+        clearHistory();
         const draft = incomingCanvasDraftRef.current;
         if (draft?.workspaceId === workspaceId) {
           incomingCanvasDraftRef.current = undefined;
@@ -740,7 +805,7 @@ export function WorkspacePage() {
   }
 
   function openChipEditor(chip: Chip) {
-    if (chip.kind !== "extract" && chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation" && chip.kind !== "sql" && chip.kind !== "serve") return;
+    if (chip.kind !== "extract" && chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation" && chip.kind !== "sql" && chip.kind !== "serve" && chip.kind !== "script") return;
     if (!workspaceId || currentWorkspaceRef.current !== workspaceId) return;
     void (async () => {
       const originalChipId = chip.id;
@@ -758,6 +823,10 @@ export function WorkspacePage() {
       if (isDraftChipId(currentChip.id)) return;
       if (currentChip.kind === "sql") {
         setSqlEditor({ chip: currentChip });
+        return;
+      }
+      if (currentChip.kind === "script") {
+        setScriptEditor({ chip: currentChip });
         return;
       }
       if (currentChip.kind === "serve") {
@@ -1027,7 +1096,7 @@ export function WorkspacePage() {
 
   function propsDataEdges(chip: Chip, currentEdges: ChipEdge[]): ChipEdge[] {
     if (!workspaceId) return currentEdges;
-    if (chip.kind === "transform" || chip.kind === "load" || chip.kind === "serve") {
+    if (chip.kind === "transform" || chip.kind === "load" || chip.kind === "serve" || chip.kind === "script") {
       const current = incomingDataChipId(currentEdges, chip.id);
       if (current === propsInputChipId) return currentEdges;
       return attachHiddenDataEdges(
@@ -1074,7 +1143,9 @@ export function WorkspacePage() {
         return;
       }
     }
+    const before = snapshotNow();
     if (isDraftChipId(propsChip.id)) {
+      pushUndo(before);
       const nextChips = chips.map((item) => (
         item.id === propsChip.id ? { ...item, name } : item
       ));
@@ -1088,6 +1159,7 @@ export function WorkspacePage() {
     setPropsBusy(true);
     try {
       const updated = await chipApi.update(propsChip.id, { name });
+      pushUndo(before);
       const nextChips = chips.map((item) => (item.id === updated.id ? { ...item, ...updated } : item));
       setChips(nextChips);
       setCatalogChips((current) =>
@@ -1109,8 +1181,10 @@ export function WorkspacePage() {
   function openChipContextMenu(chip: Chip, event: ReactMouseEvent) {
     event.preventDefault();
     event.stopPropagation();
-    setSelectedChipIds([chip.id]);
-    setSelectedEdgeIds([]);
+    if (!selectedChipIdsRef.current.includes(chip.id)) {
+      setSelectedChipIds([chip.id]);
+      setSelectedEdgeIds([]);
+    }
     setChipMenu({ chip });
   }
 
@@ -1163,13 +1237,33 @@ export function WorkspacePage() {
         requestSaveRef.current();
         return;
       }
-      if (key !== "z" || event.shiftKey) return;
-      if (isEditableTarget(event.target)) return;
-      if (!workspaceId || busyRef.current || !dirtyRef.current || confirmingSaveRef.current) {
+      if (key === "c" || key === "v" || key === "d") {
+        if (isEditableTarget(event.target)) return;
+        if (event.target instanceof Element && event.target.closest("[role='dialog']")) return;
+        if (key === "c" && window.getSelection()?.toString()) return;
+        event.preventDefault();
+        if (event.repeat || busyRef.current) return;
+        if (key === "c") void copySelectedChips();
+        else if (key === "v") void pasteClipboard();
+        else void duplicateSelectedChips();
         return;
       }
+      if (key === "y" || (key === "z" && event.shiftKey)) {
+        if (isEditableTarget(event.target)) return;
+        if (event.target instanceof Element && event.target.closest("[role='dialog']")) return;
+        if (!workspaceId || busyRef.current || confirmingSaveRef.current) return;
+        event.preventDefault();
+        if (event.repeat) return;
+        redoCanvasRef.current();
+        return;
+      }
+      if (key !== "z") return;
+      if (isEditableTarget(event.target)) return;
+      if (event.target instanceof Element && event.target.closest("[role='dialog']")) return;
+      if (!workspaceId || busyRef.current || confirmingSaveRef.current) return;
       event.preventDefault();
-      resetCanvasRef.current();
+      if (event.repeat) return;
+      undoCanvasRef.current();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -1188,6 +1282,7 @@ export function WorkspacePage() {
   ) {
     const unplacedChips = catalogChipsToPlace.filter((chip) => !chips.some((placed) => placed.id === chip.id));
     if (unplacedChips.length === 0) return;
+    pushUndo();
     let nextPositions = { ...positionsRef.current };
     let nextChips = [...chips];
     const placedIds: string[] = [];
@@ -1360,6 +1455,7 @@ export function WorkspacePage() {
 
   function dropChipsLocally(chipIdsToDrop: string[]) {
     if (chipIdsToDrop.length === 0) return;
+    pushUndo();
     const dropSet = new Set(chipIdsToDrop);
     const nextChips = chips.filter((item) => !dropSet.has(item.id));
     let nextPositions = positionsRef.current;
@@ -1379,6 +1475,7 @@ export function WorkspacePage() {
 
   function removeLayersLocally(chipIdsToDrop: string[], edgeIdsToDrop: string[]) {
     if (chipIdsToDrop.length === 0 && edgeIdsToDrop.length === 0) return;
+    pushUndo();
     const chipDropSet = new Set(chipIdsToDrop);
     const edgeDropSet = new Set(edgeIdsToDrop);
     const nextChips = chips.filter((item) => !chipDropSet.has(item.id));
@@ -1410,7 +1507,7 @@ export function WorkspacePage() {
       { tone: "danger", confirmLabel: messages.common.delete },
     );
     if (!confirmed || currentWorkspaceRef.current !== workspaceId) return;
-    // Local draft only — workspace save unlinks chips; discard/reset restores them.
+    // Local draft only — workspace save unlinks chips; undo restores them.
     dropChipLocally(chip.id);
     if (chipId === chip.id && workspaceId) {
       navigate(`/workspace/${workspaceId}`);
@@ -1554,7 +1651,7 @@ export function WorkspacePage() {
       edgesToSave = withCompanionSuccessEdges(edgesToSave, positionsToSave, requestWorkspaceId);
 
       const response = await workspaceApi.save(requestWorkspaceId, {
-        version: selectedWorkspace?.version ?? 1,
+        version: workspaceVersionRef.current,
         layout: {
           nodes: Object.fromEntries(
             Object.entries(positionsToSave).map(([id, point]) => [id, roundPoint(point)]),
@@ -1612,6 +1709,8 @@ export function WorkspacePage() {
       setEdges(nextEdges);
       setPositions(nextPositions);
       rememberSaved(response.chips, nextPositions, nextEdges);
+      clearHistory();
+      workspaceVersionRef.current = response.workspace.version;
       return true;
     } catch (reason) {
       if (currentWorkspaceRef.current === requestWorkspaceId) {
@@ -1657,21 +1756,146 @@ export function WorkspacePage() {
     else navigate("/workspace");
   }
 
-  function resetCanvas() {
-    const saved = cloneCanvas(
-      savedRef.current.chips,
-      savedRef.current.positions,
-      savedRef.current.edges,
+  async function ensureSavedBeforeClipboard() {
+    if (!workspaceId) return false;
+    if (!dirtyRef.current && !chipsRef.current.some((chip) => isDraftChipId(chip.id))) return true;
+    const confirmed = await showConfirm(
+      messages.workspace.saveConfirmTitle,
+      messages.workspace.copyNeedsSave,
     );
-    setChips(saved.chips);
-    setEdges(saved.edges);
-    setPositions(saved.positions);
-    setSelectedChipIds([]);
-    setSelectedEdgeIds([]);
-    setDirty(false);
-    if (chipId && !savedIdsRef.current.has(chipId) && workspaceId) {
-      navigate(`/workspace/${workspaceId}`);
+    if (!confirmed || currentWorkspaceRef.current !== workspaceId) return false;
+    return saveCanvas();
+  }
+
+  function copyIds(chipIds: string[], silent = false) {
+    if (!workspaceId) return false;
+    const ids = chipIds.filter((id) => chipsRef.current.some((chip) => chip.id === id && !isDraftChipId(id)));
+    const bbox = chipSelectionBbox(ids, positionsRef.current);
+    if (ids.length === 0 || !bbox) {
+      if (!silent) toastError(messages.workspace.copyEmpty);
+      return false;
     }
+    pasteCountRef.current = 0;
+    rememberChipClipboard({ sourceWorkspaceId: workspaceId, chipIds: ids, bbox });
+    if (!silent) toastSuccess(messages.workspace.chipsCopied(ids.length));
+    return true;
+  }
+
+  async function copySelectedChips() {
+    if (busyRef.current) return;
+    const saved = await ensureSavedBeforeClipboard();
+    if (!saved) return;
+    copyIds(selectedChipIdsRef.current);
+  }
+
+  function applyGraphResponse(response: SaveWorkspaceResponse, requestWorkspaceId: string, selectIds?: string[]) {
+    const nextPositions = positionsFrom(response.chips, response.workspace.layout);
+    const nextEdges = withCompanionSuccessEdges(
+      response.edges ?? response.workspace.edges ?? [],
+      nextPositions,
+      requestWorkspaceId,
+    );
+    setWorkspaces((current) =>
+      current.map((item) => (item.id === response.workspace.id ? response.workspace : item)),
+    );
+    setChips(response.chips);
+    chipsRef.current = response.chips;
+    setEdges(nextEdges);
+    setPositions(nextPositions);
+    rememberSaved(response.chips, nextPositions, nextEdges);
+    workspaceVersionRef.current = response.workspace.version;
+    setSelectedEdgeIds([]);
+    if (selectIds) setSelectedChipIds(selectIds);
+  }
+
+  async function pasteChipsAt(origin: Point, chipIds?: string[]) {
+    if (!workspaceId || busyRef.current) return;
+    const clipboard = chipIds
+      ? {
+        sourceWorkspaceId: workspaceId,
+        chipIds,
+        bbox: chipSelectionBbox(chipIds, positionsRef.current) ?? { x: origin.x, y: origin.y, w: NODE_W, h: NODE_H },
+      }
+      : currentChipClipboard();
+    if (!clipboard || clipboard.chipIds.length === 0) {
+      toastError(messages.workspace.pasteEmpty);
+      return;
+    }
+    const saved = await ensureSavedBeforeClipboard();
+    if (!saved || currentWorkspaceRef.current !== workspaceId) return;
+    const before = snapshotNow();
+    const requestWorkspaceId = workspaceId;
+    setBusy(true);
+    try {
+      const response = await workspaceApi.pasteChips(requestWorkspaceId, {
+        source_workspace_id: clipboard.sourceWorkspaceId,
+        chip_ids: clipboard.chipIds,
+        origin: roundPoint(clampPoint(origin)),
+        version: workspaceVersionRef.current,
+      });
+      if (currentWorkspaceRef.current !== requestWorkspaceId) return;
+      const catalogResponse = await chipApi.listCatalog();
+      if (currentWorkspaceRef.current === requestWorkspaceId) {
+        setCatalogChips(catalogResponse.chips);
+      }
+      const pastedIds = clipboard.chipIds
+        .map((id) => response.id_map[id])
+        .filter((id): id is string => Boolean(id));
+      applyGraphResponse(response, requestWorkspaceId, pastedIds);
+      pushUndo(before);
+      const pasted = response.chips.filter((chip) => pastedIds.includes(chip.id));
+      toastSuccess(messages.workspace.chipsPasted(pastedIds.length));
+      if (pasted.some((chip) => chip.kind === "serve")) {
+        toastSuccess(messages.workspace.pasteServeRotated);
+      }
+    } catch (reason) {
+      if (currentWorkspaceRef.current !== requestWorkspaceId) return;
+      if (isWorkspaceVersionConflict(reason)) {
+        toastError(messages.workspace.versionConflict);
+        setCanvasReloadKey((key) => key + 1);
+      } else toastError(messages.workspace.saveChipError, reason);
+    } finally {
+      if (currentWorkspaceRef.current === requestWorkspaceId) setBusy(false);
+    }
+  }
+
+  async function pasteClipboard() {
+    const clipboard = currentChipClipboard();
+    if (!clipboard) {
+      toastError(messages.workspace.pasteEmpty);
+      return;
+    }
+    const onSource = workspaceId === clipboard.sourceWorkspaceId
+      && clipboard.chipIds.every((id) => chipsRef.current.some((chip) => chip.id === id));
+    let origin: Point;
+    if (onSource) {
+      pasteCountRef.current += 1;
+      const n = pasteCountRef.current;
+      origin = { x: clipboard.bbox.x + 40 * n, y: clipboard.bbox.y + 40 * n };
+    } else {
+      const canvas = canvasRef.current;
+      const zoom = canvasZoomRef.current;
+      if (canvas) {
+        origin = {
+          x: (canvas.scrollLeft + canvas.clientWidth / 2) / zoom - clipboard.bbox.w / 2,
+          y: (canvas.scrollTop + canvas.clientHeight / 2) / zoom - clipboard.bbox.h / 2,
+        };
+      } else {
+        origin = { x: clipboard.bbox.x, y: clipboard.bbox.y };
+      }
+    }
+    await pasteChipsAt(origin);
+  }
+
+  async function duplicateSelectedChips() {
+    if (busyRef.current) return;
+    const saved = await ensureSavedBeforeClipboard();
+    if (!saved) return;
+    if (!copyIds(selectedChipIdsRef.current, true)) {
+      toastError(messages.workspace.copyEmpty);
+      return;
+    }
+    await pasteClipboard();
   }
 
   async function refreshWorkspace() {
@@ -1712,10 +1936,12 @@ export function WorkspacePage() {
         workspace.id,
       );
       pendingViewRef.current = workspace.layout.view ?? { x: 0, y: 0 };
+      workspaceVersionRef.current = workspace.version;
       setChips(chipResponse.chips);
       setEdges(nextEdges);
       setPositions(nextPositions);
       rememberSaved(chipResponse.chips, nextPositions, nextEdges);
+      clearHistory();
     } catch (reason) {
       if (refreshRequestRef.current === requestId) {
         toastError(messages.workspace.loadError, reason);
@@ -1732,7 +1958,8 @@ export function WorkspacePage() {
     if (canStopWorkspaceRef.current) void stopWorkspace();
     else void runWorkspace();
   };
-  resetCanvasRef.current = resetCanvas;
+  undoCanvasRef.current = undoCanvas;
+  redoCanvasRef.current = redoCanvas;
 
   function onToolDragStart(kindValue: ChipPlaceKind, event: DragEvent<HTMLButtonElement>) {
     event.dataTransfer.setData(TOOL_KIND, kindValue);
@@ -1759,7 +1986,7 @@ export function WorkspacePage() {
     const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
     const point = { x: grab.x - NODE_W / 2, y: grab.y - NODE_H / 2 };
     const toolKind = event.dataTransfer.getData(TOOL_KIND);
-    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load" && toolKind !== "validation" && toolKind !== "sql" && toolKind !== "serve") return;
+    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load" && toolKind !== "validation" && toolKind !== "sql" && toolKind !== "serve" && toolKind !== "script") return;
     placeTool(toolKind, point);
   }
 
@@ -1797,6 +2024,7 @@ export function WorkspacePage() {
       additive,
       wasSelected,
       origins,
+      duplicate: event.altKey,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -1806,6 +2034,19 @@ export function WorkspacePage() {
     dragRef.current = null;
     if (!drag || drag.id !== draggedChipId) return;
     if (drag.moved) {
+      if (drag.duplicate) {
+        const ids = Object.keys(drag.origins);
+        const drop = chipSelectionBbox(ids, positionsRef.current);
+        const reverted = { ...positionsRef.current };
+        for (const [id, origin] of Object.entries(drag.origins)) reverted[id] = origin;
+        positionsRef.current = reverted;
+        setPositions(reverted);
+        if (drop) void pasteChipsAt({ x: drop.x, y: drop.y }, ids);
+        return;
+      }
+      const beforePositions = { ...positionsRef.current };
+      for (const [id, origin] of Object.entries(drag.origins)) beforePositions[id] = origin;
+      pushUndo(cloneCanvas(chipsRef.current, beforePositions, edgesRef.current));
       markDirty(chips, positionsRef.current, edges);
       return;
     }
@@ -2163,6 +2404,12 @@ export function WorkspacePage() {
       icon: Terminal,
     },
     {
+      kind: "script" as const,
+      label: messages.workspace.script,
+      hint: messages.workspace.scriptHint,
+      icon: Braces,
+    },
+    {
       kind: "serve" as const,
       label: messages.workspace.serve,
       hint: messages.workspace.serveHint,
@@ -2359,7 +2606,8 @@ export function WorkspacePage() {
               <ul className="flex shrink-0 items-center gap-2">
               <ShortcutHint keys={["Ctrl", "S"]} label={messages.workspace.shortcutSave} />
               <ShortcutHint keys={["Ctrl", "Enter"]} label={messages.workspace.shortcutRun} />
-              <ShortcutHint keys={["Ctrl", "Z"]} label={messages.workspace.shortcutReset} />
+              <ShortcutHint keys={["Ctrl", "Z"]} label={messages.workspace.shortcutUndo} />
+              <ShortcutHint keys={["Ctrl", "Shift", "Z"]} label={messages.workspace.shortcutRedo} />
               </ul>
             </div>
           </div>
@@ -2519,6 +2767,7 @@ export function WorkspacePage() {
             : chip.kind === "load" ? FileOutput
               : chip.kind === "validation" ? ShieldCheck
                 : chip.kind === "sql" ? Terminal
+                  : chip.kind === "script" ? Braces
                   : chip.kind === "serve" ? Globe : DatabaseZap;
           return (
             <div
@@ -2630,6 +2879,7 @@ export function WorkspacePage() {
                   : chip.kind === "load" ? "is-load"
                     : chip.kind === "validation" ? "is-validation"
                       : chip.kind === "sql" ? "is-sql"
+                        : chip.kind === "script" ? "is-script"
                         : chip.kind === "serve" ? "is-serve" : "is-transform",
               )}>
                 <Icon aria-hidden="true" />
@@ -2768,6 +3018,11 @@ export function WorkspacePage() {
           messages.workspace.defaultSqlChipName,
           (chip) => chip.kind === "sql",
         )}
+        defaultScriptName={nextSequencedChipName(
+          [...catalogChips, ...chips],
+          messages.workspace.defaultScriptChipName,
+          (chip) => chip.kind === "script",
+        )}
         defaultServeName={nextSequencedChipName(
           [...catalogChips, ...chips],
           messages.workspace.defaultServeChipName,
@@ -2783,6 +3038,7 @@ export function WorkspacePage() {
         onPlaceNewValidation={placeNewValidationChip}
         onPlaceNewServe={placeNewServeChip}
         onRegisterSql={() => setSqlEditor({ chip: null })}
+        onRegisterScript={() => setScriptEditor({ chip: null })}
       />
 
       <SqlChipEditorDialog
@@ -2804,6 +3060,7 @@ export function WorkspacePage() {
               : [saved, ...current];
           });
           if (sqlEditor?.chip) {
+            pushUndo();
             setChips((current) => current.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)));
           } else if (pendingPlace) {
             placeCatalogChips([saved], pendingPlace.point);
@@ -2813,11 +3070,41 @@ export function WorkspacePage() {
         }}
       />
 
+      <ScriptChipEditorDialog
+        open={Boolean(scriptEditor)}
+        workspaceId={workspaceId}
+        chip={scriptEditor?.chip ?? null}
+        defaultName={nextSequencedChipName(
+          [...catalogChips, ...chips],
+          messages.workspace.defaultScriptChipName,
+          (chip) => chip.kind === "script",
+        )}
+        occupiedNames={[...catalogChips, ...chips].map((chip) => chip.name)}
+        onClose={() => setScriptEditor(null)}
+        onSaved={(saved) => {
+          setCatalogChips((current) => {
+            const exists = current.some((item) => item.id === saved.id);
+            return exists
+              ? current.map((item) => (item.id === saved.id ? saved : item))
+              : [saved, ...current];
+          });
+          if (scriptEditor?.chip) {
+            pushUndo();
+            setChips((current) => current.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)));
+          } else if (pendingPlace) {
+            placeCatalogChips([saved], pendingPlace.point);
+            setPendingPlace(null);
+          }
+          setScriptEditor(null);
+        }}
+      />
+
       <ServeChipEditorDialog
         open={Boolean(serveEditor)}
         chip={serveEditor}
         onClose={() => setServeEditor(null)}
         onSaved={(saved) => {
+          pushUndo();
           setCatalogChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
           setChips((current) => current.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)));
           setServeEditor(null);
@@ -2841,6 +3128,8 @@ export function WorkspacePage() {
         onInfo={setInfoChip}
         onProperties={openChipProperties}
         onEdit={openChipEditor}
+        onCopy={() => void copySelectedChips()}
+        onDuplicate={() => void duplicateSelectedChips()}
         onDelete={(chip) => void deleteCanvasChip(chip)}
       />
 
@@ -2955,6 +3244,8 @@ export function WorkspacePage() {
                       ? "bg-violet-500/10 text-violet-600 ring-violet-500/20 dark:text-violet-400"
                       : propsChip?.kind === "sql"
                         ? "bg-sky-500/10 text-sky-600 ring-sky-500/20 dark:text-sky-400"
+                        : propsChip?.kind === "script"
+                          ? "bg-amber-500/10 text-amber-600 ring-amber-500/20 dark:text-amber-400"
                         : propsChip?.kind === "serve"
                           ? "bg-teal-500/10 text-teal-600 ring-teal-500/20 dark:text-teal-400"
                           : "bg-accent-subtle text-accent ring-accent/20",
@@ -2963,6 +3254,7 @@ export function WorkspacePage() {
                   : propsChip?.kind === "load" ? <FileOutput className="size-5" aria-hidden="true" />
                     : propsChip?.kind === "validation" ? <ShieldCheck className="size-5" aria-hidden="true" />
                       : propsChip?.kind === "sql" ? <Terminal className="size-5" aria-hidden="true" />
+                        : propsChip?.kind === "script" ? <Braces className="size-5" aria-hidden="true" />
                         : propsChip?.kind === "serve" ? <Globe className="size-5" aria-hidden="true" />
                           : <DatabaseZap className="size-5" aria-hidden="true" />}
               </span>
@@ -3009,7 +3301,7 @@ export function WorkspacePage() {
               </div>
             </div>
 
-            {propsChip?.kind === "transform" || propsChip?.kind === "load" || propsChip?.kind === "serve" ? (
+            {propsChip?.kind === "transform" || propsChip?.kind === "load" || propsChip?.kind === "serve" || propsChip?.kind === "script" ? (
               <div className="space-y-2">
                 <p className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.inputChipHint}</p>
                 <CanvasProducerSelect

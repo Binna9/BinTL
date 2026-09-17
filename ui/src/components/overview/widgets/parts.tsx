@@ -156,6 +156,7 @@ export function FeedRow({
           : item.kind === "transform" ? messages.overview.transform
           : item.kind === "load" ? messages.overview.load
           : item.kind === "sql" ? messages.workspace.sql
+          : item.kind === "script" ? messages.workspace.script
           : item.kind === "serve" ? messages.workspace.serve
           : messages.workspace.validation}
       </span>

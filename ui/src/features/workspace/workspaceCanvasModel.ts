@@ -20,6 +20,7 @@ export function chipKindLabel(kind: ChipKind, messages: Messages) {
   if (kind === "load") return messages.workspace.load;
   if (kind === "sql") return messages.workspace.sql;
   if (kind === "serve") return messages.workspace.serve;
+  if (kind === "script") return messages.workspace.script;
   return messages.workspace.validation;
 }
 
@@ -70,6 +71,20 @@ export function cloneCanvas(
   edges: ChipEdge[],
 ): CanvasSnapshot {
   return JSON.parse(JSON.stringify({ chips, positions, edges })) as CanvasSnapshot;
+}
+
+/** ponytail: in-memory cap. Raise if long edit sessions start dropping early undos. */
+export const CANVAS_UNDO_LIMIT = 50;
+
+export function appendCanvasUndo(
+  stack: CanvasSnapshot[],
+  snapshot: CanvasSnapshot,
+  limit = CANVAS_UNDO_LIMIT,
+): CanvasSnapshot[] {
+  const last = stack[stack.length - 1];
+  if (last && JSON.stringify(last) === JSON.stringify(snapshot)) return stack;
+  if (stack.length < limit) return [...stack, snapshot];
+  return [...stack.slice(stack.length - limit + 1), snapshot];
 }
 
 export function nodesFromLayout(layout?: WorkspaceLayout): Record<string, Point> {
@@ -367,11 +382,11 @@ export function wireTone(kind: ChipEdgeKind): "is-data" | "is-success" | "is-err
 /** Data wires carry a materialized dataset into transform, load, or validation. */
 export function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
   if (toKind === "validation") {
-    return fromKind === "extract" || fromKind === "transform" || fromKind === "load";
+    return fromKind === "extract" || fromKind === "transform" || fromKind === "load" || fromKind === "script";
   }
   return (
-    (fromKind === "extract" || fromKind === "transform")
-    && (toKind === "transform" || toKind === "load" || toKind === "serve")
+    (fromKind === "extract" || fromKind === "transform" || fromKind === "script")
+    && (toKind === "transform" || toKind === "load" || toKind === "serve" || toKind === "script")
   );
 }
 
@@ -612,14 +627,14 @@ export function sameKindPairEdges(
 export function producerChips(chips: Chip[], excludeIds: Iterable<string> = []): Chip[] {
   const skip = new Set(excludeIds);
   return chips.filter((chip) =>
-    (chip.kind === "extract" || chip.kind === "transform") && !skip.has(chip.id),
+    (chip.kind === "extract" || chip.kind === "transform" || chip.kind === "script") && !skip.has(chip.id),
   );
 }
 
 export function validationTargetChips(chips: Chip[], excludeIds: Iterable<string> = []): Chip[] {
   const skip = new Set(excludeIds);
   return chips.filter((chip) =>
-    (chip.kind === "extract" || chip.kind === "transform" || chip.kind === "load") && !skip.has(chip.id),
+    (chip.kind === "extract" || chip.kind === "transform" || chip.kind === "load" || chip.kind === "script") && !skip.has(chip.id),
   );
 }
 
@@ -768,6 +783,9 @@ if (import.meta.env.DEV) {
   console.assert(!canHaveControlEdge("load", "extract"), "canvas: load may not sequence extract");
   console.assert(!canHaveControlEdge("validation", "load"), "canvas: validation is a sink");
   console.assert(canHaveControlEdge("sql", "extract"), "canvas: sql may sequence extract");
+  console.assert(canHaveDataEdge("script", "transform"), "canvas: script may feed transform");
+  console.assert(canHaveDataEdge("extract", "script"), "canvas: extract may feed script");
+  console.assert(canHaveDataEdge("script", "script"), "canvas: script may feed script");
   const chip = (id: string, kind: ChipKind): Chip => ({
     id, owner_user_id: "", name: id, kind, config: {}, revision: 0, active: true, created_at: "", updated_at: "",
   });
@@ -825,4 +843,9 @@ if (import.meta.env.DEV) {
     edgeConnectIssue(extract, transform, "on_success", [wire("back", "transform", "extract", "always")]) === "cycle",
     "canvas: connect-time cycle",
   );
+  const empty = { chips: [], positions: {}, edges: [] } satisfies CanvasSnapshot;
+  const moved = { chips: [], positions: { a: { x: 1, y: 2 } }, edges: [] } satisfies CanvasSnapshot;
+  console.assert(appendCanvasUndo([], empty).length === 1, "undo: push first snapshot");
+  console.assert(appendCanvasUndo([empty], empty).length === 1, "undo: skip duplicate snapshot");
+  console.assert(appendCanvasUndo([empty], moved).length === 2, "undo: keep distinct snapshot");
 }

@@ -173,6 +173,16 @@ export function TrendChart({ days, hidden = [] }: { days: DayPoint[]; hidden?: C
             point: 2.6,
           },
           {
+            kind: "script",
+            label: messages.workspace.script,
+            values: days.map((day) => day.script),
+            color: "#d97706",
+            fillTop: 0.18,
+            dash: undefined,
+            fill: false,
+            point: 2.6,
+          },
+          {
             kind: "serve",
             label: messages.workspace.serve,
             values: days.map((day) => day.serve),

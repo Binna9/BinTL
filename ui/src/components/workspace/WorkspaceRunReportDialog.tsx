@@ -161,6 +161,9 @@ function contentSummary(chip: Chip, messages: Messages): string {
   if (chip.kind === "serve") {
     return typeof chip.config.slug === "string" ? messages.workspace.servePathPreview(chip.config.slug) : "";
   }
+  if (chip.kind === "script") {
+    return typeof chip.config.entry === "string" ? chip.config.entry : "";
+  }
   const keys = Array.isArray(chip.config.keys)
     ? chip.config.keys.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];

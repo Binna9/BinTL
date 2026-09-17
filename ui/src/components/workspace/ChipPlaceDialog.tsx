@@ -31,7 +31,7 @@ import { slugFromName, newServeApiKey } from "@/components/workspace/ServeChipEd
 import type { Chip, ChipEdge } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
-export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "sql" | "serve";
+export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "sql" | "serve" | "script";
 
 export type TransformPlaceDraft = {
   name: string;
@@ -225,14 +225,15 @@ function CatalogChipPanel({
     if (!needle) return options;
     return options.filter((chip) => chip.name.toLowerCase().includes(needle));
   }, [options, query]);
-  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : kind === "validation" ? ShieldCheck : kind === "sql" ? Terminal : kind === "serve" ? Globe : FileOutput;
-  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : kind === "validation" ? "text-violet-600 dark:text-violet-400" : kind === "sql" ? "text-sky-600 dark:text-sky-400" : kind === "serve" ? "text-teal-600 dark:text-teal-400" : "text-warning";
+  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : kind === "validation" ? ShieldCheck : kind === "sql" ? Terminal : kind === "serve" ? Globe : kind === "script" ? Braces : FileOutput;
+  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : kind === "validation" ? "text-violet-600 dark:text-violet-400" : kind === "sql" ? "text-sky-600 dark:text-sky-400" : kind === "serve" ? "text-teal-600 dark:text-teal-400" : kind === "script" ? "text-amber-600 dark:text-amber-400" : "text-warning";
   const emptyHint = kind === "extract"
     ? messages.workspace.emptyCatalogExtract
     : kind === "transform" ? messages.workspace.emptyCatalogTransform
       : kind === "validation" ? messages.workspace.emptyCatalogValidation
         : kind === "sql" ? messages.workspace.emptyCatalogSql
-          : kind === "serve" ? messages.workspace.emptyCatalogServe : messages.workspace.emptyCatalogLoad;
+          : kind === "serve" ? messages.workspace.emptyCatalogServe
+            : kind === "script" ? messages.workspace.emptyCatalogScript : messages.workspace.emptyCatalogLoad;
 
   if (options.length === 0) {
     return (
@@ -868,7 +869,7 @@ function TransformNewPanel({
 }
 
 function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChips, canvasEdges, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, hideRegister, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
-  kind?: "load" | "validation" | "sql" | "serve"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
+  kind?: "load" | "validation" | "sql" | "serve" | "script"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
   emptyChipLabel?: string; catalogHint?: string; registerLabel?: string; submitLabel?: string;
   chips: Chip[]; canvasChips: Chip[]; canvasEdges?: ChipEdge[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
   hideEmpty?: boolean;
@@ -1130,6 +1131,7 @@ export function ChipPlaceDialog({
   defaultLoadName,
   defaultValidationName,
   defaultSqlName,
+  defaultScriptName,
   defaultServeName,
   occupiedNames,
   messages,
@@ -1141,6 +1143,7 @@ export function ChipPlaceDialog({
   onPlaceNewValidation,
   onPlaceNewServe,
   onRegisterSql,
+  onRegisterScript,
 }: {
   open: boolean;
   kind: ChipPlaceKind;
@@ -1155,6 +1158,7 @@ export function ChipPlaceDialog({
   defaultLoadName: string;
   defaultValidationName: string;
   defaultSqlName: string;
+  defaultScriptName: string;
   defaultServeName: string;
   occupiedNames: string[];
   messages: Messages;
@@ -1166,6 +1170,7 @@ export function ChipPlaceDialog({
   onPlaceNewValidation: (draft: EmptyConsumerDraft) => void;
   onPlaceNewServe: (draft: EmptyConsumerDraft) => void;
   onRegisterSql: () => void;
+  onRegisterScript: () => void;
 }) {
   const navigate = useNavigate();
   const dragHandleRef = useRef<HTMLDivElement>(null);
@@ -1174,7 +1179,8 @@ export function ChipPlaceDialog({
     : kind === "transform" ? messages.workspace.placeTransformTitle
       : kind === "load" ? messages.workspace.placeLoadTitle
         : kind === "sql" ? messages.workspace.placeSqlTitle
-          : kind === "serve" ? messages.workspace.placeServeTitle : messages.workspace.placeValidationTitle;
+          : kind === "script" ? messages.workspace.placeScriptTitle
+            : kind === "serve" ? messages.workspace.placeServeTitle : messages.workspace.placeValidationTitle;
 
   function goDbRegister() {
     onClose();
@@ -1272,6 +1278,30 @@ export function ChipPlaceDialog({
           onClose={onClose}
           onPlace={onPlaceCatalog}
           onRegister={onRegisterSql}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : kind === "script" ? (
+        <LoadCatalogPanel
+          kind="script"
+          hideEmpty
+          icon={<Braces className="size-4" aria-hidden="true" />}
+          iconClassName="bg-amber-500/10 text-amber-600 dark:text-amber-400"
+          title={messages.workspace.placeScriptTitle}
+          simpleHint={messages.workspace.placeScriptSimpleHint}
+          catalogHint={messages.workspace.placeScriptCatalogHint}
+          registerLabel={messages.workspace.registerNewChip}
+          submitLabel={messages.workspace.pickChipPlace}
+          chips={catalogChips}
+          canvasChips={canvasChips}
+          canvasEdges={canvasEdges}
+          canvasChipIds={canvasChipIds}
+          defaultName={defaultScriptName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceCatalog}
+          onRegister={onRegisterScript}
           dragHandleRef={dragHandleRef}
         />
       ) : kind === "serve" ? (

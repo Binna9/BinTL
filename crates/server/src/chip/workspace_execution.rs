@@ -94,9 +94,9 @@ async fn prepare_config(
             if load_target {
                 continue;
             }
-            if !matches!(source.kind.as_str(), "extract" | "transform") {
+            if !matches!(source.kind.as_str(), "extract" | "transform" | "script") {
                 return Err(AppError::bad(
-                    "data connections require an extract or transform output",
+                    "data connections require an extract, transform, or script output",
                 ));
             }
         }
@@ -220,6 +220,12 @@ async fn prepare_config(
                 return Err(AppError::bad("too many data inputs"));
             }
             crate::serve::parse_serve_config(&config)?;
+        }
+        "script" => {
+            if incoming.len() > 1 {
+                return Err(AppError::bad("too many data inputs"));
+            }
+            config = crate::script::validate_script_config(&state.store, config).await?;
         }
         _ => return Err(AppError::bad("unsupported chip kind")),
     }
@@ -415,7 +421,7 @@ pub(super) async fn execute(
                     .ok_or_else(|| AppError::not_found("completed chip run not found"))?;
                 if let Some(output) = completed.output_dataset_id {
                     outputs.insert(chip.id.clone(), output);
-                } else if matches!(chip.kind.as_str(), "extract" | "transform") {
+                } else if matches!(chip.kind.as_str(), "extract" | "transform" | "script") {
                     // Successful producers must yield a dataset, even an empty one.
                     // Do not silently report success for an incomplete worker result.
                     first_failure.get_or_insert_with(|| {

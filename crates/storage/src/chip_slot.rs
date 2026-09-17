@@ -32,7 +32,7 @@ pub fn display_filename(chip_name: &str, kind: &str, delimiter: &str) -> String 
             let ext = extract_ext(delimiter);
             resolve_upload_filename(&format!("out.{ext}"), Some(chip_name))
         }
-        "transform" => resolve_upload_filename("result.parquet", Some(chip_name)),
+        "transform" | "script" => resolve_upload_filename("result.parquet", Some(chip_name)),
         _ => safe_filename(chip_name),
     }
 }
@@ -40,7 +40,7 @@ pub fn display_filename(chip_name: &str, kind: &str, delimiter: &str) -> String 
 pub fn slot_file_name(kind: &str, delimiter: &str) -> String {
     match kind {
         "extract" => format!("current.{}", extract_ext(delimiter)),
-        "transform" => "current.parquet".into(),
+        "transform" | "script" => "current.parquet".into(),
         other => format!("current.{other}"),
     }
 }
@@ -64,6 +64,10 @@ mod tests {
         assert_eq!(
             display_filename("Clean sales", "transform", ","),
             "Clean sales.parquet"
+        );
+        assert_eq!(
+            display_filename("logic", "script", ","),
+            "logic.parquet"
         );
         assert_eq!(
             display_filename("transform-SYS.DR$UDEF_PREFERENCE.csv", "transform", ","),

@@ -190,6 +190,22 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
     );
   }
 
+  if (chip.kind === "script") {
+    const unset = messages.chips.detailUnset;
+    const entry = typeof chip.config.entry === "string" ? chip.config.entry : "main.js";
+    const files = chip.config.files && typeof chip.config.files === "object" && !Array.isArray(chip.config.files)
+      ? Object.keys(chip.config.files as Record<string, unknown>).sort((left, right) => left.localeCompare(right))
+      : [];
+    return (
+      <DetailStack>
+        <DetailSection icon={Braces} title={messages.workspace.script}>
+          <DetailRow label={messages.workspace.scriptEntry}>{entry || unset}</DetailRow>
+          <DetailRow label={messages.workspace.scriptFiles}>{files.length ? files.join(", ") : unset}</DetailRow>
+        </DetailSection>
+      </DetailStack>
+    );
+  }
+
   if (chip.kind === "validation") {
     const keys = Array.isArray(chip.config.keys)
       ? chip.config.keys.filter((value): value is string => typeof value === "string")

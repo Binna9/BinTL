@@ -85,3 +85,14 @@ export interface SaveWorkspaceResponse {
   chips: Chip[];
   edges: ChipEdge[];
 }
+
+export interface PasteChipsRequest {
+  source_workspace_id: string;
+  chip_ids: string[];
+  origin: { x: number; y: number };
+  version: number;
+}
+
+export interface PasteChipsResponse extends SaveWorkspaceResponse {
+  id_map: Record<string, string>;
+}

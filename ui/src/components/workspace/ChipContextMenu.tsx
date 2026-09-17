@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  Copy,
+  CopyPlus,
   FileText,
   Info,
   Pencil,
@@ -58,6 +60,8 @@ export function ChipContextMenu({
   onInfo,
   onProperties,
   onEdit,
+  onCopy,
+  onDuplicate,
   onDelete,
 }: {
   menu: ChipContextMenuState | null;
@@ -71,6 +75,8 @@ export function ChipContextMenu({
   onInfo: (chip: Chip) => void;
   onProperties: (chip: Chip) => void;
   onEdit: (chip: Chip) => void;
+  onCopy: (chip: Chip) => void;
+  onDuplicate: (chip: Chip) => void;
   onDelete: (chip: Chip) => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -136,7 +142,7 @@ export function ChipContextMenu({
   ];
   const extractSource = chip.config.source as { type?: unknown } | undefined;
   const editableExtract = chip.kind === "extract" && extractSource?.type !== "http";
-  if (editableExtract || chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation" || chip.kind === "sql" || chip.kind === "serve") {
+  if (editableExtract || chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation" || chip.kind === "sql" || chip.kind === "serve" || chip.kind === "script") {
     items.push({
       id: "edit",
       label: chip.kind === "extract"
@@ -149,11 +155,29 @@ export function ChipContextMenu({
           ? messages.workspace.chipMenuEditSql
         : chip.kind === "serve"
           ? messages.workspace.chipMenuEditServe
+        : chip.kind === "script"
+          ? messages.workspace.chipMenuEditScript
         : messages.workspace.chipMenuEditSteps,
       icon: Pencil,
       onSelect: () => onEdit(chip),
     });
   }
+  items.push(
+    {
+      id: "copy",
+      label: messages.workspace.chipMenuCopy,
+      icon: Copy,
+      disabled: busy,
+      onSelect: () => onCopy(chip),
+    },
+    {
+      id: "duplicate",
+      label: messages.workspace.chipMenuDuplicate,
+      icon: CopyPlus,
+      disabled: busy,
+      onSelect: () => onDuplicate(chip),
+    },
+  );
   items.push({
     id: "delete",
     label: messages.common.delete,

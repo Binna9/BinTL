@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -398,6 +399,24 @@ pub struct WorkspaceSaveEdge {
     pub kind: String,
     pub from_port: String,
     pub to_port: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChipPasteInput {
+    pub source_workspace_id: String,
+    pub chip_ids: Vec<String>,
+    pub origin_x: f64,
+    pub origin_y: f64,
+    pub expected_version: i64,
+    pub serve_configs: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChipPasteResult {
+    pub workspace: WorkspaceRow,
+    pub chips: Vec<ChipRow>,
+    pub edges: Vec<ChipEdgeRow>,
+    pub id_map: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]

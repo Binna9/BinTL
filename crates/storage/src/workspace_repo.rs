@@ -471,127 +471,16 @@ impl Store {
             ));
         }
         let now = now_rfc3339();
-        let version = current.version + 1;
         let mut tx = self.pool.begin().await?;
-        let mut saved_chips = Vec::with_capacity(chip_ids.len());
-        for chip_id in chip_ids {
-            let chip_id = required_text(chip_id, "chip id")?;
-            let chip = sqlx::query_as::<_, ChipRow>(&format!(
-                "SELECT {CHIP_COLS} FROM chips WHERE id = ?"
-            ))
-            .bind(chip_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| StorageError::NotFound(format!("chip {chip_id} not found")))?;
-            chip_matches_workspace_owner(&chip, &current)?;
-            saved_chips.push(chip);
-        }
-        sqlx::query("DELETE FROM workspace_edges WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        if saved_chips.is_empty() {
-            sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-        } else {
-            let marks = std::iter::repeat("?")
-                .take(saved_chips.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "DELETE FROM workspace_chips WHERE workspace_id = ? AND chip_id NOT IN ({marks})"
-            );
-            let mut delete = sqlx::query(&sql).bind(id);
-            for chip in &saved_chips {
-                delete = delete.bind(&chip.id);
-            }
-            delete.execute(&mut *tx).await?;
-        }
-        for chip in &saved_chips {
-            let position = serde_json::from_str::<serde_json::Value>(layout_json)
-                .ok()
-                .and_then(|layout| {
-                    layout
-                        .get("nodes")
-                        .and_then(|nodes| nodes.get(&chip.id))
-                        .cloned()
-                });
-            let x = position
-                .as_ref()
-                .and_then(|node| node.get("x"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            let y = position
-                .as_ref()
-                .and_then(|node| node.get("y"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            sqlx::query(
-                "INSERT INTO workspace_chips (id, workspace_id, chip_id, x, y, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(id) DO UPDATE SET x=excluded.x, y=excluded.y, updated_at=excluded.updated_at",
-            )
-            .bind(workspace_chip_id(id, &chip.id))
-            .bind(id)
-            .bind(&chip.id)
-            .bind(x)
-            .bind(y)
-            .bind(&now)
-            .bind(&now)
-            .execute(&mut *tx)
-            .await?;
-        }
-        // A workspace placement owns a stable output contract. It is created
-        // before the first run so downstream chips can consume its filename and
-        // schema without requiring a materialized data_files row.
-        sqlx::query(
-            "INSERT INTO workspace_chip_outputs
-             (workspace_chip_id, port_name, expected_filename, definition_revision, updated_at)
-             SELECT wc.id, 'out',
-                    CASE c.kind
-                      WHEN 'extract' THEN COALESCE(e.output_filename, c.name || '.csv')
-                      WHEN 'transform' THEN COALESCE(t.output_filename_template, c.name || '.parquet')
-                    END,
-                    c.revision, ?
-             FROM workspace_chips wc
-             INNER JOIN chips c ON c.id = wc.chip_id
-             LEFT JOIN extracts e ON e.id = c.extract_id
-             LEFT JOIN transforms t ON t.id = c.transform_id
-             WHERE wc.workspace_id = ? AND c.kind IN ('extract', 'transform')
-             ON CONFLICT(workspace_chip_id, port_name) DO NOTHING",
+        let (saved_chips, saved_edges) = write_workspace_graph(
+            &mut tx,
+            &current,
+            layout_json,
+            chip_ids,
+            edges,
+            expected,
+            &now,
         )
-        .bind(&now)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-        let saved_edges = replace_workspace_edges(&mut tx, id, edges, &saved_chips, &now).await?;
-        let bumped = sqlx::query(
-            "UPDATE workspaces SET viewport_json = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?",
-        )
-        .bind(layout_json)
-        .bind(version)
-        .bind(&now)
-        .bind(id)
-        .bind(expected)
-        .execute(&mut *tx)
-        .await?;
-        if bumped.rows_affected() == 0 {
-            return Err(StorageError::Conflict(
-                "workspace has changed, reload and save again".into(),
-            ));
-        }
-        let snapshot = workspace_snapshot_json(layout_json, &saved_chips, &saved_edges)?;
-        sqlx::query(
-            "INSERT INTO workspace_revisions (workspace_id, version, snapshot_json, created_at)
-             VALUES (?, ?, ?, ?)",
-        )
-        .bind(id)
-        .bind(version)
-        .bind(&snapshot)
-        .bind(&now)
-        .execute(&mut *tx)
         .await?;
         tx.commit().await?;
         let workspace = self
@@ -762,13 +651,14 @@ impl Store {
                     CASE c.kind
                       WHEN 'extract' THEN COALESCE(e.output_filename, c.name || '.csv')
                       WHEN 'transform' THEN COALESCE(t.output_filename_template, c.name || '.parquet')
+                      WHEN 'script' THEN c.name || '.parquet'
                     END,
                     c.revision, ?
              FROM workspace_chips wc
              INNER JOIN chips c ON c.id = wc.chip_id
              LEFT JOIN extracts e ON e.id = c.extract_id
              LEFT JOIN transforms t ON t.id = c.transform_id
-             WHERE c.kind IN ('extract', 'transform')
+             WHERE c.kind IN ('extract', 'transform', 'script')
              ON CONFLICT(workspace_chip_id, port_name) DO NOTHING",
         )
         .bind(&now)
@@ -873,4 +763,136 @@ pub(crate) fn chip_matches_workspace_owner(
         )),
         None => Ok(()),
     }
+}
+
+pub(crate) async fn write_workspace_graph(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    workspace: &WorkspaceRow,
+    layout_json: &str,
+    chip_ids: &[String],
+    edges: &[WorkspaceSaveEdge],
+    expected: i64,
+    now: &str,
+) -> Result<(Vec<ChipRow>, Vec<ChipEdgeRow>), StorageError> {
+    let id = workspace.id.as_str();
+    let version = workspace.version + 1;
+    let mut saved_chips = Vec::with_capacity(chip_ids.len());
+    for chip_id in chip_ids {
+        let chip_id = required_text(chip_id, "chip id")?;
+        let chip = sqlx::query_as::<_, ChipRow>(&format!(
+            "SELECT {CHIP_COLS} FROM chips WHERE id = ?"
+        ))
+        .bind(chip_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| StorageError::NotFound(format!("chip {chip_id} not found")))?;
+        chip_matches_workspace_owner(&chip, workspace)?;
+        saved_chips.push(chip);
+    }
+    sqlx::query("DELETE FROM workspace_edges WHERE workspace_id = ?")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    if saved_chips.is_empty() {
+        sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+    } else {
+        let marks = std::iter::repeat("?")
+            .take(saved_chips.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "DELETE FROM workspace_chips WHERE workspace_id = ? AND chip_id NOT IN ({marks})"
+        );
+        let mut delete = sqlx::query(&sql).bind(id);
+        for chip in &saved_chips {
+            delete = delete.bind(&chip.id);
+        }
+        delete.execute(&mut **tx).await?;
+    }
+    for chip in &saved_chips {
+        let position = serde_json::from_str::<serde_json::Value>(layout_json)
+            .ok()
+            .and_then(|layout| {
+                layout
+                    .get("nodes")
+                    .and_then(|nodes| nodes.get(&chip.id))
+                    .cloned()
+            });
+        let x = position
+            .as_ref()
+            .and_then(|node| node.get("x"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let y = position
+            .as_ref()
+            .and_then(|node| node.get("y"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        sqlx::query(
+            "INSERT INTO workspace_chips (id, workspace_id, chip_id, x, y, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET x=excluded.x, y=excluded.y, updated_at=excluded.updated_at",
+        )
+        .bind(workspace_chip_id(id, &chip.id))
+        .bind(id)
+        .bind(&chip.id)
+        .bind(x)
+        .bind(y)
+        .bind(now)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO workspace_chip_outputs
+         (workspace_chip_id, port_name, expected_filename, definition_revision, updated_at)
+         SELECT wc.id, 'out',
+                CASE c.kind
+                  WHEN 'extract' THEN COALESCE(e.output_filename, c.name || '.csv')
+                  WHEN 'transform' THEN COALESCE(t.output_filename_template, c.name || '.parquet')
+                  WHEN 'script' THEN c.name || '.parquet'
+                END,
+                c.revision, ?
+         FROM workspace_chips wc
+         INNER JOIN chips c ON c.id = wc.chip_id
+         LEFT JOIN extracts e ON e.id = c.extract_id
+         LEFT JOIN transforms t ON t.id = c.transform_id
+         WHERE wc.workspace_id = ? AND c.kind IN ('extract', 'transform', 'script')
+         ON CONFLICT(workspace_chip_id, port_name) DO NOTHING",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    let saved_edges = replace_workspace_edges(tx, id, edges, &saved_chips, now).await?;
+    let bumped = sqlx::query(
+        "UPDATE workspaces SET viewport_json = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?",
+    )
+    .bind(layout_json)
+    .bind(version)
+    .bind(now)
+    .bind(id)
+    .bind(expected)
+    .execute(&mut **tx)
+    .await?;
+    if bumped.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "workspace has changed, reload and save again".into(),
+        ));
+    }
+    let snapshot = workspace_snapshot_json(layout_json, &saved_chips, &saved_edges)?;
+    sqlx::query(
+        "INSERT INTO workspace_revisions (workspace_id, version, snapshot_json, created_at)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(version)
+    .bind(&snapshot)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok((saved_chips, saved_edges))
 }

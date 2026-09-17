@@ -227,6 +227,62 @@ impl Store {
         Ok(Some(dataset_id))
     }
 
+    pub async fn complete_chip_run_with_file(
+        &self,
+        run_id: &str,
+        stored_path: &str,
+        filename: &str,
+        row_count: Option<i64>,
+    ) -> Result<String, StorageError> {
+        let run = self
+            .get_chip_run(run_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("chip run not found".into()))?;
+        if run.status != "running" {
+            return Err(StorageError::Invalid("chip run is not running".into()));
+        }
+        let size = tokio::fs::metadata(self.resolve(stored_path)).await?.len() as i64;
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let dataset_id = self
+            .upsert_chip_output_slot_dataset(
+                &mut tx,
+                &run.workspace_id,
+                &run.chip_id,
+                &run.id,
+                "transform",
+                filename,
+                stored_path,
+                Some(size),
+                row_count,
+                None,
+                None,
+                None,
+            )
+            .await?;
+        let result = sqlx::query(
+            "UPDATE execution_steps SET status = 'succeeded', error_message = NULL,
+                 finished_at = ?, output_rows = COALESCE(?, output_rows),
+                 result_json=json_set(COALESCE(result_json, '{}'), '$.output_data_file_id', ?)
+             WHERE id = ? AND status = 'running'",
+        )
+        .bind(&now)
+        .bind(row_count)
+        .bind(&dataset_id)
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::Invalid(
+                "only a running chip run can succeed".into(),
+            ));
+        }
+        tx.commit().await?;
+        search::sync_search_best_effort(self, "dataset", self.sync_search_dataset(&dataset_id))
+            .await;
+        Ok(dataset_id)
+    }
+
     pub async fn fail_chip_run_for_job(
         &self,
         job_id: &str,

@@ -4,6 +4,8 @@ import type {
   CreateWorkspaceRequest,
   SaveWorkspaceRequest,
   SaveWorkspaceResponse,
+  PasteChipsRequest,
+  PasteChipsResponse,
   UpdateFolderRequest,
   UpdateWorkspaceRequest,
   Workspace,
@@ -32,6 +34,11 @@ export const workspaceApi = {
   save: (id: string, request: SaveWorkspaceRequest) =>
     httpRequest<SaveWorkspaceResponse>(`/api/workspaces/${id}/save`, {
       method: "PUT",
+      body: JSON.stringify(request),
+    }),
+  pasteChips: (id: string, request: PasteChipsRequest) =>
+    httpRequest<PasteChipsResponse>(`/api/workspaces/${id}/paste-chips`, {
+      method: "POST",
       body: JSON.stringify(request),
     }),
   listFolders: () => httpRequest<WorkspaceFolderListResponse>("/api/workspace-folders"),
