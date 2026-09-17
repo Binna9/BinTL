@@ -3,6 +3,7 @@ import { NavIcon } from "@/components/ui/nav-icons";
 import { PanelBody } from "@/components/ui/panel";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useDashboard } from "@/hooks/overview/DashboardContext";
+import { sharePercent } from "@/lib/overview";
 import type { SummaryScope } from "../types";
 import { DashScopeToggle, OpsCard } from "./parts";
 
@@ -33,6 +34,8 @@ export function SummaryWidget() {
   const { messages } = useLanguage();
   const { model, summaryScope } = useDashboard();
   const ops = summaryScope === "chip" ? model.chipOps : model.workspaceOps;
+  const total = ops.running + ops.succeeded + ops.failed;
+  const share = (count: number) => messages.overview.share(sharePercent(count, total));
 
   return (
     <PanelBody className="flex h-full min-h-0 flex-wrap gap-3">
@@ -43,6 +46,7 @@ export function SummaryWidget() {
         title={messages.overview.running}
         value={messages.common.cases(ops.running)}
         hint={messages.overview.queuedHint(ops.queued)}
+        share={share(ops.running)}
         bar={ops.bar}
       />
       <OpsCard
@@ -52,6 +56,7 @@ export function SummaryWidget() {
         title={messages.overview.succeeded}
         value={messages.common.cases(ops.succeeded)}
         hint={messages.overview.succeededHint}
+        share={share(ops.succeeded)}
       />
       <OpsCard
         tone="red"
@@ -60,6 +65,7 @@ export function SummaryWidget() {
         title={messages.overview.failed}
         value={messages.common.cases(ops.failed)}
         hint={messages.overview.failedHint}
+        share={share(ops.failed)}
       />
     </PanelBody>
   );

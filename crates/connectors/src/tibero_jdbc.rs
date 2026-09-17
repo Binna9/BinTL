@@ -233,10 +233,84 @@ pub(crate) struct JdbcColumn {
     pub nullable: bool,
     pub max_length: Option<i64>,
     pub numeric_scale: Option<i64>,
+    pub default_value: Option<String>,
     pub comment: Option<String>,
 }
 
 pub(crate) fn columns(conn: &JdbcConn, schema: &str, table: &str) -> Result<Vec<JdbcColumn>, ConnectError> {
+    let owner = crate::sql_lit(schema);
+    let name = crate::sql_lit(table);
+    let typed = "CASE
+          WHEN c.DATA_TYPE IN ('VARCHAR2','NVARCHAR2','CHAR','NCHAR','RAW')
+               AND c.DATA_LENGTH IS NOT NULL
+            THEN c.DATA_TYPE || '(' || c.DATA_LENGTH || ')'
+          WHEN c.DATA_TYPE = 'NUMBER' AND c.DATA_PRECISION IS NOT NULL
+            THEN c.DATA_TYPE || '(' || c.DATA_PRECISION || ',' || NVL(c.DATA_SCALE, 0) || ')'
+          ELSE c.DATA_TYPE
+        END";
+    let dict = |prefix: &str, default_expr: &str| {
+        format!(
+            "SELECT c.COLUMN_ID, c.COLUMN_NAME, {typed}, c.NULLABLE, {default_expr}, c.DATA_LENGTH, c.DATA_SCALE, cc.COMMENTS
+             FROM {prefix}ALL_TAB_COLUMNS c
+             LEFT JOIN {prefix}ALL_COL_COMMENTS cc
+               ON cc.OWNER = c.OWNER AND cc.TABLE_NAME = c.TABLE_NAME AND cc.COLUMN_NAME = c.COLUMN_NAME
+             WHERE c.OWNER = {owner} AND c.TABLE_NAME = {name}
+             ORDER BY c.COLUMN_ID"
+        )
+    };
+    let queries = [
+        dict("SYS.", "c.DATA_DEFAULT"),
+        dict("", "c.DATA_DEFAULT"),
+        dict("SYS.", "NULL"),
+        dict("", "NULL"),
+        format!(
+            "SELECT c.COLUMN_ID, c.COLUMN_NAME, c.DATA_TYPE, c.NULLABLE, NULL, c.DATA_LENGTH, c.DATA_SCALE, cc.COMMENTS
+             FROM USER_TAB_COLUMNS c
+             LEFT JOIN USER_COL_COMMENTS cc ON cc.TABLE_NAME = c.TABLE_NAME AND cc.COLUMN_NAME = c.COLUMN_NAME
+             WHERE c.TABLE_NAME = {name}
+             ORDER BY c.COLUMN_ID"
+        ),
+    ];
+    for sql in &queries {
+        if let Ok((_, rows)) = query_rows(conn, sql) {
+            if !rows.is_empty() {
+                return Ok(rows.into_iter().filter_map(col_from_dict).collect());
+            }
+        }
+    }
+    jdbc_get_columns(conn, schema, table)
+}
+
+fn col_from_dict(row: Vec<String>) -> Option<JdbcColumn> {
+    let get = |i: usize| row.get(i).cloned().unwrap_or_default();
+    let name = get(1);
+    if name.trim().is_empty() {
+        return None;
+    }
+    let comment = get(7);
+    let default_value = get(4);
+    Some(JdbcColumn {
+        ordinal: get(0).parse().unwrap_or(0),
+        name,
+        data_type: get(2),
+        nullable: !get(3).eq_ignore_ascii_case("N"),
+        max_length: get(5).parse().ok(),
+        numeric_scale: get(6).parse().ok(),
+        default_value: nonempty_cell(&default_value),
+        comment: nonempty_cell(&comment),
+    })
+}
+
+fn nonempty_cell(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn jdbc_get_columns(conn: &JdbcConn, schema: &str, table: &str) -> Result<Vec<JdbcColumn>, ConnectError> {
     let mut env = attach()?;
     let meta = db_meta(&mut env, conn)?;
     let catalog = JObject::null();
@@ -275,6 +349,7 @@ pub(crate) fn columns(conn: &JdbcConn, schema: &str, table: &str) -> Result<Vec<
         let nullable = rs_i64(&mut env, &rs, 11).unwrap_or(1) != 0;
         let ordinal = rs_i64(&mut env, &rs, 17).unwrap_or(0) as i32;
         let comment = rs_string(&mut env, &rs, 12)?;
+        let default_value = rs_string(&mut env, &rs, 13)?;
         out.push(JdbcColumn {
             ordinal,
             name,
@@ -282,11 +357,8 @@ pub(crate) fn columns(conn: &JdbcConn, schema: &str, table: &str) -> Result<Vec<
             nullable,
             max_length: size,
             numeric_scale: scale,
-            comment: if comment.trim().is_empty() {
-                None
-            } else {
-                Some(comment)
-            },
+            default_value: nonempty_cell(&default_value),
+            comment: nonempty_cell(&comment),
         });
     }
     close_rs(&mut env, &rs);
@@ -337,8 +409,8 @@ fn get_tables(
             break;
         }
         rows.push((
-            rs_string(env, &rs, 2)?,
-            rs_string(env, &rs, 3)?,
+            rs_string(env, &rs, 2)?.trim().to_string(),
+            rs_string(env, &rs, 3)?.trim().to_string(),
             rs_string(env, &rs, 4)?,
         ));
     }
@@ -354,7 +426,7 @@ fn read_strings(env: &mut JNIEnv, rs: &JObject, col: i32) -> Result<Vec<String>,
         if !next {
             break;
         }
-        let name = rs_string(env, rs, col)?;
+        let name = rs_string(env, rs, col)?.trim().to_string();
         if !name.is_empty() {
             names.push(name);
         }
@@ -401,12 +473,23 @@ fn attach() -> Result<jni::AttachGuard<'static>, ConnectError> {
         .attach_current_thread()?)
 }
 
+fn jvm_classpath(jar: &Path) -> String {
+    // Windows canonicalize() yields `\\?\C:\...`. Java class.path ignores that prefix,
+    // so TbDriver is missing even when the jar file exists.
+    let raw = jar.to_string_lossy();
+    let stripped = raw
+        .strip_prefix(r"\\?\")
+        .or_else(|| raw.strip_prefix("//?/"))
+        .unwrap_or(raw.as_ref());
+    stripped.replace('\\', "/")
+}
+
 fn jvm(jar: &Path) -> Result<&'static JavaVM, ConnectError> {
     if let Some(vm) = JVM.get() {
         return Ok(vm);
     }
     ensure_java_home();
-    let classpath = jar.to_string_lossy();
+    let classpath = jvm_classpath(jar);
     let args = InitArgsBuilder::new()
         .version(JNIVersion::V8)
         .option(format!("-Djava.class.path={classpath}"))
@@ -491,6 +574,16 @@ fn java_string(env: &mut JNIEnv, obj: JObject) -> String {
 }
 
 fn ensure_java_home() {
+    // Windows keeps a system JAVA_HOME=jdk-8 for other tools; Tibero JDBC needs 17.
+    #[cfg(windows)]
+    {
+        const WIN_JDK17: &str = r"C:\Users\dndql\Desktop\Business\jdk-17";
+        if has_jvm(Path::new(WIN_JDK17)) {
+            // SAFETY: first Tibero JDBC connect, before other JNI.
+            unsafe { std::env::set_var("JAVA_HOME", WIN_JDK17) };
+            return;
+        }
+    }
     if std::env::var_os("JAVA_HOME").is_some_and(|value| !value.is_empty()) {
         return;
     }
@@ -503,10 +596,7 @@ fn ensure_java_home() {
         if *candidate == "/usr/libexec/java_home" {
             continue;
         }
-        if Path::new(candidate).join("lib/server/libjvm.dylib").exists()
-            || Path::new(candidate).join("lib/server/libjvm.so").exists()
-            || Path::new(candidate).join("bin/server/jvm.dll").exists()
-        {
+        if has_jvm(Path::new(candidate)) {
             // SAFETY: first Tibero JDBC connect, before other JNI.
             unsafe { std::env::set_var("JAVA_HOME", candidate) };
             return;
@@ -520,6 +610,12 @@ fn ensure_java_home() {
             }
         }
     }
+}
+
+fn has_jvm(home: &Path) -> bool {
+    home.join("lib/server/libjvm.dylib").exists()
+        || home.join("lib/server/libjvm.so").exists()
+        || home.join("bin/server/jvm.dll").exists()
 }
 
 fn ensure_jar() -> Result<PathBuf, ConnectError> {
@@ -669,6 +765,17 @@ mod tests {
             ssl: false,
         };
         assert_eq!(jdbc_url(&c), "jdbc:tibero:thin:@db:8629:tibero");
+    }
+
+    #[test]
+    fn strips_windows_verbatim_prefix_for_jvm() {
+        let jar = PathBuf::from(
+            r"\\?\C:\Users\dndql\Desktop\Business\BinTL\crates\connectors\vendor\tibero\tbjdbc17-7.2.6.jar",
+        );
+        assert_eq!(
+            jvm_classpath(&jar),
+            "C:/Users/dndql/Desktop/Business/BinTL/crates/connectors/vendor/tibero/tbjdbc17-7.2.6.jar"
+        );
     }
 
     #[test]

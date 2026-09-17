@@ -65,6 +65,10 @@ mod tests {
             display_filename("Clean sales", "transform", ","),
             "Clean sales.parquet"
         );
+        assert_eq!(
+            display_filename("transform-SYS.DR$UDEF_PREFERENCE.csv", "transform", ","),
+            "transform-SYS.DR$UDEF_PREFERENCE.csv"
+        );
     }
 
     #[test]

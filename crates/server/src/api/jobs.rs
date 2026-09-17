@@ -55,22 +55,18 @@ pub(super) async fn job_result(
         .output_path
         .ok_or_else(|| AppError::not_found("output missing"))?;
     let path = state.store.resolve(&rel);
-    let bytes = tokio::fs::read(&path)
-        .await
-        .map_err(|_| AppError::not_found("output file missing"))?;
-    let name = path
+    if !path.is_file() {
+        return Err(AppError::not_found("output file missing"));
+    }
+    let fallback = path
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("result.parquet");
-    let disp = format!("attachment; filename=\"{name}\"");
-    Ok((
-        AppendHeaders([
-            (
-                CONTENT_TYPE,
-                HeaderValue::from_static("application/vnd.apache.parquet"),
-            ),
-            (CONTENT_DISPOSITION, HeaderValue::from_str(&disp).unwrap()),
-        ]),
-        bytes,
-    ))
+        .unwrap_or("result.parquet")
+        .to_string();
+    let name = state
+        .store
+        .transform_download_filename(job.transform_id.as_deref())
+        .await?
+        .unwrap_or(fallback);
+    crate::transform::stored_file_attachment(path, &name).await
 }

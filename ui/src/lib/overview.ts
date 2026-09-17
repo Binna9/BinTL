@@ -87,6 +87,11 @@ export function successRate(rows: { status: string }[]) {
   );
 }
 
+export function sharePercent(count: number, total: number) {
+  if (!total) return 0;
+  return Math.round((count / total) * 100);
+}
+
 export function fileName(path: string) {
   return path.split(/[/\\]/).pop() || path;
 }
@@ -119,5 +124,8 @@ if (import.meta.env.DEV) {
   }
   if (successRate([{ status: "succeeded" }, { status: "failed" }]) !== 50) {
     throw new Error("overview: success rate");
+  }
+  if (sharePercent(1, 4) !== 25 || sharePercent(0, 0) !== 0) {
+    throw new Error("overview: share percent");
   }
 }

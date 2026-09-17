@@ -949,6 +949,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn standalone_job_uses_transform_name_as_output_filename() {
+        let (root, store, admin) = test_store().await;
+        let home = store
+            .list_visible_workspaces(Some(&DataScope::for_user(&admin)))
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .id;
+        let input = store
+            .upsert_dataset(&DatasetUpsert {
+                id: Uuid::new_v4().to_string(),
+                kind: "database".into(),
+                extract_id: None,
+                filename: "SYS.DR$UDEF_PREFERENCE.csv".into(),
+                stored_path: format!("extract_runs/databases/{}/source.csv", Uuid::new_v4()),
+                size_bytes: Some(8),
+                delimiter: Some(",".into()),
+                has_header: Some(true),
+                row_count: Some(1),
+                workspace_id: Some(home.clone()),
+            })
+            .await
+            .unwrap();
+        let transform = store
+            .insert_transform(
+                "transform-SYS.DR$UDEF_PREFERENCE.csv",
+                &input.id,
+                r#"{"version":2,"steps":[],"sink":"parquet"}"#,
+                None,
+            )
+            .await
+            .unwrap();
+        let job = store
+            .insert_transform_job(
+                &input.stored_path,
+                "{}",
+                &transform.id,
+                &input.id,
+                &home,
+            )
+            .await
+            .unwrap();
+        let rel = format!("outputs/{}/result.parquet", job.id);
+        let abs = store.resolve(&rel);
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::write(&abs, b"parquet").unwrap();
+        store.set_job_running(&job.id, &rel).await.unwrap();
+        store.set_job_succeeded(&job.id).await.unwrap();
+        let dataset = store.get_dataset(&job.id).await.unwrap().unwrap();
+        assert_eq!(dataset.filename, "transform-SYS.DR$UDEF_PREFERENCE.csv");
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn deletes_upload_directory_and_dataset() {
         let (root, store, admin) = test_store().await;
         let home = store

@@ -52,7 +52,7 @@ export function BrandMark({
             compact ? "text-[1.15rem]" : large ? "text-[1.9rem]" : "text-[1.45rem]",
           )}
         >
-          BinTL
+          {messages.brand.name}
         </span>
         {compact ? null : (
           <span className="brand-mark-sub">{messages.brand.subtitle}</span>

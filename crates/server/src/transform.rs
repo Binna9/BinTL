@@ -8,6 +8,7 @@ use connectors::sniff_delimiter;
 use engine::{FramePreview, PolarsEngine, PreviewColumn, TransformSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use storage::{DatasetRow, Store, TransformRow};
 
 use crate::access::{self, CurrentUser};
@@ -378,24 +379,66 @@ async fn dataset_file(
 ) -> Result<impl IntoResponse, AppError> {
     let row = access::require_dataset(&state.store, &user, &id).await?;
     let path = state.store.resolve(&row.stored_path);
-    let bytes = tokio::fs::read(&path)
-        .await
-        .map_err(|_| AppError::not_found("dataset file missing"))?;
-    let disp = format!("attachment; filename=\"{}\"", row.filename);
-    let ctype = if row.filename.ends_with(".parquet") {
-        "application/vnd.apache.parquet"
-    } else if row.filename.ends_with(".tsv") {
-        "text/tab-separated-values; charset=utf-8"
+    stored_file_attachment(path, &row.filename).await
+}
+
+pub(crate) async fn stored_file_attachment(
+    path: PathBuf,
+    download_name: &str,
+) -> Result<impl IntoResponse, AppError> {
+    let download_name = download_name.to_string();
+    let wants_csv = download_name.to_ascii_lowercase().ends_with(".csv");
+    let stored_parquet = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("parquet"));
+    let (bytes, ctype) = if stored_parquet && wants_csv {
+        let parquet = path;
+        let bytes = tokio::task::spawn_blocking(move || PolarsEngine::export_csv_bytes(&parquet))
+            .await
+            .map_err(|error| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("csv export failed: {error}"),
+                )
+            })?
+            .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        (bytes, "text/csv; charset=utf-8")
     } else {
-        "text/csv; charset=utf-8"
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|_| AppError::not_found("output file missing"))?;
+        (bytes, content_type_for_filename(&download_name))
     };
+    let disp = format!("attachment; filename=\"{download_name}\"");
     Ok((
         AppendHeaders([
-            (CONTENT_TYPE, HeaderValue::from_str(ctype).unwrap()),
-            (CONTENT_DISPOSITION, HeaderValue::from_str(&disp).unwrap()),
+            (
+                CONTENT_TYPE,
+                HeaderValue::from_str(ctype).unwrap_or_else(|_| {
+                    HeaderValue::from_static("application/octet-stream")
+                }),
+            ),
+            (
+                CONTENT_DISPOSITION,
+                HeaderValue::from_str(&disp).unwrap_or_else(|_| {
+                    HeaderValue::from_static("attachment; filename=\"download.bin\"")
+                }),
+            ),
         ]),
         bytes,
     ))
+}
+
+fn content_type_for_filename(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".parquet") {
+        "application/vnd.apache.parquet"
+    } else if lower.ends_with(".tsv") {
+        "text/tab-separated-values; charset=utf-8"
+    } else {
+        "text/csv; charset=utf-8"
+    }
 }
 
 async fn inspect_dataset(

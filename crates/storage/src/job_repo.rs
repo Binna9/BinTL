@@ -88,6 +88,23 @@ impl Store {
         Ok(())
     }
 
+    pub async fn transform_download_filename(
+        &self,
+        transform_id: Option<&str>,
+    ) -> Result<Option<String>, StorageError> {
+        let Some(transform_id) = transform_id.map(str::trim).filter(|id| !id.is_empty()) else {
+            return Ok(None);
+        };
+        let Some(transform) = self.get_transform(transform_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(chip_slot::display_filename(
+            &transform.name,
+            "transform",
+            ",",
+        )))
+    }
+
     pub async fn set_job_running(&self, id: &str, output_path: &str) -> Result<(), StorageError> {
         sqlx::query(
             "UPDATE execution_steps SET status = ?, started_at = ?, output_path = ?, error_message = NULL
@@ -119,11 +136,14 @@ impl Store {
         if let Some(stored_path) = job.output_path.as_deref().filter(|path| !path.is_empty()) {
             let abs = self.resolve(stored_path);
             if abs.is_file() {
-                let filename = abs
+                let fallback = abs
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .unwrap_or("result.parquet")
-                    .to_string();
+                    .unwrap_or("result.parquet");
+                let filename = self
+                    .transform_download_filename(job.transform_id.as_deref())
+                    .await?
+                    .unwrap_or_else(|| fallback.to_string());
                 let size = tokio::fs::metadata(&abs)
                     .await
                     .ok()

@@ -43,6 +43,7 @@ export function OpsCard({
   title,
   value,
   hint,
+  share,
   bar,
 }: {
   tone: "blue" | "green" | "red";
@@ -51,6 +52,7 @@ export function OpsCard({
   title: string;
   value: string;
   hint: string;
+  share?: string;
   bar?: number;
 }) {
   const glow = tone === "blue" ? "#3b8bff" : tone === "green" ? "#34d399" : "#f87171";
@@ -68,11 +70,16 @@ export function OpsCard({
       style={{ "--ops-glow": glow } as CSSProperties}
     >
       <div className="ops-shell-inner absolute inset-0.5 z-[1] flex flex-col rounded-xl px-3 py-2">
-        <span className={`flex items-center gap-1.5 ${ink}`}>
-          <span className="grid size-6 shrink-0 place-items-center rounded-full border border-current/30">
-            {icon}
+        <span className={`flex items-center justify-between gap-1.5 ${ink}`}>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="grid size-6 shrink-0 place-items-center rounded-full border border-current/30">
+              {icon}
+            </span>
+            <span className="truncate text-[12px] font-semibold tracking-[-0.02em]">{title}</span>
           </span>
-          <span className="text-[12px] font-semibold tracking-[-0.02em]">{title}</span>
+          {share ? (
+            <span className="shrink-0 text-[11px] font-semibold tabular-nums">{share}</span>
+          ) : null}
         </span>
         <span className="flex min-h-0 flex-1 flex-col items-center justify-center text-center">
           <span className={`text-[1.55rem] font-semibold leading-none tracking-[-0.04em] tabular-nums ${ink}`}>

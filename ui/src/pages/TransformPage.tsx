@@ -11,6 +11,7 @@ import {
   ListChecks,
   Plus,
   RotateCcw,
+  Save,
   Search,
   Trash2,
   Unplug,
@@ -39,7 +40,7 @@ import { cn } from "@/lib/cn";
 import { nextSequencedChipName } from "@/lib/chipSequence";
 import { fmtBytes } from "@/lib/format";
 import { layout } from "@/lib/layout";
-import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
+import { toastError, toastSuccess } from "@/lib/notifications";
 import { HttpError, isChipNameConflict, isWorkspaceVersionConflict } from "@/services/httpClient";
 import { selectableClass } from "@/lib/selectable";
 import {
@@ -772,7 +773,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
   async function openRegister() {
     if (editingChip) {
-      void saveTransformDefinition();
+      setRegisterOpen(true);
       return;
     }
     if (newWorkspaceChip) {
@@ -798,23 +799,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     setRegisterOpen(true);
   }
 
-  async function confirmRecipe() {
-    const confirmed = await showConfirm(
-      messages.transform.confirmRecipeTitle,
-      messages.transform.confirmRecipeMessage,
-    );
-    if (!confirmed) return;
-    // Confirming a recipe must persist it in every existing-chip flow. The old
-    // workspace branch only opened the result dialog, leaving the chip unbound
-    // even though the generated transform filename was already visible.
-    if (!newWorkspaceChip) {
-      const savedTransformId = await saveTransformDefinition({
-        returnToWorkspace: false,
-        updateRoute: false,
-      });
-      if (!savedTransformId) return;
-    }
-    toastSuccess(messages.transform.recipeProcessed);
+  function openResultDialog() {
     setDetailTab("result");
     setFinalizedPreviewOpen(true);
     setDetailOpen(true);
@@ -826,14 +811,15 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
       ? workspaceId
       : await workspacePick.pick(workspaceId ?? selected?.workspace_id);
     if (!dest) return;
-    let exportTransformId = transformId;
-    if (editingChip) {
-      exportTransformId = await saveTransformDefinition({ returnToWorkspace: false });
-    }
+    const exportTransformId = await saveTransformDefinition({
+      returnToWorkspace: false,
+      updateRoute: false,
+    });
     if (!exportTransformId) return;
     setBusy(true);
     try {
       const run = await transformApi.run(exportTransformId, dest);
+      toastSuccess(t.resultExported);
       navigate(`/jobs/${run.id}`);
     } catch (err) {
       toastError(messages.errors.runJob, err);
@@ -843,22 +829,21 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   }
 
   async function applyToWorkspaceChip() {
-    const savedTransformId = await saveTransformDefinition({ returnToWorkspace: false });
-    if (!savedTransformId) return;
-    setDetailOpen(false);
-    setFinalizedPreviewOpen(false);
-    toastSuccess(messages.transform.saveToWorkspace);
-    leaveEditor();
+    setRegisterBusy(true);
+    try {
+      const savedTransformId = await saveTransformDefinition({ returnToWorkspace: false });
+      if (!savedTransformId) return;
+      setRegisterOpen(false);
+      setDetailOpen(false);
+      setFinalizedPreviewOpen(false);
+      toastSuccess(messages.transform.saveToWorkspace);
+      leaveEditor();
+    } finally {
+      setRegisterBusy(false);
+    }
   }
 
-  async function closeFinalizedPreview() {
-    if (editingChip) {
-      const confirmed = await showConfirm(
-        messages.transform.cancelTransformTitle,
-        messages.transform.cancelTransformMessage,
-      );
-      if (!confirmed) return;
-    }
+  function closeFinalizedPreview() {
     setDetailOpen(false);
     setFinalizedPreviewOpen(false);
   }
@@ -954,10 +939,10 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               type="button"
               className="ml-5 gap-2"
               disabled={!datasetId || busy}
-              onClick={() => void confirmRecipe()}
+              onClick={openResultDialog}
             >
-              <BookmarkPlus className="size-3.5" aria-hidden="true" />
-              {busy ? messages.common.saving : t.confirmRecipe}
+              <Save className="size-3.5" aria-hidden="true" />
+              {messages.common.save}
             </Button>
           </>
         }
@@ -1440,7 +1425,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         className={finalizedPreviewOpen ? "h-[90vh] w-[96vw] max-w-[90rem]" : "h-[min(42rem,88vh)] w-[min(72rem,94vw)]"}
         minWidth={finalizedPreviewOpen ? 560 : 520}
         minHeight={360}
-        onClose={finalizedPreviewOpen ? () => void closeFinalizedPreview() : () => setDetailOpen(false)}
+        onClose={finalizedPreviewOpen ? closeFinalizedPreview : () => setDetailOpen(false)}
         headerExtra={finalizedPreviewOpen ? undefined : (
           <div className="flex gap-1">
             <Button
@@ -1477,7 +1462,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
               type="button"
               className="gap-2"
               disabled={busy}
-              onClick={editingChip ? () => void applyToWorkspaceChip() : openRegister}
+              onClick={() => void openRegister()}
             >
               <BookmarkPlus className="size-3.5" aria-hidden="true" />
               {editingChip ? t.applyToChip : t.register}
@@ -1546,7 +1531,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
       <AppDialog
         open={registerOpen}
-        title={messages.transform.register}
+        title={editingChip ? t.applyToChip : messages.transform.register}
         icon={<BookmarkPlus className="size-4 text-accent" aria-hidden="true" />}
         className="w-[min(22rem,92vw)]"
         minWidth={320}
@@ -1561,24 +1546,26 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
             <Button
               type="button"
               variant="primary"
-              disabled={registerBusy || !registerChipName.trim()}
-              onClick={() => void onRegisterChip()}
+              disabled={registerBusy || (!editingChip && !registerChipName.trim())}
+              onClick={() => void (editingChip ? applyToWorkspaceChip() : onRegisterChip())}
             >
-              {registerBusy ? messages.common.saving : messages.transform.register}
+              {registerBusy ? messages.common.saving : messages.common.confirm}
             </Button>
           </>
         }
       >
         <div className="flex flex-col gap-3 p-4">
           <p className="text-[11px] leading-5 text-text-tertiary">{messages.transform.registerHint}</p>
-          <FormField label={messages.workspace.chipName}>
-            <input
-              className="field-control"
-              value={registerChipName}
-              autoFocus
-              onChange={(event) => setRegisterChipName(event.target.value)}
-            />
-          </FormField>
+          {editingChip ? null : (
+            <FormField label={messages.workspace.chipName}>
+              <input
+                className="field-control"
+                value={registerChipName}
+                autoFocus
+                onChange={(event) => setRegisterChipName(event.target.value)}
+              />
+            </FormField>
+          )}
           <dl className="space-y-2 border-t border-border/60 pt-3 text-[11px] text-text-tertiary">
             <div className="flex gap-2">
               <dt className="w-14 shrink-0">{messages.transform.selectedFile}</dt>

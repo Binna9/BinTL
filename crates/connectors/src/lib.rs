@@ -68,17 +68,23 @@ pub struct TableName {
     pub table: String,
 }
 
+fn is_sql_ident_char(c: char) -> bool {
+    // Oracle/Tibero unquoted identifiers also allow $ and # (OUTLN.OL$, USER$).
+    c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '#'
+}
+
 pub fn parse_table(raw: &str) -> Result<TableName, ConnectError> {
-    let parts: Vec<&str> = raw.split('.').collect();
+    let raw = raw.trim();
+    let parts: Vec<&str> = raw.split('.').map(str::trim).collect();
     if parts.is_empty() || parts.len() > 2 {
         return Err(ConnectError::Invalid(
             "table must be name or schema.name".into(),
         ));
     }
     for p in &parts {
-        if p.is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if p.is_empty() || !p.chars().all(is_sql_ident_char) {
             return Err(ConnectError::Invalid(
-                "table/schema may only contain letters, digits, underscore".into(),
+                "table/schema may only contain letters, digits, underscore, $, #".into(),
             ));
         }
     }
@@ -102,10 +108,10 @@ pub fn parse_ident(raw: &str) -> Result<&str, ConnectError> {
     }
     if !raw
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        .all(|c| is_sql_ident_char(c) || c == '-')
     {
         return Err(ConnectError::Invalid(
-            "identifier may only contain letters, digits, underscore, hyphen".into(),
+            "identifier may only contain letters, digits, underscore, hyphen, $, #".into(),
         ));
     }
     Ok(raw)
@@ -1198,6 +1204,11 @@ mod tests {
         assert!(parse_table("public.users").is_ok());
         assert!(parse_table("public.users;drop").is_err());
         assert!(parse_table("a.b.c").is_err());
+        let outln = parse_table("OUTLN.OL$").unwrap();
+        assert_eq!(outln.schema.as_deref(), Some("OUTLN"));
+        assert_eq!(outln.table, "OL$");
+        assert_eq!(parse_table("SYS.USER$").unwrap().table, "USER$");
+        assert_eq!(parse_table("COL#").unwrap().table, "COL#");
     }
 
     #[test]
@@ -1244,6 +1255,7 @@ mod tests {
     fn ident_ok() {
         assert_eq!(parse_ident("analytics").unwrap(), "analytics");
         assert_eq!(parse_ident("dw-1").unwrap(), "dw-1");
+        assert_eq!(parse_ident("XS$NULL").unwrap(), "XS$NULL");
         assert!(parse_ident("").is_err());
         assert!(parse_ident("drop;").is_err());
     }

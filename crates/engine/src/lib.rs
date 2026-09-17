@@ -667,25 +667,38 @@ impl PolarsEngine {
         Self::export_csv_with_null_value(parquet, csv, None)
     }
 
+    pub fn export_csv_bytes(parquet: &Path) -> Result<Vec<u8>, EngineError> {
+        Self::csv_bytes_from_parquet(parquet, None)
+    }
+
     pub fn export_csv_with_null_value(
         parquet: &Path,
         csv: &Path,
         null_value: Option<&str>,
     ) -> Result<(), EngineError> {
+        let bytes = Self::csv_bytes_from_parquet(parquet, null_value)?;
+        if let Some(parent) = csv.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(csv, bytes)?;
+        Ok(())
+    }
+
+    fn csv_bytes_from_parquet(
+        parquet: &Path,
+        null_value: Option<&str>,
+    ) -> Result<Vec<u8>, EngineError> {
         let mut df = {
             let file = fs::File::open(parquet)?;
             ParquetReader::new(file).finish()?
         };
-        if let Some(parent) = csv.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut file = fs::File::create(csv)?;
-        let mut writer = CsvWriter::new(&mut file).include_header(true);
+        let mut buf = Vec::new();
+        let mut writer = CsvWriter::new(&mut buf).include_header(true);
         if let Some(null_value) = null_value {
             writer = writer.with_null_value(null_value.to_string());
         }
         writer.finish(&mut df)?;
-        Ok(())
+        Ok(buf)
     }
 
     /// Fast parquet footer row count. Used after a transform write.
@@ -1459,6 +1472,10 @@ mod tests {
             .finish()
             .unwrap();
         assert_eq!(back.height(), 2);
+        let csv = PolarsEngine::export_csv_bytes(&out).unwrap();
+        let text = String::from_utf8(csv).unwrap();
+        assert!(text.contains("a,b"));
+        assert!(text.contains("1,2"));
         let _ = fs::remove_dir_all(&dir);
     }
 

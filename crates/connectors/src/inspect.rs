@@ -291,7 +291,7 @@ pub async fn list_columns(
                             name: col.name,
                             data_type: col.data_type,
                             nullable: col.nullable,
-                            default_value: None,
+                            default_value: col.default_value,
                             max_length: col.max_length,
                             numeric_precision: None,
                             numeric_scale: col.numeric_scale,
