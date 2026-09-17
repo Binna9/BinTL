@@ -1,11 +1,12 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AppWindow, Check, ChevronRight, FileSpreadsheet, Folder, FolderOpen, FolderTree } from "lucide-react";
+import { AppWindow, Check, ChevronRight, FileSpreadsheet, Folder, FolderOpen, FolderTree, Search } from "lucide-react";
 import { PaneHeader } from "@/components/ui/pane-header";
 import {
   type CatalogFile,
   fileCountForFolder,
   filesForWorkspace,
+  filterCatalogTree,
   type FileTreeSelection,
 } from "@/features/workspace/fileWorkspaceTree";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -40,7 +41,9 @@ export function WorkspaceFileCatalog({
   activeFileId?: string | null;
 }) {
   const { messages } = useLanguage();
+  const [query, setQuery] = useState("");
   const [treeOpen, setTreeOpen] = useState<Record<string, boolean>>({});
+  const tree = useMemo(() => filterCatalogTree(folders, workspaces, query), [folders, query, workspaces]);
   const selectedFolderId = selection.type === "folder" ? selection.id : null;
   const selectedWorkspace = selection.type === "workspace"
     ? workspaces.find((workspace) => workspace.id === selection.id) ?? null
@@ -56,29 +59,34 @@ export function WorkspaceFileCatalog({
     }));
   }, [folders, selectedFolderId, selectedWorkspace]);
 
+  useEffect(() => {
+    if (!query.trim()) return;
+    setTreeOpen((current) => ({ ...current, ...tree.openIds }));
+  }, [query, tree.openIds]);
+
   const rootFolders = useMemo(
     () =>
-      folders
+      tree.folders
         .filter((folder) => !folder.parent_id)
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [folders],
+    [tree.folders],
   );
   const rootWorkspaces = useMemo(
     () =>
-      workspaces
+      tree.workspaces
         .filter((workspace) => !workspace.folder_id)
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [workspaces],
+    [tree.workspaces],
   );
 
   function childFolders(parent: string) {
-    return folders
+    return tree.folders
       .filter((folder) => folder.parent_id === parent)
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   function childWorkspaces(folderId: string | null) {
-    return workspaces
+    return tree.workspaces
       .filter((workspace) =>
         folderId ? workspace.folder_id === folderId : !workspace.folder_id,
       )
@@ -247,6 +255,21 @@ export function WorkspaceFileCatalog({
         title={messages.workspace.browser}
         meta={String(files.length)}
       />
+      <div className="shrink-0 border-b border-border p-2">
+        <label className="group flex h-8 items-center overflow-hidden rounded-lg border border-border bg-surface focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+          <span className="grid size-8 shrink-0 place-items-center text-text-tertiary group-focus-within:text-accent">
+            <Search className="size-3.5" aria-hidden="true" />
+          </span>
+          <input
+            type="search"
+            className="min-w-0 flex-1 bg-transparent pr-2 text-[12px] text-text outline-none placeholder:text-text-tertiary"
+            value={query}
+            placeholder={messages.workspace.searchWorkspace}
+            aria-label={messages.workspace.searchWorkspace}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+      </div>
       <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface p-2">
         <button
           type="button"
@@ -266,7 +289,9 @@ export function WorkspaceFileCatalog({
           </span>
         </button>
         {rootFolders.length === 0 && rootWorkspaces.length === 0 ? (
-          <p className="px-3 py-8 text-center text-[12px] text-text-tertiary">{messages.workspace.noWorkspaces}</p>
+          <p className="px-3 py-8 text-center text-[12px] text-text-tertiary">
+            {query.trim() ? messages.workspace.noWorkspaceResults : messages.workspace.noWorkspaces}
+          </p>
         ) : (
           <div className="space-y-0.5">
             {rootFolders.map((folder) => renderFolderNode(folder))}

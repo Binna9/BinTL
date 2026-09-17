@@ -215,6 +215,12 @@ async fn prepare_config(
             }
             config = super::validate_sql_config(&state.store, config).await?;
         }
+        "serve" => {
+            if incoming.len() > 1 {
+                return Err(AppError::bad("too many data inputs"));
+            }
+            crate::serve::parse_serve_config(&config)?;
+        }
         _ => return Err(AppError::bad("unsupported chip kind")),
     }
     Ok(config)
@@ -306,6 +312,13 @@ pub(super) async fn execute(
     for (chip, run) in ordered.iter().zip(&runs) {
         if errors.contains_key(&chip.id) {
             outcomes.insert(chip.id.clone(), Outcome::Failed);
+            continue;
+        }
+        if chip.kind == "serve" {
+            let config: Value = serde_json::from_str(&run.config_snapshot_json)
+                .map_err(|e| AppError::bad(e.to_string()))?;
+            crate::serve::finish_serve_run(state, &run.id, &config).await?;
+            outcomes.insert(chip.id.clone(), Outcome::Succeeded);
             continue;
         }
         if condition_blocked(&chip.id, &edges, &outcomes) {

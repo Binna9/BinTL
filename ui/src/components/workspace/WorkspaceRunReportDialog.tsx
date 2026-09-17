@@ -158,6 +158,9 @@ function contentSummary(chip: Chip, messages: Messages): string {
   if (chip.kind === "sql") {
     return typeof chip.config.sql_text === "string" ? fmtSqlPreview(chip.config.sql_text) : "";
   }
+  if (chip.kind === "serve") {
+    return typeof chip.config.slug === "string" ? messages.workspace.servePathPreview(chip.config.slug) : "";
+  }
   const keys = Array.isArray(chip.config.keys)
     ? chip.config.keys.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];

@@ -1,4 +1,4 @@
-export type ChipKind = "extract" | "transform" | "load" | "validation" | "sql";
+export type ChipKind = "extract" | "transform" | "load" | "validation" | "sql" | "serve";
 export type ChipEdgeKind = "data" | "on_success" | "on_error" | "always";
 export type ChipConfig = Record<string, unknown>;
 
@@ -36,6 +36,7 @@ export function chipEditorPath(
     : `/chips/${chip.id}`;
   if (chip.kind === "extract") return httpExtract ? `${prefix}/extract-api` : `${prefix}/extract`;
   if (chip.kind === "sql") return workspaceId ? `/workspace/${workspaceId}` : "/chips";
+  if (chip.kind === "serve") return workspaceId ? `/workspace/${workspaceId}` : "/chips";
   if (chip.kind === "validation") return `${prefix}/validation`;
   const editor = chip.kind === "load" ? "load" : "transform";
   const bindingKind = chip.kind === "load" ? "load_recipe" : "transform";
@@ -56,6 +57,7 @@ export interface Chip {
   active: boolean;
   created_at: string;
   updated_at: string;
+  api_key?: string;
 }
 
 export interface ChipEdge {

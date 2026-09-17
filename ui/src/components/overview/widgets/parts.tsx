@@ -66,7 +66,7 @@ export function OpsCard({
   return (
     <Link
       to={to}
-      className="ops-shell relative h-full min-h-0 min-w-[10.5rem] flex-1 overflow-hidden rounded-xl no-underline transition-opacity duration-150 hover:opacity-90"
+      className="ops-shell relative h-full min-h-0 min-w-[10.5rem] flex-1 overflow-hidden rounded-xl no-underline"
       style={{ "--ops-glow": glow } as CSSProperties}
     >
       <div className="ops-shell-inner absolute inset-0.5 z-[1] flex flex-col rounded-xl px-3 py-2">
@@ -156,6 +156,7 @@ export function FeedRow({
           : item.kind === "transform" ? messages.overview.transform
           : item.kind === "load" ? messages.overview.load
           : item.kind === "sql" ? messages.workspace.sql
+          : item.kind === "serve" ? messages.workspace.serve
           : messages.workspace.validation}
       </span>
       <span className="min-w-0 flex-1">

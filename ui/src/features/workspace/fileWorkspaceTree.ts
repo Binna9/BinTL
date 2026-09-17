@@ -85,6 +85,57 @@ export function fileCountForFolder(
   return files.filter((file) => ids.has(file.workspace_id)).length;
 }
 
+function nameMatches(name: string, query: string) {
+  return name.toLocaleLowerCase().includes(query);
+}
+
+export function filterCatalogTree(
+  folders: WorkspaceFolder[],
+  workspaces: Workspace[],
+  query: string,
+): { folders: WorkspaceFolder[]; workspaces: Workspace[]; openIds: Record<string, boolean> } {
+  const q = query.trim().toLocaleLowerCase();
+  if (!q) return { folders, workspaces, openIds: {} };
+
+  const folderById = new Map(folders.map((folder) => [folder.id, folder]));
+  const subtreeFolderIds = new Set<string>();
+  for (const folder of folders) {
+    if (!nameMatches(folder.name, q)) continue;
+    for (const id of descendantFolderIds(folders, folder.id)) subtreeFolderIds.add(id);
+  }
+
+  const ancestorIds = new Set<string>();
+  function addAncestors(folderId: string | null | undefined) {
+    let cursor = folderId ?? null;
+    while (cursor) {
+      ancestorIds.add(cursor);
+      cursor = folderById.get(cursor)?.parent_id ?? null;
+    }
+  }
+  for (const id of subtreeFolderIds) addAncestors(folderById.get(id)?.parent_id);
+  const matchingWorkspaceIds = new Set(
+    workspaces.filter((workspace) => nameMatches(workspace.name, q)).map((workspace) => workspace.id),
+  );
+  for (const workspace of workspaces) {
+    if (matchingWorkspaceIds.has(workspace.id)) addAncestors(workspace.folder_id);
+  }
+
+  const visibleFolderIds = new Set([...subtreeFolderIds, ...ancestorIds]);
+  const visibleWorkspaces = workspaces.filter(
+    (workspace) =>
+      matchingWorkspaceIds.has(workspace.id) ||
+      (workspace.folder_id != null && subtreeFolderIds.has(workspace.folder_id)),
+  );
+  const openIds: Record<string, boolean> = {};
+  for (const id of visibleFolderIds) openIds[id] = true;
+  for (const workspace of visibleWorkspaces) openIds[`ws:${workspace.id}`] = true;
+  return {
+    folders: folders.filter((folder) => visibleFolderIds.has(folder.id)),
+    workspaces: visibleWorkspaces,
+    openIds,
+  };
+}
+
 if (import.meta.env.DEV) {
   const folders = [
     { id: "a", owner_user_id: "u", parent_id: null, name: "A", created_at: "", updated_at: "" },
@@ -117,4 +168,9 @@ if (import.meta.env.DEV) {
     "file tree: nested folder",
   );
   console.assert(fileCountForFolder(items.map((item) => ({ ...item, name: item.id })), folders, workspaces, "b") === 1, "file tree: child folder count");
+  const byWorkspace = filterCatalogTree(folders, workspaces, "w1");
+  console.assert(byWorkspace.workspaces.map((row) => row.id).join(",") === "w1" && byWorkspace.folders.map((row) => row.id).join(",") === "a,b", "catalog tree: workspace match keeps ancestors");
+  const byFolder = filterCatalogTree(folders, workspaces, "A");
+  console.assert(byFolder.folders.map((row) => row.id).join(",") === "a,b" && byFolder.workspaces.map((row) => row.id).join(",") === "w1,w2", "catalog tree: folder match keeps subtree");
+  console.assert(filterCatalogTree(folders, workspaces, "nope").workspaces.length === 0, "catalog tree: empty");
 }

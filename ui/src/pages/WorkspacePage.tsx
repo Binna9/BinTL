@@ -1,7 +1,7 @@
 import type { WorkspaceExecution } from "@/types/chip";
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Square, Terminal, Workflow, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Globe, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Square, Terminal, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -16,6 +16,7 @@ import {
   type TransformPlaceDraft,
 } from "@/components/workspace/ChipPlaceDialog";
 import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
+import { ServeChipEditorDialog } from "@/components/workspace/ServeChipEditorDialog";
 import { WorkspaceRunReportDialog } from "@/components/workspace/WorkspaceRunReportDialog";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
@@ -45,8 +46,11 @@ import {
   NODE_W,
   TOOL_KIND,
   attachHiddenDataEdges,
-  canHaveDataEdge,
+  canvasEdgesIssue,
   canvasPoint,
+  edgeConnectIssue,
+  edgeIssueMessage,
+  withCompanionSuccessEdges,
   chipFixedInputId,
   incomingDataChipId,
   sameKindPairEdges,
@@ -206,6 +210,7 @@ export function WorkspacePage() {
   } | null>(null);
   const lastPlaceKindRef = useRef<ChipPlaceKind>("extract");
   const [sqlEditor, setSqlEditor] = useState<{ chip: Chip | null } | null>(null);
+  const [serveEditor, setServeEditor] = useState<Chip | null>(null);
   const [chipMenu, setChipMenu] = useState<ChipContextMenuState | null>(null);
   const [infoChip, setInfoChip] = useState<Chip | null>(null);
   const [logChipId, setLogChipId] = useState<string | null>(null);
@@ -238,24 +243,10 @@ export function WorkspacePage() {
     messages.workspace.topLevel,
   );
   const [latestWorkspaceRun, setLatestWorkspaceRun] = useState<WorkspaceExecution | null>(null);
-  useEffect(() => {
-    setLatestWorkspaceRun(null);
-    if (!workspaceId) return;
-    let cancelled = false;
-    let timer: number | undefined;
-    const refreshStatus = async () => {
-      try {
-        const response = await chipApi.listWorkspaceRuns(workspaceId, { silent: true });
-        if (!cancelled) setLatestWorkspaceRun(response.runs[0] ?? null);
-      } catch {
-        // Preserve the last known status on a transient network failure.
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => void refreshStatus(), 2000);
-      }
-    };
-    void refreshStatus();
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [workspaceId]);
+  function applyRunList(runs: ChipRun[], workspaceRuns?: WorkspaceExecution[]) {
+    setRuns(runs);
+    if (workspaceRuns) setLatestWorkspaceRun(workspaceRuns[0] ?? null);
+  }
   const workspaceName = selectedWorkspace?.name ?? messages.workspace.selectWorkspace;
   const infoInputChip = infoChip
     ? chips.find((chip) => chip.id === edges.find(
@@ -417,10 +408,6 @@ export function WorkspacePage() {
     const to = chips.find((chip) => chip.id === toId);
     if (!from || !to || !workspaceId) return;
     const kind = kindValue;
-    if (kind === "data" && !canHaveDataEdge(from.kind, to.kind)) {
-      toastError(messages.workspace.dataEdgeInvalidPair);
-      return;
-    }
     let validationPort: "source" | "target" | undefined;
     if (kind === "data" && to.kind === "validation") {
       const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === toId);
@@ -451,11 +438,29 @@ export function WorkspacePage() {
     const incomingData = kind === "data" && to.kind !== "validation"
       ? edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === toId)
       : [];
+    const incomingCompanions = incomingData.flatMap((data) =>
+      edges.filter((edge) =>
+        edge.kind === "on_success"
+        && edge.from_chip_id === data.from_chip_id
+        && edge.to_chip_id === data.to_chip_id
+      )
+    );
     if (
       existing.some((edge) => edge.kind === kind)
       && incomingData.every((edge) => edge.from_chip_id === fromId)
     ) {
       toastError(messages.workspace.edgeAlreadySame);
+      return;
+    }
+    const dropIds = new Set([
+      ...existing.map((edge) => edge.id),
+      ...incomingData.map((edge) => edge.id),
+      ...incomingCompanions.map((edge) => edge.id),
+    ]);
+    const preview = edges.filter((edge) => !dropIds.has(edge.id));
+    const issue = edgeConnectIssue(from, to, kind, preview);
+    if (issue) {
+      toastError(edgeIssueMessage(issue, kind, messages));
       return;
     }
     const replacingIncoming = incomingData.some((edge) => edge.from_chip_id !== fromId);
@@ -484,14 +489,11 @@ export function WorkspacePage() {
       from_port: route.fromSide,
       to_port: validationPort ?? route.toSide,
     };
-    const dropIds = new Set([
-      ...existing.map((edge) => edge.id),
-      ...incomingData.map((edge) => edge.id),
-    ]);
-    const nextEdges = [
-      ...edges.filter((edge) => !dropIds.has(edge.id)),
-      created,
-    ];
+    const nextEdges = withCompanionSuccessEdges(
+      [...preview, created],
+      positionsRef.current,
+      workspaceId,
+    );
     const nextChips = kind === "data" && (to.kind === "transform" || to.kind === "load")
       ? chips.map((chip) => chip.id === toId
         ? {
@@ -557,6 +559,7 @@ export function WorkspacePage() {
       setChips([]);
       setEdges([]);
       setRuns([]);
+      setLatestWorkspaceRun(null);
       setPositions({});
       setSelectedChipIds([]);
       setSelectedEdgeIds([]);
@@ -582,11 +585,15 @@ export function WorkspacePage() {
             : [...current, workspace];
         });
         const nextPositions = positionsFrom(chipResponse.chips, workspace.layout);
-        const nextEdges = workspace.edges ?? [];
+        const nextEdges = withCompanionSuccessEdges(
+          workspace.edges ?? [],
+          nextPositions,
+          workspace.id,
+        );
         pendingViewRef.current = workspace.layout.view ?? { x: 0, y: 0 };
         setChips(chipResponse.chips);
         setEdges(nextEdges);
-        setRuns(runResponse.runs);
+        applyRunList(runResponse.runs, runResponse.workspace_runs);
         setCatalogChips(catalogResponse.chips);
         setPositions(nextPositions);
         setSelectedChipIds([]);
@@ -701,13 +708,13 @@ export function WorkspacePage() {
         if (cancelled) return;
         const stillActive = response.runs.some((run) => ACTIVE_STATUSES.has(run.status));
         if (stillActive) {
-          setRuns(response.runs);
+          applyRunList(response.runs, response.workspace_runs);
           toasted = false;
           timer = window.setTimeout(() => void poll(), 2000);
         } else {
           const datasetResponse = await datasetApi.list();
           if (cancelled) return;
-          setRuns(response.runs);
+          applyRunList(response.runs, response.workspace_runs);
           setDatasets(datasetResponse.datasets);
           toasted = false;
         }
@@ -733,7 +740,7 @@ export function WorkspacePage() {
   }
 
   function openChipEditor(chip: Chip) {
-    if (chip.kind !== "extract" && chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation" && chip.kind !== "sql") return;
+    if (chip.kind !== "extract" && chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation" && chip.kind !== "sql" && chip.kind !== "serve") return;
     if (!workspaceId || currentWorkspaceRef.current !== workspaceId) return;
     void (async () => {
       const originalChipId = chip.id;
@@ -753,6 +760,10 @@ export function WorkspacePage() {
         setSqlEditor({ chip: currentChip });
         return;
       }
+      if (currentChip.kind === "serve") {
+        setServeEditor(currentChip);
+        return;
+      }
       const snapshot = cloneCanvas(
         chipsRef.current,
         savedRef.current.positions,
@@ -769,7 +780,7 @@ export function WorkspacePage() {
     for (;;) {
       if (currentWorkspaceRef.current !== workspaceId) return;
       const response = await chipApi.listRuns(workspaceId, { silent: true });
-      setRuns(response.runs);
+      applyRunList(response.runs, response.workspace_runs);
       const latest = response.runs.find((run) => run.chip_id === chipId);
       if (!latest || !ACTIVE_STATUSES.has(latest.status)) {
         return latest?.status;
@@ -812,13 +823,9 @@ export function WorkspacePage() {
     if (!workspaceId) return;
     for (;;) {
       if (currentWorkspaceRef.current !== workspaceId) return;
-      const [executions, chipRuns] = await Promise.all([
-        chipApi.listWorkspaceRuns(workspaceId, { silent: true }),
-        chipApi.listRuns(workspaceId, { silent: true }),
-      ]);
-      setLatestWorkspaceRun(executions.runs[0] ?? null);
-      setRuns(chipRuns.runs);
-      const row = executions.runs.find((item) => item.id === executionId);
+      const response = await chipApi.listRuns(workspaceId, { silent: true });
+      applyRunList(response.runs, response.workspace_runs);
+      const row = response.workspace_runs.find((item) => item.id === executionId);
       if (row && !ACTIVE_STATUSES.has(row.status)) {
         if (
           row.status === "succeeded"
@@ -873,7 +880,7 @@ export function WorkspacePage() {
       }
       if (currentWorkspaceRef.current !== workspaceId) return;
       const response = await chipApi.listRuns(workspaceId, { silent: true });
-      setRuns(response.runs);
+      applyRunList(response.runs, response.workspace_runs);
       const reportRuns = result.execution_id
         ? response.runs.filter((run) => run.execution_id === result.execution_id)
         : response.runs.filter((run) => !previousRunIds.has(run.id));
@@ -900,7 +907,7 @@ export function WorkspacePage() {
       try {
         const response = await chipApi.listRuns(workspaceId, { silent: true });
         const currentRuns = response.runs.filter((run) => !previousRunIds.has(run.id));
-        setRuns(response.runs);
+        applyRunList(response.runs, response.workspace_runs);
         const failedNames = [...new Set(
           currentRuns
             .filter((run) => run.status === "failed")
@@ -939,7 +946,7 @@ export function WorkspacePage() {
       const status = await waitForChipRun(chip.id);
       if (currentWorkspaceRef.current !== workspaceId) return;
       const response = await chipApi.listRuns(workspaceId, { silent: true });
-      setRuns(response.runs);
+      applyRunList(response.runs, response.workspace_runs);
       const latest = response.runs.find((run) => run.chip_id === chip.id);
       const outcome = status || latest?.status;
       if (outcome === "canceled") {
@@ -1020,7 +1027,7 @@ export function WorkspacePage() {
 
   function propsDataEdges(chip: Chip, currentEdges: ChipEdge[]): ChipEdge[] {
     if (!workspaceId) return currentEdges;
-    if (chip.kind === "transform" || chip.kind === "load") {
+    if (chip.kind === "transform" || chip.kind === "load" || chip.kind === "serve") {
       const current = incomingDataChipId(currentEdges, chip.id);
       if (current === propsInputChipId) return currentEdges;
       return attachHiddenDataEdges(
@@ -1060,6 +1067,13 @@ export function WorkspacePage() {
     }
     const nextEdges = propsDataEdges(propsChip, edges);
     const edgesChanged = nextEdges !== edges;
+    if (edgesChanged) {
+      const issue = canvasEdgesIssue(chips, nextEdges);
+      if (issue) {
+        toastError(edgeIssueMessage(issue, "data", messages));
+        return;
+      }
+    }
     if (isDraftChipId(propsChip.id)) {
       const nextChips = chips.map((item) => (
         item.id === propsChip.id ? { ...item, name } : item
@@ -1191,8 +1205,13 @@ export function WorkspacePage() {
     let nextEdges = edges;
     if (dataInputs.length > 0 && workspaceId) {
       nextEdges = attachHiddenDataEdges(edges, dataInputs, nextPositions, workspaceId);
-      setEdges(nextEdges);
+      const issue = canvasEdgesIssue(nextChips, nextEdges);
+      if (issue) {
+        toastError(edgeIssueMessage(issue, "data", messages));
+        nextEdges = edges;
+      }
     }
+    if (nextEdges !== edges) setEdges(nextEdges);
     setChips(nextChips);
     setPositions(nextPositions);
     markDirty(nextChips, nextPositions, nextEdges);
@@ -1310,6 +1329,32 @@ export function WorkspacePage() {
       draft.targetChipId ? { fromId: draft.targetChipId, toId: chip.id, toPort: "target" } : null,
     ].filter((item): item is { fromId: string; toId: string; toPort: string } => Boolean(item));
     placeCatalogChips([chip], pendingPlace.point, dataInputs);
+    setPendingPlace(null);
+  }
+
+  function placeNewServeChip(draft: EmptyConsumerDraft) {
+    if (!pendingPlace) return;
+    const now = new Date().toISOString();
+    const chip: Chip = {
+      id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+      owner_user_id: "",
+      name: draft.name,
+      kind: "serve",
+      config: {
+        slug: draft.slug ?? "",
+        api_key: draft.apiKey ?? "",
+        freshness: draft.freshness ?? "slot",
+      },
+      revision: 0,
+      active: true,
+      created_at: now,
+      updated_at: now,
+    };
+    placeCatalogChips(
+      [chip],
+      pendingPlace.point,
+      draft.inputChipId ? [{ fromId: draft.inputChipId, toId: chip.id }] : [],
+    );
     setPendingPlace(null);
   }
 
@@ -1470,6 +1515,11 @@ export function WorkspacePage() {
         }
         usedNames.add(normalized);
       }
+      const graphIssue = canvasEdgesIssue(currentChips, edges);
+      if (graphIssue) {
+        toastError(edgeIssueMessage(graphIssue, "on_success", messages));
+        return false;
+      }
       const idMap = new Map<string, string>();
       savedDraftIdMapRef.current = idMap;
       let chipsToSave = [...currentChips];
@@ -1501,6 +1551,7 @@ export function WorkspacePage() {
         setPositions(positionsToSave);
         positionsRef.current = positionsToSave;
       }
+      edgesToSave = withCompanionSuccessEdges(edgesToSave, positionsToSave, requestWorkspaceId);
 
       const response = await workspaceApi.save(requestWorkspaceId, {
         version: selectedWorkspace?.version ?? 1,
@@ -1546,7 +1597,11 @@ export function WorkspacePage() {
         }
       }
       const nextPositions = positionsFrom(response.chips, response.workspace.layout);
-      const nextEdges = response.edges ?? response.workspace.edges ?? [];
+      const nextEdges = withCompanionSuccessEdges(
+        response.edges ?? response.workspace.edges ?? [],
+        nextPositions,
+        requestWorkspaceId,
+      );
       setWorkspaces((current) =>
         current.map((item) =>
           item.id === response.workspace.id ? response.workspace : item,
@@ -1647,11 +1702,15 @@ export function WorkspacePage() {
           ? current.map((item) => (item.id === workspace.id ? workspace : item))
           : [...current, workspace];
       });
-      setRuns(runResponse.runs);
+      applyRunList(runResponse.runs, runResponse.workspace_runs);
       setCatalogChips(catalogResponse.chips);
       if (dirtyRef.current) return;
       const nextPositions = positionsFrom(chipResponse.chips, workspace.layout);
-      const nextEdges = workspace.edges ?? [];
+      const nextEdges = withCompanionSuccessEdges(
+        workspace.edges ?? [],
+        nextPositions,
+        workspace.id,
+      );
       pendingViewRef.current = workspace.layout.view ?? { x: 0, y: 0 };
       setChips(chipResponse.chips);
       setEdges(nextEdges);
@@ -1700,7 +1759,7 @@ export function WorkspacePage() {
     const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
     const point = { x: grab.x - NODE_W / 2, y: grab.y - NODE_H / 2 };
     const toolKind = event.dataTransfer.getData(TOOL_KIND);
-    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load" && toolKind !== "validation" && toolKind !== "sql") return;
+    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load" && toolKind !== "validation" && toolKind !== "sql" && toolKind !== "serve") return;
     placeTool(toolKind, point);
   }
 
@@ -2103,6 +2162,12 @@ export function WorkspacePage() {
       hint: messages.workspace.sqlHint,
       icon: Terminal,
     },
+    {
+      kind: "serve" as const,
+      label: messages.workspace.serve,
+      hint: messages.workspace.serveHint,
+      icon: Globe,
+    },
   ];
   const edgeTools = [
     {
@@ -2453,7 +2518,8 @@ export function WorkspacePage() {
           const Icon = chip.kind === "transform" ? Workflow
             : chip.kind === "load" ? FileOutput
               : chip.kind === "validation" ? ShieldCheck
-                : chip.kind === "sql" ? Terminal : DatabaseZap;
+                : chip.kind === "sql" ? Terminal
+                  : chip.kind === "serve" ? Globe : DatabaseZap;
           return (
             <div
               key={chip.id}
@@ -2563,7 +2629,8 @@ export function WorkspacePage() {
                 chip.kind === "extract" ? "is-extract"
                   : chip.kind === "load" ? "is-load"
                     : chip.kind === "validation" ? "is-validation"
-                      : chip.kind === "sql" ? "is-sql" : "is-transform",
+                      : chip.kind === "sql" ? "is-sql"
+                        : chip.kind === "serve" ? "is-serve" : "is-transform",
               )}>
                 <Icon aria-hidden="true" />
               </span>
@@ -2595,7 +2662,9 @@ export function WorkspacePage() {
                   <span className="text-[9px] font-medium text-text-tertiary">
                     {chip.output?.available
                       ? messages.workspace.outputReady
-                      : messages.workspace.outputEmpty}
+                      : chip.kind === "serve" && typeof chip.config.slug === "string" && chip.config.slug
+                        ? messages.workspace.servePathPreview(chip.config.slug)
+                        : messages.workspace.outputEmpty}
                   </span>
                 )}
               </span>
@@ -2699,6 +2768,11 @@ export function WorkspacePage() {
           messages.workspace.defaultSqlChipName,
           (chip) => chip.kind === "sql",
         )}
+        defaultServeName={nextSequencedChipName(
+          [...catalogChips, ...chips],
+          messages.workspace.defaultServeChipName,
+          (chip) => chip.kind === "serve",
+        )}
         occupiedNames={[...catalogChips, ...chips].map((chip) => chip.name)}
         messages={messages}
         busy={busy}
@@ -2707,6 +2781,7 @@ export function WorkspacePage() {
         onPlaceNewTransform={(draft) => placeNewTransformChip(draft)}
         onPlaceNewLoad={placeNewLoadChip}
         onPlaceNewValidation={placeNewValidationChip}
+        onPlaceNewServe={placeNewServeChip}
         onRegisterSql={() => setSqlEditor({ chip: null })}
       />
 
@@ -2735,6 +2810,17 @@ export function WorkspacePage() {
             setPendingPlace(null);
           }
           setSqlEditor(null);
+        }}
+      />
+
+      <ServeChipEditorDialog
+        open={Boolean(serveEditor)}
+        chip={serveEditor}
+        onClose={() => setServeEditor(null)}
+        onSaved={(saved) => {
+          setCatalogChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+          setChips((current) => current.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)));
+          setServeEditor(null);
         }}
       />
 
@@ -2869,13 +2955,16 @@ export function WorkspacePage() {
                       ? "bg-violet-500/10 text-violet-600 ring-violet-500/20 dark:text-violet-400"
                       : propsChip?.kind === "sql"
                         ? "bg-sky-500/10 text-sky-600 ring-sky-500/20 dark:text-sky-400"
-                        : "bg-accent-subtle text-accent ring-accent/20",
+                        : propsChip?.kind === "serve"
+                          ? "bg-teal-500/10 text-teal-600 ring-teal-500/20 dark:text-teal-400"
+                          : "bg-accent-subtle text-accent ring-accent/20",
               )}>
                 {propsChip?.kind === "transform" ? <Workflow className="size-5" aria-hidden="true" />
                   : propsChip?.kind === "load" ? <FileOutput className="size-5" aria-hidden="true" />
                     : propsChip?.kind === "validation" ? <ShieldCheck className="size-5" aria-hidden="true" />
                       : propsChip?.kind === "sql" ? <Terminal className="size-5" aria-hidden="true" />
-                        : <DatabaseZap className="size-5" aria-hidden="true" />}
+                        : propsChip?.kind === "serve" ? <Globe className="size-5" aria-hidden="true" />
+                          : <DatabaseZap className="size-5" aria-hidden="true" />}
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-text-tertiary">
@@ -2920,7 +3009,7 @@ export function WorkspacePage() {
               </div>
             </div>
 
-            {propsChip?.kind === "transform" || propsChip?.kind === "load" ? (
+            {propsChip?.kind === "transform" || propsChip?.kind === "load" || propsChip?.kind === "serve" ? (
               <div className="space-y-2">
                 <p className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.inputChipHint}</p>
                 <CanvasProducerSelect

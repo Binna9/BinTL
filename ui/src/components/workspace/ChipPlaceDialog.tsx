@@ -10,6 +10,7 @@ import {
   FileSpreadsheet,
   FileOutput,
   FileStack,
+  Globe,
   Layers3,
   Plus,
   Terminal,
@@ -20,15 +21,17 @@ import {
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { chipKindLabel, incomingDataChipId, producerChips, validationTargetChips } from "@/features/workspace/workspaceCanvasModel";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
 import { selectableClass } from "@/lib/selectable";
+import { slugFromName, newServeApiKey } from "@/components/workspace/ServeChipEditorDialog";
 import type { Chip, ChipEdge } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
-export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "sql";
+export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "sql" | "serve";
 
 export type TransformPlaceDraft = {
   name: string;
@@ -41,6 +44,9 @@ export type EmptyConsumerDraft = {
   inputChipId?: string;
   sourceChipId?: string;
   targetChipId?: string;
+  slug?: string;
+  apiKey?: string;
+  freshness?: "slot" | "live";
 };
 
 const PRODUCER_KIND_ORDER = ["extract", "transform", "load"] as const;
@@ -219,13 +225,14 @@ function CatalogChipPanel({
     if (!needle) return options;
     return options.filter((chip) => chip.name.toLowerCase().includes(needle));
   }, [options, query]);
-  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : kind === "validation" ? ShieldCheck : kind === "sql" ? Terminal : FileOutput;
-  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : kind === "validation" ? "text-violet-600 dark:text-violet-400" : kind === "sql" ? "text-sky-600 dark:text-sky-400" : "text-warning";
+  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : kind === "validation" ? ShieldCheck : kind === "sql" ? Terminal : kind === "serve" ? Globe : FileOutput;
+  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : kind === "validation" ? "text-violet-600 dark:text-violet-400" : kind === "sql" ? "text-sky-600 dark:text-sky-400" : kind === "serve" ? "text-teal-600 dark:text-teal-400" : "text-warning";
   const emptyHint = kind === "extract"
     ? messages.workspace.emptyCatalogExtract
     : kind === "transform" ? messages.workspace.emptyCatalogTransform
       : kind === "validation" ? messages.workspace.emptyCatalogValidation
-        : kind === "sql" ? messages.workspace.emptyCatalogSql : messages.workspace.emptyCatalogLoad;
+        : kind === "sql" ? messages.workspace.emptyCatalogSql
+          : kind === "serve" ? messages.workspace.emptyCatalogServe : messages.workspace.emptyCatalogLoad;
 
   if (options.length === 0) {
     return (
@@ -860,11 +867,12 @@ function TransformNewPanel({
   );
 }
 
-function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChips, canvasEdges, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
-  kind?: "load" | "validation" | "sql"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
+function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChips, canvasEdges, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, hideRegister, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
+  kind?: "load" | "validation" | "sql" | "serve"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
   emptyChipLabel?: string; catalogHint?: string; registerLabel?: string; submitLabel?: string;
   chips: Chip[]; canvasChips: Chip[]; canvasEdges?: ChipEdge[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
   hideEmpty?: boolean;
+  hideRegister?: boolean;
   onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty?: (draft: EmptyConsumerDraft) => void; onRegister: () => void;
   dragHandleRef: RefObject<HTMLDivElement | null>;
 }) {
@@ -874,6 +882,9 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
   const [inputChipId, setInputChipId] = useState("");
   const [sourceChipId, setSourceChipId] = useState("");
   const [targetChipId, setTargetChipId] = useState("");
+  const [slug, setSlug] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [freshness, setFreshness] = useState<"slot" | "live">("slot");
 
   useEffect(() => {
     setNamingEmpty(false);
@@ -881,16 +892,25 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
     setInputChipId("");
     setSourceChipId("");
     setTargetChipId("");
-  }, [defaultName]);
+    setSlug(slugFromName(defaultName));
+    setApiKey(kind === "serve" ? newServeApiKey() : "");
+    setFreshness("slot");
+  }, [defaultName, kind]);
   const nameTaken = occupiedNames.some((name) => name.trim().toLocaleLowerCase() === emptyName.trim().toLocaleLowerCase());
-  const emptyReady = kind === "validation" ? Boolean(sourceChipId && targetChipId) : Boolean(inputChipId);
+  const emptyReady = kind === "validation"
+    ? Boolean(sourceChipId && targetChipId)
+    : kind === "serve"
+      ? Boolean(inputChipId && slug.trim())
+      : Boolean(inputChipId);
   const confirmEmpty = () => {
     const trimmed = emptyName.trim();
     if (!trimmed || busy || nameTaken || !emptyReady) return;
     setNamingEmpty(false);
     onPlaceEmpty?.(kind === "validation"
       ? { name: trimmed, sourceChipId, targetChipId }
-      : { name: trimmed, inputChipId });
+      : kind === "serve"
+        ? { name: trimmed, inputChipId, slug: slug.trim(), apiKey, freshness }
+        : { name: trimmed, inputChipId });
   };
 
   return (
@@ -904,7 +924,7 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
         dragHandleRef={dragHandleRef}
       />
 
-      <div className={cn("grid shrink-0 gap-2 px-4 pt-4", hideEmpty ? "grid-cols-1" : "grid-cols-2")}>
+      <div className={cn("grid shrink-0 gap-2 px-4 pt-4", hideEmpty || hideRegister ? "grid-cols-1" : "grid-cols-2")}>
         {hideEmpty ? null : (
           <Button
             type="button"
@@ -916,6 +936,9 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
               setInputChipId("");
               setSourceChipId("");
               setTargetChipId("");
+              setSlug(slugFromName(defaultName));
+              setApiKey(kind === "serve" ? newServeApiKey() : "");
+              setFreshness("slot");
               setNamingEmpty(true);
             }}
           >
@@ -923,6 +946,7 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
             {emptyChipLabel ?? messages.workspace.placeLoadEmptyChip}
           </Button>
         )}
+        {hideRegister ? null : (
         <Button
           type="button"
           variant="secondary"
@@ -933,6 +957,7 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
           <Plus className="size-3.5" aria-hidden="true" />
           {registerLabel ?? messages.workspace.registerLoadFirst}
         </Button>
+        )}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-2 pt-4">
@@ -962,9 +987,9 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
         open={namingEmpty}
         title={messages.workspace.nameChipTitle}
         zIndex={110}
-        className={kind === "validation" ? VALIDATION_NAME_DIALOG_CLASS : EMPTY_NAME_DIALOG_CLASS}
-        minWidth={kind === "validation" ? 560 : 384}
-        minHeight={kind === "validation" ? 520 : 240}
+        className={kind === "validation" || kind === "serve" ? VALIDATION_NAME_DIALOG_CLASS : EMPTY_NAME_DIALOG_CLASS}
+        minWidth={kind === "validation" || kind === "serve" ? 560 : 384}
+        minHeight={kind === "validation" || kind === "serve" ? 520 : 240}
         onClose={() => setNamingEmpty(false)}
         footer={
           <>
@@ -986,7 +1011,13 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
               value={emptyName}
               autoFocus
               disabled={busy}
-              onChange={(event) => setEmptyName(event.target.value)}
+              onChange={(event) => {
+                const next = event.target.value;
+                setEmptyName(next);
+                if (kind === "serve" && (!slug || slug === slugFromName(emptyName))) {
+                  setSlug(slugFromName(next));
+                }
+              }}
               onKeyDown={(event) => {
                 if (event.key !== "Enter") return;
                 event.preventDefault();
@@ -1038,6 +1069,45 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
                 disabled={busy}
                 onChange={setInputChipId}
               />
+              {kind === "serve" ? (
+                <>
+                  <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+                    <span className="flex min-h-4 min-w-0 items-baseline justify-between gap-2">
+                      <span className="text-xs font-semibold text-text">{messages.workspace.serveSlug}</span>
+                      <span className="min-w-0 truncate text-right text-[11px] text-text-tertiary">{messages.workspace.serveSlugExample}</span>
+                    </span>
+                    <input
+                      className="field-control text-sm"
+                      value={slug}
+                      placeholder={messages.workspace.serveSlugPlaceholder}
+                      disabled={busy}
+                      onChange={(event) => setSlug(event.target.value)}
+                    />
+                    {slug.trim() ? (
+                      <span className="font-mono text-[11px] text-text-tertiary">{messages.workspace.servePathLabel(slug.trim())}</span>
+                    ) : (
+                      <span className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.serveSlugHint}</span>
+                    )}
+                  </label>
+                  <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+                    <span className="text-xs font-semibold text-text">{messages.workspace.serveApiKey}</span>
+                    <input className="field-control font-mono text-[12px]" value={apiKey} readOnly />
+                    <span className="text-[11px] leading-5 text-text-tertiary">{messages.workspace.serveApiKeyHint}</span>
+                  </label>
+                  <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+                    <span className="text-xs font-semibold text-text">{messages.workspace.serveFreshness}</span>
+                    <Select
+                      value={freshness}
+                      disabled={busy}
+                      options={[
+                        { value: "slot", label: messages.workspace.serveFreshnessSlot },
+                        { value: "live", label: messages.workspace.serveFreshnessLive },
+                      ]}
+                      onChange={(value) => setFreshness(value === "live" ? "live" : "slot")}
+                    />
+                  </label>
+                </>
+              ) : null}
             </>
           )}
         </div>
@@ -1060,6 +1130,7 @@ export function ChipPlaceDialog({
   defaultLoadName,
   defaultValidationName,
   defaultSqlName,
+  defaultServeName,
   occupiedNames,
   messages,
   busy,
@@ -1068,6 +1139,7 @@ export function ChipPlaceDialog({
   onPlaceNewTransform,
   onPlaceNewLoad,
   onPlaceNewValidation,
+  onPlaceNewServe,
   onRegisterSql,
 }: {
   open: boolean;
@@ -1083,6 +1155,7 @@ export function ChipPlaceDialog({
   defaultLoadName: string;
   defaultValidationName: string;
   defaultSqlName: string;
+  defaultServeName: string;
   occupiedNames: string[];
   messages: Messages;
   busy?: boolean;
@@ -1091,6 +1164,7 @@ export function ChipPlaceDialog({
   onPlaceNewTransform: (draft: TransformPlaceDraft) => void;
   onPlaceNewLoad: (draft: EmptyConsumerDraft) => void;
   onPlaceNewValidation: (draft: EmptyConsumerDraft) => void;
+  onPlaceNewServe: (draft: EmptyConsumerDraft) => void;
   onRegisterSql: () => void;
 }) {
   const navigate = useNavigate();
@@ -1099,7 +1173,8 @@ export function ChipPlaceDialog({
     ? messages.workspace.placeExtractTitle
     : kind === "transform" ? messages.workspace.placeTransformTitle
       : kind === "load" ? messages.workspace.placeLoadTitle
-        : kind === "sql" ? messages.workspace.placeSqlTitle : messages.workspace.placeValidationTitle;
+        : kind === "sql" ? messages.workspace.placeSqlTitle
+          : kind === "serve" ? messages.workspace.placeServeTitle : messages.workspace.placeValidationTitle;
 
   function goDbRegister() {
     onClose();
@@ -1197,6 +1272,30 @@ export function ChipPlaceDialog({
           onClose={onClose}
           onPlace={onPlaceCatalog}
           onRegister={onRegisterSql}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : kind === "serve" ? (
+        <LoadCatalogPanel
+          kind="serve"
+          hideRegister
+          icon={<Globe className="size-4" aria-hidden="true" />}
+          iconClassName="bg-teal-500/10 text-teal-600 dark:text-teal-400"
+          title={messages.workspace.placeServeTitle}
+          simpleHint={messages.workspace.placeServeSimpleHint}
+          emptyChipLabel={messages.workspace.placeServeEmptyChip}
+          catalogHint={messages.workspace.placeServeCatalogHint}
+          chips={catalogChips}
+          canvasChips={canvasChips}
+          canvasEdges={canvasEdges}
+          canvasChipIds={canvasChipIds}
+          defaultName={defaultServeName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceCatalog}
+          onPlaceEmpty={onPlaceNewServe}
+          onRegister={() => {}}
           dragHandleRef={dragHandleRef}
         />
       ) : (

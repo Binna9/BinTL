@@ -27,16 +27,16 @@ import type { PermissionRecord, RoleRecord, SessionUser } from "@/types/user";
 import { cn } from "@/lib/cn";
 import { layout } from "@/lib/layout";
 
-type PageId = "roles" | "permissions" | "users" | "codes" | "messages";
+type PageId = "users" | "roles" | "permissions" | "codes" | "messages";
 
 const PAGES: {
   id: PageId;
   icon: typeof Shield;
   label: (m: Messages) => string;
 }[] = [
+  { id: "users", icon: Users, label: (m) => m.settings.users },
   { id: "roles", icon: Shield, label: (m) => m.settings.roles },
   { id: "permissions", icon: KeyRound, label: (m) => m.settings.permissions },
-  { id: "users", icon: Users, label: (m) => m.settings.users },
   { id: "codes", icon: Hash, label: (m) => m.settings.codes },
   { id: "messages", icon: MessageSquareText, label: (m) => m.settings.messages },
 ];
@@ -517,12 +517,12 @@ const PAGE_VIEW: Record<
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { messages } = useLanguage();
-  const [page, setPage] = useState<PageId>("roles");
+  const [page, setPage] = useState<PageId>("users");
   const [query, setQuery] = useState("");
 
   useEffect(() => {
     if (!open) return;
-    setPage("roles");
+    setPage("users");
     setQuery("");
   }, [open]);
 

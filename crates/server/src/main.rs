@@ -15,6 +15,7 @@ mod load;
 mod planned_input;
 mod schedule;
 mod search;
+mod serve;
 mod state;
 mod transform;
 mod ui;
@@ -94,6 +95,7 @@ async fn main() {
             axum::http::header::CONTENT_TYPE,
             axum::http::header::COOKIE,
             axum::http::header::AUTHORIZATION,
+            axum::http::HeaderName::from_static("x-api-key"),
         ])
         .allow_methods([
             axum::http::Method::GET,
@@ -114,6 +116,7 @@ async fn main() {
 
     let app = Router::new()
         .merge(api::public_routes())
+        .merge(crate::serve::public_routes())
         .merge(protected)
         .fallback(ui::fallback)
         .layer(TraceLayer::new_for_http())

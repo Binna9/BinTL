@@ -867,6 +867,9 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
 
   const activePreview = detailTab === "result" ? resultPreview : sourcePreview;
   const previewHeaders = activePreview?.columns.map((column) => column.name) ?? [];
+  const schemaOnlyInput = selected?.status === "connected";
+  const pendingFirstResult = finalizedPreviewOpen && schemaOnlyInput;
+  const canExportResult = !newWorkspaceChip && !schemaOnlyInput;
   const sectionLabel = editorSection === "combine"
     ? t.sectionCombine
     : editorSection === "aggregate"
@@ -1439,9 +1442,15 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         open={detailOpen}
         title={finalizedPreviewOpen ? messages.transform.resultDialogTitle : (selected?.filename ?? messages.transform.previewSteps)}
         icon={<FileSpreadsheet className="size-4 text-accent" aria-hidden="true" />}
-        className={finalizedPreviewOpen ? "h-[90vh] w-[96vw] max-w-[90rem]" : "h-[min(42rem,88vh)] w-[min(72rem,94vw)]"}
-        minWidth={finalizedPreviewOpen ? 560 : 520}
-        minHeight={360}
+        className={
+          pendingFirstResult
+            ? "h-[min(22rem,70vh)] w-[min(34rem,94vw)]"
+            : finalizedPreviewOpen
+              ? "h-[90vh] w-[96vw] max-w-[90rem]"
+              : "h-[min(42rem,88vh)] w-[min(72rem,94vw)]"
+        }
+        minWidth={pendingFirstResult ? 360 : finalizedPreviewOpen ? 560 : 520}
+        minHeight={pendingFirstResult ? 240 : 360}
         onClose={finalizedPreviewOpen ? closeFinalizedPreview : () => setDetailOpen(false)}
         headerExtra={finalizedPreviewOpen ? undefined : (
           <div className="flex gap-1">
@@ -1463,7 +1472,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
         )}
         footer={finalizedPreviewOpen ? (
           <>
-            {!newWorkspaceChip ? (
+            {canExportResult ? (
               <Button
                 variant="primary"
                 type="button"
@@ -1477,6 +1486,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
             ) : null}
             <Button
               type="button"
+              variant={canExportResult ? undefined : "primary"}
               className="gap-2"
               disabled={busy}
               onClick={() => void openRegister()}
@@ -1491,6 +1501,12 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
           </Button>
         )}
       >
+        {pendingFirstResult ? (
+          <EmptyState
+            title={messages.transform.resultNeedsRunTitle}
+            hint={messages.transform.resultNeedsRunHint}
+          />
+        ) : (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {activePreview ? (
             <div className="flex min-w-0 shrink-0 flex-wrap items-start gap-5 border-b border-border px-4 py-2.5">
@@ -1544,6 +1560,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
             )}
           </div>
         </div>
+        )}
       </AppDialog>
 
       <AppDialog

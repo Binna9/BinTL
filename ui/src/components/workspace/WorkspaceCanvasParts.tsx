@@ -1,6 +1,6 @@
 import { useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AppWindow, ChevronDown, DatabaseZap, FileOutput, Folder, FolderOpen, Layers, Pencil, Settings2, Spline, Terminal, Workflow, type LucideIcon } from "lucide-react";
+import { AppWindow, ChevronDown, DatabaseZap, FileOutput, Folder, FolderOpen, Globe, Layers, Pencil, Settings2, Spline, Terminal, Workflow, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
@@ -439,6 +439,7 @@ export function WorkspaceLayers({
   const transforms = chips.filter((chip) => chip.kind === "transform");
   const loads = chips.filter((chip) => chip.kind === "load");
   const sqls = chips.filter((chip) => chip.kind === "sql");
+  const serves = chips.filter((chip) => chip.kind === "serve");
   const allChipIds = chips.map((chip) => chip.id);
   const allEdgeIds = edges.map((edge) => edge.id);
   const allLayersSelected = (allChipIds.length + allEdgeIds.length) > 0
@@ -534,6 +535,15 @@ export function WorkspaceLayers({
         ) : sqls.map((chip) => (
           <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={Terminal}
             iconClassName="text-sky-600 dark:text-sky-400" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
+            editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
+        ))}
+      </LayerGroup>
+      <LayerGroup title={messages.workspace.layerServe(serves.length)}>
+        {serves.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : serves.map((chip) => (
+          <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={Globe}
+            iconClassName="text-teal-600 dark:text-teal-400" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
             editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
         ))}
       </LayerGroup>
@@ -639,7 +649,8 @@ export function WorkspaceMinimap({
                 "workspace-minimap-chip",
                 chip.kind === "extract" ? "is-extract"
                   : chip.kind === "load" ? "is-load"
-                    : chip.kind === "sql" ? "is-sql" : "is-transform",
+                    : chip.kind === "sql" ? "is-sql"
+                      : chip.kind === "serve" ? "is-serve" : "is-transform",
               )}
               style={{
                 left: point.x * scale,

@@ -389,7 +389,14 @@ async fn create_chip(
     Json(body): Json<CreateChipBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     access::require_workspace(&state.store, &user, &workspace_id).await?;
-    let config = validate_config(&state.store, &workspace_id, &body.kind, body.config).await?;
+    let (config, revealed_key) = if body.kind == "serve" {
+        crate::serve::validate_serve_config(&state.store, None, body.config, None, true).await?
+    } else {
+        (
+            validate_config(&state.store, &workspace_id, &body.kind, body.config).await?,
+            None,
+        )
+    };
     let config_json =
         serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?;
     let chip = state
@@ -402,10 +409,11 @@ async fn create_chip(
             &config_json,
         )
         .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(chip_json(&state.store, &chip).await?),
-    ))
+    let mut payload = chip_json(&state.store, &chip).await?;
+    if let Some(key) = revealed_key {
+        payload["api_key"] = json!(key);
+    }
+    Ok((StatusCode::CREATED, Json(payload)))
 }
 
 async fn get_chip(
@@ -476,6 +484,7 @@ async fn update_chip(
             .await?;
         return Ok(Json(chip_json(&state.store, &chip).await?));
     }
+    let mut revealed_key = None;
     let config_json = if body.kind.is_some() || body.config.is_some() {
         if state.store.get_chip_binding(&id).await?.is_some() {
             return Err(AppError::bad(
@@ -501,16 +510,39 @@ async fn update_chip(
             .chip_workspace_hint(&id)
             .await
             .map_err(|error| AppError::bad(error.to_string()))?;
-        if workspace_id.is_none() && kind != "sql" {
+        if workspace_id.is_none() && kind != "sql" && kind != "serve" {
             return Err(AppError::bad("chip is not placed on a workspace"));
         }
-        let config = validate_config(
-            &state.store,
-            workspace_id.as_deref().unwrap_or(""),
-            kind,
-            raw_config,
-        )
-        .await?;
+        let config = if kind == "serve" {
+            let existing = match current.config_json.as_deref() {
+                Some(raw) => Some(
+                    serde_json::from_str::<Value>(raw).map_err(|error| {
+                        AppError::bad(format!("stored chip config is invalid: {error}"))
+                    })?,
+                ),
+                None => None,
+            };
+            crate::serve::validate_serve_config(
+                &state.store,
+                Some(&id),
+                raw_config,
+                existing.as_ref(),
+                false,
+            )
+            .await
+            .map(|(value, key)| {
+                revealed_key = key;
+                value
+            })?
+        } else {
+            validate_config(
+                &state.store,
+                workspace_id.as_deref().unwrap_or(""),
+                kind,
+                raw_config,
+            )
+            .await?
+        };
         Some(serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?)
     } else {
         None
@@ -525,7 +557,11 @@ async fn update_chip(
             body.active,
         )
         .await?;
-    Ok(Json(chip_json(&state.store, &chip).await?))
+    let mut payload = chip_json(&state.store, &chip).await?;
+    if let Some(key) = revealed_key {
+        payload["api_key"] = json!(key);
+    }
+    Ok(Json(payload))
 }
 
 async fn delete_chip(
@@ -557,6 +593,7 @@ async fn queue_chip_run(
             queue_validation_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await
         }
         "sql" => queue_sql_chip_run(state, user, chip, workspace_id, requested_input, execution_id).await,
+        "serve" => crate::serve::queue_serve_chip_run(state, user, chip, workspace_id, execution_id).await,
         _ => {
             access::require_workspace(&state.store, user, workspace_id).await?;
             if chip.active == 0 {
@@ -1310,6 +1347,10 @@ pub(crate) async fn chip_json(store: &Store, row: &ChipRow) -> Result<Value, App
         .map_err(|error| AppError::bad(error.to_string()))?;
     let config = serde_json::from_str::<Value>(&config_raw)
         .map_err(|error| AppError::bad(format!("stored chip config is invalid: {error}")))?;
+    let mut config = config;
+    if row.kind == "serve" {
+        crate::serve::redact_config(&mut config);
+    }
     let workspace_id = store
         .chip_workspace_hint(&row.id)
         .await
@@ -1572,8 +1613,11 @@ pub(crate) async fn validate_config(
                 serde_json::to_value(value).map_err(|e| AppError::bad(e.to_string()))
             }),
         "sql" => validate_sql_config(store, config).await,
+        "serve" => crate::serve::validate_serve_config(store, None, config, None, false)
+            .await
+            .map(|(value, _)| value),
         _ => Err(AppError::bad(
-            "chip kind must be extract, transform, load, validation, or sql",
+            "chip kind must be extract, transform, load, validation, sql, or serve",
         )),
     }
 }
@@ -1930,6 +1974,21 @@ pub(crate) async fn run_one(
                     .await
                     .map_err(|error| error.to_string())?;
                 run_sql_chip(store, &run).await
+            }
+            "serve" => {
+                let config: Value = serde_json::from_str(&run.config_snapshot_json)
+                    .map_err(|error| format!("invalid serve config snapshot: {error}"))?;
+                crate::serve::parse_serve_config(&config).map_err(|error| error.message().to_string())?;
+                store
+                    .set_chip_run_running(run_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let slug = config.get("slug").and_then(Value::as_str).unwrap_or("");
+                let result = serde_json::json!({ "slug": slug, "path": format!("/p/{slug}") }).to_string();
+                store
+                    .set_chip_run_succeeded_with_result(run_id, Some(&result), None)
+                    .await
+                    .map_err(|error| error.to_string())
             }
             kind => Err(format!("unsupported chip kind {kind}")),
         }

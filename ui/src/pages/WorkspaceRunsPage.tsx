@@ -27,7 +27,7 @@ type WorkspaceRunRow = WorkspaceExecution & { workspaceName: string };
 type TimeFilter = "all" | "today" | "7d" | "30d";
 
 const RUN_STATUSES = ["queued", "running", "succeeded", "failed", "skipped", "canceled"] as const;
-const CHIP_KINDS = ["extract", "transform", "load", "validation", "sql"] as const;
+const CHIP_KINDS = ["extract", "transform", "load", "validation", "sql", "serve"] as const;
 
 function historyTab(value: string | null): "chip" | "workspace" {
   return value === "workspace" ? "workspace" : "chip";

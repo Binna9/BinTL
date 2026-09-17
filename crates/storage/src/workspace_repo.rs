@@ -639,6 +639,223 @@ impl Store {
         }
         Ok(())
     }
+
+    /// sqlx's SQLite migrator wraps every migration in a transaction, so
+    /// `PRAGMA foreign_keys=OFF` in table-rebuild scripts is a no-op and
+    /// `DROP TABLE chips` / `DROP TABLE execution_steps` CASCADE-wipes canvas
+    /// placements and output links. Restore those from the last saved revision.
+    pub(crate) async fn repair_canvas_from_revisions(&self) -> Result<(), StorageError> {
+        let now = now_rfc3339();
+        let snapshots: Vec<(String, String)> = sqlx::query_as(
+            "SELECT r.workspace_id, r.snapshot_json
+             FROM workspace_revisions r
+             INNER JOIN workspaces w ON w.id = r.workspace_id AND w.version = r.version",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for (workspace_id, snapshot_json) in snapshots {
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&snapshot_json).unwrap_or_else(|_| serde_json::json!({}));
+            let nodes = snapshot
+                .pointer("/layout/nodes")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            for chip in snapshot
+                .get("chips")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+            {
+                let Some(chip_id) = chip.get("id").and_then(|value| value.as_str()) else {
+                    continue;
+                };
+                let position = nodes.get(chip_id);
+                let x = position
+                    .and_then(|node| node.get("x"))
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or(0.0);
+                let y = position
+                    .and_then(|node| node.get("y"))
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or(0.0);
+                sqlx::query(
+                    "INSERT INTO workspace_chips (id, workspace_id, chip_id, x, y, created_at, updated_at)
+                     SELECT ?, ?, ?, ?, ?, ?, ?
+                     WHERE EXISTS (SELECT 1 FROM chips WHERE id = ?)
+                       AND NOT EXISTS (
+                         SELECT 1 FROM workspace_chips WHERE workspace_id = ? AND chip_id = ?
+                       )",
+                )
+                .bind(workspace_chip_id(&workspace_id, chip_id))
+                .bind(&workspace_id)
+                .bind(chip_id)
+                .bind(x)
+                .bind(y)
+                .bind(&now)
+                .bind(&now)
+                .bind(chip_id)
+                .bind(&workspace_id)
+                .bind(chip_id)
+                .execute(&self.pool)
+                .await?;
+            }
+            let edge_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM workspace_edges WHERE workspace_id = ?",
+            )
+            .bind(&workspace_id)
+            .fetch_one(&self.pool)
+            .await?;
+            if edge_count > 0 {
+                continue;
+            }
+            for edge in snapshot
+                .get("edges")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+            {
+                let (Some(id), Some(from_id), Some(to_id), Some(kind)) = (
+                    edge.get("id").and_then(|value| value.as_str()),
+                    edge.get("from_chip_id").and_then(|value| value.as_str()),
+                    edge.get("to_chip_id").and_then(|value| value.as_str()),
+                    edge.get("kind").and_then(|value| value.as_str()),
+                ) else {
+                    continue;
+                };
+                let from_port = edge
+                    .get("from_port")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("out");
+                let to_port = edge
+                    .get("to_port")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("in");
+                sqlx::query(
+                    "INSERT INTO workspace_edges
+                     (id, workspace_id, from_workspace_chip_id, to_workspace_chip_id, kind, from_port, to_port, created_at)
+                     SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                     WHERE EXISTS (SELECT 1 FROM workspace_chips WHERE id = ?)
+                       AND EXISTS (SELECT 1 FROM workspace_chips WHERE id = ?)
+                       AND NOT EXISTS (SELECT 1 FROM workspace_edges WHERE id = ?)",
+                )
+                .bind(id)
+                .bind(&workspace_id)
+                .bind(workspace_chip_id(&workspace_id, from_id))
+                .bind(workspace_chip_id(&workspace_id, to_id))
+                .bind(kind)
+                .bind(from_port)
+                .bind(to_port)
+                .bind(&now)
+                .bind(workspace_chip_id(&workspace_id, from_id))
+                .bind(workspace_chip_id(&workspace_id, to_id))
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        sqlx::query(
+            "INSERT INTO workspace_chip_outputs
+             (workspace_chip_id, port_name, expected_filename, definition_revision, updated_at)
+             SELECT wc.id, 'out',
+                    CASE c.kind
+                      WHEN 'extract' THEN COALESCE(e.output_filename, c.name || '.csv')
+                      WHEN 'transform' THEN COALESCE(t.output_filename_template, c.name || '.parquet')
+                    END,
+                    c.revision, ?
+             FROM workspace_chips wc
+             INNER JOIN chips c ON c.id = wc.chip_id
+             LEFT JOIN extracts e ON e.id = c.extract_id
+             LEFT JOIN transforms t ON t.id = c.transform_id
+             WHERE c.kind IN ('extract', 'transform')
+             ON CONFLICT(workspace_chip_id, port_name) DO NOTHING",
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE workspace_chip_outputs
+             SET current_data_file_id = (
+               SELECT d.id FROM data_files d
+               WHERE d.deleted_at IS NULL
+                 AND d.stored_path LIKE 'chip_outputs/' || replace(workspace_chip_outputs.workspace_chip_id, ':', '/') || '/%'
+               ORDER BY d.updated_at DESC LIMIT 1
+             ), updated_at = ?
+             WHERE current_data_file_id IS NULL",
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET chip_id = (
+               SELECT c.id FROM chips c WHERE c.extract_id = execution_steps.extract_id LIMIT 1
+             ) WHERE chip_id IS NULL AND extract_id IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET chip_id = (
+               SELECT c.id FROM chips c WHERE c.transform_id = execution_steps.transform_id LIMIT 1
+             ) WHERE chip_id IS NULL AND transform_id IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET chip_id = (
+               SELECT c.id FROM chips c WHERE c.load_id = execution_steps.load_id LIMIT 1
+             ) WHERE chip_id IS NULL AND load_id IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET chip_id = (
+               SELECT c.id FROM chips c
+               INNER JOIN executions e ON e.id = execution_steps.execution_id
+               WHERE execution_steps.output_path LIKE 'chip_outputs/' || e.workspace_id || '/' || c.id || '/%'
+               LIMIT 1
+             ) WHERE chip_id IS NULL AND output_path LIKE 'chip_outputs/%'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET workspace_chip_id = (
+               SELECT wc.id FROM workspace_chips wc
+               INNER JOIN executions e ON e.id = execution_steps.execution_id
+               WHERE wc.workspace_id = e.workspace_id AND wc.chip_id = execution_steps.chip_id
+             ) WHERE workspace_chip_id IS NULL AND chip_id IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO execution_outputs (execution_step_id, port_name, data_file_id)
+             SELECT s.id, 'out', json_extract(s.result_json, '$.data_file_id')
+             FROM execution_steps s
+             INNER JOIN data_files d ON d.id = json_extract(s.result_json, '$.data_file_id')
+             WHERE json_extract(s.result_json, '$.data_file_id') IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO execution_outputs (execution_step_id, port_name, data_file_id)
+             SELECT s.id, 'out', json_extract(s.result_json, '$.output_data_file_id')
+             FROM execution_steps s
+             INNER JOIN data_files d ON d.id = json_extract(s.result_json, '$.output_data_file_id')
+             WHERE json_extract(s.result_json, '$.output_data_file_id') IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO execution_outputs (execution_step_id, port_name, data_file_id)
+             SELECT s.id, 'out', d.id
+             FROM execution_steps s
+             INNER JOIN data_files d ON d.stored_path = s.output_path
+             WHERE s.output_path IS NOT NULL AND s.output_path != ''",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 pub(crate) fn workspace_chip_id(workspace_id: &str, chip_id: &str) -> String {

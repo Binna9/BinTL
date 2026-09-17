@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Download, History, RefreshCw, ScrollText } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Download, History, ListFilter, RefreshCw, ScrollText, Search } from "lucide-react";
 import { DataGrid, EmptyState, GridCell, GridRow } from "@/components/DataGrid";
 import { LogDialog } from "@/components/LogDialog";
 import { PaginationBar } from "@/components/PaginationBar";
@@ -7,6 +7,8 @@ import { NavIcon } from "@/components/ui/nav-icons";
 import { StatusPill } from "@/components/StatusPill";
 import { ActionAnchor, Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/panel";
+import { Select } from "@/components/ui/select";
+import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
@@ -29,6 +31,9 @@ type ExportRow = {
   downloadUrl: string | null;
 };
 
+const EXPORT_STATUSES = ["queued", "running", "succeeded", "failed"] as const;
+const EXPORT_KINDS = ["extract", "transform"] as const;
+
 function extractFilename(extract: ExtractRecord): string {
   if (extract.filename?.trim()) return extract.filename;
   if (extract.stored_path) {
@@ -49,6 +54,21 @@ function formatJobLogs(logs: EtlJobLog[], empty: string): string {
     .join("\n");
 }
 
+function filterExportRows(
+  rows: ExportRow[],
+  query: string,
+  status: string,
+  kind: "all" | ExportKind,
+) {
+  const q = query.trim().toLocaleLowerCase();
+  return rows.filter(
+    (row) =>
+      (!q || row.filename.toLocaleLowerCase().includes(q))
+      && (status === "all" || row.status === status)
+      && (kind === "all" || row.kind === kind),
+  );
+}
+
 export function ExportHistoryPage() {
   const { messages } = useLanguage();
   const t = messages.history;
@@ -56,6 +76,9 @@ export function ExportHistoryPage() {
   const [loading, setLoading] = useState(true);
   const [logRow, setLogRow] = useState<ExportRow | null>(null);
   const [logText, setLogText] = useState("");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("all");
+  const [kind, setKind] = useState<"all" | ExportKind>("all");
 
   const refresh = useCallback(async (options?: { silent?: boolean }) => {
     if (!options?.silent) setLoading(true);
@@ -133,9 +156,14 @@ export function ExportHistoryPage() {
     };
   }, [logRow, messages]);
 
-  const paging = usePagination(rows);
-  const kindLabel = (kind: ExportKind) =>
-    kind === "extract" ? t.kindExtract : t.kindTransform;
+  const visible = useMemo(
+    () => filterExportRows(rows, query, status, kind),
+    [kind, query, rows, status],
+  );
+  const paging = usePagination(visible, `${query}|${status}|${kind}`);
+  const filterEmpty = visible.length === 0 && rows.length > 0;
+  const kindLabel = (value: ExportKind) =>
+    value === "extract" ? t.kindExtract : t.kindTransform;
 
   return (
     <PageShell>
@@ -151,24 +179,71 @@ export function ExportHistoryPage() {
           </Button>
         }
       />
-      <Panel tall className="overflow-hidden">
+      <Panel>
+        <Toolbar>
+          <ToolbarGroup>
+            <h2 className="text-[13px] font-semibold">{t.exports}</h2>
+            <span className="shrink-0 rounded-full bg-accent-subtle px-2 py-0.5 text-[11px] font-bold tabular-nums text-accent">
+              {messages.common.cases(visible.length)}
+            </span>
+          </ToolbarGroup>
+        </Toolbar>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-raised/45 px-3 py-2.5">
+          <div className="group flex h-8 w-[min(17rem,100%)] min-w-[11rem] items-center overflow-hidden rounded-lg border border-border bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+            <span className="grid h-full w-8 shrink-0 place-items-center border-r border-border bg-subtle text-text-tertiary group-focus-within:text-accent">
+              <Search className="size-3.5" aria-hidden="true" />
+            </span>
+            <input
+              type="search"
+              className="min-w-0 flex-1 bg-transparent px-2.5 text-[13px] text-text outline-none placeholder:text-text-tertiary"
+              value={query}
+              placeholder={t.searchFilenamePlaceholder}
+              aria-label={t.searchFilename}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <div className="ml-3 flex items-center gap-1.5 text-xs text-text-secondary">
+            <ListFilter className="size-3.5 text-text-tertiary" aria-hidden="true" />
+            <span className="sr-only">{messages.chipRuns.statusFilter}</span>
+            <Select
+              className="h-8 min-w-[6.5rem]"
+              value={status}
+              onChange={setStatus}
+              options={[
+                { value: "all", label: messages.chips.allStatuses },
+                ...EXPORT_STATUSES.map((value) => ({ value, label: messages.status[value] })),
+              ]}
+            />
+          </div>
+          <div className="flex items-center text-xs text-text-secondary">
+            <span className="sr-only">{messages.chips.kindFilter}</span>
+            <Select
+              className="h-8 min-w-[7.5rem]"
+              value={kind}
+              onChange={(value) => setKind(value === "extract" || value === "transform" ? value : "all")}
+              options={[
+                { value: "all", label: messages.chips.allKinds },
+                ...EXPORT_KINDS.map((value) => ({ value, label: kindLabel(value) })),
+              ]}
+            />
+          </div>
+        </div>
         <DataGrid
-          className="min-h-0 flex-1"
           headers={[...t.exportsHeaders]}
           columnWidths={[88, 280, 100, 96, 160, 100, 100]}
           empty={
             loading ? (
               <EmptyState title={messages.common.loading} />
-            ) : (
+            ) : visible.length === 0 ? (
               <EmptyState
                 icon={<NavIcon name="jobs" />}
-                title={t.empty}
-                hint={t.emptyHint}
+                title={filterEmpty ? messages.chipRuns.filterEmpty : t.empty}
+                hint={filterEmpty ? messages.chipRuns.filterEmptyHint : t.emptyHint}
               />
-            )
+            ) : undefined
           }
         >
-          {loading || rows.length === 0
+          {loading || visible.length === 0
             ? null
             : paging.items.map((row) => (
                 <GridRow key={`${row.kind}-${row.id}`}>
@@ -223,4 +298,14 @@ export function ExportHistoryPage() {
       />
     </PageShell>
   );
+}
+
+if (import.meta.env.DEV) {
+  const rows: ExportRow[] = [
+    { id: "1", kind: "extract", filename: "sales.csv", status: "succeeded", row_count: 1, created_at: "2", downloadUrl: null },
+    { id: "2", kind: "transform", filename: "sales.parquet", status: "failed", row_count: null, created_at: "1", downloadUrl: null },
+  ];
+  console.assert(filterExportRows(rows, "sales", "all", "all").length === 2, "export filter: filename");
+  console.assert(filterExportRows(rows, "", "failed", "all").map((row) => row.id).join(",") === "2", "export filter: status");
+  console.assert(filterExportRows(rows, "", "all", "extract").map((row) => row.id).join(",") === "1", "export filter: kind");
 }

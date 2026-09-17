@@ -11,6 +11,7 @@ const TONE: Record<ChipKind, string> = {
   load: "var(--theme-warning)",
   sql: "var(--theme-text)",
   validation: "var(--theme-text-tertiary)",
+  serve: "#14b8a6",
 };
 
 export function FunnelWidget() {
@@ -24,6 +25,7 @@ export function FunnelWidget() {
       { id: "transform" as const, label: messages.overview.transform, rate: model.transformRate },
       { id: "load" as const, label: messages.overview.load, rate: model.loadRate },
       { id: "sql" as const, label: messages.workspace.sql, rate: model.sqlRate },
+      { id: "serve" as const, label: messages.workspace.serve, rate: model.serveRate },
       { id: "validation" as const, label: messages.workspace.validation, rate: model.validationRate },
     ],
     [messages, model],

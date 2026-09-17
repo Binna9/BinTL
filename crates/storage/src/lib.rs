@@ -40,7 +40,7 @@ use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::SqlitePool;
+use sqlx::{ConnectOptions, Connection, SqlitePool};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +83,20 @@ impl Store {
         ensure_data_layout(&data_dir).await?;
 
         let db_path = data_dir.join("etl.db");
+        // sqlx's SQLite migrator always begins a transaction, so a migration's
+        // PRAGMA foreign_keys=OFF is a no-op. DROP TABLE chips then CASCADE-wipes
+        // workspace placements. Disable FKs on the migrate connection itself.
+        {
+            let migrate_options = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(Duration::from_secs(5))
+                .foreign_keys(false);
+            let mut conn = migrate_options.connect().await?;
+            sqlx::migrate!("./migrations").run(&mut conn).await?;
+            conn.close().await?;
+        }
         let options = SqliteConnectOptions::new()
             .filename(&db_path)
             .create_if_missing(true)
@@ -94,8 +108,6 @@ impl Store {
             .max_connections(5)
             .connect_with(options)
             .await?;
-
-        sqlx::migrate!("./migrations").run(&pool).await?;
         let store = Self {
             pool,
             data_dir,
@@ -103,6 +115,7 @@ impl Store {
         };
         store.ensure_bootstrap().await?;
         store.backfill_workspace_revisions().await?;
+        store.repair_canvas_from_revisions().await?;
         if let Err(error) = store.reconcile_search_documents().await {
             // Search is a derived index. A repair failure must not prevent the
             // authoritative application data from opening.
@@ -325,9 +338,12 @@ fn trimmed_optional(value: Option<&str>) -> Option<&str> {
 }
 
 fn validate_chip_kind(kind: &str) -> Result<(), StorageError> {
-    if !matches!(kind, "extract" | "transform" | "load" | "validation" | "sql") {
+    if !matches!(
+        kind,
+        "extract" | "transform" | "load" | "validation" | "sql" | "serve"
+    ) {
         return Err(StorageError::Invalid(
-            "chip kind must be extract, transform, load, validation, or sql".into(),
+            "chip kind must be extract, transform, load, validation, sql, or serve".into(),
         ));
     }
     Ok(())
@@ -517,6 +533,7 @@ async fn replace_workspace_edges(
             "chip edges cannot form a cycle".into(),
         ));
     }
+    validate_edge_graph(&pairs, &chips_by_id)?;
     sqlx::query("DELETE FROM workspace_edges WHERE workspace_id = ?")
         .bind(workspace_id)
         .execute(&mut **tx)
@@ -572,18 +589,156 @@ fn validate_edge_kind(
                     "data edges must start from extract or transform".into(),
                 ));
             }
-            if !matches!(to_kind, "transform" | "load" | "validation") {
+            if !matches!(to_kind, "transform" | "load" | "validation" | "serve") {
                 return Err(StorageError::Invalid(
-                    "data edges must end at transform, load, or validation".into(),
+                    "data edges must end at transform, load, validation, or serve".into(),
                 ));
             }
             Ok(())
         }
-        "on_success" | "on_error" | "always" => Ok(()),
+        "on_success" | "on_error" | "always" => {
+            if !control_kinds_allowed(from_kind, to_kind) {
+                return Err(StorageError::Invalid(
+                    "control edges cannot connect these chip kinds".into(),
+                ));
+            }
+            Ok(())
+        }
         _ => Err(StorageError::Invalid(
             "chip edge kind must be data, on_success, on_error, or always".into(),
         )),
     }
+}
+
+fn control_kinds_allowed(from_kind: &str, to_kind: &str) -> bool {
+    match from_kind {
+        "load" => matches!(to_kind, "load" | "validation" | "sql"),
+        "validation" | "serve" => to_kind == "sql",
+        _ if to_kind == "extract" => matches!(from_kind, "extract" | "sql"),
+        _ => true,
+    }
+}
+
+type EdgePair = (String, String, String, String, String, String);
+
+fn flow_kind(kind: &str) -> bool {
+    matches!(kind, "data" | "on_success" | "always")
+}
+
+fn has_data_pair(pairs: &[EdgePair], from: &str, to: &str) -> bool {
+    pairs
+        .iter()
+        .any(|(_, edge_from, edge_to, kind, _, _)| kind == "data" && edge_from == from && edge_to == to)
+}
+
+fn indirect_path_exists(pairs: &[EdgePair], from: &str, to: &str, skip_id: &str) -> bool {
+    let mut graph: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (id, edge_from, edge_to, kind, _, _) in pairs {
+        if id == skip_id || !flow_kind(kind) {
+            continue;
+        }
+        graph.entry(edge_from.as_str()).or_default().push(edge_to.as_str());
+    }
+    let mut seen = HashSet::new();
+    seen.insert(from);
+    let mut queue = Vec::new();
+    for next in graph.get(from).into_iter().flatten().copied() {
+        if next == to {
+            continue;
+        }
+        if seen.insert(next) {
+            queue.push(next);
+        }
+    }
+    while let Some(current) = queue.pop() {
+        for next in graph.get(current).into_iter().flatten().copied() {
+            if next == to {
+                return true;
+            }
+            if seen.insert(next) {
+                queue.push(next);
+            }
+        }
+    }
+    false
+}
+
+fn data_depends_on(pairs: &[EdgePair], node: &str, ancestor: &str) -> bool {
+    fn walk<'a>(
+        pairs: &'a [EdgePair],
+        node: &'a str,
+        ancestor: &str,
+        seen: &mut HashSet<&'a str>,
+    ) -> bool {
+        if !seen.insert(node) {
+            return false;
+        }
+        for (_, from, to, kind, _, _) in pairs {
+            if kind != "data" || to != node {
+                continue;
+            }
+            if from == ancestor || walk(pairs, from, ancestor, seen) {
+                return true;
+            }
+        }
+        false
+    }
+    walk(pairs, node, ancestor, &mut HashSet::new())
+}
+
+fn validate_edge_graph(
+    pairs: &[EdgePair],
+    chips_by_id: &HashMap<&str, &ChipRow>,
+) -> Result<(), StorageError> {
+    let mut incoming: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (_, from, to, kind, _, _) in pairs {
+        if kind != "data" {
+            continue;
+        }
+        incoming.entry(to.as_str()).or_default().push(from.as_str());
+    }
+    for (to_id, sources) in &incoming {
+        let to_kind = chips_by_id
+            .get(to_id)
+            .map(|chip| chip.kind.as_str())
+            .unwrap_or("");
+        if to_kind == "validation" {
+            if sources.len() > 2 {
+                return Err(StorageError::Invalid("too many data inputs".into()));
+            }
+            let unique = sources.iter().copied().collect::<HashSet<_>>();
+            if unique.len() != sources.len() {
+                return Err(StorageError::Invalid("duplicate chip edge".into()));
+            }
+        } else if sources.len() > 1 {
+            return Err(StorageError::Invalid("too many data inputs".into()));
+        }
+    }
+    for (id, from, to, kind, _, _) in pairs {
+        if kind == "on_error" {
+            if data_depends_on(pairs, to, from) {
+                return Err(StorageError::Invalid(
+                    "on_error cannot target a chip that uses that chip's data".into(),
+                ));
+            }
+            continue;
+        }
+        if !indirect_path_exists(pairs, from, to, id) {
+            continue;
+        }
+        let to_kind = chips_by_id
+            .get(to.as_str())
+            .map(|chip| chip.kind.as_str())
+            .unwrap_or("");
+        let allowed = (kind == "data" && to_kind == "validation")
+            || (kind != "data" && has_data_pair(pairs, from, to));
+        if !allowed {
+            return Err(StorageError::Invalid(
+                "chip edge skips an existing path".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn edges_have_cycle<'a, I>(edges: I) -> bool
@@ -1238,6 +1393,166 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repair_canvas_restores_placements_wiped_by_chip_table_rebuild() {
+        let (root, store, admin) = test_store().await;
+        let workspace = store
+            .insert_workspace("Repair", None, &admin.id, None)
+            .await
+            .unwrap();
+        let extract = store
+            .insert_chip(
+                &admin.id,
+                &workspace.id,
+                "Src",
+                "extract",
+                r#"{"connection_id":"c","source":{"type":"table","table":"users"}}"#,
+            )
+            .await
+            .unwrap();
+        let transform = store
+            .insert_chip(
+                &admin.id,
+                &workspace.id,
+                "Out",
+                "transform",
+                r#"{"spec":{"version":2,"steps":[],"sink":"parquet"}}"#,
+            )
+            .await
+            .unwrap();
+        store
+            .save_workspace(
+                &workspace.id,
+                &format!(
+                    r#"{{"nodes":{{"{}":{{"x":10,"y":20}},"{}":{{"x":30,"y":40}}}}}}"#,
+                    extract.id, transform.id
+                ),
+                &[extract.id.clone(), transform.id.clone()],
+                &[WorkspaceSaveEdge {
+                    id: Uuid::new_v4().to_string(),
+                    from_chip_id: extract.id.clone(),
+                    to_chip_id: transform.id.clone(),
+                    kind: "data".into(),
+                    from_port: "right".into(),
+                    to_port: "left".into(),
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
+            .bind(&workspace.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.list_chips(&workspace.id).await.unwrap().is_empty());
+        store.repair_canvas_from_revisions().await.unwrap();
+        let restored = store.list_chips(&workspace.id).await.unwrap();
+        assert_eq!(restored.len(), 2);
+        let edges = store.list_chip_edges(&workspace.id).await.unwrap();
+        assert_eq!(edges.len(), 1);
+        let placed: (f64, f64) = sqlx::query_as(
+            "SELECT x, y FROM workspace_chips WHERE workspace_id = ? AND chip_id = ?",
+        )
+        .bind(&workspace.id)
+        .bind(&extract.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(placed, (10.0, 20.0));
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn rebuilding_chips_with_fk_disabled_keeps_workspace_placements() {
+        let (root, store, admin) = test_store().await;
+        let workspace = store
+            .insert_workspace("Keep", None, &admin.id, None)
+            .await
+            .unwrap();
+        let extract = store
+            .insert_chip(
+                &admin.id,
+                &workspace.id,
+                "Keep extract",
+                "extract",
+                r#"{"connection_id":"c","source":{"type":"table","table":"users"}}"#,
+            )
+            .await
+            .unwrap();
+        store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[extract.id.clone()],
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        store.pool.close().await;
+        let db_path = root.join("etl.db");
+        let mut conn = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .foreign_keys(false)
+            .connect()
+            .await
+            .unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        sqlx::query(
+            "CREATE TABLE chips_new (
+                id TEXT PRIMARY KEY,
+                owner_user_id TEXT,
+                name TEXT,
+                kind TEXT,
+                extract_id TEXT,
+                transform_id TEXT,
+                load_id TEXT,
+                config_json TEXT,
+                revision INTEGER,
+                active INTEGER,
+                created_at TEXT,
+                updated_at TEXT
+             )",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO chips_new SELECT * FROM chips")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE chips")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE chips_new RENAME TO chips")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        conn.close().await.unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM workspace_chips WHERE chip_id = ?",
+        )
+        .bind(&extract.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn save_workspace_stores_chip_edges_and_rejects_cycles() {
         let (root, store, admin) = test_store().await;
         let workspace = store
@@ -1423,6 +1738,186 @@ mod tests {
             )
             .await;
         assert!(cycle.is_err());
+
+        let load = store
+            .insert_chip(
+                &admin.id,
+                &workspace.id,
+                "Dest",
+                "load",
+                r#"{"connection_id":"c","table":"users"}"#,
+            )
+            .await
+            .unwrap();
+        let shortcut = store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[
+                    extract.id.clone(),
+                    transform.id.clone(),
+                    load.id.clone(),
+                ],
+                &[
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "data".into(),
+                        from_port: "out".into(),
+                        to_port: "in".into(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: transform.id.clone(),
+                        to_chip_id: load.id.clone(),
+                        kind: "data".into(),
+                        from_port: "out".into(),
+                        to_port: "in".into(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: load.id.clone(),
+                        kind: "on_success".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                ],
+                None,
+            )
+            .await;
+        assert!(shortcut.is_err(), "extract→load must not skip transform");
+
+        let reverse = store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[extract.id.clone(), load.id.clone()],
+                &[WorkspaceSaveEdge {
+                    id: String::new(),
+                    from_chip_id: load.id.clone(),
+                    to_chip_id: extract.id.clone(),
+                    kind: "on_success".into(),
+                    from_port: String::new(),
+                    to_port: String::new(),
+                }],
+                None,
+            )
+            .await;
+        assert!(reverse.is_err(), "load cannot sequence extract");
+
+        let error_into_consumer = store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[extract.id.clone(), transform.id.clone()],
+                &[
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "data".into(),
+                        from_port: "out".into(),
+                        to_port: "in".into(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "on_error".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                ],
+                None,
+            )
+            .await;
+        assert!(
+            error_into_consumer.is_err(),
+            "on_error cannot target a data consumer"
+        );
+
+        store
+            .save_workspace(
+                &workspace.id,
+                r#"{"nodes":{}}"#,
+                &[
+                    extract.id.clone(),
+                    transform.id.clone(),
+                    load.id.clone(),
+                    validation.id.clone(),
+                ],
+                &[
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "data".into(),
+                        from_port: "out".into(),
+                        to_port: "in".into(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: transform.id.clone(),
+                        to_chip_id: load.id.clone(),
+                        kind: "data".into(),
+                        from_port: "out".into(),
+                        to_port: "in".into(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: validation.id.clone(),
+                        kind: "data".into(),
+                        from_port: "out".into(),
+                        to_port: "source".into(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: transform.id.clone(),
+                        to_chip_id: validation.id.clone(),
+                        kind: "data".into(),
+                        from_port: "out".into(),
+                        to_port: "target".into(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: transform.id.clone(),
+                        kind: "on_success".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: transform.id.clone(),
+                        to_chip_id: load.id.clone(),
+                        kind: "on_success".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: extract.id.clone(),
+                        to_chip_id: validation.id.clone(),
+                        kind: "on_success".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                    WorkspaceSaveEdge {
+                        id: String::new(),
+                        from_chip_id: transform.id.clone(),
+                        to_chip_id: validation.id.clone(),
+                        kind: "on_success".into(),
+                        from_port: String::new(),
+                        to_port: String::new(),
+                    },
+                ],
+                None,
+            )
+            .await
+            .expect("validation may take extract+transform even when they are already chained");
 
         let stale = store
             .save_workspace(

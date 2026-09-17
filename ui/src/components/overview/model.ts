@@ -51,6 +51,7 @@ export function buildDashboardModel(input: {
   const loads = ofKind(input.chipRuns, "load");
   const sqls = ofKind(input.chipRuns, "sql");
   const validations = ofKind(input.chipRuns, "validation");
+  const serves = ofKind(input.chipRuns, "serve");
   const feed = toFeed(input.chipRuns);
   return {
     systemHealth: input.systemHealth,
@@ -66,11 +67,13 @@ export function buildDashboardModel(input: {
     loadCount: loads.length,
     sqlCount: sqls.length,
     validationCount: validations.length,
+    serveCount: serves.length,
     extractRate: successRate(extracts),
     transformRate: successRate(transforms),
     loadRate: successRate(loads),
     sqlRate: successRate(sqls),
     validationRate: successRate(validations),
+    serveRate: successRate(serves),
   };
 }
 

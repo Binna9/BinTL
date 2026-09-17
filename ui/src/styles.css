@@ -2188,6 +2188,11 @@ a {
   background: transparent;
 }
 
+.workspace-node-icon.is-serve {
+  color: #14b8a6;
+  background: transparent;
+}
+
 .workspace-node-icon svg {
   width: 0.95rem;
   height: 0.95rem;
@@ -2251,6 +2256,10 @@ a {
 
 .workspace-minimap-chip.is-sql {
   background: #0ea5e9;
+}
+
+.workspace-minimap-chip.is-serve {
+  background: #14b8a6;
 }
 
 .workspace-minimap-view {
@@ -2626,6 +2635,17 @@ a {
 
 .ops-shell {
   background: #e8e6e8;
+  transform-origin: center;
+  transition:
+    transform 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.42s ease;
+}
+
+.ops-shell:hover,
+.ops-shell:focus-visible {
+  z-index: 2;
+  transform: scale(1.035);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--ops-glow) 28%, transparent);
 }
 
 .ops-shell-inner {
@@ -2637,13 +2657,24 @@ a {
   content: "";
   pointer-events: none;
   position: absolute;
-  inset: 0;
+  inset: -45%;
   border-radius: inherit;
   background: radial-gradient(
-    55% 50% at 0% 0%,
-    color-mix(in srgb, var(--ops-glow) 18%, transparent),
-    transparent 62%
+    circle at 18% 16%,
+    color-mix(in srgb, var(--ops-glow) 34%, transparent),
+    transparent 58%
   );
+  transform: scale(0.52);
+  opacity: 0.9;
+  transition:
+    transform 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.4s ease;
+}
+
+.ops-shell:hover .ops-shell-inner::before,
+.ops-shell:focus-visible .ops-shell-inner::before {
+  transform: scale(1.45);
+  opacity: 1;
 }
 
 .ops-shell-inner > * {
@@ -2654,6 +2685,15 @@ a {
 .ops-shell-glow {
   background: var(--ops-glow);
   opacity: 0.16;
+  transition:
+    transform 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.4s ease;
+}
+
+.ops-shell:hover .ops-shell-glow,
+.ops-shell:focus-visible .ops-shell-glow {
+  transform: scale(1.75);
+  opacity: 0.36;
 }
 
 :root.dark .ops-shell {
@@ -2667,11 +2707,36 @@ a {
 }
 
 :root.dark .ops-shell-inner::before {
-  display: none;
+  opacity: 0.7;
 }
 
 :root.dark .ops-shell-glow {
   opacity: 0.28;
+}
+
+:root.dark .ops-shell:hover .ops-shell-glow,
+:root.dark .ops-shell:focus-visible .ops-shell-glow {
+  opacity: 0.46;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ops-shell,
+  .ops-shell-inner::before,
+  .ops-shell-glow {
+    transition: none;
+  }
+
+  .ops-shell:hover,
+  .ops-shell:focus-visible {
+    transform: none;
+  }
+
+  .ops-shell:hover .ops-shell-inner::before,
+  .ops-shell:focus-visible .ops-shell-inner::before,
+  .ops-shell:hover .ops-shell-glow,
+  .ops-shell:focus-visible .ops-shell-glow {
+    transform: none;
+  }
 }
 
 .asset-tile {
@@ -3056,6 +3121,15 @@ a {
 .dash-kind-sql {
   background: var(--color-accent-subtle);
   color: var(--color-accent);
+}
+
+.dash-kind-serve {
+  background: color-mix(in srgb, #14b8a6 16%, transparent);
+  color: #0f766e;
+}
+
+:root.dark .dash-kind-serve {
+  color: #5eead4;
 }
 
 .dash-kind-transform {

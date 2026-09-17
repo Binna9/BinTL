@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties } from "react";
-import { DatabaseZap, FileOutput, RotateCcw, ShieldCheck, Terminal, Workflow, type LucideIcon } from "lucide-react";
+import { DatabaseZap, FileOutput, Globe, RotateCcw, ShieldCheck, Terminal, Workflow, type LucideIcon } from "lucide-react";
 import { PanelBody } from "@/components/ui/panel";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useDashboard } from "@/hooks/overview/DashboardContext";
@@ -12,6 +12,7 @@ const SERIES: { id: ChipKind; icon: LucideIcon; tone: string }[] = [
   { id: "transform", icon: Workflow, tone: "var(--theme-success)" },
   { id: "load", icon: FileOutput, tone: "var(--theme-warning)" },
   { id: "sql", icon: Terminal, tone: "var(--theme-text)" },
+  { id: "serve", icon: Globe, tone: "#14b8a6" },
   { id: "validation", icon: ShieldCheck, tone: "var(--theme-text-tertiary)" },
 ];
 
@@ -30,6 +31,7 @@ function seriesLabel(id: ChipKind, messages: ReturnType<typeof useLanguage>["mes
   if (id === "transform") return messages.overview.transform;
   if (id === "load") return messages.overview.load;
   if (id === "sql") return messages.workspace.sql;
+  if (id === "serve") return messages.workspace.serve;
   return messages.workspace.validation;
 }
 

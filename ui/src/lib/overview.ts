@@ -8,6 +8,7 @@ export type DayPoint = {
   load: number;
   sql: number;
   validation: number;
+  serve: number;
 };
 
 function atMs(iso: string) {
@@ -75,6 +76,7 @@ export function bucketActivity(
       load: rows.filter((run) => run.kind === "load").length,
       sql: rows.filter((run) => run.kind === "sql").length,
       validation: rows.filter((run) => run.kind === "validation").length,
+      serve: rows.filter((run) => run.kind === "serve").length,
     });
   }
   return days;

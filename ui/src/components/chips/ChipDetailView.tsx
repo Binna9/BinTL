@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Braces, Database, FileInput, FileOutput, Layers3, Link2, Settings2, ShieldCheck, Terminal, Workflow, type LucideIcon } from "lucide-react";
+import { Braces, Database, FileInput, FileOutput, Globe, Layers3, Link2, Settings2, ShieldCheck, Terminal, Workflow, type LucideIcon } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import {
@@ -168,6 +168,23 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
           <DetailRow label={messages.workspace.sql} className="items-start">
             <span className="whitespace-pre-wrap break-all text-left font-mono text-[12px]">{sqlText || unset}</span>
           </DetailRow>
+        </DetailSection>
+      </DetailStack>
+    );
+  }
+
+  if (chip.kind === "serve") {
+    const unset = messages.chips.detailUnset;
+    const slug = typeof chip.config.slug === "string" ? chip.config.slug : "";
+    const freshness = chip.config.freshness === "live"
+      ? messages.workspace.serveFreshnessLive
+      : messages.workspace.serveFreshnessSlot;
+    return (
+      <DetailStack>
+        <DetailSection icon={Globe} title={messages.workspace.serve}>
+          <DetailRow label={messages.workspace.serveSlug}>{slug || unset}</DetailRow>
+          <DetailRow label={messages.workspace.servePublicPath}>{slug ? messages.workspace.servePathPreview(slug) : unset}</DetailRow>
+          <DetailRow label={messages.workspace.serveFreshness}>{freshness}</DetailRow>
         </DetailSection>
       </DetailStack>
     );

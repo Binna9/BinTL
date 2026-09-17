@@ -19,6 +19,7 @@ export function chipKindLabel(kind: ChipKind, messages: Messages) {
   if (kind === "transform") return messages.workspace.transform;
   if (kind === "load") return messages.workspace.load;
   if (kind === "sql") return messages.workspace.sql;
+  if (kind === "serve") return messages.workspace.serve;
   return messages.workspace.validation;
 }
 
@@ -370,8 +371,223 @@ export function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
   }
   return (
     (fromKind === "extract" || fromKind === "transform")
-    && (toKind === "transform" || toKind === "load")
+    && (toKind === "transform" || toKind === "load" || toKind === "serve")
   );
+}
+
+/** Control wires set run order. Sinks cannot feed the ETL pipeline; SQL is the sequencing hatch. */
+export function canHaveControlEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
+  if (fromKind === "load") return toKind === "load" || toKind === "validation" || toKind === "sql";
+  if (fromKind === "validation" || fromKind === "serve") return toKind === "sql";
+  if (toKind === "extract") return fromKind === "extract" || fromKind === "sql";
+  return true;
+}
+
+export type EdgeConnectIssue =
+  | "self"
+  | "kind"
+  | "duplicate"
+  | "cycle"
+  | "shortcut"
+  | "error-data"
+  | "inputs";
+
+export function edgeIssueMessage(issue: EdgeConnectIssue, kind: ChipEdgeKind, messages: Messages) {
+  if (issue === "kind") {
+    return kind === "data" ? messages.workspace.dataEdgeInvalidPair : messages.workspace.controlEdgeInvalidPair;
+  }
+  if (issue === "duplicate") return messages.workspace.edgeAlreadySame;
+  if (issue === "cycle") return messages.workspace.edgeCycleError;
+  if (issue === "shortcut") return messages.workspace.shortcutEdge;
+  if (issue === "error-data") return messages.workspace.errorEdgeIntoConsumer;
+  if (issue === "inputs") return messages.workspace.tooManyDataInputs;
+  return messages.workspace.dataEdgeInvalidPair;
+}
+
+const FLOW_KINDS = new Set<ChipEdgeKind>(["data", "on_success", "always"]);
+const ALL_KINDS = new Set<ChipEdgeKind>(["data", "on_success", "on_error", "always"]);
+
+function pairKey(fromId: string, toId: string) {
+  return `${fromId}\0${toId}`;
+}
+
+function hasDataEdge(edges: ChipEdge[], fromId: string, toId: string) {
+  return edges.some((edge) =>
+    edge.kind === "data" && edge.from_chip_id === fromId && edge.to_chip_id === toId,
+  );
+}
+
+function pathExists(
+  edges: ChipEdge[],
+  fromId: string,
+  toId: string,
+  kinds: Set<ChipEdgeKind> = FLOW_KINDS,
+) {
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!kinds.has(edge.kind)) continue;
+    const list = outgoing.get(edge.from_chip_id) ?? [];
+    list.push(edge.to_chip_id);
+    outgoing.set(edge.from_chip_id, list);
+  }
+  const seen = new Set([fromId]);
+  const queue = [fromId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const next of outgoing.get(current) ?? []) {
+      if (next === toId) return true;
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return false;
+}
+
+function dataDependsOn(edges: ChipEdge[], nodeId: string, ancestorId: string) {
+  const seen = new Set<string>();
+  const walk = (id: string): boolean => {
+    if (!seen.add(id)) return false;
+    for (const edge of edges) {
+      if (edge.kind !== "data" || edge.to_chip_id !== id) continue;
+      if (edge.from_chip_id === ancestorId) return true;
+      if (walk(edge.from_chip_id)) return true;
+    }
+    return false;
+  };
+  return walk(nodeId);
+}
+
+export function graphHasCycle(edges: ChipEdge[]) {
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    const list = outgoing.get(edge.from_chip_id) ?? [];
+    list.push(edge.to_chip_id);
+    outgoing.set(edge.from_chip_id, list);
+    if (!outgoing.has(edge.to_chip_id)) outgoing.set(edge.to_chip_id, []);
+  }
+  const state = new Map<string, 0 | 1 | 2>();
+  const visit = (id: string): boolean => {
+    const current = state.get(id);
+    if (current === 1) return true;
+    if (current === 2) return false;
+    state.set(id, 1);
+    for (const next of outgoing.get(id) ?? []) {
+      if (visit(next)) return true;
+    }
+    state.set(id, 2);
+    return false;
+  };
+  return [...outgoing.keys()].some((id) => visit(id));
+}
+
+function indirectPathExists(
+  edges: ChipEdge[],
+  fromId: string,
+  toId: string,
+  kinds: Set<ChipEdgeKind> = FLOW_KINDS,
+) {
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!kinds.has(edge.kind)) continue;
+    const list = outgoing.get(edge.from_chip_id) ?? [];
+    list.push(edge.to_chip_id);
+    outgoing.set(edge.from_chip_id, list);
+  }
+  const seen = new Set([fromId]);
+  const queue: string[] = [];
+  for (const next of outgoing.get(fromId) ?? []) {
+    if (next === toId) continue;
+    if (!seen.has(next)) {
+      seen.add(next);
+      queue.push(next);
+    }
+  }
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const next of outgoing.get(current) ?? []) {
+      if (next === toId) return true;
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return false;
+}
+
+function wouldBeShortcut(
+  edges: ChipEdge[],
+  fromId: string,
+  toId: string,
+  kind: ChipEdgeKind,
+  toKind: ChipKind,
+) {
+  if (kind === "on_error") return false;
+  if (!indirectPathExists(edges, fromId, toId)) return false;
+  if (kind === "data" && toKind === "validation") return false;
+  if (kind !== "data" && hasDataEdge(edges, fromId, toId)) return false;
+  return true;
+}
+
+export function edgeConnectIssue(
+  from: Chip,
+  to: Chip,
+  kind: ChipEdgeKind,
+  edges: ChipEdge[],
+): EdgeConnectIssue | null {
+  if (from.id === to.id) return "self";
+  if (kind === "data" ? !canHaveDataEdge(from.kind, to.kind) : !canHaveControlEdge(from.kind, to.kind)) {
+    return "kind";
+  }
+  if (sameKindPairEdges(edges, from.id, to.id, kind).length > 0) return "duplicate";
+  if (graphHasCycle(edges) || pathExists(edges, to.id, from.id, ALL_KINDS)) {
+    return "cycle";
+  }
+  if (kind === "on_error" && dataDependsOn(edges, to.id, from.id)) return "error-data";
+  if (wouldBeShortcut(edges, from.id, to.id, kind, to.kind)) return "shortcut";
+  if (kind === "data" && to.kind !== "validation") {
+    const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === to.id);
+    if (incoming.length > 0) return "inputs";
+  }
+  if (kind === "data" && to.kind === "validation") {
+    const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === to.id);
+    if (incoming.some((edge) => edge.from_chip_id === from.id)) return "duplicate";
+    if (incoming.length >= 2) return "inputs";
+  }
+  return null;
+}
+
+export function canvasEdgesIssue(chips: Chip[], edges: ChipEdge[]): EdgeConnectIssue | null {
+  if (graphHasCycle(edges)) return "cycle";
+  const byId = new Map(chips.map((chip) => [chip.id, chip]));
+  const incoming = new Map<string, ChipEdge[]>();
+  for (const edge of edges) {
+    if (edge.kind !== "data") continue;
+    const list = incoming.get(edge.to_chip_id) ?? [];
+    list.push(edge);
+    incoming.set(edge.to_chip_id, list);
+  }
+  for (const chip of chips) {
+    const data = incoming.get(chip.id) ?? [];
+    if (chip.kind === "validation") {
+      if (data.length > 2) return "inputs";
+      const fromIds = data.map((edge) => edge.from_chip_id);
+      if (new Set(fromIds).size !== fromIds.length) return "duplicate";
+    } else if (data.length > 1) {
+      return "inputs";
+    }
+  }
+  for (const edge of edges) {
+    const from = byId.get(edge.from_chip_id);
+    const to = byId.get(edge.to_chip_id);
+    if (!from || !to) continue;
+    const rest = edges.filter((item) => item.id !== edge.id);
+    const issue = edgeConnectIssue(from, to, edge.kind, rest);
+    if (issue) return issue;
+  }
+  return null;
 }
 
 export function visibleCanvasEdges(edges: ChipEdge[]): ChipEdge[] {
@@ -413,6 +629,46 @@ export function incomingDataChipId(edges: ChipEdge[], toId: string, toPort?: str
   return incoming[0]?.from_chip_id ?? "";
 }
 
+function stripShortcutControlEdges(edges: ChipEdge[]): ChipEdge[] {
+  return edges.filter((edge) => {
+    if (edge.kind !== "on_success" && edge.kind !== "always") return true;
+    const rest = edges.filter((item) => item.id !== edge.id);
+    return !wouldBeShortcut(rest, edge.from_chip_id, edge.to_chip_id, edge.kind, "sql");
+  });
+}
+
+export function withCompanionSuccessEdges(
+  edges: ChipEdge[],
+  positions: Record<string, Point>,
+  workspaceId: string,
+): ChipEdge[] {
+  const controlPairs = new Set(
+    edges
+      .filter((edge) => edge.kind === "on_success" || edge.kind === "on_error" || edge.kind === "always")
+      .map((edge) => pairKey(edge.from_chip_id, edge.to_chip_id)),
+  );
+  const added: ChipEdge[] = [];
+  for (const edge of edges) {
+    if (edge.kind !== "data") continue;
+    const key = pairKey(edge.from_chip_id, edge.to_chip_id);
+    if (controlPairs.has(key)) continue;
+    controlPairs.add(key);
+    const fromPoint = positions[edge.from_chip_id] ?? fallbackPoint(0);
+    const toPoint = positions[edge.to_chip_id] ?? fallbackPoint(0);
+    const route = routeSides(fromPoint, toPoint);
+    added.push({
+      id: crypto.randomUUID(),
+      workspace_id: workspaceId,
+      from_chip_id: edge.from_chip_id,
+      to_chip_id: edge.to_chip_id,
+      kind: "on_success",
+      from_port: route.fromSide,
+      to_port: route.toSide,
+    });
+  }
+  return added.length === 0 ? edges : [...edges, ...added];
+}
+
 export function attachHiddenDataEdges(
   current: ChipEdge[],
   inputs: { fromId: string; toId: string; toPort?: string }[],
@@ -425,10 +681,20 @@ export function attachHiddenDataEdges(
       .map((input) => `${input.toId}\0${input.toPort}`),
   );
   const dropAll = new Set(inputs.filter((input) => !input.toPort).map((input) => input.toId));
+  const droppedData = current.filter((edge) => {
+    if (edge.kind !== "data") return false;
+    if (dropAll.has(edge.to_chip_id)) return true;
+    return dropExact.has(`${edge.to_chip_id}\0${edge.to_port}`);
+  });
+  const droppedPairs = new Set(
+    droppedData.map((edge) => pairKey(edge.from_chip_id, edge.to_chip_id)),
+  );
   const kept = current.filter((edge) => {
-    if (edge.kind !== "data") return true;
-    if (dropAll.has(edge.to_chip_id)) return false;
-    return !dropExact.has(`${edge.to_chip_id}\0${edge.to_port}`);
+    if (droppedData.some((item) => item.id === edge.id)) return false;
+    if (edge.kind === "on_success" && droppedPairs.has(pairKey(edge.from_chip_id, edge.to_chip_id))) {
+      return false;
+    }
+    return true;
   });
   const added = inputs
     .filter((input) => input.fromId)
@@ -446,7 +712,11 @@ export function attachHiddenDataEdges(
         to_port: input.toPort ?? route.toSide,
       };
     });
-  return [...kept, ...added];
+  return withCompanionSuccessEdges(
+    stripShortcutControlEdges([...kept, ...added]),
+    positions,
+    workspaceId,
+  );
 }
 
 export function chipFixedInputId(chip: Chip): string {
@@ -486,11 +756,73 @@ if (import.meta.env.DEV) {
   );
   console.assert(
     replaced.some((edge) => edge.kind === "data" && edge.from_chip_id === "c" && edge.to_chip_id === "b")
-    && replaced.some((edge) => edge.id === "e2")
-    && !replaced.some((edge) => edge.id === "e1"),
+    && replaced.some((edge) => edge.kind === "on_success" && edge.from_chip_id === "c" && edge.to_chip_id === "b")
+    && !replaced.some((edge) => edge.id === "e1")
+    && !replaced.some((edge) => edge.id === "e2"),
     "canvas: replace hidden data input",
   );
   console.assert(canHaveDataEdge("load", "validation"), "canvas: load may feed validation");
   console.assert(!canHaveDataEdge("load", "transform"), "canvas: load may not feed transform");
   console.assert(!canHaveDataEdge("load", "load"), "canvas: load may not feed load");
+  console.assert(canHaveControlEdge("extract", "load"), "canvas: extract may sequence load");
+  console.assert(!canHaveControlEdge("load", "extract"), "canvas: load may not sequence extract");
+  console.assert(!canHaveControlEdge("validation", "load"), "canvas: validation is a sink");
+  console.assert(canHaveControlEdge("sql", "extract"), "canvas: sql may sequence extract");
+  const chip = (id: string, kind: ChipKind): Chip => ({
+    id, owner_user_id: "", name: id, kind, config: {}, revision: 0, active: true, created_at: "", updated_at: "",
+  });
+  const wire = (
+    id: string,
+    from: string,
+    to: string,
+    kind: ChipEdgeKind,
+    port = "left",
+  ): ChipEdge => ({
+    id, workspace_id: "ws", from_chip_id: from, to_chip_id: to, kind, from_port: "right", to_port: port,
+  });
+  const extract = chip("extract", "extract");
+  const transform = chip("transform", "transform");
+  const load = chip("load", "load");
+  const validation = chip("validation", "validation");
+  const pipeline = [
+    wire("d1", "extract", "transform", "data"),
+    wire("s1", "extract", "transform", "on_success"),
+    wire("d2", "transform", "load", "data"),
+    wire("s2", "transform", "load", "on_success"),
+  ];
+  console.assert(
+    edgeConnectIssue(extract, load, "on_success", pipeline) === "shortcut",
+    "canvas: block extract→load shortcut",
+  );
+  console.assert(
+    edgeConnectIssue(extract, load, "data", pipeline.filter((edge) => edge.to_chip_id !== "load")) === null,
+    "canvas: rewiring load to extract is not a shortcut",
+  );
+  const validationGraph = [
+    ...pipeline,
+    wire("d3", "extract", "validation", "data", "source"),
+    wire("s3", "extract", "validation", "on_success"),
+    wire("d4", "transform", "validation", "data", "target"),
+    wire("s4", "transform", "validation", "on_success"),
+  ];
+  console.assert(
+    edgeConnectIssue(extract, validation, "on_success", validationGraph) === "duplicate",
+    "canvas: validation source already wired",
+  );
+  console.assert(
+    canvasEdgesIssue([extract, transform, load, validation], validationGraph) === null,
+    "canvas: extract+transform validation pair is allowed",
+  );
+  console.assert(
+    edgeConnectIssue(extract, load, "on_error", pipeline) === "error-data",
+    "canvas: on_error into data consumer",
+  );
+  console.assert(
+    edgeConnectIssue(load, extract, "on_success", []) === "kind",
+    "canvas: reverse control kind",
+  );
+  console.assert(
+    edgeConnectIssue(extract, transform, "on_success", [wire("back", "transform", "extract", "always")]) === "cycle",
+    "canvas: connect-time cycle",
+  );
 }
