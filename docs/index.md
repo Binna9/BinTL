@@ -10,6 +10,7 @@
 | [workspace.md](workspace.md) | 칩·에지·최신 출력, 캔버스 저장, 전체 실행 |
 | [extract.md](extract.md) | 커넥션 → 서버 파일 |
 | [transform.md](transform.md) | 파일 → parquet |
+| [script.md](script.md) | JS 파일 → parquet |
 | [load.md](load.md) | 파일 → DB 또는 서버 파일 |
 | [bulk.md](bulk.md) | Postgres COPY와 다른 DB 대량 추출·적재 |
 | [validation.md](validation.md) | 두 파일 비교 |

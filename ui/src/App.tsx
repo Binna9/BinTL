@@ -20,6 +20,7 @@ const LoadPage = lazy(() => import("@/pages/LoadPage").then((module) => ({ defau
 const OverviewPage = lazy(() => import("@/pages/OverviewPage").then((module) => ({ default: module.OverviewPage })));
 const QueryPage = lazy(() => import("@/pages/QueryPage").then((module) => ({ default: module.QueryPage })));
 const SchedulePage = lazy(() => import("@/pages/SchedulePage").then((module) => ({ default: module.SchedulePage })));
+const ScriptPage = lazy(() => import("@/pages/ScriptPage").then((module) => ({ default: module.ScriptPage })));
 const SessionGatePage = lazy(() => import("@/pages/SessionGatePage").then((module) => ({ default: module.SessionGatePage })));
 const TransformFilesPage = lazy(() => import("@/pages/TransformFilesPage").then((module) => ({ default: module.TransformFilesPage })));
 const TransformPage = lazy(() => import("@/pages/TransformPage").then((module) => ({ default: module.TransformPage })));
@@ -98,6 +99,9 @@ function ConsoleShell() {
               <Route path="/workspace/:workspaceId/chips/:editorChipId/load" element={<LoadPage />} />
               <Route path="/workspace/:workspaceId/chips/:editorChipId/load/:id" element={<LoadPage />} />
               <Route path="/load" element={<LoadPage />} />
+              <Route path="/script" element={<ScriptPage />} />
+              <Route path="/chips/:editorChipId/script" element={<ScriptPage />} />
+              <Route path="/workspace/:workspaceId/chips/:editorChipId/script" element={<ScriptPage />} />
               <Route path="/validation" element={<ValidationPage />} />
               <Route path="/validation/rules" element={<Navigate to="/validation" replace />} />
               <Route path="/validation/results" element={<ValidationResultsPage />} />

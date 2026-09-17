@@ -26,7 +26,7 @@ export function FunnelWidget() {
       { id: "transform" as const, label: messages.overview.transform, rate: model.transformRate },
       { id: "load" as const, label: messages.overview.load, rate: model.loadRate },
       { id: "sql" as const, label: messages.workspace.sql, rate: model.sqlRate },
-      { id: "script" as const, label: messages.workspace.script, rate: model.scriptRate },
+      { id: "script" as const, label: messages.overview.script, rate: model.scriptRate },
       { id: "serve" as const, label: messages.workspace.serve, rate: model.serveRate },
       { id: "validation" as const, label: messages.workspace.validation, rate: model.validationRate },
     ],

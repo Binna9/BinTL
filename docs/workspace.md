@@ -2,7 +2,7 @@
 
 작성: 2026-09-13
 
-작업 공간은 ETL 설정, 실행 이력, 파일 산출물을 묶는 프로젝트 경계다. 제품 화면은 `/workspace` 캔버스다. `/db`, `/files`, `/transform/*`는 칩을 만들거나 고치는 도구다.
+작업 공간은 ETL 설정, 실행 이력, 파일 산출물을 묶는 프로젝트 경계다. 제품 화면은 `/workspace` 캔버스다. `/db`, `/files`, `/transform/*`, `/script`는 칩을 만들거나 고치는 도구다.
 
 한 설치는 회사 하나다. 사용자는 워크스페이스를 소유하고, 커넥션만 조직 전역이다.
 
@@ -10,7 +10,7 @@
 
 ## 세 개념
 
-- **Chip**: 이름 있는 레시피 (`extract` | `transform` | `load` | `validation`). 사용자가 보는 정체는 칩 이름이다. `extracts/…/{uuid}` 경로가 아니다.
+- **Chip**: 이름 있는 레시피 (`extract` | `transform` | `load` | `validation` | `sql` | `serve` | `script`). 사용자가 보는 정체는 칩 이름이다. `extracts/…/{uuid}` 경로가 아니다.
 - **Run**: 추가 전용 이력. 모든 실행은 `executions` → `execution_steps`다. 칩 단독은 `source='chip'`, 캔버스 전체는 `source='workspace'`.
 - **Current output**: 워크스페이스+칩당 파일 하나. `workspace_chip_outputs`와 디스크 `chip_outputs/{workspace}/{chip}/current.*`. 재실행이 덮어쓴다. 다음 칩은 카탈로그 UUID가 아니라 이 슬롯을 읽는다.
 

@@ -864,7 +864,15 @@ async fn queue_script_chip_run(
     if incoming > 1 {
         return Err(AppError::bad("too many data inputs"));
     }
-    let dataset_id = if incoming == 0 && requested_input.is_none() {
+    let requested = requested_input.or_else(|| {
+        config
+            .get("input_dataset_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    });
+    let dataset_id = if incoming == 0 && requested.is_none() {
         None
     } else {
         Some(
@@ -873,7 +881,7 @@ async fn queue_script_chip_run(
                 user,
                 workspace_id,
                 &chip.id,
-                requested_input,
+                requested,
                 None,
             )
             .await?,

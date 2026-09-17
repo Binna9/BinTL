@@ -37,7 +37,9 @@ export function chipEditorPath(
   if (chip.kind === "extract") return httpExtract ? `${prefix}/extract-api` : `${prefix}/extract`;
   if (chip.kind === "sql") return workspaceId ? `/workspace/${workspaceId}` : "/chips";
   if (chip.kind === "serve") return workspaceId ? `/workspace/${workspaceId}` : "/chips";
-  if (chip.kind === "script") return workspaceId ? `/workspace/${workspaceId}` : "/chips";
+  if (chip.kind === "script") return workspaceId
+    ? `/workspace/${workspaceId}/chips/${chip.id}/script`
+    : `/chips/${chip.id}/script`;
   if (chip.kind === "validation") return `${prefix}/validation`;
   const editor = chip.kind === "load" ? "load" : "transform";
   const bindingKind = chip.kind === "load" ? "load_recipe" : "transform";

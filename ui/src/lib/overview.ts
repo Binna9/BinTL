@@ -109,10 +109,11 @@ if (import.meta.env.DEV) {
       { kind: "transform", created_at: new Date(2026, 7, 25, 18, 0, 0).toISOString() },
       { kind: "load", created_at: new Date(2026, 7, 26, 4, 0, 0).toISOString() },
       { kind: "sql", created_at: new Date(2026, 7, 26, 5, 0, 0).toISOString() },
+      { kind: "script", created_at: new Date(2026, 7, 26, 6, 0, 0).toISOString() },
     ],
     now,
   );
-  if (days.length !== 7 || days[0].extract !== 1 || days[5].transform !== 1 || days[6].sql !== 1) {
+  if (days.length !== 7 || days[0].extract !== 1 || days[5].transform !== 1 || days[6].sql !== 1 || days[6].script !== 1) {
     throw new Error("overview: 7-day chip buckets");
   }
   const picked = bucketActivity(

@@ -99,6 +99,16 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       ],
     },
     {
+      to: "/script",
+      label: messages.nav.script,
+      icon: <Braces className={iconClassName} />,
+      isActive: (pathname) =>
+        pathname === "/script"
+        || pathname.startsWith("/script/")
+        || /^\/chips\/[^/]+\/script$/.test(pathname)
+        || /^\/workspace\/[^/]+\/chips\/[^/]+\/script$/.test(pathname),
+    },
+    {
       to: "/load",
       label: messages.nav.load,
       icon: <Upload className={iconClassName} />,

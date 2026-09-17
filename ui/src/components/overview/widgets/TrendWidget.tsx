@@ -32,7 +32,7 @@ function seriesLabel(id: ChipKind, messages: ReturnType<typeof useLanguage>["mes
   if (id === "transform") return messages.overview.transform;
   if (id === "load") return messages.overview.load;
   if (id === "sql") return messages.workspace.sql;
-  if (id === "script") return messages.workspace.script;
+  if (id === "script") return messages.overview.script;
   if (id === "serve") return messages.workspace.serve;
   return messages.workspace.validation;
 }

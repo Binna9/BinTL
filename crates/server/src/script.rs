@@ -6,6 +6,7 @@ use engine::PolarsEngine;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use storage::{chip_slot, ChipRunRow, Store};
+use uuid::Uuid;
 
 use crate::error::AppError;
 
@@ -21,12 +22,15 @@ struct ScriptFileMap {
     entry: Option<String>,
     #[serde(default)]
     files: BTreeMap<String, String>,
+    #[serde(default)]
+    input_dataset_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ScriptConfig {
     pub entry: String,
     pub files: BTreeMap<String, String>,
+    pub input_dataset_id: Option<String>,
 }
 
 pub fn parse_script_config(config: &Value) -> Result<ScriptConfig, AppError> {
@@ -60,13 +64,29 @@ pub fn parse_script_config(config: &Value) -> Result<ScriptConfig, AppError> {
             return Err(AppError::bad("script entry file is missing"));
         }
     }
-    Ok(ScriptConfig { entry, files })
+    let input_dataset_id = parsed
+        .input_dataset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|id| {
+            Uuid::parse_str(id)
+                .map(|_| id.to_string())
+                .map_err(|_| AppError::bad("input_dataset_id must be a dataset id"))
+        })
+        .transpose()?;
+    Ok(ScriptConfig {
+        entry,
+        files,
+        input_dataset_id,
+    })
 }
 
 pub fn normalize_script_config(config: ScriptConfig) -> Value {
     json!({
         "entry": config.entry,
         "files": config.files,
+        "input_dataset_id": config.input_dataset_id,
     })
 }
 
