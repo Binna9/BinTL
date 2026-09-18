@@ -29,6 +29,7 @@ export type NavIconName =
   | "transform"
   | "jobs"
   | "transformFiles"
+  | "scriptFiles"
   | "load"
   | "validation"
   | "validationRules"
@@ -49,6 +50,7 @@ const icons: Record<NavIconName, LucideIcon> = {
   transform: Workflow,
   jobs: Workflow,
   transformFiles: ListChecks,
+  scriptFiles: ListChecks,
   load: Upload,
   validation: ShieldCheck,
   validationRules: ListChecks,

@@ -19,7 +19,6 @@ import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { chipApi } from "@/services/chips/chipApi";
 import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
 import { ServeChipEditorDialog } from "@/components/workspace/ServeChipEditorDialog";
-import { ScriptChipEditorDialog } from "@/components/workspace/ScriptChipEditorDialog";
 import { nextSequencedChipName } from "@/lib/chipSequence";
 import { chipEditorPath, type Chip, type ChipKind } from "@/types/chip";
 
@@ -43,7 +42,6 @@ export function ChipsPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [detail, setDetail] = useState<Chip | null>(null);
   const [sqlEditorChip, setSqlEditorChip] = useState<Chip | null>(null);
-  const [scriptEditorChip, setScriptEditorChip] = useState<Chip | null>(null);
   const [serveEditorChip, setServeEditorChip] = useState<Chip | null>(null);
   const [nameQuery, setNameQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<"all" | ChipKind>("all");
@@ -325,10 +323,6 @@ export function ChipsPage() {
                   setSqlEditorChip(detail);
                   return;
                 }
-                if (detail.kind === "script") {
-                  setScriptEditorChip(detail);
-                  return;
-                }
                 if (detail.kind === "serve") {
                   setServeEditorChip(detail);
                   return;
@@ -369,19 +363,6 @@ export function ChipsPage() {
           setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
           setDetail((current) => (current?.id === saved.id ? saved : current));
           setSqlEditorChip(null);
-        }}
-      />
-      <ScriptChipEditorDialog
-        open={Boolean(scriptEditorChip)}
-        workspaceId={scriptEditorChip?.workspace_id ?? undefined}
-        chip={scriptEditorChip}
-        defaultName={nextSequencedChipName(chips, messages.workspace.defaultScriptChipName, (chip) => chip.kind === "script")}
-        occupiedNames={chips.map((chip) => chip.name)}
-        onClose={() => setScriptEditorChip(null)}
-        onSaved={(saved) => {
-          setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
-          setDetail((current) => (current?.id === saved.id ? saved : current));
-          setScriptEditorChip(null);
         }}
       />
       <ServeChipEditorDialog

@@ -36,7 +36,7 @@ pub enum ConnectError {
     #[error("connect timeout")]
     Timeout,
     #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
+    Sqlx(sqlx::Error),
     #[error(transparent)]
     Tiberius(#[from] tiberius::error::Error),
     #[error(transparent)]
@@ -191,6 +191,27 @@ pub(crate) fn schema_or_user(family: &str, t: &TableName, username: &str) -> Str
             .to_ascii_uppercase(),
         _ => String::new(),
     }
+}
+
+impl From<sqlx::Error> for ConnectError {
+    fn from(error: sqlx::Error) -> Self {
+        map_sqlx_error(error)
+    }
+}
+
+fn map_sqlx_error(error: sqlx::Error) -> ConnectError {
+    if postgres_non_utf8_protocol(&error.to_string()) {
+        return ConnectError::Invalid(
+            "Postgres 로그인에 실패했습니다. 사용자, 비밀번호, 데이터베이스를 확인하세요. 자세한 원인은 서버 로그를 보세요.".into(),
+        );
+    }
+    ConnectError::Sqlx(error)
+}
+
+fn postgres_non_utf8_protocol(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("non-utf-8")
+        && (lower.contains("errorresponse") || lower.contains("lc_messages") || lower.contains("authentication"))
 }
 
 pub(crate) async fn pg_pool(c: &LiveConnection) -> Result<Pool<Postgres>, ConnectError> {
@@ -1265,6 +1286,14 @@ mod tests {
         )));
         assert!(missing_load_table(&ConnectError::Invalid("ORA-00942: table or view does not exist".into())));
         assert!(!missing_load_table(&ConnectError::Invalid("permission denied".into())));
+    }
+
+    #[test]
+    fn postgres_non_utf8_protocol_is_login_failure() {
+        let message = "encountered unexpected or invalid data: Postgres protocol error (reading ErrorResponse): Postgres returned a non-UTF-8 string for its error message. This is most likely due to an error that occurred during authentication and the default lc_messages locale is not binary-compatible with UTF-8. See the server logs for the error details. (sqlx_postgres::message:138)";
+        assert!(postgres_non_utf8_protocol(message));
+        assert!(!postgres_non_utf8_protocol("password authentication failed for user \"app\""));
+        assert!(!postgres_non_utf8_protocol("connection refused"));
     }
 
     #[test]

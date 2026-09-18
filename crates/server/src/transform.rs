@@ -26,6 +26,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/datasets/{id}/inspect", post(inspect_dataset))
         .route("/api/datasets/{id}/preview", post(preview_dataset))
         .route(
+            "/api/datasets/{id}/script-preview",
+            post(preview_script_dataset),
+        )
+        .route(
             "/api/transforms",
             get(list_transforms).post(create_transform),
         )
@@ -47,6 +51,14 @@ struct LimitQuery {
 #[derive(Deserialize)]
 struct PreviewBody {
     spec: Option<Value>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct ScriptPreviewBody {
+    #[serde(default)]
+    files: Value,
+    entry: Option<String>,
     limit: Option<usize>,
 }
 
@@ -538,6 +550,23 @@ async fn preview_dataset(
         .await
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     Ok(Json(preview_json(preview)))
+}
+
+async fn preview_script_dataset(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<ScriptPreviewBody>,
+) -> Result<Json<Value>, AppError> {
+    let row = access::require_dataset(&state.store, &user, &id).await?;
+    let config = crate::script::parse_script_config(&json!({
+        "entry": body.entry,
+        "files": body.files,
+        "input_dataset_id": id,
+    }))?;
+    Ok(Json(
+        crate::script::preview_script(&state.store, &row, &config, body.limit.unwrap_or(200)).await?,
+    ))
 }
 
 async fn list_transforms(

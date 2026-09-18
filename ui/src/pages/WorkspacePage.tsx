@@ -17,7 +17,6 @@ import {
 } from "@/components/workspace/ChipPlaceDialog";
 import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
 import { ServeChipEditorDialog } from "@/components/workspace/ServeChipEditorDialog";
-import { ScriptChipEditorDialog } from "@/components/workspace/ScriptChipEditorDialog";
 import { WorkspaceRunReportDialog } from "@/components/workspace/WorkspaceRunReportDialog";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
@@ -37,6 +36,7 @@ import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { Dataset } from "@/types/dataset";
 import type { Chip, ChipEdge, ChipEdgeKind, ChipRun } from "@/types/chip";
 import { DRAFT_CHIP_ID_PREFIX, chipEditorPath, isDraftChipId } from "@/types/chip";
+import { DEFAULT_SCRIPT_MAIN, SCRIPT_ENTRY } from "@/features/script/scriptEditorModel";
 import type { SaveWorkspaceResponse, Workspace, WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
 import {
   ACTIVE_STATUSES,
@@ -224,7 +224,6 @@ export function WorkspacePage() {
   } | null>(null);
   const lastPlaceKindRef = useRef<ChipPlaceKind>("extract");
   const [sqlEditor, setSqlEditor] = useState<{ chip: Chip | null } | null>(null);
-  const [scriptEditor, setScriptEditor] = useState<{ chip: Chip | null } | null>(null);
   const [serveEditor, setServeEditor] = useState<Chip | null>(null);
   const [chipMenu, setChipMenu] = useState<ChipContextMenuState | null>(null);
   const [infoChip, setInfoChip] = useState<Chip | null>(null);
@@ -825,10 +824,6 @@ export function WorkspacePage() {
         setSqlEditor({ chip: currentChip });
         return;
       }
-      if (currentChip.kind === "script") {
-        setScriptEditor({ chip: currentChip });
-        return;
-      }
       if (currentChip.kind === "serve") {
         setServeEditor(currentChip);
         return;
@@ -1375,6 +1370,53 @@ export function WorkspacePage() {
     });
     setPendingPlace(null);
     navigate(`/transform?${params.toString()}`);
+  }
+
+  function placeNewScriptChip(draft: TransformPlaceDraft) {
+    if (!workspaceId || !pendingPlace) return;
+    const inputDatasetId = draft.inputDatasetId.trim();
+    const openEditor = Boolean(inputDatasetId);
+    const point = pendingPlace.point;
+    const now = new Date().toISOString();
+    const name = draft.name.trim() || messages.workspace.defaultScriptChipName(
+      chips.filter((item) => item.kind === "script").length + 1,
+    );
+
+    if (!openEditor) {
+      const chip: Chip = {
+        id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+        owner_user_id: "",
+        name,
+        kind: "script",
+        config: {
+          entry: SCRIPT_ENTRY,
+          files: { [SCRIPT_ENTRY]: DEFAULT_SCRIPT_MAIN },
+        },
+        revision: 0,
+        active: true,
+        created_at: now,
+        updated_at: now,
+      };
+      placeCatalogChips(
+        [chip],
+        point,
+        draft.inputChipId ? [{ fromId: draft.inputChipId, toId: chip.id }] : [],
+      );
+      setPendingPlace(null);
+      return;
+    }
+
+    const draftPoint = clampPoint(point);
+    const params = new URLSearchParams({
+      workspace: workspaceId,
+      new_chip: "1",
+      dataset: inputDatasetId,
+      chip_name: name,
+      x: String(Math.round(draftPoint.x)),
+      y: String(Math.round(draftPoint.y)),
+    });
+    setPendingPlace(null);
+    navigate(`/script?${params.toString()}`);
   }
 
   function placeNewLoadChip(draft: EmptyConsumerDraft) {
@@ -2612,10 +2654,10 @@ export function WorkspacePage() {
             </div>
           </div>
         </header>
-        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className="workspace-canvas-stage relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <nav
           aria-label={messages.workspace.toolsAria}
-          className="pointer-events-none absolute left-5 top-7 z-20"
+          className="workspace-dock pointer-events-none absolute z-20"
         >
           <ul className="dock-rail pointer-events-auto">
             {tools.map((tool) => (
@@ -3037,8 +3079,8 @@ export function WorkspacePage() {
         onPlaceNewLoad={placeNewLoadChip}
         onPlaceNewValidation={placeNewValidationChip}
         onPlaceNewServe={placeNewServeChip}
+        onPlaceNewScript={placeNewScriptChip}
         onRegisterSql={() => setSqlEditor({ chip: null })}
-        onRegisterScript={() => setScriptEditor({ chip: null })}
       />
 
       <SqlChipEditorDialog
@@ -3067,35 +3109,6 @@ export function WorkspacePage() {
             setPendingPlace(null);
           }
           setSqlEditor(null);
-        }}
-      />
-
-      <ScriptChipEditorDialog
-        open={Boolean(scriptEditor)}
-        workspaceId={workspaceId}
-        chip={scriptEditor?.chip ?? null}
-        defaultName={nextSequencedChipName(
-          [...catalogChips, ...chips],
-          messages.workspace.defaultScriptChipName,
-          (chip) => chip.kind === "script",
-        )}
-        occupiedNames={[...catalogChips, ...chips].map((chip) => chip.name)}
-        onClose={() => setScriptEditor(null)}
-        onSaved={(saved) => {
-          setCatalogChips((current) => {
-            const exists = current.some((item) => item.id === saved.id);
-            return exists
-              ? current.map((item) => (item.id === saved.id ? saved : item))
-              : [saved, ...current];
-          });
-          if (scriptEditor?.chip) {
-            pushUndo();
-            setChips((current) => current.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)));
-          } else if (pendingPlace) {
-            placeCatalogChips([saved], pendingPlace.point);
-            setPendingPlace(null);
-          }
-          setScriptEditor(null);
         }}
       />
 
@@ -3333,7 +3346,7 @@ export function WorkspacePage() {
                   excludeIds={[propsChip.id, propsSourceChipId].filter(Boolean)}
                   messages={messages}
                   label={messages.workspace.validationTargetChip}
-                  kinds={["extract", "transform", "load"]}
+                  kinds={["extract", "transform", "script", "load"]}
                   disabled={propsBusy}
                   onChange={(id) => {
                     setPropsTargetChipId(id);

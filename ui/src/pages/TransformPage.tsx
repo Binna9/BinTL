@@ -72,6 +72,7 @@ import {
   defaultTransformName,
   KIND_APPEARANCE,
   KIND_ORDER,
+  emptyKindSearch,
   resolveColumnsAtStep,
 } from "@/features/transform/transformEditorModel";
 type AggregateFunction = "sum" | "count" | "mean" | "min" | "max";
@@ -119,12 +120,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   );
   const [kindSearch, setKindSearch] = useState<
     Record<(typeof KIND_ORDER)[number], string>
-  >({
-    upload: "",
-    database: "",
-    transform: "",
-    api: "",
-  });
+  >(emptyKindSearch);
   const [busy, setBusy] = useState(false);
   const [addStepOpen, setAddStepOpen] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
@@ -292,6 +288,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     database: messages.transform.kindDatabase,
     transform: messages.transform.kindTransform,
     api: messages.transform.kindApi,
+    script: messages.transform.kindScript,
   };
 
   async function refreshCatalog() {
@@ -869,7 +866,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   const previewHeaders = activePreview?.columns.map((column) => column.name) ?? [];
   const schemaOnlyInput = selected?.status === "connected";
   const pendingFirstResult = finalizedPreviewOpen && schemaOnlyInput;
-  const canExportResult = !newWorkspaceChip && !schemaOnlyInput;
+  const canExportResult = !editingChip && !newWorkspaceChip && !schemaOnlyInput;
   const sectionLabel = editorSection === "combine"
     ? t.sectionCombine
     : editorSection === "aggregate"

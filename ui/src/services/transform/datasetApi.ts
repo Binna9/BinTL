@@ -22,6 +22,16 @@ export const datasetApi = {
       body: JSON.stringify({ spec, limit }),
       silent,
     }),
+  previewScript: (
+    id: string,
+    files: Record<string, string>,
+    entry = "main.js",
+    limit = 200,
+  ) =>
+    httpRequest<FramePreview>(`/api/datasets/${id}/script-preview`, {
+      method: "POST",
+      body: JSON.stringify({ files, entry, limit }),
+    }),
   delete: (id: string) =>
     httpRequest<{ ok: boolean }>(`/api/datasets/${id}`, { method: "DELETE" }),
   getDownloadUrl: (id: string) => `/api/datasets/${id}/file`,

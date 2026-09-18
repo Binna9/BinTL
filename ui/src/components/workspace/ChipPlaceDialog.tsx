@@ -16,12 +16,12 @@ import {
   Terminal,
   Search,
   ShieldCheck,
-  Upload,
   Workflow,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { emptyKindSearch, KIND_APPEARANCE, KIND_ORDER } from "@/features/transform/transformEditorModel";
 import { chipKindLabel, incomingDataChipId, producerChips, validationTargetChips } from "@/features/workspace/workspaceCanvasModel";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
@@ -49,7 +49,7 @@ export type EmptyConsumerDraft = {
   freshness?: "slot" | "live";
 };
 
-const PRODUCER_KIND_ORDER = ["extract", "transform", "load"] as const;
+const PRODUCER_KIND_ORDER = ["extract", "transform", "script", "load"] as const;
 type ProducerSelectKind = (typeof PRODUCER_KIND_ORDER)[number];
 
 const PRODUCER_KIND_APPEARANCE = {
@@ -66,6 +66,13 @@ const PRODUCER_KIND_APPEARANCE = {
     header: "bg-success-subtle text-success",
     count: "bg-success/15 text-success",
     iconWrap: "bg-success-subtle text-success ring-1 ring-inset ring-success/20",
+  },
+  script: {
+    icon: Braces,
+    frame: "border-amber-500/25",
+    header: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    count: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+    iconWrap: "bg-amber-500/10 text-amber-700 ring-1 ring-inset ring-amber-500/20 dark:text-amber-400",
   },
   load: {
     icon: FileOutput,
@@ -99,7 +106,7 @@ export function CanvasProducerSelect({
   onChange: (id: string) => void;
 }) {
   const skip = useMemo(() => new Set(excludeIds ?? []), [excludeIds]);
-  const allowed = kinds ?? (["extract", "transform"] as const);
+  const allowed = kinds ?? (["extract", "transform", "script"] as const);
   const options = useMemo(() => {
     const listed = allowed.includes("load") ? validationTargetChips(chips) : producerChips(chips);
     return listed.filter((chip) => allowed.includes(chip.kind as ProducerSelectKind));
@@ -180,26 +187,6 @@ export function CanvasProducerSelect({
   );
 }
 
-const DATASET_KIND_ORDER = ["upload", "database", "api"] as const;
-type DatasetKind = (typeof DATASET_KIND_ORDER)[number];
-
-const DATASET_KIND_APPEARANCE = {
-  upload: {
-    icon: Upload,
-    header: "border-accent/20 bg-accent-subtle text-accent",
-    count: "bg-accent/10 text-accent",
-  },
-  database: {
-    icon: Database,
-    header: "border-success/20 bg-success-subtle text-success",
-    count: "bg-success/10 text-success",
-  },
-  api: {
-    icon: Braces,
-    header: "border-warning/20 bg-warning-subtle text-warning",
-    count: "bg-warning/10 text-warning",
-  },
-} as const;
 
 function CatalogChipPanel({
   kind,
@@ -345,34 +332,23 @@ function DatasetPickerPanel({
   onPick: (dataset: Dataset) => void;
   className?: string;
 }) {
-  const [expandedKinds, setExpandedKinds] = useState<Set<DatasetKind>>(() => new Set());
-  const [kindSearch, setKindSearch] = useState<Record<DatasetKind, string>>({
-    upload: "",
-    database: "",
-    api: "",
-  });
+  const [expandedKinds, setExpandedKinds] = useState<Set<(typeof KIND_ORDER)[number]>>(() => new Set());
+  const [kindSearch, setKindSearch] = useState(emptyKindSearch);
 
-  const kindLabel: Record<DatasetKind, string> = {
+  const kindLabel: Record<(typeof KIND_ORDER)[number], string> = {
     upload: messages.transform.kindUpload,
     database: messages.transform.kindDatabase,
     api: messages.transform.kindApi,
+    transform: messages.transform.kindTransform,
+    script: messages.transform.kindScript,
   };
 
-  const grouped = useMemo(() => {
-    const buckets: Record<DatasetKind, Dataset[]> = {
-      upload: [],
-      database: [],
-      api: [],
-    };
-    for (const dataset of datasets) {
-      if (dataset.kind === "upload" || dataset.kind === "database" || dataset.kind === "api") {
-        buckets[dataset.kind].push(dataset);
-      }
-    }
-    return DATASET_KIND_ORDER
-      .map((kind) => ({ kind, items: buckets[kind] }))
-      .filter((group) => group.items.length > 0);
-  }, [datasets]);
+  const grouped = useMemo(
+    () => KIND_ORDER
+      .map((kind) => ({ kind, items: datasets.filter((item) => item.kind === kind) }))
+      .filter((group) => group.items.length > 0),
+    [datasets],
+  );
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col gap-2", className)} aria-label={title}>
@@ -391,7 +367,7 @@ function DatasetPickerPanel({
         ) : (
           <div className="space-y-2 p-0.5">
             {grouped.map((group) => {
-              const appearance = DATASET_KIND_APPEARANCE[group.kind];
+              const appearance = KIND_APPEARANCE[group.kind];
               const KindIcon = appearance.icon;
               const expanded = expandedKinds.has(group.kind);
               const query = kindSearch[group.kind].trim().toLocaleLowerCase();
@@ -629,6 +605,7 @@ function ExtractNewPanel({
 }
 
 function TransformNewPanel({
+  kind = "transform",
   datasets,
   defaultName,
   messages,
@@ -642,6 +619,7 @@ function TransformNewPanel({
   canvasChipIds,
   dragHandleRef,
 }: {
+  kind?: "transform" | "script";
   datasets: Dataset[];
   defaultName: string;
   messages: Messages;
@@ -655,6 +633,7 @@ function TransformNewPanel({
   canvasChipIds: Set<string>;
   dragHandleRef?: React.RefObject<HTMLDivElement | null>;
 }) {
+  const script = kind === "script";
   const [pickingDataset, setPickingDataset] = useState(false);
   const [namingEmpty, setNamingEmpty] = useState(false);
   const [emptyName, setEmptyName] = useState(defaultName);
@@ -663,8 +642,13 @@ function TransformNewPanel({
   const [catalogSelectedIds, setCatalogSelectedIds] = useState<string[]>([]);
 
   const inputDatasets = useMemo(
-    () => datasets.filter((dataset) => dataset.kind !== "transform"),
-    [datasets],
+    () => datasets.filter((dataset) =>
+      dataset.kind === "upload"
+      || dataset.kind === "database"
+      || dataset.kind === "api"
+      || dataset.kind === "script"
+      || (script && dataset.kind === "transform")),
+    [datasets, script],
   );
 
   useEffect(() => {
@@ -687,10 +671,12 @@ function TransformNewPanel({
   const main = (
     <div className="chip-place-main">
       <PlacePanelHeader
-        icon={<Workflow className="size-4" aria-hidden="true" />}
-        iconClassName="bg-success-subtle text-success"
-        title={messages.workspace.placeTransformTitle}
-        hint={messages.workspace.placeTransformSimpleHint}
+        icon={script
+          ? <Braces className="size-4" aria-hidden="true" />
+          : <Workflow className="size-4" aria-hidden="true" />}
+        iconClassName={script ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "bg-success-subtle text-success"}
+        title={script ? messages.workspace.placeScriptTitle : messages.workspace.placeTransformTitle}
+        hint={script ? messages.workspace.placeScriptSimpleHint : messages.workspace.placeTransformSimpleHint}
         dragHandleRef={dragHandleRef}
       />
 
@@ -712,7 +698,7 @@ function TransformNewPanel({
           }}
         >
           <Layers3 className="size-3.5" aria-hidden="true" />
-          {messages.workspace.placeTransformEmptyChip}
+          {script ? messages.workspace.placeScriptEmptyChip : messages.workspace.placeTransformEmptyChip}
         </Button>
         <Button
           type="button"
@@ -735,7 +721,7 @@ function TransformNewPanel({
           }}
         >
           <FileStack className="size-3.5" aria-hidden="true" />
-          {messages.workspace.placeTransformFromDataset}
+          {script ? messages.workspace.placeScriptFromDataset : messages.workspace.placeTransformFromDataset}
         </Button>
       </div>
 
@@ -743,10 +729,10 @@ function TransformNewPanel({
         {pickingDataset ? (
           <>
             <p className="shrink-0 text-[11px] text-text-tertiary">
-              {messages.workspace.placeTransformDatasetHint}
+              {script ? messages.workspace.placeScriptDatasetHint : messages.workspace.placeTransformDatasetHint}
             </p>
             <DatasetPickerPanel
-              title={messages.workspace.placeTransformInputDataset}
+              title={script ? messages.workspace.inputDataset : messages.workspace.placeTransformInputDataset}
               datasets={inputDatasets}
               selectedId={inputDatasetId}
               emptyLabel={messages.workspace.placeExtractFileEmpty}
@@ -757,10 +743,10 @@ function TransformNewPanel({
         ) : (
           <>
             <p className="shrink-0 text-[11px] text-text-tertiary">
-              {messages.workspace.placeTransformCatalogHint}
+              {script ? messages.workspace.placeScriptCatalogHint : messages.workspace.placeTransformCatalogHint}
             </p>
             <CatalogChipPanel
-              kind="transform"
+              kind={kind}
               chips={catalogChips}
               canvasChipIds={canvasChipIds}
               messages={messages}
@@ -775,7 +761,7 @@ function TransformNewPanel({
         cancelLabel={messages.common.cancel}
         submitLabel={
           pickingDataset
-            ? messages.workspace.placeTransformContinueClean
+            ? (script ? messages.workspace.placeScriptContinue : messages.workspace.placeTransformContinueClean)
             : messages.workspace.pickChipPlace
         }
         canSubmit={pickingDataset ? datasetCanSubmit : catalogCanSubmit}
@@ -1046,7 +1032,7 @@ function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHin
                   excludeIds={sourceChipId ? [sourceChipId] : undefined}
                   messages={messages}
                   label={messages.workspace.validationTargetChip}
-                  kinds={["extract", "transform", "load"]}
+                  kinds={["extract", "transform", "script", "load"]}
                   disabled={busy}
                   onChange={(id) => {
                     setTargetChipId(id);
@@ -1142,8 +1128,8 @@ export function ChipPlaceDialog({
   onPlaceNewLoad,
   onPlaceNewValidation,
   onPlaceNewServe,
+  onPlaceNewScript,
   onRegisterSql,
-  onRegisterScript,
 }: {
   open: boolean;
   kind: ChipPlaceKind;
@@ -1169,8 +1155,8 @@ export function ChipPlaceDialog({
   onPlaceNewLoad: (draft: EmptyConsumerDraft) => void;
   onPlaceNewValidation: (draft: EmptyConsumerDraft) => void;
   onPlaceNewServe: (draft: EmptyConsumerDraft) => void;
+  onPlaceNewScript: (draft: TransformPlaceDraft) => void;
   onRegisterSql: () => void;
-  onRegisterScript: () => void;
 }) {
   const navigate = useNavigate();
   const dragHandleRef = useRef<HTMLDivElement>(null);
@@ -1281,27 +1267,23 @@ export function ChipPlaceDialog({
           dragHandleRef={dragHandleRef}
         />
       ) : kind === "script" ? (
-        <LoadCatalogPanel
+        <TransformNewPanel
           kind="script"
-          hideEmpty
-          icon={<Braces className="size-4" aria-hidden="true" />}
-          iconClassName="bg-amber-500/10 text-amber-600 dark:text-amber-400"
-          title={messages.workspace.placeScriptTitle}
-          simpleHint={messages.workspace.placeScriptSimpleHint}
-          catalogHint={messages.workspace.placeScriptCatalogHint}
-          registerLabel={messages.workspace.registerNewChip}
-          submitLabel={messages.workspace.pickChipPlace}
-          chips={catalogChips}
-          canvasChips={canvasChips}
-          canvasEdges={canvasEdges}
-          canvasChipIds={canvasChipIds}
+          datasets={datasets}
           defaultName={defaultScriptName}
-          occupiedNames={occupiedNames}
           messages={messages}
           busy={busy}
           onClose={onClose}
-          onPlace={onPlaceCatalog}
-          onRegister={onRegisterScript}
+          onPlaceEmpty={(draft) => onPlaceNewScript({
+            name: draft.name,
+            inputDatasetId: "",
+            inputChipId: draft.inputChipId,
+          })}
+          onPlaceDataset={onPlaceNewScript}
+          onPlaceCatalog={onPlaceCatalog}
+          catalogChips={catalogChips}
+          canvasChips={canvasChips}
+          canvasChipIds={canvasChipIds}
           dragHandleRef={dragHandleRef}
         />
       ) : kind === "serve" ? (

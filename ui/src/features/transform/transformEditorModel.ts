@@ -1,4 +1,4 @@
-import { ArrowUpDown, Braces, Calculator, Columns3, CopyMinus, Database, Eraser, FileOutput, Filter, Repeat, Replace, Scissors, TextCursorInput, Type, Upload, type LucideIcon } from "lucide-react";
+import { ArrowUpDown, Braces, Calculator, Columns3, CopyMinus, Database, Eraser, FileCode2, FileOutput, Filter, Repeat, Replace, Scissors, TextCursorInput, Type, Upload, type LucideIcon } from "lucide-react";
 import type { Dataset, DatasetColumn } from "@/types/dataset";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type { StepOp, TransformStep } from "@/types/transform";
@@ -36,7 +36,11 @@ export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
     const raw = slot.dataset as Dataset | undefined;
     if (!raw) return {
       id: slot.dataset_id,
-      kind: slot.source_chip_kind === "transform" ? "transform" : "database",
+      kind: slot.source_chip_kind === "script"
+        ? "script"
+        : slot.source_chip_kind === "transform"
+          ? "transform"
+          : "database",
       filename: slot.source_chip_name || "input",
       stored_path: "", size_bytes: null, delimiter: slot.delimiter || ",", has_header: slot.has_header ?? true,
       columns: normalizeSlotColumns(slot.columns), row_count: null, inspected_at: null,
@@ -133,7 +137,8 @@ export function buildDeriveExpr(left: string, op: DeriveOp, right: string): stri
   if (!left.trim() || !right.trim()) return "";
   return `${left.trim()} ${op} ${right.trim()}`;
 }
-export const KIND_ORDER = ["upload", "database", "api", "transform"] as const;
+export const KIND_ORDER = ["upload", "database", "api", "transform", "script"] as const;
+export type DatasetListKind = (typeof KIND_ORDER)[number];
 export const KIND_APPEARANCE = {
   upload: {
     icon: Upload,
@@ -155,7 +160,16 @@ export const KIND_APPEARANCE = {
     header: "border-warning/20 bg-warning-subtle text-warning",
     count: "bg-warning/10 text-warning",
   },
+  script: {
+    icon: FileCode2,
+    header: "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    count: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+  },
 } as const;
+
+export function emptyKindSearch(): Record<DatasetListKind, string> {
+  return { upload: "", database: "", api: "", transform: "", script: "" };
+}
 
 export function emptyStep(op: StepOp): TransformStep {
   switch (op) {

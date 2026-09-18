@@ -21,6 +21,7 @@ const OverviewPage = lazy(() => import("@/pages/OverviewPage").then((module) => 
 const QueryPage = lazy(() => import("@/pages/QueryPage").then((module) => ({ default: module.QueryPage })));
 const SchedulePage = lazy(() => import("@/pages/SchedulePage").then((module) => ({ default: module.SchedulePage })));
 const ScriptPage = lazy(() => import("@/pages/ScriptPage").then((module) => ({ default: module.ScriptPage })));
+const ScriptFilesPage = lazy(() => import("@/pages/ScriptFilesPage").then((module) => ({ default: module.ScriptFilesPage })));
 const SessionGatePage = lazy(() => import("@/pages/SessionGatePage").then((module) => ({ default: module.SessionGatePage })));
 const TransformFilesPage = lazy(() => import("@/pages/TransformFilesPage").then((module) => ({ default: module.TransformFilesPage })));
 const TransformPage = lazy(() => import("@/pages/TransformPage").then((module) => ({ default: module.TransformPage })));
@@ -87,6 +88,7 @@ function ConsoleShell() {
               <Route path="/extract/api" element={<ApiExtractPage />} />
               <Route path="/extracts" element={<ExtractResultsPage />} />
               <Route path="/transforms" element={<TransformFilesPage />} />
+              <Route path="/scripts" element={<ScriptFilesPage />} />
               <Route path="/transform" element={<TransformPage />} />
               <Route path="/transform/reshape" element={<TransformSoonPage kind="reshape" />} />
               <Route path="/transform/clean" element={<TransformPage section="clean" />} />

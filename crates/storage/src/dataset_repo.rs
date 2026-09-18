@@ -5,10 +5,10 @@ impl Store {
     pub async fn upsert_dataset(&self, row: &DatasetUpsert) -> Result<DatasetRow, StorageError> {
         if !matches!(
             row.kind.as_str(),
-            "upload" | "database" | "api" | "transform"
+            "upload" | "database" | "api" | "transform" | "script"
         ) {
             return Err(StorageError::Invalid(
-                "dataset kind must be upload, database, api, or transform".into(),
+                "dataset kind must be upload, database, api, transform, or script".into(),
             ));
         }
         if let Some(existing) = self.get_dataset_by_stored_path(&row.stored_path).await? {
@@ -244,13 +244,14 @@ impl Store {
         let size = tokio::fs::metadata(self.resolve(stored_path)).await?.len() as i64;
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
+        let file_kind = if run.kind == "script" { "script" } else { "transform" };
         let dataset_id = self
             .upsert_chip_output_slot_dataset(
                 &mut tx,
                 &run.workspace_id,
                 &run.chip_id,
                 &run.id,
-                "transform",
+                file_kind,
                 filename,
                 stored_path,
                 Some(size),

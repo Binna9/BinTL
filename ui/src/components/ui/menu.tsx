@@ -29,6 +29,44 @@ function hasActiveDescendant(pathname: string, item: MenuItem, inactive: boolean
   return item.children.some((child) => hasActiveDescendant(pathname, child, inactive));
 }
 
+function collectGroupKeys(entries: MenuItem[]): string[] {
+  const keys: string[] = [];
+  for (const item of entries) {
+    if (!item.children?.length) continue;
+    keys.push(item.to);
+    keys.push(...collectGroupKeys(item.children));
+  }
+  return keys;
+}
+
+function findMenuItem(entries: MenuItem[], key: string): MenuItem | undefined {
+  for (const item of entries) {
+    if (item.to === key) return item;
+    if (item.children?.length) {
+      const found = findMenuItem(item.children, key);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function nextOpenGroups(current: Set<string>, items: MenuItem[], key: string, open: boolean): Set<string> {
+  if (open) {
+    if (current.has(key)) return current;
+    const next = new Set(current);
+    next.add(key);
+    return next;
+  }
+  const node = findMenuItem(items, key);
+  const closing = [key, ...collectGroupKeys(node?.children ?? [])];
+  let changed = false;
+  const next = new Set(current);
+  for (const groupKey of closing) {
+    if (next.delete(groupKey)) changed = true;
+  }
+  return changed ? next : current;
+}
+
 interface MenuSidebarProps {
   items: MenuItem[];
   className?: string;
@@ -37,11 +75,26 @@ interface MenuSidebarProps {
 
 const MENU_OPEN_STORAGE_KEY = "bintl.sidebar.open-groups";
 
-function storedOpenGroups(): Set<string> {
+function pruneHiddenGroups(open: Set<string>, items: MenuItem[]): Set<string> {
+  const next = new Set<string>();
+  function walk(entries: MenuItem[], parentOpen: boolean) {
+    for (const item of entries) {
+      if (!item.children?.length) continue;
+      const isOpen = parentOpen && open.has(item.to);
+      if (isOpen) next.add(item.to);
+      walk(item.children, isOpen);
+    }
+  }
+  walk(items, true);
+  return next;
+}
+
+function storedOpenGroups(items: MenuItem[]): Set<string> {
   try {
     const raw = window.sessionStorage.getItem(MENU_OPEN_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []);
+    const stored = new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []);
+    return pruneHiddenGroups(stored, items);
   } catch {
     return new Set();
   }
@@ -233,20 +286,8 @@ function MenuGroup({
 export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
   ({ items, className, inactive = false }, ref) => {
     const { messages } = useLanguage();
-    const [openGroups, setOpenGroups] = React.useState<Set<string>>(storedOpenGroups);
-    const groupKeys = React.useMemo(() => {
-      const keys: string[] = [];
-      function collect(entries: MenuItem[]) {
-        for (const item of entries) {
-          if (item.children?.length) {
-            keys.push(item.to);
-            collect(item.children);
-          }
-        }
-      }
-      collect(items);
-      return keys;
-    }, [items]);
+    const [openGroups, setOpenGroups] = React.useState<Set<string>>(() => storedOpenGroups(items));
+    const groupKeys = React.useMemo(() => collectGroupKeys(items), [items]);
     React.useEffect(() => {
       try {
         window.sessionStorage.setItem(MENU_OPEN_STORAGE_KEY, JSON.stringify([...openGroups]));
@@ -255,13 +296,8 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
       }
     }, [openGroups]);
     const setGroupOpen = React.useCallback((key: string, open: boolean) => {
-      setOpenGroups((current) => {
-        if (current.has(key) === open) return current;
-        const next = new Set(current);
-        if (open) next.add(key); else next.delete(key);
-        return next;
-      });
-    }, []);
+      setOpenGroups((current) => nextOpenGroups(current, items, key, open));
+    }, [items]);
     return (
       <motion.aside
         ref={ref}

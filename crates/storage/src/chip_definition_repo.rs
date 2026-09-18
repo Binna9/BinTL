@@ -597,6 +597,32 @@ impl Store {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        if kind == "script" {
+            let label = config_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                .and_then(|value| {
+                    value
+                        .get("output_filename")
+                        .and_then(|item| item.as_str())
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(|item| item.to_string())
+                })
+                .unwrap_or_else(|| name.to_string());
+            sqlx::query(
+                "UPDATE workspace_chip_outputs
+                 SET expected_filename = ?, updated_at = ?
+                 WHERE port_name = 'out' AND workspace_chip_id IN (
+                   SELECT id FROM workspace_chips WHERE chip_id = ?
+                 )",
+            )
+            .bind(chip_slot::display_filename(&label, "script", ","))
+            .bind(now_rfc3339())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        }
         search::sync_search_best_effort(self, "chip", self.sync_search_chip(id)).await;
         self.get_chip(id)
             .await?

@@ -643,6 +643,20 @@ async fn chip_input_display_name(
             ));
         }
     }
+    if chip.kind == "script" {
+        if let Ok(raw) = store.resolve_chip_config_json(chip).await {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(filename) = config
+                    .get("output_filename")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    return Ok(storage::chip_slot::display_filename(filename, "script", ","));
+                }
+            }
+        }
+    }
     Ok(chip.name.clone())
 }
 

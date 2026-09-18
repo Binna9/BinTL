@@ -5,7 +5,7 @@ use boa_engine::{Context, Source};
 use engine::PolarsEngine;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use storage::{chip_slot, ChipRunRow, Store};
+use storage::{chip_slot, ChipRunRow, DatasetRow, Store};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -24,6 +24,8 @@ struct ScriptFileMap {
     files: BTreeMap<String, String>,
     #[serde(default)]
     input_dataset_id: Option<String>,
+    #[serde(default)]
+    output_filename: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +33,7 @@ pub struct ScriptConfig {
     pub entry: String,
     pub files: BTreeMap<String, String>,
     pub input_dataset_id: Option<String>,
+    pub output_filename: Option<String>,
 }
 
 pub fn parse_script_config(config: &Value) -> Result<ScriptConfig, AppError> {
@@ -75,10 +78,17 @@ pub fn parse_script_config(config: &Value) -> Result<ScriptConfig, AppError> {
                 .map_err(|_| AppError::bad("input_dataset_id must be a dataset id"))
         })
         .transpose()?;
+    let output_filename = parsed
+        .output_filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| chip_slot::display_filename(value, "script", ","));
     Ok(ScriptConfig {
         entry,
         files,
         input_dataset_id,
+        output_filename,
     })
 }
 
@@ -87,11 +97,78 @@ pub fn normalize_script_config(config: ScriptConfig) -> Value {
         "entry": config.entry,
         "files": config.files,
         "input_dataset_id": config.input_dataset_id,
+        "output_filename": config.output_filename,
     })
 }
 
 pub async fn validate_script_config(_store: &Store, config: Value) -> Result<Value, AppError> {
     Ok(normalize_script_config(parse_script_config(&config)?))
+}
+
+pub async fn preview_script(
+    store: &Store,
+    dataset: &DatasetRow,
+    config: &ScriptConfig,
+    limit: usize,
+) -> Result<Value, AppError> {
+    let limit = limit.clamp(1, 200);
+    if dataset.status == "planned" || dataset.status == "connected" {
+        return Ok(records_to_preview(&[], limit));
+    }
+    let path = store.resolve(&dataset.stored_path);
+    if !path.is_file() {
+        return Err(AppError::not_found("dataset file missing"));
+    }
+    let input = tokio::task::spawn_blocking(move || PolarsEngine::records_from_file(&path, MAX_ROWS))
+        .await
+        .map_err(|error| AppError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .map_err(|error| AppError::bad(error.to_string()))?;
+    let files = config.files.clone();
+    let entry = config.entry.clone();
+    let js = tokio::task::spawn_blocking(move || run_js(&entry, &files, Some(&input)));
+    let outcome = tokio::time::timeout(RUN_TIMEOUT, js)
+        .await
+        .map_err(|_| AppError::bad("script timed out"))?
+        .map_err(|error| AppError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .map_err(AppError::bad)?;
+    Ok(records_to_preview(&outcome.rows, limit))
+}
+
+fn records_to_preview(rows: &[Value], limit: usize) -> Value {
+    let sample = if rows.len() > limit { &rows[..limit] } else { rows };
+    let mut names: Vec<String> = Vec::new();
+    for row in sample {
+        let Some(object) = row.as_object() else { continue };
+        for key in object.keys() {
+            if !names.iter().any(|name| name == key) {
+                names.push(key.clone());
+            }
+        }
+    }
+    let columns: Vec<Value> = names
+        .iter()
+        .map(|name| json!({ "name": name, "dtype": "String" }))
+        .collect();
+    let grid: Vec<Vec<String>> = sample
+        .iter()
+        .map(|row| {
+            names
+                .iter()
+                .map(|name| match row.get(name) {
+                    Some(Value::Null) | None => String::new(),
+                    Some(Value::String(text)) => text.clone(),
+                    Some(value) => value.to_string(),
+                })
+                .collect()
+        })
+        .collect();
+    json!({
+        "columns": columns,
+        "rows": grid,
+        "sampled_rows": sample.len(),
+        "row_count": rows.len(),
+        "truncated": rows.len() > sample.len(),
+    })
 }
 
 fn normalize_filename(raw: &str) -> Result<String, AppError> {
@@ -153,7 +230,13 @@ pub async fn run_script_chip(store: &Store, run: &ChipRunRow) -> Result<(), Stri
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "chip not found".to_string())?;
-    let filename = chip_slot::display_filename(&chip.name, "script", ",");
+    let filename = config
+        .output_filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| chip_slot::display_filename(&chip.name, "script", ","));
     let slot_name = chip_slot::slot_file_name("script", ",");
     let output_rel = chip_slot::stored_rel(&run.workspace_id, &run.chip_id, &slot_name)
         .map_err(|error| error.to_string())?;
@@ -287,5 +370,28 @@ mod tests {
     fn rejects_path_escape() {
         let err = parse_script_config(&json!({"files": {"../x.js": "1"}})).unwrap_err();
         assert!(err.message().contains("invalid script file name"));
+    }
+
+    #[test]
+    fn output_filename_keeps_user_label() {
+        let config = parse_script_config(&json!({
+            "output_filename": "script-sales"
+        }))
+        .unwrap();
+        assert_eq!(config.output_filename.as_deref(), Some("script-sales.parquet"));
+        let named = parse_script_config(&json!({
+            "output_filename": "script-sales.csv"
+        }))
+        .unwrap();
+        assert_eq!(named.output_filename.as_deref(), Some("script-sales.csv"));
+    }
+
+    #[test]
+    fn preview_grid_keeps_column_order() {
+        let preview = records_to_preview(&[json!({"id": 1, "name": "a"}), json!({"name": "b"})], 200);
+        assert_eq!(preview["sampled_rows"], 2);
+        assert_eq!(preview["columns"][0]["name"], "id");
+        assert_eq!(preview["rows"][0][0], "1");
+        assert_eq!(preview["rows"][1][1], "b");
     }
 }

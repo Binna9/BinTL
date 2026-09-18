@@ -651,7 +651,7 @@ impl Store {
                     CASE c.kind
                       WHEN 'extract' THEN COALESCE(e.output_filename, c.name || '.csv')
                       WHEN 'transform' THEN COALESCE(t.output_filename_template, c.name || '.parquet')
-                      WHEN 'script' THEN c.name || '.parquet'
+                      WHEN 'script' THEN COALESCE(NULLIF(json_extract(c.config_json, '$.output_filename'), ''), c.name || '.parquet')
                     END,
                     c.revision, ?
              FROM workspace_chips wc
@@ -853,7 +853,7 @@ pub(crate) async fn write_workspace_graph(
                 CASE c.kind
                   WHEN 'extract' THEN COALESCE(e.output_filename, c.name || '.csv')
                   WHEN 'transform' THEN COALESCE(t.output_filename_template, c.name || '.parquet')
-                  WHEN 'script' THEN c.name || '.parquet'
+                  WHEN 'script' THEN COALESCE(NULLIF(json_extract(c.config_json, '$.output_filename'), ''), c.name || '.parquet')
                 END,
                 c.revision, ?
          FROM workspace_chips wc

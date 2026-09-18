@@ -1922,14 +1922,41 @@ a {
   transform-origin: left;
 }
 
+.workspace-canvas-stage {
+  container-type: size;
+  container-name: canvas-stage;
+}
+
+.workspace-dock {
+  /* Natural dock is ~38rem. Scale tokens from leftover canvas height. */
+  --dock-space: calc(100cqh - 3.5rem);
+  --dock-btn: clamp(1.35rem, calc(var(--dock-space) * 0.066), 2.55rem);
+  --dock-gap: clamp(0.22rem, calc(var(--dock-space) * 0.0163), 0.62rem);
+  --dock-pad-y: clamp(0.4rem, calc(var(--dock-space) * 0.0276), 1.05rem);
+  --dock-pad-x: clamp(0.28rem, calc(var(--dock-space) * 0.0153), 0.58rem);
+  --dock-sep-m: clamp(0.12rem, calc(var(--dock-space) * 0.0074), 0.28rem);
+  --dock-sep-p: clamp(0.22rem, calc(var(--dock-space) * 0.0132), 0.5rem);
+  --dock-radius: clamp(0.9rem, calc(var(--dock-space) * 0.0447), 1.7rem);
+  --dock-btn-radius: clamp(0.45rem, calc(var(--dock-space) * 0.0216), 0.82rem);
+  --dock-icon: clamp(0.7rem, calc(var(--dock-space) * 0.031), 1.18rem);
+  --dock-inset: clamp(0.7rem, 3.5cqh, 1.75rem);
+  top: var(--dock-inset, 1.75rem);
+  left: clamp(0.7rem, 2.8cqi, 1.25rem);
+  max-height: var(--dock-space, calc(100% - 3.5rem));
+}
+
 .dock-rail {
   display: flex;
   flex-direction: column;
   gap: 0.62rem;
+  gap: var(--dock-gap, 0.62rem);
   margin: 0;
   padding: 1.05rem 0.58rem;
+  padding: var(--dock-pad-y, 1.05rem) var(--dock-pad-x, 0.58rem);
+  max-height: 100%;
   list-style: none;
   border-radius: 1.7rem;
+  border-radius: var(--dock-radius, 1.7rem);
   background: var(--theme-dock);
   box-shadow:
     0 14px 32px color-mix(in srgb, var(--theme-text) 12%, transparent),
@@ -1950,7 +1977,9 @@ a {
 
 .dock-rail > li:last-child {
   margin-top: 0.28rem;
+  margin-top: var(--dock-sep-m, 0.28rem);
   padding-top: 0.5rem;
+  padding-top: var(--dock-sep-p, 0.5rem);
   border-top: 1px solid color-mix(in srgb, var(--theme-text) 10%, transparent);
 }
 
@@ -1958,12 +1987,15 @@ a {
   position: relative;
   display: grid;
   width: 2.55rem;
+  width: var(--dock-btn, 2.55rem);
   height: 2.55rem;
+  height: var(--dock-btn, 2.55rem);
   place-items: center;
   padding: 0;
   appearance: none;
   border: 0;
   border-radius: 0.82rem;
+  border-radius: var(--dock-btn-radius, 0.82rem);
   background: color-mix(in srgb, var(--theme-dock) 55%, white);
   color: var(--theme-dock-icon);
   box-shadow:
@@ -1989,7 +2021,9 @@ a {
 
 .dock-btn svg {
   width: 1.18rem;
+  width: var(--dock-icon, 1.18rem);
   height: 1.18rem;
+  height: var(--dock-icon, 1.18rem);
   stroke-width: 2.15;
   filter:
     drop-shadow(-0.7px -0.8px 0.4px var(--theme-dock-icon-hi))
@@ -2030,6 +2064,7 @@ a {
   top: 22%;
   bottom: 22%;
   left: 0.32rem;
+  left: calc(var(--dock-btn, 2.55rem) * 0.125);
   width: 1.5px;
   border-radius: 99px;
   background: var(--theme-dock-glow);
@@ -2472,6 +2507,7 @@ a {
   top: 22%;
   bottom: 22%;
   left: 0.32rem;
+  left: calc(var(--dock-btn, 2.55rem) * 0.125);
   width: 1.5px;
   border-radius: 99px;
   background: var(--theme-dock-glow);
@@ -2489,7 +2525,9 @@ a {
 
 .dock-rail > li.is-sep {
   margin-top: 0.28rem;
+  margin-top: var(--dock-sep-m, 0.28rem);
   padding-top: 0.5rem;
+  padding-top: var(--dock-sep-p, 0.5rem);
   border-top: 1px solid color-mix(in srgb, var(--theme-text) 10%, transparent);
 }
 

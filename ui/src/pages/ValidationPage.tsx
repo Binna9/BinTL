@@ -163,6 +163,7 @@ export function ValidationPage() {
     database: messages.transform.kindDatabase,
     api: messages.transform.kindApi,
     transform: messages.transform.kindTransform,
+    script: messages.transform.kindScript,
   }), [messages.transform]);
   const sourceWired = canvasMode && sourceSlot?.mode !== "unwired";
   const targetWired = canvasMode && targetSlot?.mode !== "unwired";

@@ -23,7 +23,7 @@ import { chipApi } from "@/services/chips/chipApi";
 import { isChipNameConflict } from "@/services/httpClient";
 import { loadApi } from "@/services/load/loadApi";
 import { datasetApi } from "@/services/transform/datasetApi";
-import { datasetFromSlot, KIND_APPEARANCE, KIND_ORDER } from "@/features/transform/transformEditorModel";
+import { datasetFromSlot, KIND_APPEARANCE, KIND_ORDER, emptyKindSearch } from "@/features/transform/transformEditorModel";
 import { alignLoadSchema, validLoadTable } from "@/lib/loadSchema";
 import type { CatalogSelection, DataConnection, DatabaseColumn } from "@/types/connection";
 import type { ChipInputSlotResponse } from "@/types/chip";
@@ -43,9 +43,7 @@ export function LoadPage() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [inputSlot, setInputSlot] = useState<ChipInputSlotResponse | null>(null);
   const [expandedKinds, setExpandedKinds] = useState<Set<(typeof KIND_ORDER)[number]>>(new Set());
-  const [kindSearch, setKindSearch] = useState<Record<(typeof KIND_ORDER)[number], string>>({
-    upload: "", database: "", transform: "", api: "",
-  });
+  const [kindSearch, setKindSearch] = useState<Record<(typeof KIND_ORDER)[number], string>>(emptyKindSearch);
   const [inputDatasetId, setInputDatasetId] = useState("");
   const [userSelectedInput, setUserSelectedInput] = useState(false);
   const [preview, setPreview] = useState<FramePreview | null>(null);
@@ -217,6 +215,7 @@ export function LoadPage() {
     database: messages.transform.kindDatabase,
     transform: messages.transform.kindTransform,
     api: messages.transform.kindApi,
+    script: messages.transform.kindScript,
   };
   function pickConnection(id: string) {
     setConnectionId(id);

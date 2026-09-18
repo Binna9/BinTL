@@ -768,7 +768,7 @@ export function ApiExtractPage() {
         onClose={() => setIsResultOpen(false)}
         footer={
           <>
-            {extractRow?.status === "succeeded" ? (
+            {!editingChip && extractRow?.status === "succeeded" ? (
               <>
                 <ActionAnchor variant="secondary" href={extractApi.getDownloadUrl(extractRow.id)}>
                   {messages.common.download}
@@ -781,6 +781,7 @@ export function ApiExtractPage() {
             ) : null}
             <Button
               type="button"
+              variant={editingChip ? "primary" : undefined}
               className="gap-1.5"
               disabled={!canRun || registerBusy}
               onClick={() => editingChip ? void onApplyChip() : void openRegister()}
@@ -788,16 +789,18 @@ export function ApiExtractPage() {
               <BookmarkPlus className="size-3.5" />
               {editingChip ? messages.query.applyChip : messages.query.registerTask}
             </Button>
-            <Button
-              type="button"
-              variant="primary"
-              className="gap-1.5"
-              disabled={!canExtract}
-              onClick={() => void onExtract()}
-            >
-              <FileDown className="size-3.5" />
-              {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
-            </Button>
+            {!editingChip ? (
+              <Button
+                type="button"
+                variant="primary"
+                className="gap-1.5"
+                disabled={!canExtract}
+                onClick={() => void onExtract()}
+              >
+                <FileDown className="size-3.5" />
+                {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
+              </Button>
+            ) : null}
           </>
         }
       >
@@ -839,9 +842,11 @@ export function ApiExtractPage() {
                     <FormField label={messages.apiExtract.recordsPath} example={messages.apiExtract.recordsPathHint}>
                       <input className="field-control technical" value={recordsPath} placeholder="data.items" onChange={(event) => setRecordsPath(event.target.value)} />
                     </FormField>
-                    <FormField label={messages.query.exportFileName}>
-                      <input className="field-control technical" value={exportName || effectiveOutputName} onChange={(event) => setExportName(event.target.value)} />
-                    </FormField>
+                    {!editingChip ? (
+                      <FormField label={messages.query.exportFileName}>
+                        <input className="field-control technical" value={exportName || effectiveOutputName} onChange={(event) => setExportName(event.target.value)} />
+                      </FormField>
+                    ) : null}
                     <div className="flex items-end gap-2 sm:col-span-2">
                       <Select editable className="!w-[6.5rem] technical" value={delimiter} options={delimiterOptions} onChange={setDelimiter} />
                       <label className="flex h-9 items-center gap-1.5 text-xs text-text-secondary"><input className="field-control" type="checkbox" checked={header} onChange={(event) => setHeader(event.target.checked)} />{messages.common.header}</label>

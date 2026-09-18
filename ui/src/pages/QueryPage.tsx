@@ -932,7 +932,7 @@ export function QueryPage() {
         }
         footer={
           <>
-            {extractRow?.status === "succeeded" ? (
+            {!editingChip && extractRow?.status === "succeeded" ? (
               <ActionAnchor
                 variant="secondary"
                 href={extractApi.getDownloadUrl(extractRow.id)}
@@ -940,18 +940,21 @@ export function QueryPage() {
                 {messages.common.download}
               </ActionAnchor>
             ) : null}
+            {!editingChip ? (
+              <Button
+                type="button"
+                variant="primary"
+                className="gap-2"
+                disabled={!canExtract}
+                onClick={() => void onExtract()}
+              >
+                <FileDown className="size-3.5" aria-hidden="true" />
+                {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
+              </Button>
+            ) : null}
             <Button
               type="button"
-              variant="primary"
-              className="gap-2"
-              disabled={!canExtract}
-              onClick={() => void onExtract()}
-            >
-              <FileDown className="size-3.5" aria-hidden="true" />
-              {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
-            </Button>
-            <Button
-              type="button"
+              variant={editingChip ? "primary" : undefined}
               className="gap-2"
               disabled={!canRun || result?.kind === "exec"}
               onClick={() => editingChip ? void onApplyChip() : void openRegister()}
@@ -1013,13 +1016,17 @@ export function QueryPage() {
                 {messages.common.addSequence}
               </label>
               <div className="flex min-w-[10rem] flex-1 items-center gap-2 text-xs text-text-secondary">
-                <span className="shrink-0">{messages.query.exportFileName}</span>
-                <input
-                  className="field-control min-w-0 flex-1 technical"
-                  value={exportName}
-                  placeholder={messages.query.exportFileNamePlaceholder}
-                  onChange={(event) => setExportName(event.target.value)}
-                />
+                {!editingChip ? (
+                  <>
+                    <span className="shrink-0">{messages.query.exportFileName}</span>
+                    <input
+                      className="field-control min-w-0 flex-1 technical"
+                      value={exportName}
+                      placeholder={messages.query.exportFileNamePlaceholder}
+                      onChange={(event) => setExportName(event.target.value)}
+                    />
+                  </>
+                ) : null}
               </div>
               <label className="ml-auto flex min-w-48 flex-1 items-center gap-2 whitespace-nowrap text-xs text-text-secondary sm:max-w-xs">
                 <span>{messages.query.search}</span>

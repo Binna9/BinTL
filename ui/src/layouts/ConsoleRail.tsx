@@ -12,9 +12,10 @@ import {
   LayoutTemplate,
   ListChecks,
   Puzzle,
+  ShieldCheck,
   Upload,
   Workflow,
-  ShieldCheck,
+  Wrench,
 } from "lucide-react";
 import { MenuSidebar, type MenuItem } from "@/components/ui/menu";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -50,78 +51,120 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
       ],
     },
     {
-      to: "/extract",
-      label: messages.nav.extract,
-      icon: <DatabaseZap className={iconClassName} />,
+      to: "/tools",
+      label: messages.nav.tools,
+      icon: <Wrench className={iconClassName} />,
       children: [
         {
-          to: "/extract/api",
-          label: "API",
-          icon: <Braces className={iconClassName} />,
+          to: "/extract",
+          label: messages.nav.extract,
+          icon: <DatabaseZap className={iconClassName} />,
+          children: [
+            {
+              to: "/extract/api",
+              label: messages.nav.apiRecipe,
+              icon: <Braces className={iconClassName} />,
+              isActive: (pathname) =>
+                pathname === "/extract/api"
+                || pathname.endsWith("/extract-api"),
+            },
+            {
+              to: "/db",
+              label: messages.nav.dbRecipe,
+              icon: <Database className={iconClassName} />,
+              isActive: (pathname) =>
+                pathname === "/db"
+                || pathname === "/query"
+                || pathname.endsWith("/extract"),
+            },
+            {
+              to: "/files",
+              label: messages.nav.files,
+              icon: <FileText className={iconClassName} />,
+            },
+            {
+              to: "/extracts",
+              label: messages.nav.extractResults,
+              icon: <ListChecks className={iconClassName} />,
+            },
+          ],
         },
-        {
-          to: "/db",
-          label: "DB",
-          icon: <Database className={iconClassName} />,
-        },
-        {
-          to: "/files",
-          label: messages.nav.files,
-          icon: <FileText className={iconClassName} />,
-        },
-        {
-          to: "/extracts",
-          label: messages.nav.extractResults,
-          icon: <ListChecks className={iconClassName} />,
-        },
-      ],
-    },
-    {
-      to: "/transform",
-      label: messages.nav.transform,
-      icon: <Workflow className={iconClassName} />,
-      isActive: (pathname) =>
-        pathname === "/transform" ||
-        (/^\/transform\/[^/]+$/.test(pathname) && pathname !== "/transform/reshape") ||
-        /^\/workspace\/[^/]+\/chips\/[^/]+\/transform(?:\/[^/]+)?$/.test(pathname),
-      children: [
         {
           to: "/transform",
-          label: messages.transform.title,
+          label: messages.nav.transform,
           icon: <Workflow className={iconClassName} />,
-          end: true,
+          children: [
+            {
+              to: "/transform",
+              label: messages.nav.transformRecipe,
+              icon: <Workflow className={iconClassName} />,
+              isActive: (pathname) =>
+                pathname === "/transform"
+                || pathname.startsWith("/transform/")
+                || /^\/chips\/[^/]+\/transform(?:\/[^/]+)?$/.test(pathname)
+                || /^\/workspace\/[^/]+\/chips\/[^/]+\/transform(?:\/[^/]+)?$/.test(pathname),
+            },
+            {
+              to: "/transforms",
+              label: messages.nav.transformResults,
+              icon: <ListChecks className={iconClassName} />,
+            },
+          ],
         },
         {
-          to: "/transforms",
-          label: messages.nav.transformResults,
-          icon: <ListChecks className={iconClassName} />,
+          to: "/script",
+          label: messages.nav.script,
+          icon: <Braces className={iconClassName} />,
+          children: [
+            {
+              to: "/script",
+              label: messages.nav.scriptRecipe,
+              icon: <Braces className={iconClassName} />,
+              isActive: (pathname) =>
+                pathname === "/script"
+                || pathname.startsWith("/script/")
+                || /^\/chips\/[^/]+\/script$/.test(pathname)
+                || /^\/workspace\/[^/]+\/chips\/[^/]+\/script$/.test(pathname),
+            },
+            {
+              to: "/scripts",
+              label: messages.nav.scriptResults,
+              icon: <ListChecks className={iconClassName} />,
+            },
+          ],
         },
-      ],
-    },
-    {
-      to: "/script",
-      label: messages.nav.script,
-      icon: <Braces className={iconClassName} />,
-      isActive: (pathname) =>
-        pathname === "/script"
-        || pathname.startsWith("/script/")
-        || /^\/chips\/[^/]+\/script$/.test(pathname)
-        || /^\/workspace\/[^/]+\/chips\/[^/]+\/script$/.test(pathname),
-    },
-    {
-      to: "/load",
-      label: messages.nav.load,
-      icon: <Upload className={iconClassName} />,
-      isActive: (pathname) => pathname === "/load" || /^\/workspace\/[^/]+\/chips\/[^/]+\/load(?:\/[^/]+)?$/.test(pathname),
-    },
-    {
-      to: "/validation",
-      label: messages.nav.validation,
-      icon: <ShieldCheck className={iconClassName} />,
-      isActive: (pathname) => pathname.startsWith("/validation") || /^\/workspace\/[^/]+\/chips\/[^/]+\/validation$/.test(pathname),
-      children: [
-        { to: "/validation", label: messages.validation.runTitle, icon: <ShieldCheck className={iconClassName} />, end: true },
-        { to: "/validation/results", label: messages.validation.resultsTitle, icon: <History className={iconClassName} /> },
+        {
+          to: "/load",
+          label: messages.nav.load,
+          icon: <Upload className={iconClassName} />,
+          children: [
+            {
+              to: "/load",
+              label: messages.nav.loadRecipe,
+              icon: <Upload className={iconClassName} />,
+              isActive: (pathname) =>
+                pathname === "/load"
+                || /^\/chips\/[^/]+\/load(?:\/[^/]+)?$/.test(pathname)
+                || /^\/workspace\/[^/]+\/chips\/[^/]+\/load(?:\/[^/]+)?$/.test(pathname),
+            },
+          ],
+        },
+        {
+          to: "/validation",
+          label: messages.nav.validation,
+          icon: <ShieldCheck className={iconClassName} />,
+          children: [
+            {
+              to: "/validation",
+              label: messages.nav.validationRecipe,
+              icon: <ShieldCheck className={iconClassName} />,
+              isActive: (pathname) =>
+                pathname === "/validation"
+                || /^\/chips\/[^/]+\/validation$/.test(pathname)
+                || /^\/workspace\/[^/]+\/chips\/[^/]+\/validation$/.test(pathname),
+            },
+          ],
+        },
       ],
     },
     {
@@ -134,6 +177,11 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
           label: messages.nav.chipRuns,
           icon: <History className={iconClassName} />,
           end: true,
+        },
+        {
+          to: "/validation/results",
+          label: messages.nav.validationHistory,
+          icon: <ListChecks className={iconClassName} />,
         },
         {
           to: "/history/exports",

@@ -1555,6 +1555,14 @@ async fn chip_output_json(
                     .unwrap_or_else(|| row.name.clone()),
             },
         }
+    } else if row.kind == "script" {
+        config
+            .get("output_filename")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(row.name.as_str())
+            .to_string()
     } else {
         row.name.clone()
     };

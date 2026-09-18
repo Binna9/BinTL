@@ -734,15 +734,20 @@ export function attachHiddenDataEdges(
   );
 }
 
+export function storedDatasetId(id: string | undefined | null): string {
+  const value = id?.trim() ?? "";
+  // Contract ids are graph-derived placeholders, not user-selected fixed inputs.
+  return !value || value.startsWith("contract:") ? "" : value;
+}
+
 export function chipFixedInputId(chip: Chip): string {
   const value = chip.config.input_dataset_id;
-  if (typeof value !== "string") return "";
-  const inputId = value.trim();
-  // Contract ids are graph-derived placeholders, not user-selected fixed inputs.
-  return inputId.startsWith("contract:") ? "" : inputId;
+  return typeof value === "string" ? storedDatasetId(value) : "";
 }
 
 if (import.meta.env.DEV) {
+  console.assert(storedDatasetId("contract:ws:chip") === "", "canvas: drop planned input ids");
+  console.assert(storedDatasetId("11111111-1111-1111-1111-111111111111") === "11111111-1111-1111-1111-111111111111", "canvas: keep real dataset ids");
   const sample: ChipEdge = {
     id: "e1",
     workspace_id: "ws",
