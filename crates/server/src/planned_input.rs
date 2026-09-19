@@ -462,6 +462,21 @@ pub async fn get_transform_input_slot(
         .into_iter()
         .filter(|edge| edge.to_chip_id == transform_chip_id && edge.kind == "data")
         .collect::<Vec<_>>();
+    if chip.kind == "script" && port.is_none() {
+        if incoming_edges.is_empty() {
+            if let Some(fixed) = slot_from_script_datasets(state, user, &chip).await? {
+                return Ok(fixed);
+            }
+            return Ok(json!({ "mode": "unwired" }));
+        }
+        let mut slots = Vec::new();
+        for edge in &incoming_edges {
+            slots.push(slot_from_data_edge(state, workspace_id, &chip, edge).await?);
+        }
+        let mut first = slots[0].clone();
+        first["slots"] = json!(slots);
+        return Ok(first);
+    }
     let incoming = if chip.kind == "validation" {
         let want = match port {
             Some("source") => "source",
@@ -489,12 +504,21 @@ pub async fn get_transform_input_slot(
         }
         return Ok(json!({ "mode": "unwired" }));
     };
+    slot_from_data_edge(state, workspace_id, &chip, edge).await
+}
+
+async fn slot_from_data_edge(
+    state: &AppState,
+    workspace_id: &str,
+    chip: &storage::ChipRow,
+    edge: &storage::ChipEdgeRow,
+) -> Result<Value, AppError> {
     let source_chip = state.store.get_chip(&edge.from_chip_id).await?;
     let source_name = match source_chip.as_ref() {
-        Some(chip) => chip_input_display_name(&state.store, chip, workspace_id).await?,
+        Some(source) => chip_input_display_name(&state.store, source, workspace_id).await?,
         None => String::new(),
     };
-    let source_kind = source_chip.as_ref().map(|chip| chip.kind.as_str());
+    let source_kind = source_chip.as_ref().map(|source| source.kind.as_str());
     if source_kind == Some("load") {
         return load_validation_slot(
             state,
@@ -524,7 +548,6 @@ pub async fn get_transform_input_slot(
             "dataset": crate::transform::dataset_json_public(&state.store, &dataset),
         }));
     }
-    // Validation SOURCE must not overwrite the consumer's target planned contract.
     if chip.kind == "validation" && edge.to_port == "source" {
         let schema = planned_schema_for_chip(state, workspace_id, &edge.from_chip_id).await?;
         return Ok(json!({
@@ -532,19 +555,15 @@ pub async fn get_transform_input_slot(
             "source_chip_id": edge.from_chip_id,
             "source_chip_name": source_name,
             "source_chip_kind": source_kind,
-            "dataset_id": format!("contract:{workspace_id}:{transform_chip_id}:source"),
+            "dataset_id": format!("contract:{workspace_id}:{}:source", chip.id),
             "delimiter": schema.delimiter,
             "has_header": schema.header,
             "columns": schema.columns,
         }));
     }
-    let planned = ensure_planned_input_for_transform(
-        state,
-        workspace_id,
-        transform_chip_id,
-        &edge.from_chip_id,
-    )
-    .await?;
+    let planned =
+        ensure_planned_input_for_transform(state, workspace_id, &chip.id, &edge.from_chip_id)
+            .await?;
     Ok(json!({
         "mode": "connected",
         "source_chip_id": edge.from_chip_id,
@@ -555,6 +574,47 @@ pub async fn get_transform_input_slot(
         "has_header": planned["has_header"],
         "columns": planned["columns"],
     }))
+}
+
+async fn slot_from_script_datasets(
+    state: &AppState,
+    user: &CurrentUser,
+    chip: &storage::ChipRow,
+) -> Result<Option<Value>, AppError> {
+    let config_raw = match state.store.resolve_chip_config_json(chip).await {
+        Ok(raw) => raw,
+        Err(_) => return Ok(None),
+    };
+    let config: Value = serde_json::from_str(&config_raw).unwrap_or(json!({}));
+    let parsed = crate::script::parse_script_config(&config).ok();
+    let inputs = parsed.map(|item| item.inputs).unwrap_or_default();
+    if inputs.is_empty() {
+        return slot_from_fixed_dataset(state, user, chip).await;
+    }
+    let mut slots = Vec::new();
+    for input in inputs {
+        let dataset =
+            match crate::access::require_dataset(&state.store, user, &input.dataset_id).await {
+                Ok(row) => row,
+                Err(_) => continue,
+            };
+        if dataset.status != "materialized" {
+            continue;
+        }
+        slots.push(json!({
+            "mode": "materialized",
+            "dataset_id": dataset.id,
+            "source_chip_name": input.name,
+            "delimiter": dataset.delimiter.clone().unwrap_or_else(|| ",".into()),
+            "dataset": crate::transform::dataset_json_public(&state.store, &dataset),
+        }));
+    }
+    if slots.is_empty() {
+        return Ok(None);
+    }
+    let mut first = slots[0].clone();
+    first["slots"] = json!(slots);
+    Ok(Some(first))
 }
 
 async fn load_validation_slot(
@@ -652,7 +712,9 @@ async fn chip_input_display_name(
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                 {
-                    return Ok(storage::chip_slot::display_filename(filename, "script", ","));
+                    return Ok(storage::chip_slot::display_filename(
+                        filename, "script", ",",
+                    ));
                 }
             }
         }

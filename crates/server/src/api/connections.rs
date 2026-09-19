@@ -78,7 +78,7 @@ pub(super) async fn update_connection(
                 username: body.username,
                 password: body.password,
                 http_auth: body.http_auth,
-            ssl: body.ssl,
+                ssl: body.ssl,
             },
         )
         .await?;

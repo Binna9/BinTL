@@ -8,8 +8,8 @@
 
 ## 결정 (2026-09-17)
 
-- 입력은 **한 줄**. extract / transform / script 슬롯 중 아무거나 **하나**. “총 3개”는 동시에 세 개를 받는 게 아니라, 그 세 종류가 스크립트로 떨어질 수 있다는 뜻이다. 한 칩이 extract+transform+script를 한꺼번에 받으면 `ctx.input()`이 이름 맵이 되고 변환 combine과 겹친다. 다음으로 미룬다.
-- 등록 전에 입력 데이터셋을 고른다. 변환과 같다. 캔버스에서 열면 data 에지가 입력이고 고르기는 잠긴다 (`inputFromEdge`).
+- 입력은 여러 장. 캔버스에서는 extract / transform / script 칩을 **여러 줄**로 잇는다. `/script` 레시피에서는 데이터셋을 여러 개 고른다. `ctx.input()`은 첫 표, `ctx.input("이름")`은 고른 표, `ctx.inputs()`는 이름 맵이다.
+- 등록 전에 입력 데이터셋을 고를 수 있다. 캔버스에서 열면 data 에지가 잠긴 입력이고, 레시피에서 표를 더 고를 수 있다.
 - 여러 JS 파일. 엔트리는 `main.js`. 헬퍼는 `require('./lib.js')`. `main(ctx)`가 `ctx.write(rows)`로 결과 한 장을 떨어뜨린다.
 - 게스트에 커넥션을 넣지 않는다. `ctx.connection()` 없음.
 - 편집은 AppDialog가 아니라 **페이지**. SQL 다이얼로그에 파일 트리·데이터셋 고르기를 넣어서 뭉개졌다.
@@ -18,9 +18,9 @@
 
 ## 입력
 
-실행 시 data 에지의 최신 출력을 고른다. 변환과 같은 슬롯 규칙이다. 연결이 없고 단독 `input_dataset_id`도 없으면 빈 입력(`ctx.input() === null`)이거나 실패 — 페이지를 붙일 때 변환과 같은 쪽으로 맞춘다. 한 칩으로 들어오는 data 에지는 하나다.
+실행 시 캔버스 data 에지의 최신 출력과 레시피에서 고른 데이터셋을 합친다. 같은 파일은 한 번만 넣는다. 연결이 없고 단독 입력도 없으면 `ctx.input() === null`.
 
-허용 from: `extract` | `transform` | `script`. 허용 to: `transform` | `load` | `validation` | `serve` | `script`.
+허용 from: `extract` | `transform` | `script`. 허용 to: `transform` | `load` | `validation` | `serve` | `script`. 스크립트로 들어오는 data 에지는 최대 8개.
 
 ## Config
 
@@ -36,15 +36,16 @@
 }
 ```
 
-제한(서버): 파일 16개, 합계 256KB, 이름 `^[A-Za-z0-9._-]+\\.js$` (`.`으로 시작·경로 구분자 금지), 출력 5만 행, 실행 30초.
+제한(서버): 파일 16개, 합계 256KB, 입력 표 8개, 이름 `^[A-Za-z0-9._-]+\\.js$` (`.`으로 시작·경로 구분자 금지). 첫 표는 5만 행씩 나눠 돌리고 결과를 이어 붙인다. 실행 전체 10분.
 
 게스트 SDK:
 
 ```js
 function main(ctx) {
-  var rows = ctx.input() ?? [];
-  ctx.log("n=" + rows.length);
-  ctx.write(rows);
+  var orders = ctx.input("orders") || ctx.input() || [];
+  var codes = ctx.input("codes") || [];
+  ctx.log("n=" + orders.length);
+  ctx.write(orders);
 }
 ```
 
@@ -52,7 +53,7 @@ function main(ctx) {
 
 ## 출력
 
-변환과 같다. `chip_outputs/{workspace}/{chip}/current.parquet`. 표시 이름은 `{칩이름}.parquet`. 재실행이 덮어쓴다.
+변환과 같다. `chip_outputs/{workspace}/{chip}/current.parquet`. 표시 이름은 `{칩이름}.parquet`. 성공한 재실행만 슬롯을 덮어쓴다. 실패·취소·타임아웃은 직전 성공 parquet를 유지한다. JS는 JSON만 보므로 날짜·숫자는 한 번 문자열이 된다. 나가는 parquet는 첫 입력 표에 있던 같은 이름 컬럼의 타입을 다시 붙인다. JS가 새로 만든 컬럼은 JSON에서 추론한다.
 
 `data_files.kind` CHECK에 `script`가 있다. 스크립트 슬롯 upsert는 kind `"script"`를 쓴다.
 
@@ -63,7 +64,7 @@ function main(ctx) {
 - 레시피 `/script`, 캔버스에서 열면 `/workspace/:id/chips/:chipId/script`.
 - 결과 파일 `/scripts`: 작업구분 트리 + 스크립트 parquet 목록·미리보기·삭제. 변환 파일 페이지와 같다.
 - 캔버스 “새 스크립트”: 빈 칩(입력 칩 연결) 또는 데이터셋 고른 뒤 `/script?new_chip=1`. 카탈로그 배치도 된다.
-- 레시피 왼쪽: 입력 데이터셋. 단독 `/script`는 변환과 같은 종류 아코디언. 캔버스에서 열면 업스트림 칩만 보이고 잠긴다.
+- 레시피 왼쪽: 입력 데이터셋. 단독 `/script`는 변환과 같은 종류 아코디언에서 여러 장을 고른다. 캔버스에서 열면 업스트림 칩은 잠기고, 카탈로그에서 표를 더 고를 수 있다. 캔버스 칩 속성에서도 입력 칩을 여러 개 고른다.
 - 레시피 가운데: 이 칩의 JS 목록(`main.js` 엔트리). 헤더 오른쪽에서 파일 추가 팝업. CSV·작업구분 아님.
 - 레시피 오른쪽: 고른 JS 에디터.
 - 저장은 변환과 같다. 저장 → JS 적용 미리보기 → 취소/칩 적용·칩 등록. 실행·연결은 캔버스.
@@ -76,7 +77,7 @@ function main(ctx) {
 - 서버 `crates/server/src/script.rs` — parse/validate, Boa `run_js`, parquet 기록. 커넥션 호스트는 **뺐다**
 - 큐/실행: `chip.rs` `queue_script_chip_run`, `workspace_execution.rs` producer에 script
 - 에지·슬롯: `storage` validate, `chip_slot`, `workspace_repo` expected_filename
-- 엔진 `PolarsEngine::records_from_file` / `write_records`
+- 엔진 `PolarsEngine::records_from_file` / `write_records` / `RecordWriter::finish_like`
 - UI: `/script` 페이지가 편집기다. 캔버스·칩 목록은 이 경로로 들어간다. `ScriptChipEditorDialog`는 없다.
 - 의존 `@codemirror/lang-javascript`, `boa_engine = "0.20"`
 
@@ -84,4 +85,4 @@ function main(ctx) {
 
 ## 하지 않는 것
 
-게스트 커넥션·SQL, npm, `fs`, `fetch`, 입력 여러 개, 미리보기 그리드, Python, 사용자 Rust, SQL-on-parquet, `/script`를 실행 허브로 키우기, 폴더 트리·자바 패키지·TypeScript.
+게스트 커넥션·SQL, npm, `fs`, `fetch`, Python, 사용자 Rust, SQL-on-parquet, `/script`를 실행 허브로 키우기, 폴더 트리·자바 패키지·TypeScript.

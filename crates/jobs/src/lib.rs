@@ -73,7 +73,10 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
         .ok_or_else(|| RunError::State(format!("job {job_id} missing")))?;
     let from = JobStatus::parse(&job.status)
         .ok_or_else(|| RunError::State(format!("unknown status {}", job.status)))?;
-    if matches!(from, JobStatus::Running | JobStatus::Succeeded | JobStatus::Canceled) {
+    if matches!(
+        from,
+        JobStatus::Running | JobStatus::Succeeded | JobStatus::Canceled
+    ) {
         return Ok(());
     }
     transition(from, JobStatus::Running).map_err(|e| RunError::State(e.to_string()))?;
@@ -86,7 +89,9 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
     } else {
         format!("outputs/{job_id}/result.parquet")
     };
-    if let Some(parent) = store.resolve(&output_rel).parent() {
+    let write_rel =
+        storage::chip_slot::write_rel(&output_rel, job_id).map_err(RunError::Storage)?;
+    if let Some(parent) = store.resolve(&write_rel).parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|error| RunError::Storage(error.into()))?;
@@ -136,13 +141,19 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
         } else {
             store.resolve(&job.source_path)
         };
-        let output = store.resolve(&output_rel);
+        let write_path = store.resolve(&write_rel);
+        let mut staging = (write_rel != output_rel)
+            .then(|| storage::chip_slot::StagingFile::new(write_path.clone()));
 
         store
             .append_log(
                 job_id,
                 "info",
-                &format!("transform {} -> {}", input.display(), output.display()),
+                &format!(
+                    "transform {} -> {}",
+                    input.display(),
+                    store.resolve(&output_rel).display()
+                ),
             )
             .await?;
 
@@ -151,9 +162,9 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
         let needs_csv = dest.is_some();
         // ponytail: spawn_blocking cannot abort; cancel drops this future and Polars may finish in the background.
         let engine_err = tokio::task::spawn_blocking(move || {
-            engine.transform(&input, &output, &spec)?;
+            engine.transform(&input, &write_path, &spec)?;
             if needs_csv {
-                PolarsEngine::export_csv(&output, &csv_out)?;
+                PolarsEngine::export_csv(&write_path, &csv_out)?;
             }
             Ok::<(), EngineError>(())
         })
@@ -182,6 +193,10 @@ async fn run_one(store: &Store, engine: PolarsEngine, job_id: &str) -> Result<()
 
         if store.step_is_canceled(job_id).await? {
             return Err(RunError::State("canceled".into()));
+        }
+        if let Some(staging) = staging.as_mut() {
+            storage::chip_slot::publish(staging.path(), &store.resolve(&output_rel))?;
+            staging.keep();
         }
         transition(JobStatus::Running, JobStatus::Succeeded)
             .map_err(|e| RunError::State(e.to_string()))?;

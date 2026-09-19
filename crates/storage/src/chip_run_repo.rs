@@ -8,13 +8,21 @@ impl Store {
         let changed = sqlx::query("UPDATE execution_steps SET status='canceled', error_code='WORKSPACE_STEP_SKIPPED', error_message=?, finished_at=? WHERE id=? AND status='queued' AND execution_id IN (SELECT id FROM executions WHERE source='workspace' AND status='running')")
             .bind(reason).bind(now_rfc3339()).bind(id).execute(&self.pool).await?;
         if changed.rows_affected() != 1 {
-            return Err(StorageError::Invalid("only a waiting workspace step can be skipped".into()));
+            return Err(StorageError::Invalid(
+                "only a waiting workspace step can be skipped".into(),
+            ));
         }
-        self.append_execution_log(id, "info", "skipped", reason, None).await
+        self.append_execution_log(id, "info", "skipped", reason, None)
+            .await
     }
 
     /// Bind only runtime data IDs; recipe settings were frozen before any work started.
-    pub async fn bind_workspace_step_input(&self, id: &str, input: Option<&str>, source: Option<&str>) -> Result<(), StorageError> {
+    pub async fn bind_workspace_step_input(
+        &self,
+        id: &str,
+        input: Option<&str>,
+        source: Option<&str>,
+    ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
         let workspace: String = sqlx::query_scalar("SELECT e.workspace_id FROM execution_steps s JOIN executions e ON e.id=s.execution_id WHERE s.id=? AND s.status='queued' AND e.source='workspace' AND e.status='running'")
             .bind(id).fetch_optional(&mut *tx).await?
@@ -23,7 +31,9 @@ impl Store {
             let valid: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_files WHERE id=? AND workspace_id=? AND deleted_at IS NULL")
                 .bind(dataset_id).bind(&workspace).fetch_one(&mut *tx).await?;
             if valid != 1 {
-                return Err(StorageError::Invalid("input dataset is unavailable in this workspace".into()));
+                return Err(StorageError::Invalid(
+                    "input dataset is unavailable in this workspace".into(),
+                ));
             }
         }
         if let Some(input) = input {
@@ -34,7 +44,9 @@ impl Store {
             let changed = sqlx::query("UPDATE execution_steps SET definition_snapshot_json=json_set(definition_snapshot_json, '$.source_data_file_id', ?) WHERE id=? AND kind='validation'")
                 .bind(source).bind(id).execute(&mut *tx).await?;
             if changed.rows_affected() != 1 {
-                return Err(StorageError::Invalid("only validation steps accept a source input".into()));
+                return Err(StorageError::Invalid(
+                    "only validation steps accept a source input".into(),
+                ));
             }
             sqlx::query("INSERT INTO execution_inputs (execution_step_id, port_name, data_file_id, ordinal) VALUES (?, 'source', ?, 1)")
                 .bind(id).bind(source).execute(&mut *tx).await?;
@@ -43,9 +55,51 @@ impl Store {
         Ok(())
     }
 
-    pub async fn skip_waiting_workspace_steps(&self, execution_id: &str, reason: &str) -> Result<(), StorageError> {
-        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM execution_steps WHERE execution_id=? AND status='queued'")
-            .bind(execution_id).fetch_all(&self.pool).await?;
+    pub async fn bind_script_step_inputs(
+        &self,
+        id: &str,
+        inputs: &[(String, String)],
+    ) -> Result<(), StorageError> {
+        let first = inputs.first().map(|(_, dataset_id)| dataset_id.as_str());
+        self.bind_workspace_step_input(id, first, None).await?;
+        let payload = serde_json::to_value(
+            inputs
+                .iter()
+                .map(|(name, dataset_id)| serde_json::json!({ "name": name, "dataset_id": dataset_id }))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| StorageError::Invalid(error.to_string()))?;
+        let first_json = serde_json::to_value(first)
+            .map_err(|error| StorageError::Invalid(error.to_string()))?;
+        let changed = sqlx::query(
+            "UPDATE execution_steps
+             SET definition_snapshot_json = json_set(definition_snapshot_json, '$.inputs', json(?), '$.input_dataset_id', json(?))
+             WHERE id = ? AND status = 'queued' AND kind = 'script'",
+        )
+        .bind(payload.to_string())
+        .bind(first_json.to_string())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if changed.rows_affected() != 1 {
+            return Err(StorageError::Invalid(
+                "only a waiting script step can bind inputs".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn skip_waiting_workspace_steps(
+        &self,
+        execution_id: &str,
+        reason: &str,
+    ) -> Result<(), StorageError> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM execution_steps WHERE execution_id=? AND status='queued'",
+        )
+        .bind(execution_id)
+        .fetch_all(&self.pool)
+        .await?;
         for id in ids {
             self.skip_workspace_step(&id, reason).await?;
         }
@@ -92,8 +146,15 @@ impl Store {
         config_snapshot_json: &str,
         input_dataset_id: Option<&str>,
     ) -> Result<ChipRunRow, StorageError> {
-        self.create_chip_run_in_execution(chip_id, workspace_id, expected_revision,
-            config_snapshot_json, input_dataset_id, None).await
+        self.create_chip_run_in_execution(
+            chip_id,
+            workspace_id,
+            expected_revision,
+            config_snapshot_json,
+            input_dataset_id,
+            None,
+        )
+        .await
     }
 
     pub async fn create_chip_run_in_execution(
@@ -139,7 +200,9 @@ impl Store {
             }
         }
         let id = Uuid::new_v4().to_string();
-        let execution_id = parent_execution_id.map(str::to_owned).unwrap_or_else(|| Uuid::new_v4().to_string());
+        let execution_id = parent_execution_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         let placement_id: Option<String> = sqlx::query_scalar(
             "SELECT id FROM workspace_chips WHERE workspace_id = ? AND chip_id = ? LIMIT 1",
         )
@@ -150,23 +213,37 @@ impl Store {
         let binding = self.get_chip_binding(chip_id).await?;
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
+        let busy: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM execution_steps s
+             INNER JOIN executions e ON e.id = s.execution_id
+             WHERE s.chip_id = ? AND e.workspace_id = ? AND s.status IN ('queued', 'running')",
+        )
+        .bind(chip_id)
+        .bind(workspace_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if busy > 0 {
+            return Err(StorageError::Conflict("chip already running".into()));
+        }
         if parent_execution_id.is_some() {
             let valid: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM executions WHERE id=? AND workspace_id=? AND source='workspace' AND status='running'")
                 .bind(&execution_id).bind(workspace_id).fetch_one(&mut *tx).await?;
             if valid != 1 {
-                return Err(StorageError::Invalid("workspace execution is not running".into()));
+                return Err(StorageError::Invalid(
+                    "workspace execution is not running".into(),
+                ));
             }
         } else {
-        sqlx::query(
-            "INSERT INTO executions (id, workspace_id, source, trigger_id, status, created_at)
+            sqlx::query(
+                "INSERT INTO executions (id, workspace_id, source, trigger_id, status, created_at)
                      VALUES (?, ?, 'chip', ?, 'queued', ?)",
-        )
-        .bind(&execution_id)
-        .bind(workspace_id)
-        .bind(chip_id)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
+            )
+            .bind(&execution_id)
+            .bind(workspace_id)
+            .bind(chip_id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
         }
         let (extract_id, transform_id, load_id) = match binding
             .as_ref()
@@ -239,6 +316,7 @@ impl Store {
         sqlx::query("UPDATE executions SET status='failed', error_message=?, finished_at=? WHERE source != 'workspace' AND status IN ('queued','running') AND id IN (SELECT execution_id FROM execution_steps WHERE error_code='EXECUTION_INTERRUPTED')")
             .bind(reason).bind(&now).execute(&mut *tx).await?;
         tx.commit().await?;
+        crate::chip_slot::sweep_tmp(&self.data_dir.join(crate::chip_slot::REL_CHIP_OUTPUTS));
         Ok(())
     }
 
@@ -271,7 +349,11 @@ impl Store {
         .await?)
     }
 
-    pub async fn create_workspace_execution(&self, workspace_id: &str, requested_by: &str) -> Result<String, StorageError> {
+    pub async fn create_workspace_execution(
+        &self,
+        workspace_id: &str,
+        requested_by: &str,
+    ) -> Result<String, StorageError> {
         self.require_workspace(workspace_id).await?;
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
@@ -291,9 +373,21 @@ impl Store {
         Ok(id)
     }
 
-    pub async fn finish_workspace_execution(&self, id: &str, error: Option<&str>) -> Result<(), StorageError> {
-        self.finish_workspace_execution_as(id, if error.is_some() { "failed" } else { "succeeded" }, error)
-            .await
+    pub async fn finish_workspace_execution(
+        &self,
+        id: &str,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.finish_workspace_execution_as(
+            id,
+            if error.is_some() {
+                "failed"
+            } else {
+                "succeeded"
+            },
+            error,
+        )
+        .await
     }
 
     pub async fn finish_workspace_execution_as(
@@ -360,7 +454,13 @@ impl Store {
                 .await;
             if let Some(child) = child.as_deref() {
                 let _ = self
-                    .append_execution_log(child, "info", "canceled", EXECUTION_CANCELED_MESSAGE, None)
+                    .append_execution_log(
+                        child,
+                        "info",
+                        "canceled",
+                        EXECUTION_CANCELED_MESSAGE,
+                        None,
+                    )
                     .await;
             }
         }
@@ -368,14 +468,15 @@ impl Store {
     }
 
     pub async fn cancel_workspace_execution(&self, id: &str) -> Result<bool, StorageError> {
-        let status: Option<String> = sqlx::query_scalar(
-            "SELECT status FROM executions WHERE id=? AND source='workspace'",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM executions WHERE id=? AND source='workspace'")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
         let Some(status) = status else {
-            return Err(StorageError::NotFound("workspace execution not found".into()));
+            return Err(StorageError::NotFound(
+                "workspace execution not found".into(),
+            ));
         };
         if !matches!(status.as_str(), "queued" | "running") {
             return Ok(false);
@@ -403,7 +504,10 @@ impl Store {
         Ok(changed.rows_affected() == 1)
     }
 
-    pub async fn list_workspace_executions(&self, workspace_id: &str) -> Result<Vec<WorkspaceExecutionRow>, StorageError> {
+    pub async fn list_workspace_executions(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<WorkspaceExecutionRow>, StorageError> {
         self.require_workspace(workspace_id).await?;
         Ok(sqlx::query_as::<_, WorkspaceExecutionRow>("SELECT id, workspace_id, status, created_at, started_at, finished_at, error_message FROM executions WHERE workspace_id=? AND source='workspace' ORDER BY created_at DESC, rowid DESC")
             .bind(workspace_id).fetch_all(&self.pool).await?)
@@ -752,7 +856,8 @@ impl Store {
         &self,
         id: &str,
     ) -> Result<(), StorageError> {
-        self.set_chip_run_succeeded_with_result(id, None, None).await
+        self.set_chip_run_succeeded_with_result(id, None, None)
+            .await
     }
 
     pub async fn set_chip_run_succeeded_with_result(
@@ -910,50 +1015,139 @@ mod workspace_execution_tests {
         let root = std::env::temp_dir().join(format!("bintl-workspace-inputs-{}", Uuid::new_v4()));
         let store = Store::open(&root, "test-secret").await.unwrap();
         let user = store.ensure_bootstrap().await.unwrap();
-        let workspace = store.insert_workspace("Inputs", None, &user.id, None).await.unwrap();
-        let other = store.insert_workspace("Other", None, &user.id, None).await.unwrap();
+        let workspace = store
+            .insert_workspace("Inputs", None, &user.id, None)
+            .await
+            .unwrap();
+        let other = store
+            .insert_workspace("Other", None, &user.id, None)
+            .await
+            .unwrap();
         let config = r#"{"source_data_file_id":"","keys":["id"],"workspace_rule_snapshot":true}"#;
-        let chip = store.insert_chip(&user.id, &workspace.id, "Compare", "validation", config).await.unwrap();
-        store.attach_chip_to_workspace(&workspace.id, &chip.id).await.unwrap();
-        let execution = store.create_workspace_execution(&workspace.id, &user.id).await.unwrap();
-        let run = store.create_chip_run_in_execution(&chip.id, &workspace.id, chip.revision, config, None, Some(&execution)).await.unwrap();
+        let chip = store
+            .insert_chip(&user.id, &workspace.id, "Compare", "validation", config)
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&workspace.id, &chip.id)
+            .await
+            .unwrap();
+        let execution = store
+            .create_workspace_execution(&workspace.id, &user.id)
+            .await
+            .unwrap();
+        let run = store
+            .create_chip_run_in_execution(
+                &chip.id,
+                &workspace.id,
+                chip.revision,
+                config,
+                None,
+                Some(&execution),
+            )
+            .await
+            .unwrap();
         let source = Uuid::new_v4().to_string();
         let target = Uuid::new_v4().to_string();
         let foreign = Uuid::new_v4().to_string();
-        for (id, owner) in [(&source, &workspace.id), (&target, &workspace.id), (&foreign, &other.id)] {
+        for (id, owner) in [
+            (&source, &workspace.id),
+            (&target, &workspace.id),
+            (&foreign, &other.id),
+        ] {
             sqlx::query("INSERT INTO data_files (id, workspace_id, kind, format, filename, stored_path, created_at, updated_at) VALUES (?, ?, 'upload', 'csv', 'test.csv', ?, ?, ?)")
                 .bind(id).bind(owner).bind(format!("uploads/{id}.csv"))
                 .bind(now_rfc3339()).bind(now_rfc3339()).execute(&store.pool).await.unwrap();
         }
         // A bad source must roll back the otherwise valid target binding.
-        assert!(store.bind_workspace_step_input(&run.id, Some(&target), Some(&foreign)).await.is_err());
+        assert!(store
+            .bind_workspace_step_input(&run.id, Some(&target), Some(&foreign))
+            .await
+            .is_err());
         let untouched = store.get_chip_run(&run.id).await.unwrap().unwrap();
         assert!(untouched.input_dataset_id.is_none());
         assert_eq!(untouched.config_snapshot_json, config);
-        store.bind_workspace_step_input(&run.id, Some(&target), Some(&source)).await.unwrap();
+        store
+            .bind_workspace_step_input(&run.id, Some(&target), Some(&source))
+            .await
+            .unwrap();
         let bound = store.get_chip_run(&run.id).await.unwrap().unwrap();
         assert_eq!(bound.input_dataset_id.as_deref(), Some(target.as_str()));
-        let snapshot: serde_json::Value = serde_json::from_str(&bound.config_snapshot_json).unwrap();
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&bound.config_snapshot_json).unwrap();
         assert_eq!(snapshot["source_data_file_id"], source);
         assert_eq!(snapshot["keys"], serde_json::json!(["id"]));
         assert_eq!(snapshot["workspace_rule_snapshot"], true);
-        assert!(store.bind_workspace_step_input(&run.id, Some(&target), Some(&source)).await.is_err());
-        store.skip_workspace_step(&run.id, "Condition not met").await.unwrap();
+        assert!(store
+            .bind_workspace_step_input(&run.id, Some(&target), Some(&source))
+            .await
+            .is_err());
+        store
+            .skip_workspace_step(&run.id, "Condition not met")
+            .await
+            .unwrap();
         let skipped = store.get_chip_run(&run.id).await.unwrap().unwrap();
         assert_eq!(skipped.status, "canceled");
-        assert_eq!(skipped.error_code.as_deref(), Some("WORKSPACE_STEP_SKIPPED"));
+        assert_eq!(
+            skipped.error_code.as_deref(),
+            Some("WORKSPACE_STEP_SKIPPED")
+        );
         assert!(skipped.started_at.is_none() && skipped.finished_at.is_some());
-        assert_eq!(store.list_logs(&run.id).await.unwrap()[0].message, "Condition not met");
-        assert_eq!(store.get_execution(&execution).await.unwrap().unwrap().status, "running");
+        assert_eq!(
+            store.list_logs(&run.id).await.unwrap()[0].message,
+            "Condition not met"
+        );
+        assert_eq!(
+            store
+                .get_execution(&execution)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "running"
+        );
         assert!(store.skip_workspace_step(&run.id, "Again").await.is_err());
-        assert!(store.bind_workspace_step_input(&run.id, None, None).await.is_err());
+        assert!(store
+            .bind_workspace_step_input(&run.id, None, None)
+            .await
+            .is_err());
 
-        let running = store.create_chip_run_in_execution(&chip.id, &workspace.id, chip.revision, config, None, Some(&execution)).await.unwrap();
+        let running = store
+            .create_chip_run_in_execution(
+                &chip.id,
+                &workspace.id,
+                chip.revision,
+                config,
+                None,
+                Some(&execution),
+            )
+            .await
+            .unwrap();
         store.set_chip_run_running(&running.id).await.unwrap();
-        assert!(store.skip_workspace_step(&running.id, "Too late").await.is_err());
-        let standalone = store.create_chip_run(&chip.id, &workspace.id, chip.revision, config, None).await.unwrap();
-        assert!(store.skip_workspace_step(&standalone.id, "Not a workspace step").await.is_err());
-        assert!(store.bind_workspace_step_input(&standalone.id, None, None).await.is_err());
+        assert!(store
+            .skip_workspace_step(&running.id, "Too late")
+            .await
+            .is_err());
+        let other = store
+            .insert_chip(&user.id, &workspace.id, "Other", "validation", config)
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&workspace.id, &other.id)
+            .await
+            .unwrap();
+        let standalone = store
+            .create_chip_run(&other.id, &workspace.id, other.revision, config, None)
+            .await
+            .unwrap();
+        assert!(store
+            .skip_workspace_step(&standalone.id, "Not a workspace step")
+            .await
+            .is_err());
+        assert!(store
+            .bind_workspace_step_input(&standalone.id, None, None)
+            .await
+            .is_err());
         store.pool.close().await;
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -963,69 +1157,245 @@ mod workspace_execution_tests {
         let root = std::env::temp_dir().join(format!("bintl-workspace-runs-{}", Uuid::new_v4()));
         let store = Store::open(&root, "test-secret").await.unwrap();
         let user = store.ensure_bootstrap().await.unwrap();
-        let workspace = store.insert_workspace("History", None, &user.id, None).await.unwrap();
+        let workspace = store
+            .insert_workspace("History", None, &user.id, None)
+            .await
+            .unwrap();
         let config = r#"{"connection_id":"c","source":{"type":"table","table":"users"}}"#;
-        let chip = store.insert_chip(&user.id, &workspace.id, "Users", "extract", config).await.unwrap();
-        store.attach_chip_to_workspace(&workspace.id, &chip.id).await.unwrap();
-        let execution = store.create_workspace_execution(&workspace.id, &user.id).await.unwrap();
-        let first = store.create_chip_run_in_execution(&chip.id, &workspace.id, chip.revision, config, None, Some(&execution)).await.unwrap();
+        let chip = store
+            .insert_chip(&user.id, &workspace.id, "Users", "extract", config)
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&workspace.id, &chip.id)
+            .await
+            .unwrap();
+        let execution = store
+            .create_workspace_execution(&workspace.id, &user.id)
+            .await
+            .unwrap();
+        let first = store
+            .create_chip_run_in_execution(
+                &chip.id,
+                &workspace.id,
+                chip.revision,
+                config,
+                None,
+                Some(&execution),
+            )
+            .await
+            .unwrap();
         assert_eq!(first.execution_id, execution);
         assert_eq!(first.execution_source, "workspace");
-        store.set_execution_step_running(&first.id, None).await.unwrap();
-        store.finish_execution_step(&first.id, "succeeded", None, None).await.unwrap();
+        store
+            .set_execution_step_running(&first.id, None)
+            .await
+            .unwrap();
+        store
+            .finish_execution_step(&first.id, "succeeded", None, None)
+            .await
+            .unwrap();
         let parent = store.get_execution(&execution).await.unwrap().unwrap();
         assert_eq!(parent.status, "running");
         assert!(parent.finished_at.is_none());
-        let second = store.create_chip_run_in_execution(&chip.id, &workspace.id, chip.revision, config, None, Some(&execution)).await.unwrap();
+        let second = store
+            .create_chip_run_in_execution(
+                &chip.id,
+                &workspace.id,
+                chip.revision,
+                config,
+                None,
+                Some(&execution),
+            )
+            .await
+            .unwrap();
         store.set_chip_run_running(&second.id).await.unwrap();
-        store.set_chip_run_failed(&second.id, "failed second chip").await.unwrap();
-        store.append_execution_log(&second.id, "error", "failed", "workspace-only log", None).await.unwrap();
-        assert_eq!(store.get_execution(&execution).await.unwrap().unwrap().status, "running");
-        store.finish_workspace_execution(&execution, Some("failed second chip")).await.unwrap();
+        store
+            .set_chip_run_failed(&second.id, "failed second chip")
+            .await
+            .unwrap();
+        store
+            .append_execution_log(&second.id, "error", "failed", "workspace-only log", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_execution(&execution)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "running"
+        );
+        store
+            .finish_workspace_execution(&execution, Some("failed second chip"))
+            .await
+            .unwrap();
         let parent = store.get_execution(&execution).await.unwrap().unwrap();
         assert_eq!(parent.status, "failed");
         assert!(parent.finished_at.is_some());
-        assert!(store.create_chip_run_in_execution(&chip.id, &workspace.id, chip.revision, config, None, Some(&execution)).await.is_err());
+        assert!(store
+            .create_chip_run_in_execution(
+                &chip.id,
+                &workspace.id,
+                chip.revision,
+                config,
+                None,
+                Some(&execution)
+            )
+            .await
+            .is_err());
 
         // Per-chip pruning must never delete a grouped execution or its logs.
         for _ in 0..52 {
-            let single = store.create_chip_run(&chip.id, &workspace.id, chip.revision, config, None).await.unwrap();
+            let single = store
+                .create_chip_run(&chip.id, &workspace.id, chip.revision, config, None)
+                .await
+                .unwrap();
             assert_eq!(single.execution_source, "chip");
-            store.set_chip_run_failed(&single.id, "standalone").await.unwrap();
+            store
+                .set_chip_run_failed(&single.id, "standalone")
+                .await
+                .unwrap();
         }
-        assert_eq!(store.list_workspace_executions(&workspace.id).await.unwrap().len(), 1);
-        assert_eq!(store.list_logs(&second.id).await.unwrap()[0].message, "workspace-only log");
-        assert_eq!(store.list_chip_runs(&workspace.id).await.unwrap().iter().filter(|run| run.execution_id == execution).count(), 2);
+        assert_eq!(
+            store
+                .list_workspace_executions(&workspace.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store.list_logs(&second.id).await.unwrap()[0].message,
+            "workspace-only log"
+        );
+        assert_eq!(
+            store
+                .list_chip_runs(&workspace.id)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|run| run.execution_id == execution)
+                .count(),
+            2
+        );
         // Removing an extract output must not delete its whole workspace execution.
         store.delete_extract(&first.id).await.unwrap();
         assert!(store.get_chip_run(&second.id).await.unwrap().is_some());
         assert!(store.get_execution(&execution).await.unwrap().is_some());
 
-        let success = store.create_workspace_execution(&workspace.id, &user.id).await.unwrap();
-        let step = store.create_chip_run_in_execution(&chip.id, &workspace.id, chip.revision, config, None, Some(&success)).await.unwrap();
-        store.finish_execution_step(&step.id, "succeeded", None, None).await.unwrap();
-        store.finish_workspace_execution(&success, None).await.unwrap();
-        assert_eq!(store.list_workspace_executions(&workspace.id).await.unwrap()[0].status, "succeeded");
-        let interrupted = store.create_workspace_execution(&workspace.id, &user.id).await.unwrap();
-        let pending = store.create_chip_run_in_execution(&chip.id, &workspace.id, chip.revision, config, None, Some(&interrupted)).await.unwrap();
-        let chip_only = store.create_chip_run(&chip.id, &workspace.id, chip.revision, config, None).await.unwrap();
-        assert!(store.workspace_has_active_execution(&workspace.id).await.unwrap());
+        let success = store
+            .create_workspace_execution(&workspace.id, &user.id)
+            .await
+            .unwrap();
+        let step = store
+            .create_chip_run_in_execution(
+                &chip.id,
+                &workspace.id,
+                chip.revision,
+                config,
+                None,
+                Some(&success),
+            )
+            .await
+            .unwrap();
+        store
+            .finish_execution_step(&step.id, "succeeded", None, None)
+            .await
+            .unwrap();
+        store
+            .finish_workspace_execution(&success, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .list_workspace_executions(&workspace.id)
+                .await
+                .unwrap()[0]
+                .status,
+            "succeeded"
+        );
+        let interrupted = store
+            .create_workspace_execution(&workspace.id, &user.id)
+            .await
+            .unwrap();
+        let pending = store
+            .create_chip_run_in_execution(
+                &chip.id,
+                &workspace.id,
+                chip.revision,
+                config,
+                None,
+                Some(&interrupted),
+            )
+            .await
+            .unwrap();
+        let solo = store
+            .insert_chip(&user.id, &workspace.id, "Solo", "extract", config)
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&workspace.id, &solo.id)
+            .await
+            .unwrap();
+        let chip_only = store
+            .create_chip_run(&solo.id, &workspace.id, solo.revision, config, None)
+            .await
+            .unwrap();
+        assert!(store
+            .workspace_has_active_execution(&workspace.id)
+            .await
+            .unwrap());
         assert_eq!(
             store.list_dispatchable_steps(8).await.unwrap(),
             vec![chip_only.id.clone()]
         );
         store.recover_interrupted_executions().await.unwrap();
-        assert_eq!(store.get_chip_run(&pending.id).await.unwrap().unwrap().status, "failed");
-        assert_eq!(store.get_chip_run(&chip_only.id).await.unwrap().unwrap().status, "queued");
-        assert_eq!(store.get_execution(&interrupted).await.unwrap().unwrap().status, "failed");
-        assert_eq!(store.get_execution(&success).await.unwrap().unwrap().status, "succeeded");
+        assert_eq!(
+            store
+                .get_chip_run(&pending.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "failed"
+        );
+        assert_eq!(
+            store
+                .get_chip_run(&chip_only.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "queued"
+        );
+        assert_eq!(
+            store
+                .get_execution(&interrupted)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "failed"
+        );
+        assert_eq!(
+            store.get_execution(&success).await.unwrap().unwrap().status,
+            "succeeded"
+        );
         assert_eq!(
             store.list_dispatchable_steps(8).await.unwrap(),
             vec![chip_only.id.clone()]
         );
-        let leftover_chip = store.create_chip_run(&chip.id, &workspace.id, chip.revision, config, None).await.unwrap();
+        let leftover_chip = store
+            .create_chip_run(&chip.id, &workspace.id, chip.revision, config, None)
+            .await
+            .unwrap();
         assert_eq!(leftover_chip.status, "queued");
-        assert!(!store.workspace_has_active_execution(&workspace.id).await.unwrap());
+        assert!(!store
+            .workspace_has_active_execution(&workspace.id)
+            .await
+            .unwrap());
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1093,10 +1463,52 @@ mod workspace_execution_tests {
         assert!(store.list_dispatchable_steps(8).await.unwrap().is_empty());
         store.mark_dispatchable(&running.id).await.unwrap_err();
         assert_eq!(
-            store.get_execution(&execution).await.unwrap().unwrap().status,
+            store
+                .get_execution(&execution)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
             "canceled"
         );
         assert!(store.step_is_canceled(&running.id).await.unwrap());
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn chip_already_running_is_conflict() {
+        let root = std::env::temp_dir().join(format!("bintl-chip-busy-{}", Uuid::new_v4()));
+        let store = Store::open(&root, "test-secret").await.unwrap();
+        let user = store.ensure_bootstrap().await.unwrap();
+        let workspace = store
+            .insert_workspace("Busy", None, &user.id, None)
+            .await
+            .unwrap();
+        let config = r#"{"connection_id":"c","source":{"type":"table","table":"users"}}"#;
+        let chip = store
+            .insert_chip(&user.id, &workspace.id, "Extract", "extract", config)
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&workspace.id, &chip.id)
+            .await
+            .unwrap();
+        let first = store
+            .create_chip_run(&chip.id, &workspace.id, chip.revision, config, None)
+            .await
+            .unwrap();
+        let err = store
+            .create_chip_run(&chip.id, &workspace.id, chip.revision, config, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)));
+        store.set_chip_run_failed(&first.id, "stop").await.unwrap();
+        let second = store
+            .create_chip_run(&chip.id, &workspace.id, chip.revision, config, None)
+            .await
+            .unwrap();
+        assert_eq!(second.status, "queued");
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
     }

@@ -58,7 +58,8 @@ pub(crate) fn apply_rule_defaults(
         return Ok(());
     }
     *keys = serde_json::from_str(&rule.keys_json).map_err(|e| AppError::bad(e.to_string()))?;
-    *columns = serde_json::from_str(&rule.columns_json).map_err(|e| AppError::bad(e.to_string()))?;
+    *columns =
+        serde_json::from_str(&rule.columns_json).map_err(|e| AppError::bad(e.to_string()))?;
     *compare_row_count = rule.compare_row_count != 0;
     *compare_schema = rule.compare_schema != 0;
     Ok(())

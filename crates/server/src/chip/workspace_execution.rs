@@ -88,9 +88,8 @@ async fn prepare_config(
                 AppError::bad("input connection references an inactive or missing chip")
             })?;
         if edge.kind == "data" {
-            let load_target = chip.kind == "validation"
-                && source.kind == "load"
-                && edge.to_port != "source";
+            let load_target =
+                chip.kind == "validation" && source.kind == "load" && edge.to_port != "source";
             if load_target {
                 continue;
             }
@@ -101,7 +100,12 @@ async fn prepare_config(
             }
         }
     }
-    if incoming.len() > if chip.kind == "validation" { 2 } else { 1 } {
+    let max_inputs = match chip.kind.as_str() {
+        "validation" => 2,
+        "script" => crate::script::MAX_SCRIPT_INPUTS,
+        _ => 1,
+    };
+    if incoming.len() > max_inputs {
         return Err(AppError::bad("too many data inputs"));
     }
     match chip.kind.as_str() {
@@ -167,11 +171,10 @@ async fn prepare_config(
             if load_targets.len() > 1 {
                 return Err(AppError::bad("validation can use only one load chip"));
             }
-            if load_targets
-                .iter()
-                .any(|edge| edge.to_port == "source")
-            {
-                return Err(AppError::bad("load chips can only be the validation TARGET"));
+            if load_targets.iter().any(|edge| edge.to_port == "source") {
+                return Err(AppError::bad(
+                    "load chips can only be the validation TARGET",
+                ));
             }
             if incoming.len() == 2 {
                 config["source_data_file_id"] = json!("");
@@ -222,9 +225,6 @@ async fn prepare_config(
             crate::serve::parse_serve_config(&config)?;
         }
         "script" => {
-            if incoming.len() > 1 {
-                return Err(AppError::bad("too many data inputs"));
-            }
             config = crate::script::validate_script_config(&state.store, config).await?;
         }
         _ => return Err(AppError::bad("unsupported chip kind")),
@@ -378,30 +378,73 @@ pub(super) async fn execute(
                 .and_then(|edge| outputs.get(&edge.from_chip_id))
                 .map(String::as_str)
                 .or_else(|| {
-                    if chip.kind == "transform" {
-                        config["input_dataset_id"].as_str()
+                    if chip.kind == "transform" || chip.kind == "script" {
+                        config["input_dataset_id"].as_str().or_else(|| {
+                            config["inputs"]
+                                .as_array()
+                                .and_then(|items| items.first())
+                                .and_then(|item| item.get("dataset_id"))
+                                .and_then(Value::as_str)
+                        })
                     } else {
                         None
                     }
                 })
         };
         let result = async {
-            if let Some(id) = input {
-                require_input(state, user, workspace_id, id).await?;
-            }
-            if chip.kind == "validation" {
-                let source_id = source
-                    .or_else(|| config["source_data_file_id"].as_str())
-                    .ok_or_else(|| AppError::bad("validation source input missing"))?;
-                require_input(state, user, workspace_id, source_id).await?;
-                if Some(source_id) == input {
-                    return Err(AppError::bad("source and target data files must differ"));
+            if chip.kind == "script" {
+                let mut edge_inputs = Vec::new();
+                for edge in &incoming {
+                    let Some(dataset_id) = outputs.get(&edge.from_chip_id) else {
+                        continue;
+                    };
+                    require_input(state, user, workspace_id, dataset_id).await?;
+                    let name = ordered
+                        .iter()
+                        .find(|source| source.id == edge.from_chip_id)
+                        .map(|source| crate::script::input_name_from_label(&source.name))
+                        .unwrap_or_else(|| "input".into());
+                    edge_inputs.push(crate::script::ScriptInput {
+                        name,
+                        dataset_id: dataset_id.clone(),
+                    });
                 }
+                let extras = crate::script::parse_script_config(&config)
+                    .map(|parsed| parsed.inputs)
+                    .unwrap_or_default();
+                for extra in &extras {
+                    if edge_inputs
+                        .iter()
+                        .any(|item| item.dataset_id == extra.dataset_id)
+                    {
+                        continue;
+                    }
+                    require_input(state, user, workspace_id, &extra.dataset_id).await?;
+                }
+                let inputs = crate::script::merge_script_inputs(edge_inputs, extras)?;
+                let bound = inputs
+                    .iter()
+                    .map(|item| (item.name.clone(), item.dataset_id.clone()))
+                    .collect::<Vec<_>>();
+                state.store.bind_script_step_inputs(&run.id, &bound).await?;
+            } else {
+                if let Some(id) = input {
+                    require_input(state, user, workspace_id, id).await?;
+                }
+                if chip.kind == "validation" {
+                    let source_id = source
+                        .or_else(|| config["source_data_file_id"].as_str())
+                        .ok_or_else(|| AppError::bad("validation source input missing"))?;
+                    require_input(state, user, workspace_id, source_id).await?;
+                    if Some(source_id) == input {
+                        return Err(AppError::bad("source and target data files must differ"));
+                    }
+                }
+                state
+                    .store
+                    .bind_workspace_step_input(&run.id, input, source)
+                    .await?;
             }
-            state
-                .store
-                .bind_workspace_step_input(&run.id, input, source)
-                .await?;
             if let Err(error) = state.store.mark_dispatchable(&run.id).await {
                 if state.store.step_is_canceled(&run.id).await? {
                     return Err(AppError::bad("canceled"));

@@ -204,16 +204,10 @@ async fn execute_http(
     let tokens = acquire_custom_tokens(&client, connection).await?;
     let mut response = send_http(&client, connection, spec, &url, timeout, tokens.as_ref()).await?;
     if response.status().as_u16() == 401 {
-        if let Some(refreshed) = refresh_custom_tokens(&client, connection, tokens.as_ref()).await? {
-            response = send_http(
-                &client,
-                connection,
-                spec,
-                &url,
-                timeout,
-                Some(&refreshed),
-            )
-            .await?;
+        if let Some(refreshed) = refresh_custom_tokens(&client, connection, tokens.as_ref()).await?
+        {
+            response =
+                send_http(&client, connection, spec, &url, timeout, Some(&refreshed)).await?;
         }
     }
     read_json_response(response).await
@@ -428,7 +422,9 @@ fn apply_access_token(
         .map(|item| item.token_header.trim())
         .filter(|name| !name.is_empty())
         .unwrap_or("Authorization");
-    let prefix = auth.map(|item| item.token_prefix.trim()).unwrap_or("Bearer");
+    let prefix = auth
+        .map(|item| item.token_prefix.trim())
+        .unwrap_or("Bearer");
     let value = if prefix.is_empty() {
         token.to_string()
     } else {
@@ -487,7 +483,11 @@ async fn login_tokens(
         ]),
         _ => {
             let mut body = serde_json::json!({});
-            set_json_path(&mut body, &auth.username_field, Value::String(user.to_string()))?;
+            set_json_path(
+                &mut body,
+                &auth.username_field,
+                Value::String(user.to_string()),
+            )?;
             set_json_path(
                 &mut body,
                 &auth.password_field,
@@ -533,12 +533,12 @@ fn tokens_from_login(
     value: &Value,
 ) -> Result<TokenPair, ConnectError> {
     let access = json_string_at(value, &auth.access_token_path)?;
-    let refresh = if auth.refresh_path.trim().is_empty() || auth.refresh_token_path.trim().is_empty()
-    {
-        None
-    } else {
-        json_string_at(value, &auth.refresh_token_path).ok()
-    };
+    let refresh =
+        if auth.refresh_path.trim().is_empty() || auth.refresh_token_path.trim().is_empty() {
+            None
+        } else {
+            json_string_at(value, &auth.refresh_token_path).ok()
+        };
     Ok(TokenPair { access, refresh })
 }
 
@@ -585,7 +585,9 @@ fn json_string_at(value: &Value, path: &str) -> Result<String, ConnectError> {
         Some(_) => Err(ConnectError::Invalid(format!(
             "token path is not a string: {path}"
         ))),
-        None => Err(ConnectError::Invalid(format!("token path not found: {path}"))),
+        None => Err(ConnectError::Invalid(format!(
+            "token path not found: {path}"
+        ))),
     }
 }
 

@@ -3,7 +3,9 @@ import {
   Braces,
   Cable,
   CalendarClock,
+  CloudDownload,
   Database,
+  FileDown,
   FileText,
   History,
   LayoutDashboard,
@@ -25,9 +27,10 @@ export type NavIconName =
   | "connections"
   | "query"
   | "api"
+  | "script"
   | "extracts"
   | "transform"
-  | "jobs"
+  | "exportHistory"
   | "transformFiles"
   | "scriptFiles"
   | "load"
@@ -45,12 +48,13 @@ const icons: Record<NavIconName, LucideIcon> = {
   files: FileText,
   connections: Cable,
   query: Database,
-  api: Braces,
-  extracts: ListChecks,
+  api: CloudDownload,
+  script: Braces,
+  extracts: FileText,
   transform: Workflow,
-  jobs: Workflow,
-  transformFiles: ListChecks,
-  scriptFiles: ListChecks,
+  exportHistory: FileDown,
+  transformFiles: FileText,
+  scriptFiles: FileText,
   load: Upload,
   validation: ShieldCheck,
   validationRules: ListChecks,

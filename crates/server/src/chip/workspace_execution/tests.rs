@@ -608,11 +608,7 @@ async fn cancel_aborts_workspace_and_skips_remaining() {
             .status,
         "canceled"
     );
-    assert!(f
-        .runs()
-        .await
-        .values()
-        .all(|run| run.status == "canceled"));
+    assert!(f.runs().await.values().all(|run| run.status == "canceled"));
     f.close(None).await;
 }
 
@@ -679,9 +675,7 @@ async fn validation_against_append_load_ignores_extra_keys() {
         .await;
     f.exec_sql(&dest, "INSERT INTO dest (id, name) VALUES ('99', 'old')")
         .await;
-    let expected = f
-        .extract("Expected", "SELECT 1 AS id, 'new' AS name")
-        .await;
+    let expected = f.extract("Expected", "SELECT 1 AS id, 'new' AS name").await;
     let load = f.load_db("Load", &dest, "dest", "append").await;
     let v = f
         .chip(
@@ -711,9 +705,7 @@ async fn validation_against_load_table_fails_on_value_mismatch() {
     let expected = f
         .extract("Expected", "SELECT 1 AS id, 'right' AS name")
         .await;
-    let loaded = f
-        .extract("Loaded", "SELECT 1 AS id, 'wrong' AS name")
-        .await;
+    let loaded = f.extract("Loaded", "SELECT 1 AS id, 'wrong' AS name").await;
     let load = f.load_db("Load", &dest, "dest", "replace").await;
     let v = f
         .chip(

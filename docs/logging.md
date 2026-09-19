@@ -388,7 +388,7 @@ DB batch 적재 실패에서 드라이버가 단일 행을 제공하지 않으�
 - 추출 페이지: workspace, connection, source(table/query/API), database, 출력 파일명, delimiter, header, sequence 설정의 조합을 식별자로 사용한다.
 - 동일 식별자의 재실행이 성공하면 이전 dataset은 `deleted_at` 처리하고 이전 실제 파일도 정리한다.
 - source나 출력 설정이 다르면 파일명이 같더라도 별도의 dataset으로 유지한다.
-- 실패한 새 실행은 이전 성공 파일을 제거하지 않는다.
+- 실패한 새 실행은 이전 성공 파일을 제거하지 않는다. 칩 슬롯은 tmp에 쓴 뒤 성공 시에만 `current.*`로 바꾼다.
 
 추출 파일 화면은 실행 테이블을 기반으로 조회하지만, 성공한 실행 중 `data_files.deleted_at`이 설정된 과거 출력은 표시하지 않는다. `queued`, `running`, `failed` 실행은 진행 상태와 오류 확인을 위해 표시한다. 전체 실행 이력과 로그는 DB에 계속 보존되며 파일 화면과 별도로 조회할 수 있다.
 

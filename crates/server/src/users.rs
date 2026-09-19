@@ -76,7 +76,11 @@ async fn update_profile(
     user: CurrentUser,
     Json(body): Json<UpdateProfileBody>,
 ) -> Result<Json<Value>, AppError> {
-    let avatar_path = match body.avatar_data_url.as_deref().filter(|value| !value.is_empty()) {
+    let avatar_path = match body
+        .avatar_data_url
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         Some(avatar) if avatar.starts_with("data:image/") => Some(
             state
                 .store
@@ -102,11 +106,17 @@ async fn user_avatar(
         .get_user(&id)
         .await?
         .ok_or_else(|| AppError::not_found("user not found"))?;
-    let (bytes, content_type) = state.store.read_avatar_bytes(row.avatar_data_url.as_deref()).await?;
+    let (bytes, content_type) = state
+        .store
+        .read_avatar_bytes(row.avatar_data_url.as_deref())
+        .await?;
     Ok((
         [
             (CONTENT_TYPE, HeaderValue::from_static(content_type)),
-            (CACHE_CONTROL, HeaderValue::from_static("private, max-age=0, must-revalidate")),
+            (
+                CACHE_CONTROL,
+                HeaderValue::from_static("private, max-age=0, must-revalidate"),
+            ),
         ],
         bytes,
     ))

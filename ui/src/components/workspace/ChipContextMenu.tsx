@@ -2,7 +2,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Copy,
-  CopyPlus,
   FileText,
   Info,
   Pencil,
@@ -61,7 +60,6 @@ export function ChipContextMenu({
   onProperties,
   onEdit,
   onCopy,
-  onDuplicate,
   onDelete,
 }: {
   menu: ChipContextMenuState | null;
@@ -76,7 +74,6 @@ export function ChipContextMenu({
   onProperties: (chip: Chip) => void;
   onEdit: (chip: Chip) => void;
   onCopy: (chip: Chip) => void;
-  onDuplicate: (chip: Chip) => void;
   onDelete: (chip: Chip) => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -162,22 +159,13 @@ export function ChipContextMenu({
       onSelect: () => onEdit(chip),
     });
   }
-  items.push(
-    {
-      id: "copy",
-      label: messages.workspace.chipMenuCopy,
-      icon: Copy,
-      disabled: busy,
-      onSelect: () => onCopy(chip),
-    },
-    {
-      id: "duplicate",
-      label: messages.workspace.chipMenuDuplicate,
-      icon: CopyPlus,
-      disabled: busy,
-      onSelect: () => onDuplicate(chip),
-    },
-  );
+  items.push({
+    id: "copy",
+    label: messages.workspace.chipMenuCopy,
+    icon: Copy,
+    disabled: busy,
+    onSelect: () => onCopy(chip),
+  });
   items.push({
     id: "delete",
     label: messages.common.delete,

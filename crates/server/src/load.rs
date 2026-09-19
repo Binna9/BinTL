@@ -133,11 +133,7 @@ async fn wait_for_load_step(state: &AppState, run_id: &str) -> Result<(), AppErr
                 ));
             }
             "queued" | "running" => {}
-            other => {
-                return Err(AppError::bad(format!(
-                    "unexpected load status `{other}`"
-                )))
-            }
+            other => return Err(AppError::bad(format!("unexpected load status `{other}`"))),
         }
     }
 }

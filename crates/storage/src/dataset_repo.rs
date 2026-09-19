@@ -244,7 +244,11 @@ impl Store {
         let size = tokio::fs::metadata(self.resolve(stored_path)).await?.len() as i64;
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
-        let file_kind = if run.kind == "script" { "script" } else { "transform" };
+        let file_kind = if run.kind == "script" {
+            "script"
+        } else {
+            "transform"
+        };
         let dataset_id = self
             .upsert_chip_output_slot_dataset(
                 &mut tx,

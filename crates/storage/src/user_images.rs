@@ -68,7 +68,10 @@ impl Store {
         Ok(rel)
     }
 
-    pub async fn read_avatar_bytes(&self, stored: Option<&str>) -> Result<(Vec<u8>, &'static str), StorageError> {
+    pub async fn read_avatar_bytes(
+        &self,
+        stored: Option<&str>,
+    ) -> Result<(Vec<u8>, &'static str), StorageError> {
         if let Some(data_url) = stored.filter(|value| value.starts_with("data:image/")) {
             let (bytes, ext) = decode_image_data_url(data_url)?;
             return Ok((bytes, mime_for_ext(ext)));

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::StorageError;
+use serde::{Deserialize, Serialize};
 
 /// Non-secret authentication settings. Passwords and tokens use password_cipher.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,42 +23,73 @@ pub struct HttpAuthConfig {
 impl Default for HttpAuthConfig {
     fn default() -> Self {
         Self {
-            mode: "none".into(), api_key_name: "X-API-Key".into(), api_key_location: "header".into(),
-            login_path: "/auth/login".into(), login_body_mode: "json".into(),
-            username_field: "email".into(), password_field: "password".into(),
-            access_token_path: "data.accessToken".into(), token_header: "Authorization".into(), token_prefix: "Bearer".into(),
-            refresh_path: String::new(), refresh_token_path: "data.refreshToken".into(),
-            refresh_field: "refreshToken".into(), refresh_body_mode: "json".into(),
+            mode: "none".into(),
+            api_key_name: "X-API-Key".into(),
+            api_key_location: "header".into(),
+            login_path: "/auth/login".into(),
+            login_body_mode: "json".into(),
+            username_field: "email".into(),
+            password_field: "password".into(),
+            access_token_path: "data.accessToken".into(),
+            token_header: "Authorization".into(),
+            token_prefix: "Bearer".into(),
+            refresh_path: String::new(),
+            refresh_token_path: "data.refreshToken".into(),
+            refresh_field: "refreshToken".into(),
+            refresh_body_mode: "json".into(),
         }
     }
 }
 impl HttpAuthConfig {
     pub fn validate(&self) -> Result<(), StorageError> {
         let invalid = |message: &str| StorageError::Invalid(message.into());
-        if !matches!(self.mode.as_str(), "none" | "basic" | "bearer" | "api_key" | "custom") {
+        if !matches!(
+            self.mode.as_str(),
+            "none" | "basic" | "bearer" | "api_key" | "custom"
+        ) {
             return Err(invalid("unsupported HTTP authentication mode"));
         }
-        if self.mode == "api_key" && (self.api_key_name.trim().is_empty() || !matches!(self.api_key_location.as_str(), "header" | "query")) {
-            return Err(invalid("API key name and header/query location are required"));
+        if self.mode == "api_key"
+            && (self.api_key_name.trim().is_empty()
+                || !matches!(self.api_key_location.as_str(), "header" | "query"))
+        {
+            return Err(invalid(
+                "API key name and header/query location are required",
+            ));
         }
         if self.mode == "custom" {
-            if self.login_path.trim().is_empty() || self.username_field.trim().is_empty()
-                || self.password_field.trim().is_empty() || self.access_token_path.trim().is_empty()
-                || self.token_header.trim().is_empty() {
-                return Err(invalid("login URL, credential field names, token path and token header are required"));
+            if self.login_path.trim().is_empty()
+                || self.username_field.trim().is_empty()
+                || self.password_field.trim().is_empty()
+                || self.access_token_path.trim().is_empty()
+                || self.token_header.trim().is_empty()
+            {
+                return Err(invalid(
+                    "login URL, credential field names, token path and token header are required",
+                ));
             }
             let user = self.username_field.trim();
             let pass = self.password_field.trim();
-            if user == pass || user.starts_with(&format!("{pass}.")) || pass.starts_with(&format!("{user}.")) {
+            if user == pass
+                || user.starts_with(&format!("{pass}."))
+                || pass.starts_with(&format!("{user}."))
+            {
                 return Err(invalid("username and password fields must not overlap"));
             }
             if !matches!(self.login_body_mode.as_str(), "json" | "urlencoded") {
                 return Err(invalid("login body mode must be json or urlencoded"));
             }
-            if !self.refresh_path.trim().is_empty() && (self.refresh_field.trim().is_empty()
-                || self.refresh_token_path.trim().is_empty()
-                || !matches!(self.refresh_body_mode.as_str(), "json" | "urlencoded" | "header")) {
-                return Err(invalid("refresh token path, field and body mode are required"));
+            if !self.refresh_path.trim().is_empty()
+                && (self.refresh_field.trim().is_empty()
+                    || self.refresh_token_path.trim().is_empty()
+                    || !matches!(
+                        self.refresh_body_mode.as_str(),
+                        "json" | "urlencoded" | "header"
+                    ))
+            {
+                return Err(invalid(
+                    "refresh token path, field and body mode are required",
+                ));
             }
         }
         Ok(())
@@ -84,10 +115,16 @@ mod tests {
 
     #[test]
     fn require_secrets_matches_mode() {
-        let bearer = HttpAuthConfig { mode: "bearer".into(), ..Default::default() };
+        let bearer = HttpAuthConfig {
+            mode: "bearer".into(),
+            ..Default::default()
+        };
         assert!(bearer.require_secrets("", "").is_err());
         assert!(bearer.require_secrets("", "tok").is_ok());
-        let basic = HttpAuthConfig { mode: "basic".into(), ..Default::default() };
+        let basic = HttpAuthConfig {
+            mode: "basic".into(),
+            ..Default::default()
+        };
         assert!(basic.require_secrets("u", "").is_err());
         assert!(basic.require_secrets("u", "p").is_ok());
         assert!(HttpAuthConfig::default().require_secrets("", "").is_ok());

@@ -562,9 +562,14 @@ export function edgeConnectIssue(
   }
   if (kind === "on_error" && dataDependsOn(edges, to.id, from.id)) return "error-data";
   if (wouldBeShortcut(edges, from.id, to.id, kind, to.kind)) return "shortcut";
-  if (kind === "data" && to.kind !== "validation") {
+  if (kind === "data" && to.kind !== "validation" && to.kind !== "script") {
     const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === to.id);
     if (incoming.length > 0) return "inputs";
+  }
+  if (kind === "data" && to.kind === "script") {
+    const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === to.id);
+    if (incoming.some((edge) => edge.from_chip_id === from.id)) return "duplicate";
+    if (incoming.length >= 8) return "inputs";
   }
   if (kind === "data" && to.kind === "validation") {
     const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === to.id);
@@ -590,6 +595,8 @@ export function canvasEdgesIssue(chips: Chip[], edges: ChipEdge[]): EdgeConnectI
       if (data.length > 2) return "inputs";
       const fromIds = data.map((edge) => edge.from_chip_id);
       if (new Set(fromIds).size !== fromIds.length) return "duplicate";
+    } else if (chip.kind === "script") {
+      if (data.length > 8) return "inputs";
     } else if (data.length > 1) {
       return "inputs";
     }
@@ -638,10 +645,18 @@ export function validationTargetChips(chips: Chip[], excludeIds: Iterable<string
   );
 }
 
+export function incomingDataChipIds(edges: ChipEdge[], toId: string, toPort?: string): string[] {
+  return edges
+    .filter((edge) =>
+      edge.kind === "data"
+      && edge.to_chip_id === toId
+      && (!toPort || edge.to_port === toPort),
+    )
+    .map((edge) => edge.from_chip_id);
+}
+
 export function incomingDataChipId(edges: ChipEdge[], toId: string, toPort?: string): string {
-  const incoming = edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === toId);
-  if (toPort) return incoming.find((edge) => edge.to_port === toPort)?.from_chip_id ?? "";
-  return incoming[0]?.from_chip_id ?? "";
+  return incomingDataChipIds(edges, toId, toPort)[0] ?? "";
 }
 
 function stripShortcutControlEdges(edges: ChipEdge[]): ChipEdge[] {
@@ -847,6 +862,24 @@ if (import.meta.env.DEV) {
   console.assert(
     edgeConnectIssue(extract, transform, "on_success", [wire("back", "transform", "extract", "always")]) === "cycle",
     "canvas: connect-time cycle",
+  );
+  const script = chip("script", "script");
+  const extractB = chip("extract-b", "extract");
+  const scriptOne = [wire("ds1", "extract", "script", "data")];
+  console.assert(
+    edgeConnectIssue(extractB, script, "data", scriptOne) === null,
+    "canvas: script accepts a second data input",
+  );
+  console.assert(
+    incomingDataChipIds([
+      ...scriptOne,
+      wire("ds2", "extract-b", "script", "data"),
+    ], "script").length === 2,
+    "canvas: script incoming ids keep both wires",
+  );
+  console.assert(
+    edgeConnectIssue(extract, transform, "data", [wire("dt1", "extract-b", "transform", "data")]) === "inputs",
+    "canvas: transform still takes one data input",
   );
   const empty = { chips: [], positions: {}, edges: [] } satisfies CanvasSnapshot;
   const moved = { chips: [], positions: { a: { x: 1, y: 2 } }, edges: [] } satisfies CanvasSnapshot;

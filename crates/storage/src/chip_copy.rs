@@ -103,8 +103,14 @@ impl Store {
             chip_matches_workspace_owner(&chip, &target)?;
         }
 
-        let min_x = sources.iter().map(|src| src.x).fold(f64::INFINITY, f64::min);
-        let min_y = sources.iter().map(|src| src.y).fold(f64::INFINITY, f64::min);
+        let min_x = sources
+            .iter()
+            .map(|src| src.x)
+            .fold(f64::INFINITY, f64::min);
+        let min_y = sources
+            .iter()
+            .map(|src| src.y)
+            .fold(f64::INFINITY, f64::min);
         let dx = input.origin_x - min_x;
         let dy = input.origin_y - min_y;
         let id_map: HashMap<String, String> = sources
@@ -133,14 +139,15 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let mut taken_names: HashMap<String, HashSet<String>> = HashMap::new();
         for src in &sources {
-            let names = taken_names.entry(src.owner_user_id.clone()).or_insert_with(HashSet::new);
+            let names = taken_names
+                .entry(src.owner_user_id.clone())
+                .or_insert_with(HashSet::new);
             if names.is_empty() {
-                let existing: Vec<String> = sqlx::query_scalar(
-                    "SELECT name FROM chips WHERE owner_user_id = ?",
-                )
-                .bind(&src.owner_user_id)
-                .fetch_all(&mut *tx)
-                .await?;
+                let existing: Vec<String> =
+                    sqlx::query_scalar("SELECT name FROM chips WHERE owner_user_id = ?")
+                        .bind(&src.owner_user_id)
+                        .fetch_all(&mut *tx)
+                        .await?;
                 names.extend(existing.into_iter().map(|name| name.trim().to_lowercase()));
             }
             let name = next_copy_name(&src.name, names);
@@ -174,8 +181,8 @@ impl Store {
         .fetch_all(&mut *tx)
         .await?;
 
-        let mut layout: Value = serde_json::from_str(&target.layout_json)
-            .unwrap_or_else(|_| json!({}));
+        let mut layout: Value =
+            serde_json::from_str(&target.layout_json).unwrap_or_else(|_| json!({}));
         if !layout.is_object() {
             layout = json!({});
         }
@@ -190,10 +197,7 @@ impl Store {
         let nodes = nodes.as_object_mut().expect("nodes object");
         for src in &sources {
             let new_id = id_map.get(&src.id).expect("clone id");
-            nodes.insert(
-                new_id.clone(),
-                json!({ "x": src.x + dx, "y": src.y + dy }),
-            );
+            nodes.insert(new_id.clone(), json!({ "x": src.x + dx, "y": src.y + dy }));
         }
         let layout_json = serde_json::to_string(&layout)
             .map_err(|error| StorageError::Invalid(error.to_string()))?;
@@ -244,9 +248,10 @@ impl Store {
         for new_id in id_map.values() {
             search::sync_search_best_effort(self, "chip", self.sync_search_chip(new_id)).await;
         }
-        let workspace = self.get_workspace(target_workspace_id).await?.ok_or_else(|| {
-            StorageError::NotFound("workspace disappeared after paste".into())
-        })?;
+        let workspace = self
+            .get_workspace(target_workspace_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("workspace disappeared after paste".into()))?;
         Ok(ChipPasteResult {
             workspace,
             chips: saved_chips,
@@ -305,13 +310,12 @@ async fn clone_extract(
     now: &str,
 ) -> Result<(), StorageError> {
     if let Some(extract_id) = src.extract_id.as_deref() {
-        let delimiter: String = sqlx::query_scalar(
-            "SELECT COALESCE(delimiter, ',') FROM extracts WHERE id = ?",
-        )
-        .bind(extract_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| StorageError::NotFound("extract definition not found".into()))?;
+        let delimiter: String =
+            sqlx::query_scalar("SELECT COALESCE(delimiter, ',') FROM extracts WHERE id = ?")
+                .bind(extract_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(|| StorageError::NotFound("extract definition not found".into()))?;
         let new_extract_id = Uuid::new_v4().to_string();
         let copied = sqlx::query(
             "INSERT INTO extracts
@@ -330,7 +334,9 @@ async fn clone_extract(
         .execute(&mut **tx)
         .await?;
         if copied.rows_affected() == 0 {
-            return Err(StorageError::NotFound("extract definition not found".into()));
+            return Err(StorageError::NotFound(
+                "extract definition not found".into(),
+            ));
         }
         sqlx::query(
             "INSERT INTO chips
@@ -571,6 +577,7 @@ fn rewrite_json_datasets(value: &mut Value, rewrite: &DatasetRewrite<'_>) {
                 "right_dataset_id",
                 "source_data_file_id",
                 "target_data_file_id",
+                "dataset_id",
             ] {
                 if let Some(Value::String(current)) = map.get(key) {
                     let next = rewrite_dataset_id(current, rewrite).unwrap_or_default();

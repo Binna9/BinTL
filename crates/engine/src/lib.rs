@@ -751,21 +751,125 @@ impl PolarsEngine {
     }
 
     pub fn write_records(rows: &[serde_json::Value], output: &Path) -> Result<u64, EngineError> {
+        let mut writer = RecordWriter::new();
+        writer.push(rows)?;
+        writer.finish(output)
+    }
+
+    pub fn open_records(path: &Path) -> Result<RecordTable, EngineError> {
+        Ok(RecordTable {
+            df: read_any(path, &TransformSpec::identity(), None)?,
+        })
+    }
+}
+
+/// Polars table kept off-heap so script JS only sees one batch at a time.
+pub struct RecordTable {
+    df: DataFrame,
+}
+
+impl RecordTable {
+    pub fn height(&self) -> usize {
+        self.df.height()
+    }
+
+    pub fn slice(&self, offset: usize, limit: usize) -> Result<Vec<serde_json::Value>, EngineError> {
+        let height = self.df.height();
+        if offset >= height || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let take = limit.min(height - offset);
+        dataframe_to_records(self.df.slice(offset as i64, take))
+    }
+}
+
+pub struct RecordWriter {
+    acc: Option<DataFrame>,
+}
+
+impl RecordWriter {
+    pub fn new() -> Self {
+        Self { acc: None }
+    }
+
+    pub fn push(&mut self, rows: &[serde_json::Value]) -> Result<(), EngineError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let next = json_rows_to_df(rows)?;
+        self.acc = Some(match self.acc.take() {
+            None => next,
+            Some(prev) => concat_diagonal(prev, next)?,
+        });
+        Ok(())
+    }
+
+    pub fn finish(self, output: &Path) -> Result<u64, EngineError> {
+        self.finish_with(None, output)
+    }
+
+    /// Recast columns that still exist on `like` after the JSON round-trip.
+    /// New JS columns stay inferred. Failed casts keep the JSON dtype.
+    pub fn finish_like(self, like: &RecordTable, output: &Path) -> Result<u64, EngineError> {
+        self.finish_with(Some(like), output)
+    }
+
+    fn finish_with(self, like: Option<&RecordTable>, output: &Path) -> Result<u64, EngineError> {
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
         }
-        if rows.is_empty() {
-            write_parquet(DataFrame::empty(), output)?;
-            return Ok(0);
-        }
-        let buf = serde_json::to_vec(rows)
-            .map_err(|error| EngineError::Spec(format!("script rows are not JSON: {error}")))?;
-        let cursor = std::io::Cursor::new(buf);
-        let df = JsonReader::new(cursor).finish()?;
+        let df = self.acc.unwrap_or_else(DataFrame::empty);
+        let df = match like {
+            Some(table) => restore_like(df, &table.df),
+            None => df,
+        };
         let count = df.height() as u64;
         write_parquet(df, output)?;
         Ok(count)
     }
+}
+
+fn restore_like(df: DataFrame, like: &DataFrame) -> DataFrame {
+    let cols: Vec<Column> = df
+        .get_columns()
+        .iter()
+        .map(|col| match like.column(col.name()) {
+            Ok(src) if src.dtype() != col.dtype() => {
+                let Ok(casted) = col.cast(src.dtype()) else {
+                    return col.clone();
+                };
+                if casted.dtype() == src.dtype()
+                    && (col.len() == col.null_count() || casted.null_count() < col.len())
+                {
+                    casted
+                } else {
+                    col.clone()
+                }
+            }
+            _ => col.clone(),
+        })
+        .collect();
+    DataFrame::new(cols).unwrap_or(df)
+}
+
+fn json_rows_to_df(rows: &[serde_json::Value]) -> Result<DataFrame, EngineError> {
+    let buf = serde_json::to_vec(rows)
+        .map_err(|error| EngineError::Spec(format!("script rows are not JSON: {error}")))?;
+    let cursor = std::io::Cursor::new(buf);
+    Ok(JsonReader::new(cursor).finish()?)
+}
+
+fn concat_diagonal(left: DataFrame, right: DataFrame) -> Result<DataFrame, EngineError> {
+    Ok(concat(
+        &[left.lazy(), right.lazy()],
+        UnionArgs {
+            rechunk: true,
+            to_supertypes: true,
+            diagonal: true,
+            ..Default::default()
+        },
+    )?
+    .collect()?)
 }
 
 fn execute_recipe(
@@ -1530,6 +1634,73 @@ mod tests {
         assert_eq!(PolarsEngine::write_records(&rows, &out).unwrap(), 1);
         let back = PolarsEngine::records_from_file(&out, 10).unwrap();
         assert_eq!(back[0]["name"], "a");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_table_slices_and_writer_concat() {
+        let dir = tmp("batches");
+        let src = dir.join("in.parquet");
+        let rows = vec![
+            serde_json::json!({"id": 1}),
+            serde_json::json!({"id": 2}),
+            serde_json::json!({"id": 3}),
+        ];
+        PolarsEngine::write_records(&rows, &src).unwrap();
+        let table = PolarsEngine::open_records(&src).unwrap();
+        assert_eq!(table.height(), 3);
+        assert_eq!(table.slice(0, 2).unwrap().len(), 2);
+        assert_eq!(table.slice(2, 2).unwrap().len(), 1);
+        let mut writer = RecordWriter::new();
+        writer.push(&table.slice(0, 2).unwrap()).unwrap();
+        writer.push(&table.slice(2, 2).unwrap()).unwrap();
+        let out = dir.join("out.parquet");
+        assert_eq!(writer.finish(&out).unwrap(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writer_restores_input_types_after_json() {
+        let dir = tmp("restore");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "id,when,amt\n1,2024-01-15,10.5\n2,2024-01-16,20\n").unwrap();
+        let src = dir.join("in.parquet");
+        PolarsEngine
+            .transform(&csv, &src, &TransformSpec::identity())
+            .unwrap();
+        let table = PolarsEngine::open_records(&src).unwrap();
+        let when = table
+            .df
+            .column("when")
+            .unwrap()
+            .cast(&DataType::Date)
+            .unwrap();
+        let typed = DataFrame::new(vec![
+            table.df.column("id").unwrap().clone(),
+            when,
+            table.df.column("amt").unwrap().clone(),
+        ])
+        .unwrap();
+        write_parquet(typed, &src).unwrap();
+        let table = PolarsEngine::open_records(&src).unwrap();
+        assert_eq!(table.df.column("id").unwrap().dtype(), &DataType::Int64);
+        assert_eq!(table.df.column("when").unwrap().dtype(), &DataType::Date);
+
+        let rows = vec![
+            serde_json::json!({"id": "1", "when": "2024-01-15", "amt": "10.5", "extra": "x"}),
+            serde_json::json!({"id": "2", "when": "2024-01-16", "amt": "20", "extra": "y"}),
+        ];
+        let mut writer = RecordWriter::new();
+        writer.push(&rows).unwrap();
+        let out = dir.join("out.parquet");
+        writer.finish_like(&table, &out).unwrap();
+        let back = ParquetReader::new(fs::File::open(&out).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(back.column("id").unwrap().dtype(), &DataType::Int64);
+        assert_eq!(back.column("when").unwrap().dtype(), &DataType::Date);
+        assert_eq!(back.column("amt").unwrap().dtype(), table.df.column("amt").unwrap().dtype());
+        assert_eq!(back.column("extra").unwrap().dtype(), &DataType::String);
         let _ = fs::remove_dir_all(&dir);
     }
 

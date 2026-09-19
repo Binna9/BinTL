@@ -154,7 +154,9 @@ impl Store {
             }
         };
         if taken > 0 {
-            return Err(StorageError::Conflict("schedule name already exists".into()));
+            return Err(StorageError::Conflict(
+                "schedule name already exists".into(),
+            ));
         }
         Ok(())
     }

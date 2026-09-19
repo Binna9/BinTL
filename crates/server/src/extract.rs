@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -6,6 +7,43 @@ use connectors::{
     ExtractOptions,
 };
 use storage::{chip_slot, Store};
+
+struct ExtractDest {
+    filename: String,
+    final_rel: String,
+    write_path: PathBuf,
+    staging: Option<chip_slot::StagingFile>,
+}
+
+impl ExtractDest {
+    async fn prepare(store: &Store, row: &storage::ExtractRow) -> Result<Self, String> {
+        let (filename, final_rel) = resolve_extract_dest(store, row).await?;
+        let write_rel = chip_slot::write_rel(&final_rel, &row.id).map_err(|e| e.to_string())?;
+        let write_path = store.resolve(&write_rel);
+        if let Some(parent) = write_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let staging =
+            (write_rel != final_rel).then(|| chip_slot::StagingFile::new(write_path.clone()));
+        Ok(Self {
+            filename,
+            final_rel,
+            write_path,
+            staging,
+        })
+    }
+
+    fn commit(mut self, store: &Store) -> Result<(String, String), String> {
+        if let Some(staging) = self.staging.as_mut() {
+            chip_slot::publish(staging.path(), &store.resolve(&self.final_rel))
+                .map_err(|e| e.to_string())?;
+            staging.keep();
+        }
+        Ok((self.filename, self.final_rel))
+    }
+}
 
 async fn append_extract_log(
     store: &Store,
@@ -194,18 +232,13 @@ async fn extract_api_now(store: &Store, row: &storage::ExtractRow) -> Result<(),
         quote: b'"',
         add_sequence: row.add_sequence != 0,
     };
-    let (filename, rel) = resolve_extract_dest(store, row).await?;
-    let dest = store.resolve(&rel);
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    let dest = ExtractDest::prepare(store, row).await?;
     let progress = ExtractProgress::new(store.clone(), row.id.clone());
     let on_progress = |n: u64| progress.report(n);
-    let n = extract_http(&live, &spec, &dest, &opts, Some(&on_progress))
+    let n = extract_http(&live, &spec, &dest.write_path, &opts, Some(&on_progress))
         .await
         .map_err(|e| e.to_string())?;
+    let (filename, rel) = dest.commit(store)?;
     store
         .set_extract_succeeded(&row.id, &rel, &filename, n as i64)
         .await
@@ -226,24 +259,25 @@ async fn extract_database_now(store: &Store, row: &storage::ExtractRow) -> Resul
         quote: b'"',
         add_sequence: row.add_sequence != 0,
     };
-    let (filename, rel) = resolve_extract_dest(store, row).await?;
-    let dest = store.resolve(&rel);
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    let dest = ExtractDest::prepare(store, row).await?;
     let progress = ExtractProgress::new(store.clone(), row.id.clone());
     let on_progress = |n: u64| progress.report(n);
     let n = if let Some(sql) = row.sql_text.as_deref().filter(|s| !s.trim().is_empty()) {
-        extract_query(&live, sql, &dest, &opts, Some(&on_progress))
+        extract_query(&live, sql, &dest.write_path, &opts, Some(&on_progress))
             .await
             .map_err(|e| e.to_string())?
     } else {
-        extract_table(&live, &row.table_name, &dest, &opts, Some(&on_progress))
-            .await
-            .map_err(|e| e.to_string())?
+        extract_table(
+            &live,
+            &row.table_name,
+            &dest.write_path,
+            &opts,
+            Some(&on_progress),
+        )
+        .await
+        .map_err(|e| e.to_string())?
     };
+    let (filename, rel) = dest.commit(store)?;
     store
         .set_extract_succeeded(&row.id, &rel, &filename, n as i64)
         .await

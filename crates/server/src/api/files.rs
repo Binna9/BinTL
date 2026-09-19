@@ -173,7 +173,8 @@ pub(super) async fn commit_spreadsheet(
     let delimiter = parse_delimiter(&delimiter_raw)?;
     let header = body.header.unwrap_or(true);
     let add_sequence = body.add_sequence.unwrap_or(false);
-    let workspace_id = access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
+    let workspace_id =
+        access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
     let path = staged.path.clone();
     let available = tokio::task::spawn_blocking({
         let path = path.clone();
@@ -222,7 +223,11 @@ pub(super) async fn commit_spreadsheet(
             {
                 Ok(Ok(csv)) => csv,
                 Ok(Err(error)) => {
-                    let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.to_string() })).await;
+                    let _ = send_commit_line(
+                        &tx,
+                        json!({ "type": "error", "error": error.to_string() }),
+                    )
+                    .await;
                     return;
                 }
                 Err(error) => {
@@ -238,13 +243,15 @@ pub(super) async fn commit_spreadsheet(
                 }
             };
             if let Err(error) = validate_csv(&csv, delimiter) {
-                let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.message() })).await;
+                let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.message() }))
+                    .await;
                 return;
             }
             exports.push((sheet.filename, csv));
         }
         if let Err(error) = store.delete_stage(&staging_id).await {
-            let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.to_string() })).await;
+            let _ =
+                send_commit_line(&tx, json!({ "type": "error", "error": error.to_string() })).await;
             return;
         }
         let mut files = Vec::with_capacity(exports.len());
@@ -261,7 +268,11 @@ pub(super) async fn commit_spreadsheet(
             {
                 Ok(file) => files.push(file),
                 Err(error) => {
-                    let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.to_string() })).await;
+                    let _ = send_commit_line(
+                        &tx,
+                        json!({ "type": "error", "error": error.to_string() }),
+                    )
+                    .await;
                     return;
                 }
             }
@@ -272,7 +283,9 @@ pub(super) async fn commit_spreadsheet(
     Response::builder()
         .status(StatusCode::CREATED)
         .header(CONTENT_TYPE, "application/x-ndjson")
-        .body(Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)))
+        .body(Body::from_stream(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
         .map_err(|error| {
             AppError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,

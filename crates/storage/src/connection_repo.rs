@@ -6,7 +6,9 @@ impl Store {
         &self,
         new: NewConnection,
     ) -> Result<ConnectionRow, StorageError> {
-        if let Some(auth) = &new.http_auth { auth.validate()?; }
+        if let Some(auth) = &new.http_auth {
+            auth.validate()?;
+        }
         let driver = new.driver.to_ascii_lowercase();
         if !supported_driver(&driver) {
             return Err(StorageError::Invalid(
@@ -70,7 +72,9 @@ impl Store {
         if self.get_connection(id).await?.is_none() {
             return Err(StorageError::NotFound("connection not found".into()));
         }
-        if let Some(auth) = &new.http_auth { auth.validate()?; }
+        if let Some(auth) = &new.http_auth {
+            auth.validate()?;
+        }
         let driver = new.driver.to_ascii_lowercase();
         if !supported_driver(&driver) {
             return Err(StorageError::Invalid(
@@ -135,7 +139,8 @@ impl Store {
         }
 
         if let Some(auth) = &new.http_auth {
-            let raw = serde_json::to_string(auth).map_err(|_| StorageError::Invalid("invalid auth settings".into()))?;
+            let raw = serde_json::to_string(auth)
+                .map_err(|_| StorageError::Invalid("invalid auth settings".into()))?;
             sqlx::query("UPDATE connections SET options_json=json_set(options_json, '$.http_auth', json(?)) WHERE id=?")
                 .bind(raw).bind(id).execute(&mut *tx).await?;
         }

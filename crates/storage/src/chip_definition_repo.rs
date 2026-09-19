@@ -630,10 +630,14 @@ impl Store {
     }
 
     /// ponytail: O(n) scan of serve chips. Index the slug if this table grows.
-    pub async fn list_serve_chip_configs(&self) -> Result<Vec<(String, Option<String>)>, StorageError> {
-        Ok(sqlx::query_as("SELECT id, config_json FROM chips WHERE kind = 'serve'")
-            .fetch_all(&self.pool)
-            .await?)
+    pub async fn list_serve_chip_configs(
+        &self,
+    ) -> Result<Vec<(String, Option<String>)>, StorageError> {
+        Ok(
+            sqlx::query_as("SELECT id, config_json FROM chips WHERE kind = 'serve'")
+                .fetch_all(&self.pool)
+                .await?,
+        )
     }
 
     pub async fn delete_chip(&self, id: &str) -> Result<(), StorageError> {

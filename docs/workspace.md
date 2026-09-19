@@ -12,7 +12,7 @@
 
 - **Chip**: 이름 있는 레시피 (`extract` | `transform` | `load` | `validation` | `sql` | `serve` | `script`). 사용자가 보는 정체는 칩 이름이다. `extracts/…/{uuid}` 경로가 아니다.
 - **Run**: 추가 전용 이력. 모든 실행은 `executions` → `execution_steps`다. 칩 단독은 `source='chip'`, 캔버스 전체는 `source='workspace'`.
-- **Current output**: 워크스페이스+칩당 파일 하나. `workspace_chip_outputs`와 디스크 `chip_outputs/{workspace}/{chip}/current.*`. 재실행이 덮어쓴다. 다음 칩은 카탈로그 UUID가 아니라 이 슬롯을 읽는다.
+- **Current output**: 워크스페이스+칩당 파일 하나. `workspace_chip_outputs`와 디스크 `chip_outputs/{workspace}/{chip}/current.*`. 성공한 재실행만 슬롯을 덮어쓴다. 실패·취소·중단은 tmp에만 쓰고 `current.*`는 직전 성공본을 유지한다. 다음 칩은 카탈로그 UUID가 아니라 이 슬롯을 읽는다.
 
 배선은 **data 에지**다. 변환 입력은 업스트림 칩의 최신 출력이다.
 
@@ -59,7 +59,7 @@
 
 기동 시 미완료 워크스페이스 실행(`queued`/`running`)과 그 leftover 칩, 그리고 돌고 있던 단독 `running`은 `EXECUTION_INTERRUPTED`로 닫는다. 워크스페이스 중간부터 자동 재개하지 않는다. 아직 `queued`인 단독 칩·추출·변환·적재는 그대로 두고 디스패처가 다시 집는다.
 
-칩 단독 `POST /api/chips/:id/run`은 `source='chip'`이다. 이력 화면은 둘을 분리한다. `GET /api/workspaces/:id/runs`는 `runs`와 `workspace_runs`를 같이 준다.
+칩 단독 `POST /api/chips/:id/run`은 `source='chip'`이다. 같은 워크스페이스에서 그 칩이 이미 `queued`/`running`이면 409다. 이력 화면은 둘을 분리한다. `GET /api/workspaces/:id/runs`는 `runs`와 `workspace_runs`를 같이 준다.
 
 ## API
 

@@ -357,7 +357,8 @@ pub async fn list_columns(
                      WHERE TABLE_NAME = '{table}'
                      ORDER BY COLUMN_ID"
                 );
-                let (_, rows) = oracle::query_rows_any(conn, &[all.as_str(), pub_all.as_str(), user.as_str()])?;
+                let (_, rows) =
+                    oracle::query_rows_any(conn, &[all.as_str(), pub_all.as_str(), user.as_str()])?;
                 Ok(rows
                     .into_iter()
                     .map(|row| {

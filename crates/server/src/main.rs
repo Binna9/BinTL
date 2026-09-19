@@ -7,16 +7,16 @@ mod api;
 mod auth;
 mod chip;
 mod config;
+mod dispatch;
 mod error;
 mod execution_error;
 mod extract;
-mod dispatch;
 mod load;
 mod planned_input;
 mod schedule;
+mod script;
 mod search;
 mod serve;
-mod script;
 mod state;
 mod transform;
 mod ui;
@@ -66,10 +66,13 @@ async fn main() {
             std::process::exit(1);
         });
 
-    store.recover_interrupted_executions().await.unwrap_or_else(|error| {
-        eprintln!("execution recovery error: {error}");
-        std::process::exit(1);
-    });
+    store
+        .recover_interrupted_executions()
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("execution recovery error: {error}");
+            std::process::exit(1);
+        });
 
     let execution_permits = Arc::new(Semaphore::new(config.max_concurrent_jobs.max(1)));
     let dispatch = Arc::new(Notify::new());

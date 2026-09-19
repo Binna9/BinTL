@@ -28,7 +28,7 @@ v2 스텝: `select`, `drop`, `rename`, `filter`, `derive`, `trim`, `replace`, `s
 
 ## 출력
 
-칩이 연결된 잡: `chip_outputs/{workspace}/{chip}/current.parquet`. 레거시 단독 잡: `outputs/{job_id}/result.parquet`. 재실행은 슬롯을 덮어쓴다.
+칩이 연결된 잡: `chip_outputs/{workspace}/{chip}/current.parquet`. 레거시 단독 잡은 `outputs/{job_id}/result.parquet`에 쓴다. 성공한 재실행만 슬롯을 덮어쓴다. 실패·취소는 직전 성공 parquet를 유지한다.
 
 `POST /api/transforms/:id/run`과 칩 변환은 queued 변환 단계를 만든 뒤 같은 디스패처가 `jobs::execute`로 돌린다. v1 dest가 있으면 jobs가 CSV를 내보낸 뒤 connectors 적재를 이어서 호출할 수 있다. 새 레시피에 dest를 넣지 않는다.
 

@@ -6,11 +6,7 @@ use tokio::sync::{Notify, Semaphore};
 
 use crate::execution_error;
 
-pub async fn run_loop(
-    store: storage::Store,
-    dispatch: Arc<Notify>,
-    permits: Arc<Semaphore>,
-) {
+pub async fn run_loop(store: storage::Store, dispatch: Arc<Notify>, permits: Arc<Semaphore>) {
     let in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
     loop {
         pump(&store, &dispatch, &permits, &in_flight).await;
@@ -49,10 +45,7 @@ async fn pump(
     }
 }
 
-async fn next_step(
-    store: &storage::Store,
-    in_flight: &Mutex<HashSet<String>>,
-) -> Option<String> {
+async fn next_step(store: &storage::Store, in_flight: &Mutex<HashSet<String>>) -> Option<String> {
     let ids = store.list_dispatchable_steps(16).await.ok()?;
     let mut running = in_flight.lock().ok()?;
     for id in ids {

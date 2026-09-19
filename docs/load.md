@@ -19,8 +19,8 @@
 
 칩 워커가 실재 파일을 확인한 뒤 `execute_load_config`를 호출한다.
 
-- DB: parquet/CSV를 적재용 CSV로 만들고 `connectors::load_table`에 넘긴다. 빈 필드는 비텍스트 컬럼에서 NULL 마커로 보낸다. Postgres는 아래 대량 적재를 탄다. 그 외 DB는 배치 INSERT/MERGE다.
-- 파일: `loads/{workspace}/{scope}/{filename}`에 복사하거나 parquet로 바꾼다. 칩 최신 출력 슬롯을 덮어쓰지 않는다.
+- DB: parquet/CSV를 적재용 CSV로 만들고 `connectors::load_table`에 넘긴다. 빈 필드는 비텍스트 컬럼에서 NULL 마커로 보낸다. Postgres는 아래 대량 적재를 탄다. 그 외 DB는 배치 INSERT/MERGE다. 대상 테이블이 이미 있으면 `truncate`/`replace`/`recreate`는 스테이징 테이블에 다 넣은 뒤 바꾼다. 실패·취소는 원본 테이블을 비우지 않는다.
+- 파일: `loads/{workspace}/{scope}/{filename}`에 복사하거나 parquet로 바꾼다. 칩 최신 출력 슬롯을 덮어쓰지 않는다. 파일 대상도 tmp에 쓴 뒤 성공 시에만 교체한다.
 
 수치와 대상은 `execution_steps.result_json`에 남긴다. 별도 `load_results` 테이블은 없다. 구분자 입력은 적재 전 빈 셀을 검사하고 최대 100개를 warn으로 남긴다. parquet 입력은 이 검사를 건너뛴다. 적재 중에는 `load_progress`로 적재 행 수를 남기고 `output_rows`를 갱신한다. 적재 페이지는 실행 전 입력/대상 컬럼을 비교하고, 마지막 적재 수치를 보여 준다.
 

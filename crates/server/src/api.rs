@@ -19,8 +19,7 @@ use connectors::{
     catalog_layout, export_sheet_to_csv, list_columns, list_databases, list_relations,
     list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter, parse_http_spec,
     parse_ident, parse_table, preview_http, preview_table, run_sql, sniff_delimiter,
-    spreadsheet_format, sql_kind, test_connection, with_database, HttpKv, HttpRequestSpec,
-    SqlKind,
+    spreadsheet_format, sql_kind, test_connection, with_database, HttpKv, HttpRequestSpec, SqlKind,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};

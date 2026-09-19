@@ -42,15 +42,28 @@ import {
   DEFAULT_SCRIPT_MAIN,
   MAX_SCRIPT_BYTES,
   MAX_SCRIPT_FILES,
+  MAX_SCRIPT_INPUTS,
   SCRIPT_ENTRY,
   defaultScriptName,
   filesFromChip,
+  inputsFromChip,
   outputFilenameFromChip,
   scriptBytes,
+  uniqueInputName,
   validScriptFileName,
+  type ScriptInputRef,
 } from "@/features/script/scriptEditorModel";
 import type { Chip } from "@/types/chip";
 import type { Dataset, FramePreview } from "@/types/dataset";
+
+function refsFromDatasetIds(ids: string[]): ScriptInputRef[] {
+  const used = new Set<string>();
+  return ids.slice(0, MAX_SCRIPT_INPUTS).map((dataset_id) => {
+    const name = uniqueInputName("input", used);
+    used.add(name);
+    return { name, dataset_id };
+  });
+}
 
 export function ScriptPage() {
   const { messages } = useLanguage();
@@ -71,7 +84,10 @@ export function ScriptPage() {
   const [chip, setChip] = useState<Chip | null>(null);
   const [chips, setChips] = useState<Chip[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [inputDatasetId, setInputDatasetId] = useState("");
+  const [inputs, setInputs] = useState<ScriptInputRef[]>([]);
+  const [lockedIds, setLockedIds] = useState<string[]>([]);
+  const lockedIdsRef = useRef<string[]>([]);
+  lockedIdsRef.current = lockedIds;
   const [files, setFiles] = useState<Record<string, string>>({ [SCRIPT_ENTRY]: DEFAULT_SCRIPT_MAIN });
   const [activeFile, setActiveFile] = useState(SCRIPT_ENTRY);
   const [newFile, setNewFile] = useState("");
@@ -98,16 +114,21 @@ export function ScriptPage() {
   const nameTaken = occupiedNames.some(
     (value) => value.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase() && value !== chip?.name,
   );
-  const canSave = Boolean(entrySource.trim() && name.trim() && !nameTaken && (canvasMode || inputDatasetId));
-  const canOpenSave = Boolean(entrySource.trim() && (canvasMode || inputDatasetId));
-  const selected = datasets.find((item) => item.id === inputDatasetId);
-  const schemaOnlyInput =
-    selected?.status === "connected"
-    || selected?.status === "planned"
-    || selected?.available === false
-    || !storedDatasetId(inputDatasetId);
-  const pendingFirstResult = previewOpen && (!inputDatasetId || schemaOnlyInput);
-  const canExportResult = !editorChipId && !newWorkspaceChip && !schemaOnlyInput && Boolean(storedDatasetId(inputDatasetId));
+  const canSave = Boolean(entrySource.trim() && name.trim() && !nameTaken && (canvasMode || inputs.length));
+  const canOpenSave = Boolean(entrySource.trim() && (canvasMode || inputs.length));
+  const selected = datasets.find((item) => item.id === inputs[0]?.dataset_id);
+  const schemaOnly = (dataset?: Dataset) =>
+    dataset?.status === "connected"
+    || dataset?.status === "planned"
+    || dataset?.available === false
+    || !storedDatasetId(dataset?.id);
+  const materializedInputs = inputs.filter((item) => {
+    const dataset = datasets.find((row) => row.id === item.dataset_id);
+    return storedDatasetId(item.dataset_id) && !schemaOnly(dataset);
+  });
+  const pendingFirstResult = previewOpen && materializedInputs.length === 0;
+  const canExportResult = !editorChipId && !newWorkspaceChip && materializedInputs.length > 0;
+  const selectedLabel = inputs.length === 0 ? "—" : inputs.map((item) => item.name).join(", ");
 
   useEffect(() => {
     void Promise.all([datasetApi.list(), chipApi.listCatalog()])
@@ -124,14 +145,17 @@ export function ScriptPage() {
       .catch((error) => toastError(messages.workspace.saveChipError, error));
   }, [editorChipId, messages, searchParams]);
 
-  const draftDataset = searchParams.get("dataset")?.trim() ?? "";
+  const draftDatasets = [...new Set(
+    searchParams.getAll("dataset").map((id) => id.trim()).filter(Boolean),
+  )];
 
   useEffect(() => {
     if (!editorChipId) {
       setChip(null);
       setFiles({ [SCRIPT_ENTRY]: DEFAULT_SCRIPT_MAIN });
       setActiveFile(SCRIPT_ENTRY);
-      setInputDatasetId(draftDataset);
+      setLockedIds([]);
+      setInputs(refsFromDatasetIds(draftDatasets));
       setNewFile("");
       setAddingFile(false);
       setPreview(null);
@@ -152,9 +176,14 @@ export function ScriptPage() {
         const nextFiles = filesFromChip(row);
         setFiles(nextFiles);
         setActiveFile(SCRIPT_ENTRY in nextFiles ? SCRIPT_ENTRY : Object.keys(nextFiles)[0] ?? SCRIPT_ENTRY);
-        const savedInput = typeof row.config.input_dataset_id === "string" ? row.config.input_dataset_id : "";
         setOutputName(outputFilenameFromChip(row) || row.name);
-        if (!canvasMode) setInputDatasetId(savedInput);
+        setInputs((current) => {
+          const saved = inputsFromChip(row);
+          if (!canvasMode) return saved;
+          const locked = current.filter((item) => lockedIdsRef.current.includes(item.dataset_id));
+          const extras = saved.filter((item) => !locked.some((lock) => lock.dataset_id === item.dataset_id));
+          return [...locked, ...extras].slice(0, MAX_SCRIPT_INPUTS);
+        });
       })
       .catch((error) => {
         if (!cancelled) toastError(messages.workspace.saveChipError, error);
@@ -168,18 +197,42 @@ export function ScriptPage() {
     if (!workspaceId || !editorChipId) return;
     void chipApi.getInputSlot(workspaceId, editorChipId)
       .then((slot) => {
-        const dataset = datasetFromSlot(slot);
-        if (!dataset) return;
-        setDatasets((current) => current.some((item) => item.id === dataset.id) ? current : [dataset, ...current]);
-        setInputDatasetId(dataset.id);
+        const slots = slot.slots?.length ? slot.slots : [slot];
+        const locked: ScriptInputRef[] = [];
+        const extraDatasets: Dataset[] = [];
+        const used = new Set<string>();
+        for (const item of slots) {
+          const dataset = datasetFromSlot(item);
+          if (!dataset) continue;
+          extraDatasets.push(dataset);
+          const name = uniqueInputName(item.source_chip_name || dataset.filename, used);
+          used.add(name);
+          locked.push({ name, dataset_id: dataset.id });
+        }
+        if (locked.length === 0) {
+          setLockedIds([]);
+          return;
+        }
+        setLockedIds(locked.map((item) => item.dataset_id));
+        setDatasets((current) => {
+          const next = [...current];
+          for (const dataset of extraDatasets) {
+            if (!next.some((item) => item.id === dataset.id)) next.unshift(dataset);
+          }
+          return next;
+        });
+        setInputs((current) => {
+          const extras = current.filter((item) => !locked.some((lock) => lock.dataset_id === item.dataset_id));
+          return [...locked, ...extras].slice(0, MAX_SCRIPT_INPUTS);
+        });
       })
       .catch((error) => toastError(messages.workspace.saveChipError, error));
   }, [editorChipId, messages.workspace.saveChipError, workspaceId]);
 
   useEffect(() => {
-    if (canvasMode || !draftDataset || inputDatasetId) return;
-    setInputDatasetId(draftDataset);
-  }, [canvasMode, draftDataset, inputDatasetId]);
+    if (canvasMode || draftDatasets.length === 0 || inputs.length) return;
+    setInputs(refsFromDatasetIds(draftDatasets));
+  }, [canvasMode, draftDatasets.join("|"), inputs.length]);
 
   useEffect(() => {
     if (editorChipId) return;
@@ -187,17 +240,20 @@ export function ScriptPage() {
   }, [editorChipId, selected?.id, selected?.filename]);
 
   useEffect(() => {
-    if (canvasMode || !inputDatasetId) return;
-    const selected = datasets.find((item) => item.id === inputDatasetId);
-    if (!selected || !KIND_ORDER.includes(selected.kind as (typeof KIND_ORDER)[number])) return;
-    const kind = selected.kind as (typeof KIND_ORDER)[number];
-    setExpandedKinds((current) => {
-      if (current.has(kind)) return current;
-      const next = new Set(current);
-      next.add(kind);
-      return next;
-    });
-  }, [canvasMode, datasets, inputDatasetId]);
+    if (inputs.length === 0) return;
+    for (const item of inputs) {
+      if (lockedIds.includes(item.dataset_id)) continue;
+      const row = datasets.find((dataset) => dataset.id === item.dataset_id);
+      if (!row || !KIND_ORDER.includes(row.kind as (typeof KIND_ORDER)[number])) continue;
+      const kind = row.kind as (typeof KIND_ORDER)[number];
+      setExpandedKinds((current) => {
+        if (current.has(kind)) return current;
+        const next = new Set(current);
+        next.add(kind);
+        return next;
+      });
+    }
+  }, [datasets, inputs, lockedIds]);
 
   const kindLabel: Record<string, string> = {
     upload: messages.transform.kindUpload,
@@ -207,13 +263,36 @@ export function ScriptPage() {
     script: messages.transform.kindScript,
   };
   const grouped = useMemo(
-    () => KIND_ORDER.map((kind) => ({ kind, items: datasets.filter((item) => item.kind === kind) })),
-    [datasets],
+    () => KIND_ORDER.map((kind) => ({
+      kind,
+      items: datasets.filter((item) => item.kind === kind && !lockedIds.includes(item.id)),
+    })),
+    [datasets, lockedIds],
   );
-  const canvasDatasets = useMemo(
-    () => datasets.filter((item) => item.id === inputDatasetId),
-    [datasets, inputDatasetId],
+  const lockedDatasets = useMemo(
+    () => lockedIds
+      .map((id) => datasets.find((item) => item.id === id))
+      .filter((item): item is Dataset => Boolean(item)),
+    [datasets, lockedIds],
   );
+  const catalogCount = datasets.filter((item) => !lockedIds.includes(item.id)).length;
+
+  function toggleInput(dataset: Dataset) {
+    if (lockedIds.includes(dataset.id)) return;
+    setInputs((current) => {
+      if (current.some((item) => item.dataset_id === dataset.id)) {
+        return current.filter((item) => item.dataset_id !== dataset.id);
+      }
+      if (current.length >= MAX_SCRIPT_INPUTS) {
+        toastError(messages.workspace.scriptTooManyInputs);
+        return current;
+      }
+      return [...current, {
+        name: uniqueInputName(dataset.filename, current.map((item) => item.name)),
+        dataset_id: dataset.id,
+      }];
+    });
+  }
 
   function setSource(next: string) {
     setFiles((current) => ({ ...current, [activeFile]: next }));
@@ -260,7 +339,10 @@ export function ScriptPage() {
     return {
       entry: SCRIPT_ENTRY,
       files,
-      input_dataset_id: storedDatasetId(inputDatasetId) || undefined,
+      input_dataset_id: storedDatasetId(inputs[0]?.dataset_id) || undefined,
+      inputs: inputs
+        .map((item) => ({ name: item.name, dataset_id: storedDatasetId(item.dataset_id) }))
+        .filter((item) => item.dataset_id),
       output_filename: outputName.trim() || (selected?.filename ? defaultScriptName(selected.filename) : undefined),
     };
   }
@@ -389,7 +471,7 @@ export function ScriptPage() {
       if (!saved) return;
       const queued = await chipApi.run(saved.id, {
         workspace_id: dest,
-        input_dataset_id: storedDatasetId(inputDatasetId) || undefined,
+        input_dataset_id: storedDatasetId(inputs[0]?.dataset_id) || undefined,
       });
       let run = await chipApi.getRun(queued.id);
       while (run.status === "queued" || run.status === "running") {
@@ -429,10 +511,11 @@ export function ScriptPage() {
     if (busy || !canOpenSave) return;
     setPreviewOpen(true);
     setPreview(null);
-    if (!storedDatasetId(inputDatasetId) || schemaOnlyInput) return;
+    if (materializedInputs.length === 0) return;
     setPreviewLoading(true);
     try {
-      setPreview(await datasetApi.previewScript(inputDatasetId, files, SCRIPT_ENTRY));
+      const previewId = materializedInputs[0].dataset_id;
+      setPreview(await datasetApi.previewScript(previewId, files, SCRIPT_ENTRY, 200, materializedInputs));
     } catch (error) {
       toastError(messages.errors.previewScript, error);
     } finally {
@@ -485,7 +568,7 @@ export function ScriptPage() {
   return (
     <PageShell>
       <PageHeader
-        iconName="api"
+        iconName="script"
         eyebrow={messages.nav.script}
         title={messages.script.title}
         description={messages.script.description}
@@ -511,41 +594,37 @@ export function ScriptPage() {
         <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.catalog]}>
           <aside className="flex min-h-0 flex-col overflow-hidden">
             <PaneHeader
-              title={canvasMode ? messages.workspace.inputDataset : messages.transform.catalog}
-              meta={messages.common.count(canvasMode ? canvasDatasets.length : datasets.length)}
+              title={messages.transform.catalog}
+              meta={messages.common.count(catalogCount)}
             />
             <div className="scroll-pane min-h-0 flex-1 overflow-auto bg-surface">
-              {canvasMode ? (
-                canvasDatasets.length === 0 ? (
-                  <p className="p-3 text-xs text-text-tertiary">{messages.workspace.selectDataset}</p>
-                ) : canvasDatasets.map((dataset) => (
-                  <div
-                    key={dataset.id}
-                    className={cn(
-                      "flex w-full items-start gap-2 border-b border-border px-3 py-2.5 text-left last:border-b-0",
-                      selectableClass(true),
-                    )}
-                  >
-                    <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
-                    <span className="min-w-0">
-                      <span className="block break-all text-[13px] font-medium leading-4">{dataset.filename}</span>
-                      <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
-                        {dataset.status === "connected" || dataset.status === "planned"
-                          ? messages.transform.schemaOnlyHint
-                          : dataset.origin?.connection_name
-                            ? `${dataset.origin.connection_name} · ${dataset.origin.table_name}`
-                            : dataset.row_count != null
-                              ? messages.common.rows(dataset.row_count)
-                              : dataset.size_bytes != null
-                                ? fmtBytes(dataset.size_bytes)
-                                : dataset.kind}
-                      </span>
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <div className="space-y-2 p-2">
-                  {grouped.map((group) => {
+              {canvasMode && lockedIds.length > 0 ? (
+                <div className="border-b border-border">
+                  <p className="px-3 py-2 text-[11px] text-text-tertiary">{messages.workspace.inputFromEdge}</p>
+                  {lockedDatasets.map((dataset) => {
+                    const key = inputs.find((item) => item.dataset_id === dataset.id)?.name;
+                    return (
+                      <div
+                        key={dataset.id}
+                        className={cn(
+                          "flex w-full items-start gap-2 border-b border-border px-3 py-2.5 text-left last:border-b-0",
+                          selectableClass(true),
+                        )}
+                      >
+                        <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
+                        <span className="min-w-0">
+                          <span className="block break-all text-[13px] font-medium leading-4">{dataset.filename}</span>
+                          <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
+                            {key ? messages.script.inputKey(key) : messages.workspace.inputFromEdge}
+                          </span>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+              <div className="space-y-2 p-2">
+                {grouped.map((group) => {
                     const appearance = KIND_APPEARANCE[group.kind];
                     const KindIcon = appearance.icon;
                     const expanded = expandedKinds.has(group.kind);
@@ -597,40 +676,42 @@ export function ScriptPage() {
                         {expanded && visibleItems.length === 0 ? (
                           <p className="px-3 py-4 text-center text-xs text-text-tertiary">{messages.transform.noMatchingFiles}</p>
                         ) : null}
-                        {expanded && visibleItems.map((dataset) => (
+                        {expanded && visibleItems.map((dataset) => {
+                          const selectedInput = inputs.find((item) => item.dataset_id === dataset.id);
+                          const locked = lockedIds.includes(dataset.id);
+                          return (
                           <button
                             key={dataset.id}
                             type="button"
-                            disabled={busy}
+                            disabled={busy || locked}
                             className={cn(
                               "flex w-full min-w-0 items-start gap-2 border-b border-border px-3 py-2.5 text-left last:border-b-0",
-                              selectableClass(inputDatasetId === dataset.id),
+                              selectableClass(Boolean(selectedInput)),
                             )}
-                            onClick={() => {
-                              const next = dataset.id === inputDatasetId ? "" : dataset.id;
-                              setInputDatasetId(next);
-                            }}
+                            onClick={() => toggleInput(dataset)}
                           >
                             <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
                             <span className="min-w-0 flex-1">
                               <span className="block break-all text-[13px] font-medium leading-4">{dataset.filename}</span>
                               <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
-                                {dataset.origin?.connection_name
-                                  ? `${dataset.origin.connection_name} · ${dataset.origin.table_name}`
-                                  : dataset.row_count != null
-                                    ? messages.common.rows(dataset.row_count)
-                                    : dataset.size_bytes != null
-                                      ? fmtBytes(dataset.size_bytes)
-                                      : dataset.id.slice(0, 8)}
+                                {selectedInput
+                                  ? messages.script.inputKey(selectedInput.name)
+                                  : dataset.origin?.connection_name
+                                    ? `${dataset.origin.connection_name} · ${dataset.origin.table_name}`
+                                    : dataset.row_count != null
+                                      ? messages.common.rows(dataset.row_count)
+                                      : dataset.size_bytes != null
+                                        ? fmtBytes(dataset.size_bytes)
+                                        : dataset.id.slice(0, 8)}
                               </span>
                             </span>
                           </button>
-                        ))}
+                          );
+                        })}
                       </section>
                     );
                   })}
-                </div>
-              )}
+              </div>
             </div>
           </aside>
           <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -651,10 +732,10 @@ export function ScriptPage() {
                 <div className="flex h-[3.25rem] items-start gap-2 rounded border border-border bg-raised px-2.5 py-1.5 text-[13px]">
                   <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0 text-text-tertiary" aria-hidden="true" />
                   <span
-                    title={selected?.filename}
+                    title={selectedLabel}
                     className="line-clamp-2 h-[2.5rem] min-w-0 flex-1 overflow-hidden break-all leading-5"
                   >
-                    {selected?.filename ?? "—"}
+                    {selectedLabel}
                   </span>
                 </div>
               </FormField>
@@ -931,7 +1012,7 @@ export function ScriptPage() {
           <dl className="space-y-2 border-t border-border/60 pt-3 text-[11px] text-text-tertiary">
             <div className="flex gap-2">
               <dt className="w-14 shrink-0">{messages.transform.selectedFile}</dt>
-              <dd className="min-w-0 truncate text-text-secondary">{selected?.filename ?? "—"}</dd>
+              <dd className="min-w-0 truncate text-text-secondary">{selectedLabel}</dd>
             </div>
             <div className="flex gap-2">
               <dt className="w-14 shrink-0">{messages.workspace.scriptFiles}</dt>

@@ -327,13 +327,18 @@ pub async fn list_relations(
                         .collect());
                 }
                 let table_sqls = [
-                    format!("SELECT TABLE_NAME, 'TABLE' FROM SYS.DBA_TABLES WHERE OWNER = '{schema}'"),
-                    format!("SELECT TABLE_NAME, 'TABLE' FROM SYS.ALL_TABLES WHERE OWNER = '{schema}'"),
+                    format!(
+                        "SELECT TABLE_NAME, 'TABLE' FROM SYS.DBA_TABLES WHERE OWNER = '{schema}'"
+                    ),
+                    format!(
+                        "SELECT TABLE_NAME, 'TABLE' FROM SYS.ALL_TABLES WHERE OWNER = '{schema}'"
+                    ),
                     format!("SELECT TABLE_NAME, 'TABLE' FROM DBA_TABLES WHERE OWNER = '{schema}'"),
                     format!("SELECT TABLE_NAME, 'TABLE' FROM ALL_TABLES WHERE OWNER = '{schema}'"),
                     "SELECT TABLE_NAME, 'TABLE' FROM SYS.USER_TABLES".to_string(),
                     "SELECT TABLE_NAME, 'TABLE' FROM USER_TABLES".to_string(),
-                    "SELECT OBJECT_NAME, 'TABLE' FROM USER_OBJECTS WHERE OBJECT_TYPE = 'TABLE'".to_string(),
+                    "SELECT OBJECT_NAME, 'TABLE' FROM USER_OBJECTS WHERE OBJECT_TYPE = 'TABLE'"
+                        .to_string(),
                     "SELECT TNAME, 'TABLE' FROM TAB WHERE TABTYPE = 'TABLE'".to_string(),
                 ];
                 let view_sqls = [
@@ -343,7 +348,8 @@ pub async fn list_relations(
                     format!("SELECT VIEW_NAME, 'VIEW' FROM ALL_VIEWS WHERE OWNER = '{schema}'"),
                     "SELECT VIEW_NAME, 'VIEW' FROM SYS.USER_VIEWS".to_string(),
                     "SELECT VIEW_NAME, 'VIEW' FROM USER_VIEWS".to_string(),
-                    "SELECT OBJECT_NAME, 'VIEW' FROM USER_OBJECTS WHERE OBJECT_TYPE = 'VIEW'".to_string(),
+                    "SELECT OBJECT_NAME, 'VIEW' FROM USER_OBJECTS WHERE OBJECT_TYPE = 'VIEW'"
+                        .to_string(),
                     "SELECT TNAME, 'VIEW' FROM TAB WHERE TABTYPE = 'VIEW'".to_string(),
                 ];
                 let table_refs: Vec<&str> = table_sqls.iter().map(|s| s.as_str()).collect();
@@ -359,7 +365,9 @@ pub async fn list_relations(
                     Err(error) => last = Some(error),
                 }
                 if rows.is_empty() {
-                    return Err(last.unwrap_or_else(|| ConnectError::Invalid("no tables found".into())));
+                    return Err(
+                        last.unwrap_or_else(|| ConnectError::Invalid("no tables found".into()))
+                    );
                 }
                 Ok(rows
                     .into_iter()

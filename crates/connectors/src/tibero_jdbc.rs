@@ -87,13 +87,18 @@ pub(crate) fn query_rows(
 ) -> Result<(Vec<String>, Vec<Vec<String>>), ConnectError> {
     let mut columns = Vec::new();
     let mut rows = Vec::new();
-    stream_query(conn, sql, |names| {
-        columns = names.to_vec();
-        Ok(())
-    }, |row| {
-        rows.push(row.to_vec());
-        Ok(())
-    })?;
+    stream_query(
+        conn,
+        sql,
+        |names| {
+            columns = names.to_vec();
+            Ok(())
+        },
+        |row| {
+            rows.push(row.to_vec());
+            Ok(())
+        },
+    )?;
     Ok((columns, rows))
 }
 
@@ -101,17 +106,29 @@ pub(crate) fn exec(conn: &JdbcConn, sql: &str) -> Result<u64, ConnectError> {
     let mut env = attach()?;
     let sql_j = env.new_string(sql)?;
     let stmt = env
-        .call_method(handle(conn)?, "createStatement", "()Ljava/sql/Statement;", &[])?
+        .call_method(
+            handle(conn)?,
+            "createStatement",
+            "()Ljava/sql/Statement;",
+            &[],
+        )?
         .l()?;
     check_ex(&mut env)?;
     let has_rs = env
-        .call_method(&stmt, "execute", "(Ljava/lang/String;)Z", &[JValue::Object(&sql_j)])?
+        .call_method(
+            &stmt,
+            "execute",
+            "(Ljava/lang/String;)Z",
+            &[JValue::Object(&sql_j)],
+        )?
         .z()?;
     check_ex(&mut env)?;
     let n = if has_rs {
         0
     } else {
-        env.call_method(&stmt, "getUpdateCount", "()I", &[])?.i()?.max(0) as u64
+        env.call_method(&stmt, "getUpdateCount", "()I", &[])?
+            .i()?
+            .max(0) as u64
     };
     close_stmt(&mut env, &stmt);
     Ok(n)
@@ -126,7 +143,12 @@ pub(crate) fn stream_query(
     let mut env = attach()?;
     let sql_j = env.new_string(sql)?;
     let stmt = env
-        .call_method(handle(conn)?, "createStatement", "()Ljava/sql/Statement;", &[])?
+        .call_method(
+            handle(conn)?,
+            "createStatement",
+            "()Ljava/sql/Statement;",
+            &[],
+        )?
         .l()?;
     check_ex(&mut env)?;
     let rs = env.call_method(
@@ -145,7 +167,12 @@ pub(crate) fn stream_query(
     let mut columns = Vec::with_capacity(ncols.max(0) as usize);
     for i in 1..=ncols {
         let label = env
-            .call_method(&meta, "getColumnLabel", "(I)Ljava/lang/String;", &[JValue::Int(i)])?
+            .call_method(
+                &meta,
+                "getColumnLabel",
+                "(I)Ljava/lang/String;",
+                &[JValue::Int(i)],
+            )?
             .l()?;
         columns.push(java_string(&mut env, label));
     }
@@ -202,7 +229,10 @@ fn unique_keep_order(names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn relations(conn: &JdbcConn, schema: &str) -> Result<Vec<(String, String)>, ConnectError> {
+pub(crate) fn relations(
+    conn: &JdbcConn,
+    schema: &str,
+) -> Result<Vec<(String, String)>, ConnectError> {
     let mut env = attach()?;
     let meta = db_meta(&mut env, conn)?;
     let mut rows = get_tables(&mut env, &meta, Some(schema))?;
@@ -237,7 +267,11 @@ pub(crate) struct JdbcColumn {
     pub comment: Option<String>,
 }
 
-pub(crate) fn columns(conn: &JdbcConn, schema: &str, table: &str) -> Result<Vec<JdbcColumn>, ConnectError> {
+pub(crate) fn columns(
+    conn: &JdbcConn,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<JdbcColumn>, ConnectError> {
     let owner = crate::sql_lit(schema);
     let name = crate::sql_lit(table);
     let typed = "CASE
@@ -310,7 +344,11 @@ fn nonempty_cell(value: &str) -> Option<String> {
     }
 }
 
-fn jdbc_get_columns(conn: &JdbcConn, schema: &str, table: &str) -> Result<Vec<JdbcColumn>, ConnectError> {
+fn jdbc_get_columns(
+    conn: &JdbcConn,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<JdbcColumn>, ConnectError> {
     let mut env = attach()?;
     let meta = db_meta(&mut env, conn)?;
     let catalog = JObject::null();
@@ -366,7 +404,12 @@ fn jdbc_get_columns(conn: &JdbcConn, schema: &str, table: &str) -> Result<Vec<Jd
 }
 
 fn db_meta<'a>(env: &mut JNIEnv<'a>, conn: &JdbcConn) -> Result<JObject<'a>, ConnectError> {
-    let meta = env.call_method(handle(conn)?, "getMetaData", "()Ljava/sql/DatabaseMetaData;", &[]);
+    let meta = env.call_method(
+        handle(conn)?,
+        "getMetaData",
+        "()Ljava/sql/DatabaseMetaData;",
+        &[],
+    );
     Ok(step(env, meta)?.l()?)
 }
 
@@ -435,13 +478,22 @@ fn read_strings(env: &mut JNIEnv, rs: &JObject, col: i32) -> Result<Vec<String>,
 }
 
 fn rs_string(env: &mut JNIEnv, rs: &JObject, col: i32) -> Result<String, ConnectError> {
-    let value = env.call_method(rs, "getString", "(I)Ljava/lang/String;", &[JValue::Int(col)])?;
+    let value = env.call_method(
+        rs,
+        "getString",
+        "(I)Ljava/lang/String;",
+        &[JValue::Int(col)],
+    )?;
     check_ex(env)?;
     Ok(java_string(env, value.l()?))
 }
 
 fn rs_i64(env: &mut JNIEnv, rs: &JObject, col: i32) -> Option<i64> {
-    let value = env.call_method(rs, "getLong", "(I)J", &[JValue::Int(col)]).ok()?.j().ok()?;
+    let value = env
+        .call_method(rs, "getLong", "(I)J", &[JValue::Int(col)])
+        .ok()?
+        .j()
+        .ok()?;
     let was_null = env.call_method(rs, "wasNull", "()Z", &[]).ok()?.z().ok()?;
     if was_null {
         None
@@ -507,7 +559,12 @@ fn jvm(jar: &Path) -> Result<&'static JavaVM, ConnectError> {
 
 fn load_driver(env: &mut JNIEnv) -> Result<(), ConnectError> {
     // Tokio worker threads have a null context ClassLoader, so DriverManager SPI finds nothing.
-    let thread = env.call_static_method("java/lang/Thread", "currentThread", "()Ljava/lang/Thread;", &[]);
+    let thread = env.call_static_method(
+        "java/lang/Thread",
+        "currentThread",
+        "()Ljava/lang/Thread;",
+        &[],
+    );
     let thread = step(env, thread)?.l()?;
     let loader = env.call_static_method(
         "java/lang/ClassLoader",

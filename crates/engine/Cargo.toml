@@ -15,4 +15,6 @@ polars = { version = "0.51", default-features = false, features = [
     "json",
     "regex",
     "strings",
+    "dtype-date",
+    "dtype-datetime",
 ] }

@@ -117,7 +117,8 @@ pub async fn extract_query(
     }
     if c.driver == "postgres" && !opts.add_sequence && postgres_copy_query_ok(&sql) {
         let copy_sql = postgres_copy_to_query(&sql, opts.header, opts.delimiter, opts.quote);
-        return copy_postgres_to_file(c, &copy_sql, dest, opts.header, opts.quote, on_progress).await;
+        return copy_postgres_to_file(c, &copy_sql, dest, opts.header, opts.quote, on_progress)
+            .await;
     }
     let mut wtr = WriterBuilder::new()
         .delimiter(opts.delimiter)
@@ -173,7 +174,14 @@ pub async fn extract_query(
             )
             .await?
         }
-        "oracle" => stream_oracle(c, &sql, &mut wtr, opts.header, opts.add_sequence, on_progress)?,
+        "oracle" => stream_oracle(
+            c,
+            &sql,
+            &mut wtr,
+            opts.header,
+            opts.add_sequence,
+            on_progress,
+        )?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     wtr.flush()?;
@@ -209,13 +217,14 @@ async fn exec_sql(
     let affected = match family {
         "postgres" => {
             let pool = pg_pool(c).await?;
-            let n = if let Some(set) = schema.and_then(|value| schema_search_path_sql(family, value)) {
-                let mut conn = pool.acquire().await?;
-                sqlx::query(&set).execute(&mut *conn).await?;
-                sqlx::query(sql).execute(&mut *conn).await?.rows_affected()
-            } else {
-                sqlx::query(sql).execute(&pool).await?.rows_affected()
-            };
+            let n =
+                if let Some(set) = schema.and_then(|value| schema_search_path_sql(family, value)) {
+                    let mut conn = pool.acquire().await?;
+                    sqlx::query(&set).execute(&mut *conn).await?;
+                    sqlx::query(sql).execute(&mut *conn).await?.rows_affected()
+                } else {
+                    sqlx::query(sql).execute(&pool).await?.rows_affected()
+                };
             pool.close().await;
             n
         }
@@ -790,7 +799,9 @@ mod tests {
         assert_eq!(sql_kind("UPDATE t SET a = 1"), SqlKind::Exec);
         assert!(normalize_sql("SELECT ';'").is_ok());
         assert!(postgres_copy_query_ok("SELECT 1"));
-        assert!(postgres_copy_query_ok("WITH a AS (SELECT 1) SELECT * FROM a"));
+        assert!(postgres_copy_query_ok(
+            "WITH a AS (SELECT 1) SELECT * FROM a"
+        ));
         assert!(!postgres_copy_query_ok("SHOW search_path"));
     }
 

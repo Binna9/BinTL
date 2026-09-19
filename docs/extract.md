@@ -33,7 +33,7 @@
 | 단독 `/api/extracts` | `extract_runs/{database\|api}/{id}/{filename}` |
 | 업로드 | `extract_runs/uploads/…` |
 
-사용자에게 보이는 이름은 칩 이름이다. 재실행은 슬롯을 덮어쓴다.
+사용자에게 보이는 이름은 칩 이름이다. 성공한 재실행만 슬롯을 덮어쓴다. 실패·취소는 `current.*`를 건드리지 않는다.
 
 다운스트림이 슬롯이 비어 있으면 `run_extract_chip_sync`가 최대 120초 업스트림 extract를 기다린다.
 

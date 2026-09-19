@@ -198,10 +198,7 @@ impl Store {
                 }
             }
         }
-        for rel in [
-            chip_slot::REL_CHIP_OUTPUTS.to_string(),
-            "loads".to_string(),
-        ] {
+        for rel in [chip_slot::REL_CHIP_OUTPUTS.to_string(), "loads".to_string()] {
             match tokio::fs::remove_dir_all(self.data_dir.join(rel).join(id)).await {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -588,12 +585,11 @@ impl Store {
                 .execute(&self.pool)
                 .await?;
             }
-            let edge_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM workspace_edges WHERE workspace_id = ?",
-            )
-            .bind(&workspace_id)
-            .fetch_one(&self.pool)
-            .await?;
+            let edge_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM workspace_edges WHERE workspace_id = ?")
+                    .bind(&workspace_id)
+                    .fetch_one(&self.pool)
+                    .await?;
             if edge_count > 0 {
                 continue;
             }
@@ -779,13 +775,12 @@ pub(crate) async fn write_workspace_graph(
     let mut saved_chips = Vec::with_capacity(chip_ids.len());
     for chip_id in chip_ids {
         let chip_id = required_text(chip_id, "chip id")?;
-        let chip = sqlx::query_as::<_, ChipRow>(&format!(
-            "SELECT {CHIP_COLS} FROM chips WHERE id = ?"
-        ))
-        .bind(chip_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| StorageError::NotFound(format!("chip {chip_id} not found")))?;
+        let chip =
+            sqlx::query_as::<_, ChipRow>(&format!("SELECT {CHIP_COLS} FROM chips WHERE id = ?"))
+                .bind(chip_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(|| StorageError::NotFound(format!("chip {chip_id} not found")))?;
         chip_matches_workspace_owner(&chip, workspace)?;
         saved_chips.push(chip);
     }

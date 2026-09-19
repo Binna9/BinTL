@@ -70,10 +70,12 @@ pub fn normalize_slug(raw: &str) -> Result<String, AppError> {
 }
 
 pub fn redact_config(config: &mut Value) {
-    let has_key = config
-        .get("api_key_hash")
-        .and_then(Value::as_str)
-        .is_some_and(|value| !value.is_empty());
+    let has_key = ["api_key", "api_key_hash"].iter().any(|key| {
+        config
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    });
     let slug = config
         .get("slug")
         .and_then(Value::as_str)
@@ -81,7 +83,6 @@ pub fn redact_config(config: &mut Value) {
         .trim()
         .to_string();
     if let Some(object) = config.as_object_mut() {
-        object.remove("api_key");
         object.remove("api_key_hash");
         object.insert("has_api_key".into(), json!(has_key));
         if !slug.is_empty() {
@@ -143,28 +144,45 @@ pub async fn validate_serve_config(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let existing_key = existing
+        .and_then(|value| value.get("api_key").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let existing_hash = existing
         .and_then(|value| value.get("api_key_hash").and_then(Value::as_str))
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let (api_key_hash, revealed) = if let Some(key) = provided {
-        (hash_api_key(key), Some(key.to_string()))
+    let (api_key_hash, stored_key, revealed) = if let Some(key) = provided {
+        (
+            hash_api_key(key),
+            Some(key.to_string()),
+            Some(key.to_string()),
+        )
+    } else if let Some(key) = existing_key {
+        (
+            existing_hash
+                .map(str::to_string)
+                .unwrap_or_else(|| hash_api_key(key)),
+            Some(key.to_string()),
+            None,
+        )
     } else if let Some(hash) = existing_hash {
-        (hash.to_string(), None)
+        (hash.to_string(), None, None)
     } else if generate_if_missing {
         let key = generate_api_key();
-        (hash_api_key(&key), Some(key))
+        (hash_api_key(&key), Some(key.clone()), Some(key))
     } else {
         return Err(AppError::bad("API key is not configured"));
     };
-    Ok((
-        json!({
-            "slug": slug,
-            "api_key_hash": api_key_hash,
-            "freshness": freshness,
-        }),
-        revealed,
-    ))
+    let mut config = json!({
+        "slug": slug,
+        "api_key_hash": api_key_hash,
+        "freshness": freshness,
+    });
+    if let Some(key) = stored_key {
+        config["api_key"] = json!(key);
+    }
+    Ok((config, revealed))
 }
 
 async fn ensure_slug_unique(
@@ -196,7 +214,10 @@ async fn ensure_slug_unique(
 }
 
 fn provided_api_key(headers: &HeaderMap) -> Option<String> {
-    if let Some(value) = headers.get("x-api-key").and_then(|value| value.to_str().ok()) {
+    if let Some(value) = headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+    {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             return Some(trimmed.to_string());
@@ -227,7 +248,10 @@ fn hash_eq(left: &str, right: &str) -> bool {
         == 0
 }
 
-async fn find_serve_chip(store: &Store, slug: &str) -> Result<Option<(ChipRow, ServeConfig)>, AppError> {
+async fn find_serve_chip(
+    store: &Store,
+    slug: &str,
+) -> Result<Option<(ChipRow, ServeConfig)>, AppError> {
     let slug = normalize_slug(slug)?;
     let mut found = None;
     for (id, raw) in store.list_serve_chip_configs().await? {
@@ -323,7 +347,11 @@ async fn publish(
     })
     .await
     .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))??;
-    let columns: Vec<String> = preview.columns.iter().map(|column| column.name.clone()).collect();
+    let columns: Vec<String> = preview
+        .columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect();
     let rows: Vec<Vec<String>> = preview.rows.into_iter().skip(offset).take(limit).collect();
     let row_count = preview.row_count.unwrap_or(preview.sampled_rows as u64);
     let truncated = preview.truncated || offset + rows.len() < row_count as usize;
@@ -349,7 +377,10 @@ async fn publish(
         .map(|row| {
             let mut object = Map::new();
             for (index, name) in columns.iter().enumerate() {
-                object.insert(name.clone(), json!(row.get(index).cloned().unwrap_or_default()));
+                object.insert(
+                    name.clone(),
+                    json!(row.get(index).cloned().unwrap_or_default()),
+                );
             }
             Value::Object(object)
         })
@@ -430,7 +461,11 @@ pub async fn queue_serve_chip_run(
         .ok_or_else(|| AppError::not_found("chip run disappeared"))
 }
 
-pub async fn finish_serve_run(state: &AppState, run_id: &str, config: &Value) -> Result<(), AppError> {
+pub async fn finish_serve_run(
+    state: &AppState,
+    run_id: &str,
+    config: &Value,
+) -> Result<(), AppError> {
     let slug = config
         .get("slug")
         .and_then(Value::as_str)
@@ -438,10 +473,12 @@ pub async fn finish_serve_run(state: &AppState, run_id: &str, config: &Value) ->
         .trim();
     let result = json!({ "slug": slug, "path": format!("/p/{slug}") }).to_string();
     match state.store.set_chip_run_running(run_id).await {
-        Ok(()) => state
-            .store
-            .set_chip_run_succeeded_with_result(run_id, Some(&result), None)
-            .await?,
+        Ok(()) => {
+            state
+                .store
+                .set_chip_run_succeeded_with_result(run_id, Some(&result), None)
+                .await?
+        }
         Err(_) => {
             let run = state
                 .store
@@ -449,7 +486,9 @@ pub async fn finish_serve_run(state: &AppState, run_id: &str, config: &Value) ->
                 .await?
                 .ok_or_else(|| AppError::not_found("chip run disappeared"))?;
             if run.status != "running" && run.status != "succeeded" {
-                return Err(AppError::conflict("chip run must be queued before starting"));
+                return Err(AppError::conflict(
+                    "chip run must be queued before starting",
+                ));
             }
         }
     }
@@ -472,5 +511,20 @@ mod tests {
         assert_ne!(hash_api_key(key), hash_api_key("other"));
         assert!(hash_eq(&hash_api_key(key), &hash_api_key(key)));
         assert!(!hash_eq(&hash_api_key(key), &hash_api_key("other")));
+    }
+
+    #[test]
+    fn redact_keeps_plaintext_key() {
+        let mut config = json!({
+            "slug": "orders",
+            "api_key": "btl_secret",
+            "api_key_hash": "abc",
+            "freshness": "slot",
+        });
+        redact_config(&mut config);
+        assert_eq!(config["api_key"], "btl_secret");
+        assert!(config.get("api_key_hash").is_none());
+        assert_eq!(config["has_api_key"], true);
+        assert_eq!(config["public_path"], "/p/orders");
     }
 }

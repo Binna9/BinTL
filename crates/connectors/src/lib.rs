@@ -17,12 +17,12 @@ mod spreadsheet;
 mod tibero_jdbc;
 
 pub use catalog::{catalog_layout, list_databases, list_relations, list_schemas, CatalogItem};
-pub use oracle::{configure_odbc, OdbcSettings};
 pub use extract::{extract_table, parse_delimiter, sniff_delimiter, ExtractOptions};
 pub use http_extract::{
     extract_http, parse_http_spec, ping_http, preview_http, HttpKv, HttpPreview, HttpRequestSpec,
 };
 pub use inspect::{list_columns, preview_table, ColumnInfo, Preview};
+pub use oracle::{configure_odbc, OdbcSettings};
 pub use query::{extract_query, normalize_sql, run_sql, sql_kind, QueryOutcome, SqlKind};
 pub use spreadsheet::{export_sheet_to_csv, list_sheets, spreadsheet_format, SheetInfo};
 use tiberius::{AuthMethod, Client, Config, EncryptionLevel};
@@ -106,10 +106,7 @@ pub fn parse_ident(raw: &str) -> Result<&str, ConnectError> {
     if raw.is_empty() || raw.len() > 128 {
         return Err(ConnectError::Invalid("invalid identifier".into()));
     }
-    if !raw
-        .chars()
-        .all(|c| is_sql_ident_char(c) || c == '-')
-    {
+    if !raw.chars().all(|c| is_sql_ident_char(c) || c == '-') {
         return Err(ConnectError::Invalid(
             "identifier may only contain letters, digits, underscore, hyphen, $, #".into(),
         ));
@@ -211,7 +208,9 @@ fn map_sqlx_error(error: sqlx::Error) -> ConnectError {
 fn postgres_non_utf8_protocol(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("non-utf-8")
-        && (lower.contains("errorresponse") || lower.contains("lc_messages") || lower.contains("authentication"))
+        && (lower.contains("errorresponse")
+            || lower.contains("lc_messages")
+            || lower.contains("authentication"))
 }
 
 pub(crate) async fn pg_pool(c: &LiveConnection) -> Result<Pool<Postgres>, ConnectError> {
@@ -609,10 +608,124 @@ fn clear_sql(family: &str, q: &str) -> String {
     }
 }
 
+fn staging_table(dest: &TableName) -> TableName {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    TableName {
+        schema: dest.schema.clone(),
+        table: format!("bintlld{}", &id[..12]),
+    }
+}
+
+fn col_sql(family: &str, cols: &[String]) -> String {
+    cols.iter()
+        .map(|col| quote_ident(family, col))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn drop_table_sql(family: &str, q: &str) -> String {
+    match family {
+        "oracle" | "mssql" => format!("DROP TABLE {q}"),
+        _ => format!("DROP TABLE IF EXISTS {q}"),
+    }
+}
+
+fn rename_stage_sql(family: &str, stage_q: &str, dest_q: &str, dest_table: &str) -> String {
+    let dest = quote_ident(family, dest_table);
+    match family {
+        "mysql" => format!("RENAME TABLE {stage_q} TO {dest_q}"),
+        "mssql" => format!("EXEC sp_rename '{stage_q}', '{dest_table}'"),
+        _ => format!("ALTER TABLE {stage_q} RENAME TO {dest}"),
+    }
+}
+
+fn swap_clear_sql(family: &str, q: &str) -> String {
+    match family {
+        "postgres" => format!("TRUNCATE TABLE {q}"),
+        _ => format!("DELETE FROM {q}"),
+    }
+}
+
+fn insert_select_sql(family: &str, dest_q: &str, stage_q: &str, cols: &[String]) -> String {
+    let cols = col_sql(family, cols);
+    format!("INSERT INTO {dest_q} ({cols}) SELECT {cols} FROM {stage_q}")
+}
+
+async fn swap_sqlx_table<DB>(
+    pool: &Pool<DB>,
+    family: &str,
+    dest_q: &str,
+    dest_table: &str,
+    stage_q: &str,
+    mode: &str,
+    cols: &[String],
+) -> Result<(), ConnectError>
+where
+    DB: sqlx::Database,
+    for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
+    for<'c> &'c mut <DB as sqlx::Database>::Connection: sqlx::Executor<'c, Database = DB>,
+{
+    let mut tx = pool.begin().await?;
+    if mode == "recreate" {
+        sqlx::query(&drop_table_sql(family, dest_q))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&rename_stage_sql(family, stage_q, dest_q, dest_table))
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        sqlx::query(&swap_clear_sql(family, dest_q))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&insert_select_sql(family, dest_q, stage_q, cols))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&drop_table_sql(family, stage_q))
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+fn oracle_swap_loaded(
+    conn: &oracle::OraConn<'_>,
+    family: &str,
+    dest_q: &str,
+    dest_table: &str,
+    stage_q: &str,
+    mode: &str,
+    cols: &[String],
+) -> Result<(), ConnectError> {
+    if mode == "recreate" {
+        oracle::exec_ignore(
+            conn,
+            &drop_table_sql(family, dest_q),
+            &["ORA-00942", "TBR-0008", "table or view does not exist"],
+        )?;
+        oracle::exec(conn, &rename_stage_sql(family, stage_q, dest_q, dest_table))?;
+        return Ok(());
+    }
+    let sql = format!(
+        "BEGIN\n{};\n{};\nEND;",
+        swap_clear_sql(family, dest_q),
+        insert_select_sql(family, dest_q, stage_q, cols)
+    );
+    oracle::exec(conn, &sql)?;
+    oracle::exec_ignore(
+        conn,
+        &drop_table_sql(family, stage_q),
+        &["ORA-00942", "TBR-0008", "table or view does not exist"],
+    )?;
+    Ok(())
+}
+
 /// Streams bounded row batches so input size does not determine memory use.
 /// Postgres append/truncate/replace/recreate uses COPY FROM STDIN. Other
 /// drivers and Postgres upsert still batch INSERT/MERGE.
 /// New tables are created as TEXT columns from the CSV header.
+/// Existing dest + truncate/replace/recreate loads a staging table first, then
+/// swaps so a failed run does not leave dest empty.
 pub async fn load_table(
     c: &LiveConnection,
     table: &str,
@@ -639,14 +752,16 @@ pub async fn load_table(
     // strings for textual destination columns, but map them to NULL for known
     // non-text destination types (integer/date/boolean/etc.). Recreated/new
     // tables use TEXT columns, so their empty strings must be preserved.
+    let listed = match list_columns(c, table).await {
+        Ok(cols) => Some(cols),
+        Err(error) if missing_load_table(&error) => None,
+        Err(error) => return Err(error),
+    };
+    let dest_exists = listed.is_some();
     let destination_columns = if mode == "recreate" {
         Vec::new()
     } else {
-        match list_columns(c, table).await {
-            Ok(cols) => cols,
-            Err(error) if missing_load_table(&error) => Vec::new(),
-            Err(error) => return Err(error),
-        }
+        listed.unwrap_or_default()
     };
     let column_rules = load_column_rules(&cols, &destination_columns);
     if mode == "upsert" {
@@ -661,28 +776,40 @@ pub async fn load_table(
             ));
         }
     }
+    let dest_q = q.clone();
+    let use_stage = dest_exists && matches!(mode, "truncate" | "replace" | "recreate");
+    let stage = use_stage.then(|| staging_table(&parsed));
+    let target = stage.as_ref().unwrap_or(&parsed);
+    let q = qualified(family, target);
+    let write_mode = if use_stage { "append" } else { mode };
     let create = create_table_sql(
         family,
         &q,
-        table,
+        if use_stage { &target.table } else { table },
         &cols,
-        if mode == "upsert" { conflict_keys } else { &[] },
+        if write_mode == "upsert" {
+            conflict_keys
+        } else {
+            &[]
+        },
     );
     let mut n = 0u64;
     match family {
         "postgres" => {
             let pool = pg_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "recreate" {
-                sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
-                    .execute(&pool)
-                    .await?;
-                sqlx::query(&create).execute(&pool).await?;
+            if !use_stage {
+                if mode == "recreate" {
+                    sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
+                        .execute(&pool)
+                        .await?;
+                    sqlx::query(&create).execute(&pool).await?;
+                }
+                if matches!(mode, "replace" | "truncate") {
+                    sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+                }
             }
-            if matches!(mode, "replace" | "truncate") {
-                sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
-            }
-            if c.driver == "postgres" && mode != "upsert" {
+            if c.driver == "postgres" && write_mode != "upsert" {
                 n = copy_postgres_csv(
                     &pool,
                     &q,
@@ -709,7 +836,7 @@ pub async fn load_table(
                         &cols,
                         &column_rules,
                         &rows,
-                        mode,
+                        write_mode,
                         conflict_keys,
                         null_marker,
                     )
@@ -719,19 +846,31 @@ pub async fn load_table(
                     report_load_progress(on_progress, n);
                 }
             }
+            if use_stage {
+                if let Err(error) =
+                    swap_sqlx_table(&pool, family, &dest_q, &parsed.table, &q, mode, &cols).await
+                {
+                    let _ = sqlx::query(&drop_table_sql(family, &q))
+                        .execute(&pool)
+                        .await;
+                    return Err(error);
+                }
+            }
             pool.close().await;
         }
         "mysql" => {
             let pool = my_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "recreate" {
-                sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
-                    .execute(&pool)
-                    .await?;
-                sqlx::query(&create).execute(&pool).await?;
-            }
-            if matches!(mode, "replace" | "truncate") {
-                sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+            if !use_stage {
+                if mode == "recreate" {
+                    sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
+                        .execute(&pool)
+                        .await?;
+                    sqlx::query(&create).execute(&pool).await?;
+                }
+                if matches!(mode, "replace" | "truncate") {
+                    sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+                }
             }
             loop {
                 let rows = read_csv_batch(&mut reader, 2_000)?;
@@ -748,7 +887,7 @@ pub async fn load_table(
                     &cols,
                     &column_rules,
                     &rows,
-                    mode,
+                    write_mode,
                     conflict_keys,
                     null_marker,
                 )
@@ -757,19 +896,31 @@ pub async fn load_table(
                 n = row_end;
                 report_load_progress(on_progress, n);
             }
+            if use_stage {
+                if let Err(error) =
+                    swap_sqlx_table(&pool, family, &dest_q, &parsed.table, &q, mode, &cols).await
+                {
+                    let _ = sqlx::query(&drop_table_sql(family, &q))
+                        .execute(&pool)
+                        .await;
+                    return Err(error);
+                }
+            }
             pool.close().await;
         }
         "sqlite" => {
             let pool = sqlite_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "recreate" {
-                sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
-                    .execute(&pool)
-                    .await?;
-                sqlx::query(&create).execute(&pool).await?;
-            }
-            if matches!(mode, "replace" | "truncate") {
-                sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+            if !use_stage {
+                if mode == "recreate" {
+                    sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
+                        .execute(&pool)
+                        .await?;
+                    sqlx::query(&create).execute(&pool).await?;
+                }
+                if matches!(mode, "replace" | "truncate") {
+                    sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+                }
             }
             loop {
                 let rows = read_csv_batch(&mut reader, 2_000)?;
@@ -786,7 +937,7 @@ pub async fn load_table(
                     &cols,
                     &column_rules,
                     &rows,
-                    mode,
+                    write_mode,
                     conflict_keys,
                     null_marker,
                 )
@@ -795,17 +946,29 @@ pub async fn load_table(
                 n = row_end;
                 report_load_progress(on_progress, n);
             }
+            if use_stage {
+                if let Err(error) =
+                    swap_sqlx_table(&pool, family, &dest_q, &parsed.table, &q, mode, &cols).await
+                {
+                    let _ = sqlx::query(&drop_table_sql(family, &q))
+                        .execute(&pool)
+                        .await;
+                    return Err(error);
+                }
+            }
             pool.close().await;
         }
         "mssql" => {
             let mut client = mssql_client(c).await?;
             client.simple_query(create.clone()).await?;
-            if mode == "recreate" {
-                client.simple_query(format!("DROP TABLE {q}")).await.ok();
-                client.simple_query(create.clone()).await?;
-            }
-            if matches!(mode, "replace" | "truncate") {
-                client.simple_query(clear_sql(family, &q)).await?;
+            if !use_stage {
+                if mode == "recreate" {
+                    client.simple_query(format!("DROP TABLE {q}")).await.ok();
+                    client.simple_query(create.clone()).await?;
+                }
+                if matches!(mode, "replace" | "truncate") {
+                    client.simple_query(clear_sql(family, &q)).await?;
+                }
             }
             let col_sql = cols
                 .iter()
@@ -852,11 +1015,37 @@ pub async fn load_table(
                 }
                 report_load_progress(on_progress, n);
             }
+            if use_stage {
+                let swap = async {
+                    client.simple_query("BEGIN TRAN").await?;
+                    if mode == "recreate" {
+                        let _ = client.simple_query(drop_table_sql(family, &dest_q)).await;
+                        client
+                            .simple_query(rename_stage_sql(family, &q, &dest_q, &parsed.table))
+                            .await?;
+                    } else {
+                        client.simple_query(swap_clear_sql(family, &dest_q)).await?;
+                        client
+                            .simple_query(insert_select_sql(family, &dest_q, &q, &cols))
+                            .await?;
+                        let _ = client.simple_query(drop_table_sql(family, &q)).await;
+                    }
+                    client.simple_query("COMMIT").await?;
+                    Ok::<(), ConnectError>(())
+                }
+                .await;
+                if let Err(error) = swap {
+                    let _ = client.simple_query("ROLLBACK").await;
+                    let _ = client.simple_query(drop_table_sql(family, &q)).await;
+                    return Err(error);
+                }
+            }
         }
         "oracle" => {
             oracle::with_conn(c, |conn| {
-                let drop = (mode == "recreate").then(|| format!("DROP TABLE {q}"));
-                let clear = matches!(mode, "replace" | "truncate").then(|| clear_sql(family, &q));
+                let drop = (!use_stage && mode == "recreate").then(|| format!("DROP TABLE {q}"));
+                let clear = (!use_stage && matches!(mode, "replace" | "truncate"))
+                    .then(|| clear_sql(family, &q));
                 oracle::prepare_table(conn, &create, drop.as_deref(), clear.as_deref())?;
                 let (mut reader, _) = open_load_csv(csv_path)?;
                 loop {
@@ -873,13 +1062,25 @@ pub async fn load_table(
                         &cols,
                         &column_rules,
                         &rows,
-                        mode,
+                        write_mode,
                         conflict_keys,
                         null_marker,
                     )
                     .map_err(|error| load_batch_error(row_start, row_end, error))?;
                     n = row_end;
                     report_load_progress(on_progress, n);
+                }
+                if use_stage {
+                    if let Err(error) =
+                        oracle_swap_loaded(conn, family, &dest_q, &parsed.table, &q, mode, &cols)
+                    {
+                        let _ = oracle::exec_ignore(
+                            conn,
+                            &drop_table_sql(family, &q),
+                            &["ORA-00942", "TBR-0008", "table or view does not exist"],
+                        );
+                        return Err(error);
+                    }
                 }
                 Ok(())
             })?;
@@ -1284,15 +1485,21 @@ mod tests {
         assert!(missing_load_table(&ConnectError::Invalid(
             "relation \"sales.new_fact\" does not exist".into()
         )));
-        assert!(missing_load_table(&ConnectError::Invalid("ORA-00942: table or view does not exist".into())));
-        assert!(!missing_load_table(&ConnectError::Invalid("permission denied".into())));
+        assert!(missing_load_table(&ConnectError::Invalid(
+            "ORA-00942: table or view does not exist".into()
+        )));
+        assert!(!missing_load_table(&ConnectError::Invalid(
+            "permission denied".into()
+        )));
     }
 
     #[test]
     fn postgres_non_utf8_protocol_is_login_failure() {
         let message = "encountered unexpected or invalid data: Postgres protocol error (reading ErrorResponse): Postgres returned a non-UTF-8 string for its error message. This is most likely due to an error that occurred during authentication and the default lc_messages locale is not binary-compatible with UTF-8. See the server logs for the error details. (sqlx_postgres::message:138)";
         assert!(postgres_non_utf8_protocol(message));
-        assert!(!postgres_non_utf8_protocol("password authentication failed for user \"app\""));
+        assert!(!postgres_non_utf8_protocol(
+            "password authentication failed for user \"app\""
+        ));
         assert!(!postgres_non_utf8_protocol("connection refused"));
     }
 
@@ -1312,6 +1519,24 @@ mod tests {
         assert_eq!(parse_ident("XS$NULL").unwrap(), "XS$NULL");
         assert!(parse_ident("").is_err());
         assert!(parse_ident("drop;").is_err());
+    }
+
+    #[test]
+    fn staging_table_stays_in_schema() {
+        let dest = parse_table("sales.fact").unwrap();
+        let stage = staging_table(&dest);
+        assert_eq!(stage.schema.as_deref(), Some("sales"));
+        assert!(stage.table.starts_with("bintlld"));
+        assert_ne!(stage.table, dest.table);
+        assert_eq!(
+            insert_select_sql(
+                "postgres",
+                "\"sales\".\"fact\"",
+                "\"sales\".\"bintlldabc\"",
+                &["id".into(), "name".into()],
+            ),
+            "INSERT INTO \"sales\".\"fact\" (\"id\", \"name\") SELECT \"id\", \"name\" FROM \"sales\".\"bintlldabc\""
+        );
     }
 
     #[test]
@@ -1351,8 +1576,8 @@ mod tests {
                 data_type: "text".into(),
             },
         ];
-        let bytes = encode_copy_csv(&[vec![String::new(), String::new()]], &rules, None, "\\N")
-            .unwrap();
+        let bytes =
+            encode_copy_csv(&[vec![String::new(), String::new()]], &rules, None, "\\N").unwrap();
         assert_eq!(String::from_utf8(bytes).unwrap(), "\"\\N\",\"\"\n");
         let marked = encode_copy_csv(
             &[vec!["\u{1e}BINTL_NULL\u{1e}".into(), "x".into()]],

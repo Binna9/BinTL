@@ -44,7 +44,11 @@ pub(crate) fn vendor(driver: &str) -> &'static str {
     }
 }
 
-pub(crate) fn pick_driver(vendor: &str, installed: &[String], forced: Option<&str>) -> Option<String> {
+pub(crate) fn pick_driver(
+    vendor: &str,
+    installed: &[String],
+    forced: Option<&str>,
+) -> Option<String> {
     if let Some(forced) = forced.map(str::trim).filter(|value| !value.is_empty()) {
         return Some(forced.to_string());
     }
@@ -110,7 +114,10 @@ pub(crate) fn connection_string(c: &LiveConnection, driver_name: &str) -> String
 }
 
 fn nonempty(value: Option<&str>) -> Option<String> {
-    value.map(str::trim).filter(|value| !value.is_empty()).map(|value| value.to_string())
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
 }
 
 fn env_driver(vendor: &str) -> Option<String> {
@@ -217,7 +224,8 @@ fn query_rows_odbc(
         .map_err(map_odbc)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_odbc)?;
-    let mut buffers = TextRowSet::for_cursor(BATCH_ROWS, &mut cursor, Some(MAX_TEXT)).map_err(map_odbc)?;
+    let mut buffers =
+        TextRowSet::for_cursor(BATCH_ROWS, &mut cursor, Some(MAX_TEXT)).map_err(map_odbc)?;
     let mut row_set = cursor.bind_buffer(&mut buffers).map_err(map_odbc)?;
     let mut rows = Vec::new();
     while let Some(batch) = row_set.fetch().map_err(map_odbc)? {
@@ -260,7 +268,11 @@ fn exec_odbc(conn: &Connection<'_>, sql: &str) -> Result<u64, ConnectError> {
     Ok(stmt.row_count().map_err(map_odbc)?.unwrap_or(0) as u64)
 }
 
-pub(crate) fn exec_ignore(conn: &OraConn<'_>, sql: &str, needles: &[&str]) -> Result<(), ConnectError> {
+pub(crate) fn exec_ignore(
+    conn: &OraConn<'_>,
+    sql: &str,
+    needles: &[&str],
+) -> Result<(), ConnectError> {
     match exec(conn, sql) {
         Ok(_) => Ok(()),
         Err(error) => {
@@ -292,7 +304,9 @@ pub(crate) fn stream_query(
     on_row: impl FnMut(&[String]) -> Result<(), ConnectError>,
 ) -> Result<u64, ConnectError> {
     match conn {
-        OraConn::Jdbc(conn) => return crate::tibero_jdbc::stream_query(conn, sql, on_columns, on_row),
+        OraConn::Jdbc(conn) => {
+            return crate::tibero_jdbc::stream_query(conn, sql, on_columns, on_row)
+        }
         OraConn::Odbc(conn) => stream_query_odbc(conn, sql, on_columns, on_row),
     }
 }
@@ -316,7 +330,8 @@ fn stream_query_odbc(
         .collect::<Result<Vec<_>, _>>()
         .map_err(map_odbc)?;
     on_columns(&columns)?;
-    let mut buffers = TextRowSet::for_cursor(BATCH_ROWS, &mut cursor, Some(MAX_TEXT)).map_err(map_odbc)?;
+    let mut buffers =
+        TextRowSet::for_cursor(BATCH_ROWS, &mut cursor, Some(MAX_TEXT)).map_err(map_odbc)?;
     let mut row_set = cursor.bind_buffer(&mut buffers).map_err(map_odbc)?;
     let mut n = 0u64;
     while let Some(batch) = row_set.fetch().map_err(map_odbc)? {

@@ -3,6 +3,7 @@ import {
   Braces,
   Cable,
   CalendarClock,
+  CloudDownload,
   Database,
   DatabaseZap,
   FileDown,
@@ -10,7 +11,6 @@ import {
   History,
   LayoutDashboard,
   LayoutTemplate,
-  ListChecks,
   Puzzle,
   ShieldCheck,
   Upload,
@@ -63,7 +63,7 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
             {
               to: "/extract/api",
               label: messages.nav.apiRecipe,
-              icon: <Braces className={iconClassName} />,
+              icon: <CloudDownload className={iconClassName} />,
               isActive: (pathname) =>
                 pathname === "/extract/api"
                 || pathname.endsWith("/extract-api"),
@@ -85,7 +85,7 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
             {
               to: "/extracts",
               label: messages.nav.extractResults,
-              icon: <ListChecks className={iconClassName} />,
+              icon: <FileText className={iconClassName} />,
             },
           ],
         },
@@ -107,7 +107,7 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
             {
               to: "/transforms",
               label: messages.nav.transformResults,
-              icon: <ListChecks className={iconClassName} />,
+              icon: <FileText className={iconClassName} />,
             },
           ],
         },
@@ -129,7 +129,7 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
             {
               to: "/scripts",
               label: messages.nav.scriptResults,
-              icon: <ListChecks className={iconClassName} />,
+              icon: <FileText className={iconClassName} />,
             },
           ],
         },
@@ -181,7 +181,7 @@ function createLinks(messages: ReturnType<typeof useLanguage>["messages"]): Menu
         {
           to: "/validation/results",
           label: messages.nav.validationHistory,
-          icon: <ListChecks className={iconClassName} />,
+          icon: <History className={iconClassName} />,
         },
         {
           to: "/history/exports",

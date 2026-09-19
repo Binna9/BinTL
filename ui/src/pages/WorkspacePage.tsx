@@ -36,7 +36,7 @@ import { workspaceApi } from "@/services/workspace/workspaceApi";
 import type { Dataset } from "@/types/dataset";
 import type { Chip, ChipEdge, ChipEdgeKind, ChipRun } from "@/types/chip";
 import { DRAFT_CHIP_ID_PREFIX, chipEditorPath, isDraftChipId } from "@/types/chip";
-import { DEFAULT_SCRIPT_MAIN, SCRIPT_ENTRY } from "@/features/script/scriptEditorModel";
+import { DEFAULT_SCRIPT_MAIN, MAX_SCRIPT_INPUTS, SCRIPT_ENTRY } from "@/features/script/scriptEditorModel";
 import type { SaveWorkspaceResponse, Workspace, WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
 import {
   ACTIVE_STATUSES,
@@ -54,6 +54,7 @@ import {
   withCompanionSuccessEdges,
   chipFixedInputId,
   incomingDataChipId,
+  incomingDataChipIds,
   sameKindPairEdges,
   chipInMarquee,
   chipKindLabel,
@@ -150,7 +151,6 @@ export function WorkspacePage() {
     additive: boolean;
     wasSelected: boolean;
     origins: Record<string, Point>;
-    duplicate: boolean;
   } | null>(null);
   const panRef = useRef<{
     pointerId: number;
@@ -234,9 +234,9 @@ export function WorkspacePage() {
   const activeLogChip = logChipId ? chips.find((chip) => chip.id === logChipId) ?? null : null;
   const [propsName, setPropsName] = useState("");
   const [propsInputChipId, setPropsInputChipId] = useState("");
+  const [propsInputChipIds, setPropsInputChipIds] = useState<string[]>([]);
   const [propsSourceChipId, setPropsSourceChipId] = useState("");
   const [propsTargetChipId, setPropsTargetChipId] = useState("");
-  const [propsBusy, setPropsBusy] = useState(false);
   positionsRef.current = positions;
   dirtyRef.current = dirty;
   busyRef.current = busy;
@@ -495,7 +495,7 @@ export function WorkspacePage() {
     const existing = sameKindPairEdges(edges, fromId, toId, kind);
     // Transform/load take one data input. A new wire replaces the previous
     // incoming data edge; the unique chip's standalone file stays as fallback.
-    const incomingData = kind === "data" && to.kind !== "validation"
+    const incomingData = kind === "data" && to.kind !== "validation" && to.kind !== "script"
       ? edges.filter((edge) => edge.kind === "data" && edge.to_chip_id === toId)
       : [];
     const incomingCompanions = incomingData.flatMap((data) =>
@@ -1085,18 +1085,35 @@ export function WorkspacePage() {
     setPropsChip(chip);
     setPropsName(chip.name);
     setPropsInputChipId(incomingDataChipId(edges, chip.id));
+    setPropsInputChipIds(incomingDataChipIds(edges, chip.id));
     setPropsSourceChipId(incomingDataChipId(edges, chip.id, "source"));
     setPropsTargetChipId(incomingDataChipId(edges, chip.id, "target"));
   }
 
   function propsDataEdges(chip: Chip, currentEdges: ChipEdge[]): ChipEdge[] {
     if (!workspaceId) return currentEdges;
-    if (chip.kind === "transform" || chip.kind === "load" || chip.kind === "serve" || chip.kind === "script") {
+    if (chip.kind === "transform" || chip.kind === "load" || chip.kind === "serve") {
       const current = incomingDataChipId(currentEdges, chip.id);
       if (current === propsInputChipId) return currentEdges;
       return attachHiddenDataEdges(
         currentEdges,
         [{ fromId: propsInputChipId, toId: chip.id }],
+        positionsRef.current,
+        workspaceId,
+      );
+    }
+    if (chip.kind === "script") {
+      const current = incomingDataChipIds(currentEdges, chip.id);
+      if (current.length === propsInputChipIds.length
+        && current.every((id, index) => id === propsInputChipIds[index])) {
+        return currentEdges;
+      }
+      const inputs = propsInputChipIds.length > 0
+        ? propsInputChipIds.map((fromId) => ({ fromId, toId: chip.id }))
+        : [{ fromId: "", toId: chip.id }];
+      return attachHiddenDataEdges(
+        currentEdges,
+        inputs,
         positionsRef.current,
         workspaceId,
       );
@@ -1118,7 +1135,7 @@ export function WorkspacePage() {
     return currentEdges;
   }
 
-  async function saveChipProperties() {
+  function saveChipProperties() {
     if (!propsChip || !workspaceId) return;
     const name = propsName.trim();
     if (!name) return;
@@ -1129,6 +1146,14 @@ export function WorkspacePage() {
         return;
       }
     }
+    const nameTaken = [...catalogChips, ...chips].some((item) => (
+      item.id !== propsChip.id
+      && item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase()
+    ));
+    if (nameTaken) {
+      toastError(messages.workspace.duplicateChipName);
+      return;
+    }
     const nextEdges = propsDataEdges(propsChip, edges);
     const edgesChanged = nextEdges !== edges;
     if (edgesChanged) {
@@ -1138,39 +1163,25 @@ export function WorkspacePage() {
         return;
       }
     }
-    const before = snapshotNow();
-    if (isDraftChipId(propsChip.id)) {
-      pushUndo(before);
-      const nextChips = chips.map((item) => (
-        item.id === propsChip.id ? { ...item, name } : item
-      ));
-      setChips(nextChips);
-      if (edgesChanged) setEdges(nextEdges);
+    if (name === propsChip.name && !edgesChanged) {
       setPropsChip(null);
-      markDirty(nextChips, positionsRef.current, nextEdges);
-      toastSuccess(messages.workspace.chipPropertiesSaved);
       return;
     }
-    setPropsBusy(true);
-    try {
-      const updated = await chipApi.update(propsChip.id, { name });
-      pushUndo(before);
-      const nextChips = chips.map((item) => (item.id === updated.id ? { ...item, ...updated } : item));
-      setChips(nextChips);
-      setCatalogChips((current) =>
-        current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
-      );
-      if (edgesChanged) {
-        setEdges(nextEdges);
-        markDirty(nextChips, positionsRef.current, nextEdges);
-      }
-      setPropsChip(null);
-      toastSuccess(messages.workspace.chipPropertiesSaved);
-    } catch (reason) {
-      toastError(messages.workspace.saveChipError, reason);
-    } finally {
-      setPropsBusy(false);
+    pushUndo();
+    const nextChips = chips.map((item) => (
+      item.id === propsChip.id ? { ...item, name } : item
+    ));
+    chipsRef.current = nextChips;
+    setChips(nextChips);
+    setCatalogChips((current) =>
+      current.map((item) => (item.id === propsChip.id ? { ...item, name } : item)),
+    );
+    if (edgesChanged) {
+      edgesRef.current = nextEdges;
+      setEdges(nextEdges);
     }
+    setPropsChip(null);
+    markDirty(nextChips, positionsRef.current, nextEdges);
   }
 
   function openChipContextMenu(chip: Chip, event: ReactMouseEvent) {
@@ -1232,15 +1243,14 @@ export function WorkspacePage() {
         requestSaveRef.current();
         return;
       }
-      if (key === "c" || key === "v" || key === "d") {
+      if (key === "c" || key === "v") {
         if (isEditableTarget(event.target)) return;
         if (event.target instanceof Element && event.target.closest("[role='dialog']")) return;
         if (key === "c" && window.getSelection()?.toString()) return;
         event.preventDefault();
         if (event.repeat || busyRef.current) return;
         if (key === "c") void copySelectedChips();
-        else if (key === "v") void pasteClipboard();
-        else void duplicateSelectedChips();
+        else void pasteClipboard();
         return;
       }
       if (key === "y" || (key === "z" && event.shiftKey)) {
@@ -1375,7 +1385,11 @@ export function WorkspacePage() {
   function placeNewScriptChip(draft: TransformPlaceDraft) {
     if (!workspaceId || !pendingPlace) return;
     const inputDatasetId = draft.inputDatasetId.trim();
-    const openEditor = Boolean(inputDatasetId);
+    const datasetIds = (draft.inputDatasetIds ?? [])
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (datasetIds.length === 0 && inputDatasetId) datasetIds.push(inputDatasetId);
+    const openEditor = datasetIds.length > 0;
     const point = pendingPlace.point;
     const now = new Date().toISOString();
     const name = draft.name.trim() || messages.workspace.defaultScriptChipName(
@@ -1397,10 +1411,12 @@ export function WorkspacePage() {
         created_at: now,
         updated_at: now,
       };
+      const chipIds = draft.inputChipIds?.filter(Boolean)
+        ?? (draft.inputChipId ? [draft.inputChipId] : []);
       placeCatalogChips(
         [chip],
         point,
-        draft.inputChipId ? [{ fromId: draft.inputChipId, toId: chip.id }] : [],
+        chipIds.map((fromId) => ({ fromId, toId: chip.id })),
       );
       setPendingPlace(null);
       return;
@@ -1410,11 +1426,11 @@ export function WorkspacePage() {
     const params = new URLSearchParams({
       workspace: workspaceId,
       new_chip: "1",
-      dataset: inputDatasetId,
       chip_name: name,
       x: String(Math.round(draftPoint.x)),
       y: String(Math.round(draftPoint.y)),
     });
+    for (const id of datasetIds) params.append("dataset", id);
     setPendingPlace(null);
     navigate(`/script?${params.toString()}`);
   }
@@ -1641,13 +1657,15 @@ export function WorkspacePage() {
     try {
       const currentChips = chipsRef.current;
       const draftChips = currentChips.filter((chip) => isDraftChipId(chip.id));
-      const usedNames = new Set(
-        catalogChips
-          .filter((chip) => !draftChips.some((draft) => draft.id === chip.id))
-          .map((chip) => chip.name.trim().toLocaleLowerCase()),
-      );
-      for (const draft of draftChips) {
-        const normalized = draft.name.trim().toLocaleLowerCase();
+      const onCanvas = new Set(currentChips.map((chip) => chip.id));
+      const upcomingNames = [
+        ...catalogChips.filter((chip) => !onCanvas.has(chip.id)).map((chip) => chip.name),
+        ...currentChips.map((chip) => chip.name),
+      ];
+      const usedNames = new Set<string>();
+      for (const raw of upcomingNames) {
+        const normalized = raw.trim().toLocaleLowerCase();
+        if (!normalized) continue;
         if (usedNames.has(normalized)) {
           toastError(messages.workspace.duplicateChipName);
           return false;
@@ -1690,6 +1708,21 @@ export function WorkspacePage() {
         setPositions(positionsToSave);
         positionsRef.current = positionsToSave;
       }
+
+      const savedChips = savedRef.current.chips;
+      let renamed = false;
+      for (const chip of chipsToSave) {
+        const original = savedChips.find((item) => item.id === chip.id);
+        if (!original || original.name === chip.name) continue;
+        const updated = await chipApi.update(chip.id, { name: chip.name });
+        if (currentWorkspaceRef.current !== requestWorkspaceId) return false;
+        renamed = true;
+        chipsToSave = chipsToSave.map((item) => (item.id === updated.id ? { ...item, ...updated } : item));
+      }
+      if (renamed) {
+        chipsRef.current = chipsToSave;
+        setChips(chipsToSave);
+      }
       edgesToSave = withCompanionSuccessEdges(edgesToSave, positionsToSave, requestWorkspaceId);
 
       const response = await workspaceApi.save(requestWorkspaceId, {
@@ -1729,7 +1762,7 @@ export function WorkspacePage() {
         }),
       });
       if (currentWorkspaceRef.current !== requestWorkspaceId) return false;
-      if (draftChips.length > 0) {
+      if (draftChips.length > 0 || renamed) {
         const catalogResponse = await chipApi.listCatalog();
         if (currentWorkspaceRef.current === requestWorkspaceId) {
           setCatalogChips(catalogResponse.chips);
@@ -1809,17 +1842,16 @@ export function WorkspacePage() {
     return saveCanvas();
   }
 
-  function copyIds(chipIds: string[], silent = false) {
+  function copyIds(chipIds: string[]) {
     if (!workspaceId) return false;
     const ids = chipIds.filter((id) => chipsRef.current.some((chip) => chip.id === id && !isDraftChipId(id)));
     const bbox = chipSelectionBbox(ids, positionsRef.current);
     if (ids.length === 0 || !bbox) {
-      if (!silent) toastError(messages.workspace.copyEmpty);
+      toastError(messages.workspace.copyEmpty);
       return false;
     }
     pasteCountRef.current = 0;
     rememberChipClipboard({ sourceWorkspaceId: workspaceId, chipIds: ids, bbox });
-    if (!silent) toastSuccess(messages.workspace.chipsCopied(ids.length));
     return true;
   }
 
@@ -1850,15 +1882,9 @@ export function WorkspacePage() {
     if (selectIds) setSelectedChipIds(selectIds);
   }
 
-  async function pasteChipsAt(origin: Point, chipIds?: string[]) {
+  async function pasteChipsAt(origin: Point) {
     if (!workspaceId || busyRef.current) return;
-    const clipboard = chipIds
-      ? {
-        sourceWorkspaceId: workspaceId,
-        chipIds,
-        bbox: chipSelectionBbox(chipIds, positionsRef.current) ?? { x: origin.x, y: origin.y, w: NODE_W, h: NODE_H },
-      }
-      : currentChipClipboard();
+    const clipboard = currentChipClipboard();
     if (!clipboard || clipboard.chipIds.length === 0) {
       toastError(messages.workspace.pasteEmpty);
       return;
@@ -1886,7 +1912,6 @@ export function WorkspacePage() {
       applyGraphResponse(response, requestWorkspaceId, pastedIds);
       pushUndo(before);
       const pasted = response.chips.filter((chip) => pastedIds.includes(chip.id));
-      toastSuccess(messages.workspace.chipsPasted(pastedIds.length));
       if (pasted.some((chip) => chip.kind === "serve")) {
         toastSuccess(messages.workspace.pasteServeRotated);
       }
@@ -1927,17 +1952,6 @@ export function WorkspacePage() {
       }
     }
     await pasteChipsAt(origin);
-  }
-
-  async function duplicateSelectedChips() {
-    if (busyRef.current) return;
-    const saved = await ensureSavedBeforeClipboard();
-    if (!saved) return;
-    if (!copyIds(selectedChipIdsRef.current, true)) {
-      toastError(messages.workspace.copyEmpty);
-      return;
-    }
-    await pasteClipboard();
   }
 
   async function refreshWorkspace() {
@@ -2066,7 +2080,6 @@ export function WorkspacePage() {
       additive,
       wasSelected,
       origins,
-      duplicate: event.altKey,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -2076,16 +2089,6 @@ export function WorkspacePage() {
     dragRef.current = null;
     if (!drag || drag.id !== draggedChipId) return;
     if (drag.moved) {
-      if (drag.duplicate) {
-        const ids = Object.keys(drag.origins);
-        const drop = chipSelectionBbox(ids, positionsRef.current);
-        const reverted = { ...positionsRef.current };
-        for (const [id, origin] of Object.entries(drag.origins)) reverted[id] = origin;
-        positionsRef.current = reverted;
-        setPositions(reverted);
-        if (drop) void pasteChipsAt({ x: drop.x, y: drop.y }, ids);
-        return;
-      }
       const beforePositions = { ...positionsRef.current };
       for (const [id, origin] of Object.entries(drag.origins)) beforePositions[id] = origin;
       pushUndo(cloneCanvas(chipsRef.current, beforePositions, edgesRef.current));
@@ -3142,7 +3145,6 @@ export function WorkspacePage() {
         onProperties={openChipProperties}
         onEdit={openChipEditor}
         onCopy={() => void copySelectedChips()}
-        onDuplicate={() => void duplicateSelectedChips()}
         onDelete={(chip) => void deleteCanvasChip(chip)}
       />
 
@@ -3226,16 +3228,16 @@ export function WorkspacePage() {
         minWidth={380}
         footer={
           <>
-            <Button type="button" variant="quiet" disabled={propsBusy} onClick={() => setPropsChip(null)}>
+            <Button type="button" variant="quiet" onClick={() => setPropsChip(null)}>
               {messages.common.cancel}
             </Button>
             <Button
               type="button"
               variant="primary"
-              disabled={propsBusy || !propsName.trim()}
-              onClick={() => void saveChipProperties()}
+              disabled={!propsName.trim()}
+              onClick={() => saveChipProperties()}
             >
-              {propsBusy ? messages.common.saving : messages.workspace.chipPropertiesSave}
+              {messages.workspace.chipPropertiesSave}
             </Button>
           </>
         }
@@ -3303,9 +3305,9 @@ export function WorkspacePage() {
                   value={propsName}
                   onChange={(event) => setPropsName(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && propsName.trim() && !propsBusy) {
+                    if (event.key === "Enter" && propsName.trim()) {
                       event.preventDefault();
-                      void saveChipProperties();
+                      saveChipProperties();
                     }
                   }}
                   autoFocus
@@ -3314,7 +3316,7 @@ export function WorkspacePage() {
               </div>
             </div>
 
-            {propsChip?.kind === "transform" || propsChip?.kind === "load" || propsChip?.kind === "serve" || propsChip?.kind === "script" ? (
+            {propsChip?.kind === "transform" || propsChip?.kind === "load" || propsChip?.kind === "serve" ? (
               <div className="space-y-2">
                 <p className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.inputChipHint}</p>
                 <CanvasProducerSelect
@@ -3323,8 +3325,21 @@ export function WorkspacePage() {
                   excludeIds={[propsChip.id]}
                   messages={messages}
                   label={messages.workspace.inputChip}
-                  disabled={propsBusy}
                   onChange={setPropsInputChipId}
+                />
+              </div>
+            ) : null}
+            {propsChip?.kind === "script" ? (
+              <div className="space-y-2">
+                <p className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.scriptInputChipsHint}</p>
+                <CanvasProducerSelect
+                  chips={chips}
+                  values={propsInputChipIds}
+                  excludeIds={[propsChip.id]}
+                  max={MAX_SCRIPT_INPUTS}
+                  messages={messages}
+                  label={messages.workspace.inputChip}
+                  onValuesChange={setPropsInputChipIds}
                 />
               </div>
             ) : null}
@@ -3337,7 +3352,6 @@ export function WorkspacePage() {
                   excludeIds={[propsChip.id, propsTargetChipId].filter(Boolean)}
                   messages={messages}
                   label={messages.workspace.validationSourceChip}
-                  disabled={propsBusy}
                   onChange={setPropsSourceChipId}
                 />
                 <CanvasProducerSelect
@@ -3347,7 +3361,6 @@ export function WorkspacePage() {
                   messages={messages}
                   label={messages.workspace.validationTargetChip}
                   kinds={["extract", "transform", "script", "load"]}
-                  disabled={propsBusy}
                   onChange={(id) => {
                     setPropsTargetChipId(id);
                     if (propsSourceChipId || !id) return;

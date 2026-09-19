@@ -60,6 +60,8 @@ struct ScriptPreviewBody {
     files: Value,
     entry: Option<String>,
     limit: Option<usize>,
+    #[serde(default)]
+    inputs: Vec<crate::script::ScriptInput>,
 }
 
 #[derive(Deserialize)]
@@ -427,9 +429,8 @@ pub(crate) async fn stored_file_attachment(
         AppendHeaders([
             (
                 CONTENT_TYPE,
-                HeaderValue::from_str(ctype).unwrap_or_else(|_| {
-                    HeaderValue::from_static("application/octet-stream")
-                }),
+                HeaderValue::from_str(ctype)
+                    .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
             ),
             (
                 CONTENT_DISPOSITION,
@@ -559,13 +560,27 @@ async fn preview_script_dataset(
     Json(body): Json<ScriptPreviewBody>,
 ) -> Result<Json<Value>, AppError> {
     let row = access::require_dataset(&state.store, &user, &id).await?;
-    let config = crate::script::parse_script_config(&json!({
+    let mut config_json = json!({
         "entry": body.entry,
         "files": body.files,
         "input_dataset_id": id,
-    }))?;
+    });
+    if !body.inputs.is_empty() {
+        config_json["inputs"] = json!(body.inputs);
+    }
+    let config = crate::script::parse_script_config(&config_json)?;
+    let mut tables = Vec::new();
+    if config.inputs.is_empty() {
+        tables.push((crate::script::input_name_from_label(&row.filename), row));
+    } else {
+        for input in &config.inputs {
+            let dataset = access::require_dataset(&state.store, &user, &input.dataset_id).await?;
+            tables.push((input.name.clone(), dataset));
+        }
+    }
     Ok(Json(
-        crate::script::preview_script(&state.store, &row, &config, body.limit.unwrap_or(200)).await?,
+        crate::script::preview_script(&state.store, &tables, &config, body.limit.unwrap_or(200))
+            .await?,
     ))
 }
 

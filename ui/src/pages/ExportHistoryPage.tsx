@@ -168,7 +168,7 @@ export function ExportHistoryPage() {
   return (
     <PageShell>
       <PageHeader
-        iconName="jobs"
+        iconName="exportHistory"
         eyebrow={t.eyebrow}
         title={t.exports}
         description={t.exportsDescription}
@@ -236,7 +236,7 @@ export function ExportHistoryPage() {
               <EmptyState title={messages.common.loading} />
             ) : visible.length === 0 ? (
               <EmptyState
-                icon={<NavIcon name="jobs" />}
+                icon={<NavIcon name="exportHistory" />}
                 title={filterEmpty ? messages.chipRuns.filterEmpty : t.empty}
                 hint={filterEmpty ? messages.chipRuns.filterEmptyHint : t.emptyHint}
               />

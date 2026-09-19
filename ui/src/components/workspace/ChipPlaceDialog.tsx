@@ -22,6 +22,7 @@ import { AppDialog } from "@/components/AppDialog";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { emptyKindSearch, KIND_APPEARANCE, KIND_ORDER } from "@/features/transform/transformEditorModel";
+import { MAX_SCRIPT_INPUTS } from "@/features/script/scriptEditorModel";
 import { chipKindLabel, incomingDataChipId, producerChips, validationTargetChips } from "@/features/workspace/workspaceCanvasModel";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
@@ -36,12 +37,15 @@ export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "s
 export type TransformPlaceDraft = {
   name: string;
   inputDatasetId: string;
+  inputDatasetIds?: string[];
   inputChipId?: string;
+  inputChipIds?: string[];
 };
 
 export type EmptyConsumerDraft = {
   name: string;
   inputChipId?: string;
+  inputChipIds?: string[];
   sourceChipId?: string;
   targetChipId?: string;
   slug?: string;
@@ -89,21 +93,27 @@ const VALIDATION_NAME_DIALOG_CLASS = "flex max-h-[min(86vh,48rem)] w-[min(40rem,
 export function CanvasProducerSelect({
   chips,
   value,
+  values,
   excludeIds,
   messages,
   label,
   disabled,
   kinds,
+  max,
   onChange,
+  onValuesChange,
 }: {
   chips: Chip[];
-  value: string;
+  value?: string;
+  values?: string[];
   excludeIds?: Iterable<string>;
   messages: Messages;
   label: string;
   disabled?: boolean;
   kinds?: readonly ProducerSelectKind[];
-  onChange: (id: string) => void;
+  max?: number;
+  onChange?: (id: string) => void;
+  onValuesChange?: (ids: string[]) => void;
 }) {
   const skip = useMemo(() => new Set(excludeIds ?? []), [excludeIds]);
   const allowed = kinds ?? (["extract", "transform", "script"] as const);
@@ -119,6 +129,8 @@ export function CanvasProducerSelect({
       })),
     [allowed, options],
   );
+  const selected = values ?? (value ? [value] : []);
+  const multi = Boolean(onValuesChange);
 
   return (
     <div className="flex min-w-0 shrink-0 flex-col gap-2">
@@ -128,6 +140,7 @@ export function CanvasProducerSelect({
         role="listbox"
         aria-label={label}
         aria-disabled={disabled}
+        aria-multiselectable={multi || undefined}
       >
         {grouped.map((group) => {
           const appearance = PRODUCER_KIND_APPEARANCE[group.kind];
@@ -152,27 +165,38 @@ export function CanvasProducerSelect({
               ) : (
                 <ul className="scroll-pane m-0 max-h-36 list-none overflow-y-auto overflow-x-hidden p-0">
                   {group.items.map((chip) => {
-                    const selected = chip.id === value;
+                    const picked = selected.includes(chip.id);
                     const blocked = skip.has(chip.id);
+                    const full = Boolean(max && !picked && selected.length >= max);
                     return (
                       <li key={chip.id} className="min-w-0 border-t border-border/70">
                         <button
                           type="button"
                           role="option"
-                          aria-selected={selected}
-                          disabled={disabled || blocked}
+                          aria-selected={picked}
+                          disabled={disabled || blocked || full}
                           className={cn(
                             "flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left outline-none",
-                            selectableClass(selected),
-                            blocked && "opacity-50",
+                            selectableClass(picked),
+                            (blocked || full) && "opacity-50",
                           )}
-                          onClick={() => onChange(selected ? "" : chip.id)}
+                          onClick={() => {
+                            if (multi) {
+                              onValuesChange?.(
+                                picked
+                                  ? selected.filter((id) => id !== chip.id)
+                                  : [...selected, chip.id],
+                              );
+                              return;
+                            }
+                            onChange?.(picked ? "" : chip.id);
+                          }}
                         >
                           <span className={cn("grid size-6 shrink-0 place-items-center rounded-md", appearance.iconWrap)}>
                             <KindIcon className="size-3.5" aria-hidden="true" />
                           </span>
                           <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-text">{chip.name}</span>
-                          {selected ? <Check className="size-3.5 shrink-0 text-accent" aria-hidden="true" /> : null}
+                          {picked ? <Check className="size-3.5 shrink-0 text-accent" aria-hidden="true" /> : null}
                         </button>
                       </li>
                     );
@@ -319,6 +343,7 @@ function DatasetPickerPanel({
   title,
   datasets,
   selectedId,
+  selectedIds,
   emptyLabel,
   messages,
   onPick,
@@ -326,7 +351,8 @@ function DatasetPickerPanel({
 }: {
   title: string;
   datasets: Dataset[];
-  selectedId: string;
+  selectedId?: string;
+  selectedIds?: string[];
   emptyLabel: string;
   messages: Messages;
   onPick: (dataset: Dataset) => void;
@@ -349,6 +375,7 @@ function DatasetPickerPanel({
       .filter((group) => group.items.length > 0),
     [datasets],
   );
+  const pickedIds = selectedIds ?? (selectedId ? [selectedId] : []);
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col gap-2", className)} aria-label={title}>
@@ -446,13 +473,15 @@ function DatasetPickerPanel({
                     </p>
                   ) : null}
                   {expanded
-                    ? visibleItems.map((item) => (
+                    ? visibleItems.map((item) => {
+                        const picked = pickedIds.includes(item.id);
+                        return (
                         <button
                           key={item.id}
                           type="button"
                           className={cn(
                             "flex w-full min-w-0 items-start gap-2 border-b border-border px-2.5 py-2 text-left last:border-b-0",
-                            selectableClass(item.id === selectedId),
+                            selectableClass(picked),
                           )}
                           onClick={() => onPick(item)}
                         >
@@ -479,8 +508,10 @@ function DatasetPickerPanel({
                                     : item.id.slice(0, 8)}
                             </span>
                           </span>
+                          {picked ? <Check className="mt-0.5 size-3.5 shrink-0 text-accent" aria-hidden="true" /> : null}
                         </button>
-                      ))
+                        );
+                      })
                     : null}
                 </section>
               );
@@ -638,7 +669,9 @@ function TransformNewPanel({
   const [namingEmpty, setNamingEmpty] = useState(false);
   const [emptyName, setEmptyName] = useState(defaultName);
   const [inputChipId, setInputChipId] = useState("");
+  const [inputChipIds, setInputChipIds] = useState<string[]>([]);
   const [inputDatasetId, setInputDatasetId] = useState("");
+  const [inputDatasetIds, setInputDatasetIds] = useState<string[]>([]);
   const [catalogSelectedIds, setCatalogSelectedIds] = useState<string[]>([]);
 
   const inputDatasets = useMemo(
@@ -656,16 +689,20 @@ function TransformNewPanel({
     setNamingEmpty(false);
     setEmptyName(defaultName);
     setInputChipId("");
+    setInputChipIds([]);
     setInputDatasetId("");
+    setInputDatasetIds([]);
     setCatalogSelectedIds([]);
   }, [defaultName]);
 
   const catalogCanSubmit = catalogSelectedIds.length > 0;
-  const datasetCanSubmit = Boolean(inputDatasetId);
+  const datasetCanSubmit = script ? inputDatasetIds.length > 0 : Boolean(inputDatasetId);
+  const emptyInputReady = script ? inputChipIds.length > 0 : Boolean(inputChipId);
 
   function exitDatasetPick() {
     setPickingDataset(false);
     setInputDatasetId("");
+    setInputDatasetIds([]);
   }
 
   const main = (
@@ -694,6 +731,7 @@ function TransformNewPanel({
             if (pickingDataset) exitDatasetPick();
             setEmptyName(defaultName);
             setInputChipId("");
+            setInputChipIds([]);
             setNamingEmpty(true);
           }}
         >
@@ -734,10 +772,21 @@ function TransformNewPanel({
             <DatasetPickerPanel
               title={script ? messages.workspace.inputDataset : messages.workspace.placeTransformInputDataset}
               datasets={inputDatasets}
-              selectedId={inputDatasetId}
+              selectedId={script ? undefined : inputDatasetId}
+              selectedIds={script ? inputDatasetIds : undefined}
               emptyLabel={messages.workspace.placeExtractFileEmpty}
               messages={messages}
-              onPick={(dataset) => setInputDatasetId(dataset.id)}
+              onPick={(dataset) => {
+                if (!script) {
+                  setInputDatasetId(dataset.id);
+                  return;
+                }
+                setInputDatasetIds((current) => {
+                  if (current.includes(dataset.id)) return current.filter((id) => id !== dataset.id);
+                  if (current.length >= MAX_SCRIPT_INPUTS) return current;
+                  return [...current, dataset.id];
+                });
+              }}
             />
           </>
         ) : (
@@ -776,7 +825,11 @@ function TransformNewPanel({
         onSubmit={() => {
           if (pickingDataset) {
             if (!datasetCanSubmit) return;
-            onPlaceDataset({ name: defaultName, inputDatasetId });
+            onPlaceDataset({
+              name: defaultName,
+              inputDatasetId: script ? (inputDatasetIds[0] ?? "") : inputDatasetId,
+              inputDatasetIds: script ? inputDatasetIds : undefined,
+            });
             return;
           }
           if (!catalogCanSubmit) return;
@@ -806,12 +859,14 @@ function TransformNewPanel({
             <Button
               type="button"
               variant="primary"
-              disabled={busy || !emptyName.trim() || !inputChipId}
+              disabled={busy || !emptyName.trim() || !emptyInputReady}
               onClick={() => {
                 const trimmed = emptyName.trim();
-                if (!trimmed || !inputChipId) return;
+                if (!trimmed || !emptyInputReady) return;
                 setNamingEmpty(false);
-                onPlaceEmpty({ name: trimmed, inputChipId });
+                onPlaceEmpty(script
+                  ? { name: trimmed, inputChipIds }
+                  : { name: trimmed, inputChipId });
               }}
             >
               {messages.workspace.nameChipConfirm}
@@ -833,20 +888,27 @@ function TransformNewPanel({
                 if (event.key !== "Enter") return;
                 event.preventDefault();
                 const trimmed = emptyName.trim();
-                if (!trimmed || !inputChipId || busy) return;
+                if (!trimmed || !emptyInputReady || busy) return;
                 setNamingEmpty(false);
-                onPlaceEmpty({ name: trimmed, inputChipId });
+                onPlaceEmpty(script
+                  ? { name: trimmed, inputChipIds }
+                  : { name: trimmed, inputChipId });
               }}
             />
           </label>
-          <p className="shrink-0 text-xs leading-5 text-text-tertiary">{messages.workspace.inputChipHint}</p>
+          <p className="shrink-0 text-xs leading-5 text-text-tertiary">
+            {script ? messages.workspace.scriptInputChipsHint : messages.workspace.inputChipHint}
+          </p>
           <CanvasProducerSelect
             chips={canvasChips}
-            value={inputChipId}
+            value={script ? undefined : inputChipId}
+            values={script ? inputChipIds : undefined}
+            max={script ? MAX_SCRIPT_INPUTS : undefined}
             messages={messages}
             label={messages.workspace.inputChip}
             disabled={busy}
             onChange={setInputChipId}
+            onValuesChange={script ? setInputChipIds : undefined}
           />
         </div>
       </AppDialog>
@@ -1278,6 +1340,7 @@ export function ChipPlaceDialog({
             name: draft.name,
             inputDatasetId: "",
             inputChipId: draft.inputChipId,
+            inputChipIds: draft.inputChipIds,
           })}
           onPlaceDataset={onPlaceNewScript}
           onPlaceCatalog={onPlaceCatalog}

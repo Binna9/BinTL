@@ -184,6 +184,13 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
         <DetailSection icon={Globe} title={messages.workspace.serve}>
           <DetailRow label={messages.workspace.serveSlug}>{slug || unset}</DetailRow>
           <DetailRow label={messages.workspace.servePublicPath}>{slug ? messages.workspace.servePathPreview(slug) : unset}</DetailRow>
+          <DetailRow label={messages.workspace.serveApiKey} className="items-start">
+            <span className="break-all text-left font-mono text-[12px]">
+              {typeof chip.config.api_key === "string" && chip.config.api_key
+                ? chip.config.api_key
+                : chip.api_key || messages.workspace.serveApiKeySaved}
+            </span>
+          </DetailRow>
           <DetailRow label={messages.workspace.serveFreshness}>{freshness}</DetailRow>
         </DetailSection>
       </DetailStack>
@@ -196,11 +203,19 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
     const files = chip.config.files && typeof chip.config.files === "object" && !Array.isArray(chip.config.files)
       ? Object.keys(chip.config.files as Record<string, unknown>).sort((left, right) => left.localeCompare(right))
       : [];
+    const inputNames = Array.isArray(chip.config.inputs)
+      ? chip.config.inputs
+        .map((item) => (item && typeof item === "object" && !Array.isArray(item) && typeof (item as { name?: unknown }).name === "string"
+          ? (item as { name: string }).name
+          : ""))
+        .filter(Boolean)
+      : [];
     return (
       <DetailStack>
         <DetailSection icon={Braces} title={messages.workspace.script}>
           <DetailRow label={messages.workspace.scriptEntry}>{entry || unset}</DetailRow>
           <DetailRow label={messages.workspace.scriptFiles}>{files.length ? files.join(", ") : unset}</DetailRow>
+          <DetailRow label={messages.transform.selectedFile}>{inputNames.length ? inputNames.join(", ") : unset}</DetailRow>
         </DetailSection>
       </DetailStack>
     );

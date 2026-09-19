@@ -170,6 +170,7 @@ export interface ChipInputSlotResponse {
   has_header?: boolean;
   columns?: { name: string; dtype?: string; type?: string }[];
   dataset?: Record<string, unknown>;
+  slots?: ChipInputSlotResponse[];
 }
 
 export interface WorkspaceExecution {

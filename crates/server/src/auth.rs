@@ -72,9 +72,7 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 
 pub fn session_cookie(secret: &str, user_id: &str) -> String {
     let value = sign(secret, user_id);
-    format!(
-        "{COOKIE_NAME}={value}; HttpOnly; Path=/; SameSite=Lax; Max-Age={SESSION_TTL_SECS}"
-    )
+    format!("{COOKIE_NAME}={value}; HttpOnly; Path=/; SameSite=Lax; Max-Age={SESSION_TTL_SECS}")
 }
 
 pub fn clear_cookie() -> String {
@@ -94,11 +92,7 @@ fn cookie_value(header: &str, name: &str) -> Option<String> {
 
 async fn load_session_user(state: &AppState, cookie_header: &str) -> Result<UserRow, AppError> {
     if state.config.skip_auth {
-        return state
-            .store
-            .ensure_bootstrap()
-            .await
-            .map_err(AppError::from);
+        return state.store.ensure_bootstrap().await.map_err(AppError::from);
     }
     let token = cookie_value(cookie_header, COOKIE_NAME).ok_or_else(AppError::unauthorized)?;
     let user_id =

@@ -136,11 +136,15 @@ mod tests {
     #[tokio::test]
     async fn removes_legacy_log_dirs() {
         let dir = std::env::temp_dir().join(format!("bintl-log-clean-{}", std::process::id()));
-        tokio::fs::create_dir_all(dir.join("logs/extracts")).await.unwrap();
+        tokio::fs::create_dir_all(dir.join("logs/extracts"))
+            .await
+            .unwrap();
         tokio::fs::write(dir.join("logs/extracts/old.log"), "leftover")
             .await
             .unwrap();
-        tokio::fs::create_dir_all(dir.join("logs/query")).await.unwrap();
+        tokio::fs::create_dir_all(dir.join("logs/query"))
+            .await
+            .unwrap();
         tokio::fs::write(dir.join("logs/query/fresh.log"), "keep")
             .await
             .unwrap();

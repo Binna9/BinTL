@@ -22,6 +22,16 @@ import { ServeChipEditorDialog } from "@/components/workspace/ServeChipEditorDia
 import { nextSequencedChipName } from "@/lib/chipSequence";
 import { chipEditorPath, type Chip, type ChipKind } from "@/types/chip";
 
+const KIND_ORDER: Record<ChipKind, number> = {
+  extract: 0,
+  transform: 1,
+  load: 2,
+  validation: 3,
+  sql: 4,
+  script: 5,
+  serve: 6,
+};
+
 function kindLabel(kind: ChipKind, messages: ReturnType<typeof useLanguage>["messages"]) {
   if (kind === "extract") return messages.workspace.extract;
   if (kind === "transform") return messages.workspace.transform;
@@ -30,6 +40,12 @@ function kindLabel(kind: ChipKind, messages: ReturnType<typeof useLanguage>["mes
   if (kind === "script") return messages.workspace.script;
   if (kind === "serve") return messages.workspace.serve;
   return messages.workspace.validation;
+}
+
+function compareChips(a: Chip, b: Chip) {
+  const kind = (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99);
+  if (kind !== 0) return kind;
+  return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
 export function ChipsPage() {
@@ -50,11 +66,13 @@ export function ChipsPage() {
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const visibleChips = useMemo(() => {
     const query = nameQuery.trim().toLocaleLowerCase();
-    return chips.filter((chip) =>
-      (kindFilter === "all" || chip.kind === kindFilter)
-      && (statusFilter === "all" || (statusFilter === "active" ? chip.active : !chip.active))
-      && (!query || chip.name.toLocaleLowerCase().includes(query)),
-    );
+    return chips
+      .filter((chip) =>
+        (kindFilter === "all" || chip.kind === kindFilter)
+        && (statusFilter === "all" || (statusFilter === "active" ? chip.active : !chip.active))
+        && (!query || chip.name.toLocaleLowerCase().includes(query)),
+      )
+      .sort(compareChips);
   }, [chips, kindFilter, nameQuery, statusFilter]);
   const paging = usePagination(visibleChips, `${kindFilter}|${statusFilter}|${nameQuery}`);
   const pageChips = paging.items;
@@ -64,9 +82,7 @@ export function ChipsPage() {
     setLoading(true);
     try {
       const response = await chipApi.listCatalog();
-      setChips(
-        [...response.chips].sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
-      );
+      setChips(response.chips);
     } catch (error) {
       toastError(messages.workspace.loadError, error);
     } finally {

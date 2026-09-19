@@ -8,9 +8,9 @@ mod delete_guard;
 mod execution_repo;
 mod extract_repo;
 mod file_repo;
+mod http_auth;
 mod identity;
 mod user_images;
-mod http_auth;
 pub use http_auth::HttpAuthConfig;
 mod job_repo;
 mod load_repo;
@@ -24,17 +24,15 @@ mod transform_repo;
 mod validation_repo;
 mod workspace_repo;
 
+pub use chip_copy::next_copy_slug;
 pub use identity::{
     DataScope, PermissionRow, RoleWithPermissions, UserRow, PERM_CONNECTION_WRITE,
     PERM_EXTRACT_RUN, PERM_TRANSFORM_RUN, PERM_USER_MANAGE, PERM_WORKSPACE_ALL,
 };
-pub use user_images::DEFAULT_USER_IMAGE_REL;
 pub use models::*;
-pub use chip_copy::next_copy_slug;
-pub use process_log::{
-    clean_process_logs, safe_log_id, ProcessLog, LOG_AREAS, LOG_QUERY,
-};
+pub use process_log::{clean_process_logs, safe_log_id, ProcessLog, LOG_AREAS, LOG_QUERY};
 pub use search::SearchHit;
+pub use user_images::DEFAULT_USER_IMAGE_REL;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -177,7 +175,11 @@ impl Store {
             database: row.database_name,
             username: row.username,
             password,
-            http_auth: row.http_auth_json.as_deref().map(serde_json::from_str).transpose()
+            http_auth: row
+                .http_auth_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
                 .map_err(|_| StorageError::Invalid("invalid saved HTTP auth settings".into()))?,
             ssl: row.ssl != 0,
         })
@@ -246,6 +248,7 @@ pub fn job_db_extract_rel(job_id: &str) -> String {
 
 async fn ensure_data_layout(data_dir: &Path) -> Result<(), StorageError> {
     tokio::fs::create_dir_all(data_dir.join(REL_OUTPUTS)).await?;
+    tokio::fs::create_dir_all(data_dir.join(chip_slot::REL_CHIP_OUTPUTS)).await?;
     tokio::fs::create_dir_all(data_dir.join(REL_STAGING)).await?;
     for kind in EXTRACT_KINDS {
         tokio::fs::create_dir_all(data_dir.join("extract_runs").join(kind)).await?;
@@ -502,14 +505,11 @@ async fn replace_workspace_edges(
         };
         let key = (from_id.to_string(), to_id.to_string(), slot.to_string());
         if !seen.insert(key) {
-            return Err(StorageError::Invalid(
-                if slot == "control" {
-                    "only one of on_success, on_error, or always is allowed between two chips"
-                        .into()
-                } else {
-                    "duplicate chip edge".into()
-                },
-            ));
+            return Err(StorageError::Invalid(if slot == "control" {
+                "only one of on_success, on_error, or always is allowed between two chips".into()
+            } else {
+                "duplicate chip edge".into()
+            }));
         }
         let id = if edge.id.trim().is_empty() {
             Uuid::new_v4().to_string()
@@ -591,7 +591,10 @@ fn validate_edge_kind(
                     "data edges must start from extract, transform, or script".into(),
                 ));
             }
-            if !matches!(to_kind, "transform" | "load" | "validation" | "serve" | "script") {
+            if !matches!(
+                to_kind,
+                "transform" | "load" | "validation" | "serve" | "script"
+            ) {
                 return Err(StorageError::Invalid(
                     "data edges must end at transform, load, validation, serve, or script".into(),
                 ));
@@ -628,9 +631,9 @@ fn flow_kind(kind: &str) -> bool {
 }
 
 fn has_data_pair(pairs: &[EdgePair], from: &str, to: &str) -> bool {
-    pairs
-        .iter()
-        .any(|(_, edge_from, edge_to, kind, _, _)| kind == "data" && edge_from == from && edge_to == to)
+    pairs.iter().any(|(_, edge_from, edge_to, kind, _, _)| {
+        kind == "data" && edge_from == from && edge_to == to
+    })
 }
 
 fn indirect_path_exists(pairs: &[EdgePair], from: &str, to: &str, skip_id: &str) -> bool {
@@ -639,7 +642,10 @@ fn indirect_path_exists(pairs: &[EdgePair], from: &str, to: &str, skip_id: &str)
         if id == skip_id || !flow_kind(kind) {
             continue;
         }
-        graph.entry(edge_from.as_str()).or_default().push(edge_to.as_str());
+        graph
+            .entry(edge_from.as_str())
+            .or_default()
+            .push(edge_to.as_str());
     }
     let mut seen = HashSet::new();
     seen.insert(from);
@@ -711,6 +717,11 @@ fn validate_edge_graph(
             let unique = sources.iter().copied().collect::<HashSet<_>>();
             if unique.len() != sources.len() {
                 return Err(StorageError::Invalid("duplicate chip edge".into()));
+            }
+        } else if to_kind == "script" {
+            // Keep in sync with server::script::MAX_SCRIPT_INPUTS.
+            if sources.len() > 8 {
+                return Err(StorageError::Invalid("too many data inputs".into()));
             }
         } else if sources.len() > 1 {
             return Err(StorageError::Invalid("too many data inputs".into()));
@@ -1162,13 +1173,7 @@ mod tests {
             .await
             .unwrap();
         let job = store
-            .insert_transform_job(
-                &input.stored_path,
-                "{}",
-                &transform.id,
-                &input.id,
-                &home,
-            )
+            .insert_transform_job(&input.stored_path, "{}", &transform.id, &input.id, &home)
             .await
             .unwrap();
         let rel = format!("outputs/{}/result.parquet", job.id);
@@ -1182,7 +1187,10 @@ mod tests {
         assert_eq!(dataset.row_count, Some(12));
         let listed = store.list_jobs(20, None).await.unwrap();
         let listed = listed.iter().find(|row| row.id == job.id).unwrap();
-        assert_eq!(listed.filename.as_deref(), Some("transform-SYS.DR$UDEF_PREFERENCE.csv"));
+        assert_eq!(
+            listed.filename.as_deref(),
+            Some("transform-SYS.DR$UDEF_PREFERENCE.csv")
+        );
         assert_eq!(listed.row_count, Some(12));
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
@@ -1355,25 +1363,23 @@ mod tests {
             )
             .await
             .unwrap();
-        let placed_before: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM workspace_chips WHERE chip_id = ?",
-        )
-        .bind(&chip.id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+        let placed_before: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM workspace_chips WHERE chip_id = ?")
+                .bind(&chip.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
         assert!(placed_before.0 > 0);
 
         store.delete_chip(&chip.id).await.unwrap();
 
         assert!(store.get_chip(&chip.id).await.unwrap().is_none());
-        let canvas_placements: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM workspace_chips WHERE chip_id = ?",
-        )
-        .bind(&chip.id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+        let canvas_placements: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM workspace_chips WHERE chip_id = ?")
+                .bind(&chip.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
         assert_eq!(canvas_placements.0, 0);
         assert!(store
             .get_extract_definition(&definition_id)
@@ -1542,13 +1548,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM workspace_chips WHERE chip_id = ?",
-        )
-        .bind(&extract.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM workspace_chips WHERE chip_id = ?")
+                .bind(&extract.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count, 1);
         pool.close().await;
         let _ = std::fs::remove_dir_all(root);
@@ -1755,11 +1760,7 @@ mod tests {
             .save_workspace(
                 &workspace.id,
                 r#"{"nodes":{}}"#,
-                &[
-                    extract.id.clone(),
-                    transform.id.clone(),
-                    load.id.clone(),
-                ],
+                &[extract.id.clone(), transform.id.clone(), load.id.clone()],
                 &[
                     WorkspaceSaveEdge {
                         id: String::new(),
@@ -2189,22 +2190,20 @@ mod tests {
         assert!(store.get_workspace(&ws.id).await.unwrap().is_none());
         assert!(store.get_dataset(&upload.id).await.unwrap().is_none());
         assert!(!store.resolve(&upload.stored_path).exists());
-        let moved: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM data_files WHERE workspace_id = ? OR id = ?",
-        )
-        .bind(DEFAULT_WORKSPACE_ID)
-        .bind(&upload.id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+        let moved: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM data_files WHERE workspace_id = ? OR id = ?")
+                .bind(DEFAULT_WORKSPACE_ID)
+                .bind(&upload.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
         assert_eq!(moved, 0);
-        let search_left: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM search_documents WHERE workspace_id = ?",
-        )
-        .bind(&ws.id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+        let search_left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM search_documents WHERE workspace_id = ?")
+                .bind(&ws.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
         assert_eq!(search_left, 0);
 
         store.pool.close().await;
@@ -2272,7 +2271,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let source_version = store.get_workspace(&source.id).await.unwrap().unwrap().version;
+        let source_version = store
+            .get_workspace(&source.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .version;
         store
             .save_workspace(
                 &source.id,
@@ -2308,7 +2312,12 @@ mod tests {
             .await
             .unwrap();
         let extract_binding = store.get_chip_binding(&extract.id).await.unwrap().unwrap();
-        let target_version = store.get_workspace(&target.id).await.unwrap().unwrap().version;
+        let target_version = store
+            .get_workspace(&target.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .version;
         let pasted = store
             .paste_chips(
                 &target.id,
@@ -2356,13 +2365,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(placed, (40.0, 80.0));
-        let output_files: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM data_files WHERE workspace_id = ?",
-        )
-        .bind(&target.id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+        let output_files: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM data_files WHERE workspace_id = ?")
+                .bind(&target.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
         assert_eq!(output_files, 0);
         let source_chips = store.list_chips(&source.id).await.unwrap();
         assert_eq!(source_chips.len(), 3);

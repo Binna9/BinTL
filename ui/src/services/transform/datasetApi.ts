@@ -27,10 +27,11 @@ export const datasetApi = {
     files: Record<string, string>,
     entry = "main.js",
     limit = 200,
+    inputs?: { name: string; dataset_id: string }[],
   ) =>
     httpRequest<FramePreview>(`/api/datasets/${id}/script-preview`, {
       method: "POST",
-      body: JSON.stringify({ files, entry, limit }),
+      body: JSON.stringify({ files, entry, limit, inputs }),
     }),
   delete: (id: string) =>
     httpRequest<{ ok: boolean }>(`/api/datasets/${id}`, { method: "DELETE" }),
