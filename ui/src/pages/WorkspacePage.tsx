@@ -1,7 +1,7 @@
 import type { WorkspaceExecution } from "@/types/chip";
 import { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeftRight, ArrowRight, Braces, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Globe, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Square, Terminal, Workflow, X } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, Braces, CheckCircle2, CircleAlert, DatabaseZap, FileOutput, FolderOpen, Globe, History, Minus, Pencil, Pin, Play, Plus, Puzzle, RefreshCw, Save, ShieldCheck, Square, StickyNote, Terminal, Workflow, X } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import {
@@ -17,6 +17,7 @@ import {
 } from "@/components/workspace/ChipPlaceDialog";
 import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
 import { ServeChipEditorDialog } from "@/components/workspace/ServeChipEditorDialog";
+import { MemoChipEditorDialog, MAX_MEMO_TEXT, memoConfig, type MemoStyle } from "@/components/workspace/MemoChipEditorDialog";
 import { WorkspaceRunReportDialog } from "@/components/workspace/WorkspaceRunReportDialog";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { StatusPill } from "@/components/StatusPill";
@@ -43,6 +44,8 @@ import {
   CANVAS_H,
   CANVAS_W,
   CHIP_PLACE_GAP,
+  MEMO_DEFAULT_H,
+  MEMO_DEFAULT_W,
   NODE_H,
   NODE_W,
   TOOL_KIND,
@@ -58,6 +61,7 @@ import {
   sameKindPairEdges,
   chipInMarquee,
   chipKindLabel,
+  chipNodeSize,
   PINNED_WORKSPACE_KEY,
   storedPinnedWorkspace,
   chipRunOrder,
@@ -72,16 +76,19 @@ import {
   nodesFromLayout,
   normalizeMarquee,
   omitPoint,
+  placedCanvasNode,
   pointerOutsideCanvas,
   portPoint,
   previewGeometry,
   routeSides,
   asPortSide,
   releasePointer,
+  resizeMemoNode,
   roundPoint,
   scrollCanvasFromPointer,
   visibleCanvasEdges,
   wireTone,
+  type CanvasNode,
   type CanvasSnapshot,
   type MarqueeBox,
   type Point,
@@ -97,6 +104,7 @@ import {
   EdgeWire,
   ChipLinkHandle,
   isEditableTarget,
+  MemoStickyNote,
   ShortcutHint,
   ToolIconButton,
   WorkspaceBrowserPanel,
@@ -122,7 +130,7 @@ export function WorkspacePage() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const canvasZoomRef = useRef(1);
   const pendingViewRef = useRef<Point | null>(null);
-  const positionsRef = useRef<Record<string, Point>>({});
+  const positionsRef = useRef<Record<string, CanvasNode>>({});
   const savedRef = useRef<CanvasSnapshot>({ chips: [], positions: {}, edges: [] });
   const incomingCanvasDraftRef = useRef(
     (location.state as { canvasDraft?: CanvasSnapshot & { workspaceId: string } } | null)
@@ -150,8 +158,17 @@ export function WorkspacePage() {
     moved: boolean;
     additive: boolean;
     wasSelected: boolean;
-    origins: Record<string, Point>;
+    origins: Record<string, CanvasNode>;
   } | null>(null);
+  const resizeRef = useRef<{
+    id: string;
+    startW: number;
+    startH: number;
+    grabX: number;
+    grabY: number;
+    origin: CanvasNode;
+  } | null>(null);
+  const memoSaveGenRef = useRef(new Map<string, number>());
   const panRef = useRef<{
     pointerId: number;
     startX: number;
@@ -184,7 +201,7 @@ export function WorkspacePage() {
   edgesRef.current = edges;
   const [runs, setRuns] = useState<ChipRun[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [positions, setPositions] = useState<Record<string, Point>>({});
+  const [positions, setPositions] = useState<Record<string, CanvasNode>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -225,6 +242,7 @@ export function WorkspacePage() {
   const lastPlaceKindRef = useRef<ChipPlaceKind>("extract");
   const [sqlEditor, setSqlEditor] = useState<{ chip: Chip | null } | null>(null);
   const [serveEditor, setServeEditor] = useState<Chip | null>(null);
+  const [memoEditor, setMemoEditor] = useState<Chip | null>(null);
   const [chipMenu, setChipMenu] = useState<ChipContextMenuState | null>(null);
   const [infoChip, setInfoChip] = useState<Chip | null>(null);
   const [logChipId, setLogChipId] = useState<string | null>(null);
@@ -308,7 +326,7 @@ export function WorkspacePage() {
 
   function rememberSaved(
     nextChips: Chip[],
-    nextPositions: Record<string, Point>,
+    nextPositions: Record<string, CanvasNode>,
     nextEdges: ChipEdge[],
   ) {
     savedRef.current = cloneCanvas(nextChips, nextPositions, nextEdges);
@@ -318,16 +336,16 @@ export function WorkspacePage() {
 
   function positionsFrom(nextChips: Chip[], layout?: WorkspaceLayout) {
     const stored = nodesFromLayout(layout);
-    const next: Record<string, Point> = {};
+    const next: Record<string, CanvasNode> = {};
     nextChips.forEach((chip, index) => {
-      next[chip.id] = stored[chip.id] ?? fallbackPoint(index);
+      next[chip.id] = placedCanvasNode(chip.kind, stored[chip.id] ?? fallbackPoint(index), stored[chip.id]);
     });
     return next;
   }
 
   function markDirty(
     nextChips: Chip[],
-    nextPositions: Record<string, Point>,
+    nextPositions: Record<string, CanvasNode>,
     nextEdges: ChipEdge[],
   ) {
     const saved = savedRef.current;
@@ -344,7 +362,10 @@ export function WorkspacePage() {
         const savedPoint = saved.positions[chip.id];
         return !currentPoint || !savedPoint
           || currentPoint.x !== savedPoint.x
-          || currentPoint.y !== savedPoint.y;
+          || currentPoint.y !== savedPoint.y
+          || currentPoint.w !== savedPoint.w
+          || currentPoint.h !== savedPoint.h
+          || Boolean(currentPoint.collapsed) !== Boolean(savedPoint.collapsed);
       })
       || nextEdges.some((edge) => {
         const original = saved.edges.find((item) => item.id === edge.id);
@@ -804,6 +825,10 @@ export function WorkspacePage() {
   }
 
   function openChipEditor(chip: Chip) {
+    if (chip.kind === "memo") {
+      setMemoEditor(chip);
+      return;
+    }
     if (chip.kind !== "extract" && chip.kind !== "transform" && chip.kind !== "load" && chip.kind !== "validation" && chip.kind !== "sql" && chip.kind !== "serve" && chip.kind !== "script") return;
     if (!workspaceId || currentWorkspaceRef.current !== workspaceId) return;
     void (async () => {
@@ -1146,7 +1171,10 @@ export function WorkspacePage() {
         return;
       }
     }
-    const nameTaken = [...catalogChips, ...chips].some((item) => (
+    const nameTaken = [
+      ...catalogChips.filter((item) => item.kind !== "memo"),
+      ...chips,
+    ].some((item) => (
       item.id !== propsChip.id
       && item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase()
     ));
@@ -1292,11 +1320,13 @@ export function WorkspacePage() {
     let nextChips = [...chips];
     const placedIds: string[] = [];
     unplacedChips.forEach((catalogChip, index) => {
+      const size = chipNodeSize(catalogChip.kind);
       const nextPoint = clampPoint({
-        x: origin.x + index * (NODE_W + CHIP_PLACE_GAP),
+        x: origin.x + index * (size.w + CHIP_PLACE_GAP),
         y: origin.y,
-      });
-      nextPositions[catalogChip.id] = nextPoint;
+      }, { width: CANVAS_W, height: CANVAS_H }, { width: size.w, height: size.h });
+      nextPositions[catalogChip.id] = placedCanvasNode(catalogChip.kind, nextPoint);
+   
       if (!nextChips.some((chip) => chip.id === catalogChip.id)) {
         nextChips = [catalogChip, ...nextChips];
       }
@@ -1511,10 +1541,33 @@ export function WorkspacePage() {
     setPendingPlace(null);
   }
 
+  function placeNewMemoChip(name: string) {
+    if (!pendingPlace) return;
+    const now = new Date().toISOString();
+    const chip: Chip = {
+      id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+      owner_user_id: "",
+      name,
+      kind: "memo",
+      config: { text: "" },
+      revision: 0,
+      active: true,
+      created_at: now,
+      updated_at: now,
+    };
+    placeCatalogChips([chip], pendingPlace.point);
+    setPendingPlace(null);
+  }
+
   function dropChipsLocally(chipIdsToDrop: string[]) {
     if (chipIdsToDrop.length === 0) return;
     pushUndo();
     const dropSet = new Set(chipIdsToDrop);
+    const droppedMemos = chips.filter((item) => dropSet.has(item.id) && item.kind === "memo").map((item) => item.id);
+    if (droppedMemos.length > 0) {
+      const memoSet = new Set(droppedMemos);
+      setCatalogChips((current) => current.filter((item) => !memoSet.has(item.id)));
+    }
     const nextChips = chips.filter((item) => !dropSet.has(item.id));
     let nextPositions = positionsRef.current;
     for (const id of chipIdsToDrop) nextPositions = omitPoint(nextPositions, id);
@@ -1535,6 +1588,11 @@ export function WorkspacePage() {
     if (chipIdsToDrop.length === 0 && edgeIdsToDrop.length === 0) return;
     pushUndo();
     const chipDropSet = new Set(chipIdsToDrop);
+    const droppedMemos = chips.filter((item) => chipDropSet.has(item.id) && item.kind === "memo").map((item) => item.id);
+    if (droppedMemos.length > 0) {
+      const memoSet = new Set(droppedMemos);
+      setCatalogChips((current) => current.filter((item) => !memoSet.has(item.id)));
+    }
     const edgeDropSet = new Set(edgeIdsToDrop);
     const nextChips = chips.filter((item) => !chipDropSet.has(item.id));
     let nextPositions = positionsRef.current;
@@ -1659,7 +1717,9 @@ export function WorkspacePage() {
       const draftChips = currentChips.filter((chip) => isDraftChipId(chip.id));
       const onCanvas = new Set(currentChips.map((chip) => chip.id));
       const upcomingNames = [
-        ...catalogChips.filter((chip) => !onCanvas.has(chip.id)).map((chip) => chip.name),
+        ...catalogChips
+          .filter((chip) => chip.kind !== "memo" && !onCanvas.has(chip.id))
+          .map((chip) => chip.name),
         ...currentChips.map((chip) => chip.name),
       ];
       const usedNames = new Set<string>();
@@ -1676,6 +1736,19 @@ export function WorkspacePage() {
       if (graphIssue) {
         toastError(edgeIssueMessage(graphIssue, "on_success", messages));
         return false;
+      }
+      const removedPersistedMemos = savedRef.current.chips.filter((chip) => (
+        chip.kind === "memo"
+        && !isDraftChipId(chip.id)
+        && !currentChips.some((item) => item.id === chip.id)
+      ));
+      for (const memo of removedPersistedMemos) {
+        await chipApi.remove(memo.id);
+        if (currentWorkspaceRef.current !== requestWorkspaceId) return false;
+      }
+      if (removedPersistedMemos.length > 0) {
+        const removed = new Set(removedPersistedMemos.map((chip) => chip.id));
+        setCatalogChips((current) => current.filter((item) => !removed.has(item.id)));
       }
       const idMap = new Map<string, string>();
       savedDraftIdMapRef.current = idMap;
@@ -1710,16 +1783,23 @@ export function WorkspacePage() {
       }
 
       const savedChips = savedRef.current.chips;
-      let renamed = false;
+      let definitionChanged = false;
       for (const chip of chipsToSave) {
         const original = savedChips.find((item) => item.id === chip.id);
-        if (!original || original.name === chip.name) continue;
-        const updated = await chipApi.update(chip.id, { name: chip.name });
+        if (!original) continue;
+        const nameChanged = original.name !== chip.name;
+        const memoChanged = chip.kind === "memo"
+          && JSON.stringify(original.config) !== JSON.stringify(chip.config);
+        if (!nameChanged && !memoChanged) continue;
+        const updated = await chipApi.update(chip.id, {
+          ...(nameChanged ? { name: chip.name } : {}),
+          ...(memoChanged ? { config: memoConfig(chip) } : {}),
+        });
         if (currentWorkspaceRef.current !== requestWorkspaceId) return false;
-        renamed = true;
+        definitionChanged = true;
         chipsToSave = chipsToSave.map((item) => (item.id === updated.id ? { ...item, ...updated } : item));
       }
-      if (renamed) {
+      if (definitionChanged) {
         chipsRef.current = chipsToSave;
         setChips(chipsToSave);
       }
@@ -1762,7 +1842,10 @@ export function WorkspacePage() {
         }),
       });
       if (currentWorkspaceRef.current !== requestWorkspaceId) return false;
-      if (draftChips.length > 0 || renamed) {
+      const removedMemos = savedChips.some((chip) =>
+        chip.kind === "memo" && !chipsToSave.some((item) => item.id === chip.id),
+      );
+      if (draftChips.length > 0 || definitionChanged || removedMemos) {
         const catalogResponse = await chipApi.listCatalog();
         if (currentWorkspaceRef.current === requestWorkspaceId) {
           setCatalogChips(catalogResponse.chips);
@@ -1845,7 +1928,10 @@ export function WorkspacePage() {
   function copyIds(chipIds: string[]) {
     if (!workspaceId) return false;
     const ids = chipIds.filter((id) => chipsRef.current.some((chip) => chip.id === id && !isDraftChipId(id)));
-    const bbox = chipSelectionBbox(ids, positionsRef.current);
+    const bbox = chipSelectionBbox(ids, positionsRef.current, (id, node) => {
+      const kind = chipsRef.current.find((chip) => chip.id === id)?.kind;
+      return chipNodeSize(kind, node);
+    });
     if (ids.length === 0 || !bbox) {
       toastError(messages.workspace.copyEmpty);
       return false;
@@ -2040,15 +2126,19 @@ export function WorkspacePage() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
-    const point = { x: grab.x - NODE_W / 2, y: grab.y - NODE_H / 2 };
     const toolKind = event.dataTransfer.getData(TOOL_KIND);
-    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load" && toolKind !== "validation" && toolKind !== "sql" && toolKind !== "serve" && toolKind !== "script") return;
+    if (toolKind !== "extract" && toolKind !== "transform" && toolKind !== "load" && toolKind !== "validation" && toolKind !== "sql" && toolKind !== "serve" && toolKind !== "script" && toolKind !== "memo") return;
+    const size = toolKind === "memo"
+      ? { w: MEMO_DEFAULT_W, h: MEMO_DEFAULT_H }
+      : { w: NODE_W, h: NODE_H };
+    const point = { x: grab.x - size.w / 2, y: grab.y - size.h / 2 };
     placeTool(toolKind, point);
   }
 
   function onNodePointerDown(chip: Chip, event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
-    if ((event.target as HTMLElement).closest(".chip-link, button")) return;
+    const target = event.target as HTMLElement;
+    if (target.closest(".chip-link, button, select, .workspace-memo-format, .workspace-memo-resize")) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const node = positionsRef.current[chip.id] ?? { x: 56, y: 48 };
@@ -2061,12 +2151,13 @@ export function WorkspacePage() {
     } else if (!wasSelected) {
       setSelectedChipIds([...selectedChipIdsRef.current, chip.id]);
     }
+    if (target.closest("textarea")) return;
     const dragIds = wasSelected
       ? selectedChipIdsRef.current
       : additive
         ? [...new Set([...selectedChipIdsRef.current, chip.id])]
         : [chip.id];
-    const origins: Record<string, Point> = {};
+    const origins: Record<string, CanvasNode> = {};
     for (const id of dragIds) {
       origins[id] = positionsRef.current[id] ?? { x: 56, y: 48 };
     }
@@ -2125,15 +2216,28 @@ export function WorkspacePage() {
     }
     scrollCanvasFromPointer(canvas, event.clientX, event.clientY);
     const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
+    const dragged = chipsRef.current.find((item) => item.id === drag.id);
+    const primarySize = chipNodeSize(dragged?.kind, drag.origins[drag.id]);
     const tentative = { x: grab.x - drag.dx, y: grab.y - drag.dy };
-    const nextPrimary = clampPoint(tentative);
+    const nextPrimary = clampPoint(
+      tentative,
+      { width: CANVAS_W, height: CANVAS_H },
+      { width: primarySize.w, height: primarySize.h },
+    );
     const deltaX = nextPrimary.x - drag.startX;
     const deltaY = nextPrimary.y - drag.startY;
     if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) drag.moved = true;
     setPositions((current) => {
       const next = { ...current };
       for (const [id, origin] of Object.entries(drag.origins)) {
-        next[id] = clampPoint({ x: origin.x + deltaX, y: origin.y + deltaY });
+        const kind = chipsRef.current.find((item) => item.id === id)?.kind;
+        const size = chipNodeSize(kind, origin);
+        const clamped = clampPoint(
+          { x: origin.x + deltaX, y: origin.y + deltaY },
+          { width: CANVAS_W, height: CANVAS_H },
+          { width: size.w, height: size.h },
+        );
+        next[id] = { ...origin, x: clamped.x, y: clamped.y };
       }
       return next;
     });
@@ -2146,6 +2250,114 @@ export function WorkspacePage() {
   function onNodePointerCancel(chip: Chip, event: ReactPointerEvent<HTMLDivElement>) {
     releasePointer(event.currentTarget, event.pointerId);
     finishNodeDrag(chip.id, false);
+  }
+
+  function finishMemoResize(id: string) {
+    const resize = resizeRef.current;
+    resizeRef.current = null;
+    if (!resize || resize.id !== id) return;
+    const current = positionsRef.current[id];
+    if (
+      current
+      && current.w === resize.origin.w
+      && current.h === resize.origin.h
+    ) {
+      return;
+    }
+    const beforePositions = { ...positionsRef.current, [id]: resize.origin };
+    pushUndo(cloneCanvas(chipsRef.current, beforePositions, edgesRef.current));
+    markDirty(chipsRef.current, positionsRef.current, edgesRef.current);
+  }
+
+  function onMemoResizePointerDown(chip: Chip, event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const node = positionsRef.current[chip.id] ?? { x: 56, y: 48 };
+    const size = chipNodeSize("memo", node);
+    const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
+    resizeRef.current = {
+      id: chip.id,
+      startW: size.w,
+      startH: size.h,
+      grabX: grab.x,
+      grabY: grab.y,
+      origin: { ...node },
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function onMemoResizePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const resize = resizeRef.current;
+    const canvas = canvasRef.current;
+    if (!resize || !canvas) return;
+    const grab = canvasPoint(canvas, event.clientX, event.clientY, canvasZoomRef.current);
+    setPositions((current) => {
+      const node = current[resize.id] ?? resize.origin;
+      return {
+        ...current,
+        [resize.id]: resizeMemoNode(
+          node,
+          resize.startW + (grab.x - resize.grabX),
+          resize.startH + (grab.y - resize.grabY),
+        ),
+      };
+    });
+  }
+
+  function toggleMemoCollapsed(chip: Chip) {
+    const node = positionsRef.current[chip.id];
+    if (!node) return;
+    pushUndo();
+    const nextPositions = {
+      ...positionsRef.current,
+      [chip.id]: { ...node, collapsed: !node.collapsed },
+    };
+    setPositions(nextPositions);
+    markDirty(chipsRef.current, nextPositions, edgesRef.current);
+  }
+
+  function setMemoConfigLocal(chipId: string, patch: Partial<MemoStyle>) {
+    const chip = chipsRef.current.find((item) => item.id === chipId);
+    if (!chip) return null;
+    const config = memoConfig(chip, patch);
+    const nextChips = chipsRef.current.map((item) => (
+      item.id === chipId ? { ...item, config } : item
+    ));
+    chipsRef.current = nextChips;
+    setChips(nextChips);
+    if (isDraftChipId(chipId)) markDirty(nextChips, positionsRef.current, edgesRef.current);
+    return config;
+  }
+
+  async function commitMemoConfig(chipId: string, patch: Partial<MemoStyle>) {
+    const chip = chipsRef.current.find((item) => item.id === chipId);
+    if (!chip) return;
+    const config = memoConfig(chip, patch);
+    if (config.text.length > MAX_MEMO_TEXT) {
+      toastError(messages.workspace.memoTooLong);
+      return;
+    }
+    setMemoConfigLocal(chipId, patch);
+    if (isDraftChipId(chipId)) return;
+    const gen = (memoSaveGenRef.current.get(chipId) ?? 0) + 1;
+    memoSaveGenRef.current.set(chipId, gen);
+    try {
+      const saved = await chipApi.update(chipId, { config });
+      if (memoSaveGenRef.current.get(chipId) !== gen) return;
+      const nextChips = chipsRef.current.map((item) => (item.id === saved.id ? { ...item, ...saved } : item));
+      chipsRef.current = nextChips;
+      setChips(nextChips);
+      setCatalogChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+      const snapshot = savedRef.current;
+      snapshot.chips = snapshot.chips.map((item) => (item.id === saved.id ? { ...item, ...saved } : item));
+      markDirty(nextChips, positionsRef.current, edgesRef.current);
+    } catch (error) {
+      if (memoSaveGenRef.current.get(chipId) !== gen) return;
+      toastError(messages.workspace.saveChipError, error);
+    }
   }
 
   function onPortPointerDown(
@@ -2187,11 +2399,12 @@ export function WorkspacePage() {
     const snap = 26;
     let nearest: { id: string; distance: number } | undefined;
     for (const chip of chipsRef.current) {
-      if (chip.id === fromId) continue;
+      if (chip.id === fromId || chip.kind === "memo") continue;
       const position = positionsRef.current[chip.id];
       if (!position) continue;
-      const dx = Math.max(position.x - point.x, 0, point.x - (position.x + NODE_W));
-      const dy = Math.max(position.y - point.y, 0, point.y - (position.y + NODE_H));
+      const size = chipNodeSize(chip.kind, position);
+      const dx = Math.max(position.x - point.x, 0, point.x - (position.x + size.w));
+      const dy = Math.max(position.y - point.y, 0, point.y - (position.y + size.h));
       const distance = Math.hypot(dx, dy);
       if (distance <= snap && (!nearest || distance < nearest.distance)) {
         nearest = { id: chip.id, distance };
@@ -2260,7 +2473,7 @@ export function WorkspacePage() {
     const pickedChips = chips
       .filter((chip) => {
         const point = positions[chip.id];
-        return point ? chipInMarquee(point, box) : false;
+        return point ? chipInMarquee(point, box, chipNodeSize(chip.kind, point)) : false;
       })
       .map((chip) => chip.id);
     const pickedEdges = controlEdges
@@ -2459,6 +2672,12 @@ export function WorkspacePage() {
       label: messages.workspace.serve,
       hint: messages.workspace.serveHint,
       icon: Globe,
+    },
+    {
+      kind: "memo" as const,
+      label: messages.workspace.memo,
+      hint: messages.workspace.memoHint,
+      icon: StickyNote,
     },
   ];
   const edgeTools = [
@@ -2808,12 +3027,48 @@ export function WorkspacePage() {
         {chips.map((chip) => {
           const point = positions[chip.id] ?? fallbackPoint(0);
           const latest = latestByChip.get(chip.id);
+          if (chip.kind === "memo") {
+            return (
+              <MemoStickyNote
+                key={chip.id}
+                chip={chip}
+                point={placedCanvasNode("memo", point, point)}
+                selected={selectedChipIds.includes(chip.id)}
+                messages={messages}
+                busy={busy}
+                onNodePointerDown={(event) => onNodePointerDown(chip, event)}
+                onNodePointerMove={onNodePointerMove}
+                onNodePointerUp={() => onNodePointerUp(chip)}
+                onNodePointerCancel={(event) => onNodePointerCancel(chip, event)}
+                onLostPointerCapture={() => {
+                  if (dragRef.current?.id === chip.id) finishNodeDrag(chip.id, false);
+                }}
+                onContextMenu={(event) => openChipContextMenu(chip, event)}
+                onToggleCollapse={() => toggleMemoCollapsed(chip)}
+                onResizePointerDown={(event) => onMemoResizePointerDown(chip, event)}
+                onResizePointerMove={onMemoResizePointerMove}
+                onResizePointerUp={() => finishMemoResize(chip.id)}
+                onResizePointerCancel={(event) => {
+                  releasePointer(event.currentTarget, event.pointerId);
+                  finishMemoResize(chip.id);
+                }}
+                onResizeLostCapture={() => {
+                  if (resizeRef.current?.id === chip.id) finishMemoResize(chip.id);
+                }}
+                onTextChange={(text) => setMemoConfigLocal(chip.id, { text })}
+                onTextBlur={(text) => void commitMemoConfig(chip.id, { text })}
+                onStyleChange={(patch) => void commitMemoConfig(chip.id, patch)}
+                onDelete={() => void deleteCanvasChip(chip)}
+              />
+            );
+          }
           const Icon = chip.kind === "transform" ? Workflow
             : chip.kind === "load" ? FileOutput
               : chip.kind === "validation" ? ShieldCheck
                 : chip.kind === "sql" ? Terminal
                   : chip.kind === "script" ? Braces
-                  : chip.kind === "serve" ? Globe : DatabaseZap;
+                  : chip.kind === "serve" ? Globe
+                    : DatabaseZap;
           return (
             <div
               key={chip.id}
@@ -2925,7 +3180,8 @@ export function WorkspacePage() {
                     : chip.kind === "validation" ? "is-validation"
                       : chip.kind === "sql" ? "is-sql"
                         : chip.kind === "script" ? "is-script"
-                        : chip.kind === "serve" ? "is-serve" : "is-transform",
+                        : chip.kind === "serve" ? "is-serve"
+                          : "is-transform",
               )}>
                 <Icon aria-hidden="true" />
               </span>
@@ -3073,7 +3329,15 @@ export function WorkspacePage() {
           messages.workspace.defaultServeChipName,
           (chip) => chip.kind === "serve",
         )}
-        occupiedNames={[...catalogChips, ...chips].map((chip) => chip.name)}
+        defaultMemoName={nextSequencedChipName(
+          chips,
+          messages.workspace.defaultMemoChipName,
+          (chip) => chip.kind === "memo",
+        )}
+        occupiedNames={[
+          ...catalogChips.filter((chip) => chip.kind !== "memo"),
+          ...chips,
+        ].map((chip) => chip.name)}
         messages={messages}
         busy={busy}
         onClose={cancelPlaceChip}
@@ -3083,6 +3347,7 @@ export function WorkspacePage() {
         onPlaceNewValidation={placeNewValidationChip}
         onPlaceNewServe={placeNewServeChip}
         onPlaceNewScript={placeNewScriptChip}
+        onPlaceNewMemo={placeNewMemoChip}
         onRegisterSql={() => setSqlEditor({ chip: null })}
       />
 
@@ -3124,6 +3389,20 @@ export function WorkspacePage() {
           setCatalogChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
           setChips((current) => current.map((item) => (item.id === saved.id ? { ...item, ...saved } : item)));
           setServeEditor(null);
+        }}
+      />
+
+      <MemoChipEditorDialog
+        open={Boolean(memoEditor)}
+        chip={memoEditor}
+        onClose={() => setMemoEditor(null)}
+        onSaved={(saved) => {
+          pushUndo();
+          setCatalogChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+          const nextChips = chips.map((item) => (item.id === saved.id ? { ...item, ...saved } : item));
+          setChips(nextChips);
+          if (isDraftChipId(saved.id)) markDirty(nextChips, positionsRef.current, edges);
+          setMemoEditor(null);
         }}
       />
 
@@ -3263,6 +3542,8 @@ export function WorkspacePage() {
                           ? "bg-amber-500/10 text-amber-600 ring-amber-500/20 dark:text-amber-400"
                         : propsChip?.kind === "serve"
                           ? "bg-teal-500/10 text-teal-600 ring-teal-500/20 dark:text-teal-400"
+                          : propsChip?.kind === "memo"
+                            ? "bg-rose-500/10 text-rose-600 ring-rose-500/20 dark:text-rose-400"
                           : "bg-accent-subtle text-accent ring-accent/20",
               )}>
                 {propsChip?.kind === "transform" ? <Workflow className="size-5" aria-hidden="true" />
@@ -3271,6 +3552,7 @@ export function WorkspacePage() {
                       : propsChip?.kind === "sql" ? <Terminal className="size-5" aria-hidden="true" />
                         : propsChip?.kind === "script" ? <Braces className="size-5" aria-hidden="true" />
                         : propsChip?.kind === "serve" ? <Globe className="size-5" aria-hidden="true" />
+                          : propsChip?.kind === "memo" ? <StickyNote className="size-5" aria-hidden="true" />
                           : <DatabaseZap className="size-5" aria-hidden="true" />}
               </span>
               <div className="min-w-0 flex-1">

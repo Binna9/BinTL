@@ -194,10 +194,25 @@ impl Store {
         if !nodes.is_object() {
             *nodes = json!({});
         }
+        let source_nodes = serde_json::from_str::<Value>(&source.layout_json)
+            .ok()
+            .and_then(|layout| layout.get("nodes").cloned());
         let nodes = nodes.as_object_mut().expect("nodes object");
         for src in &sources {
             let new_id = id_map.get(&src.id).expect("clone id");
-            nodes.insert(new_id.clone(), json!({ "x": src.x + dx, "y": src.y + dy }));
+            let mut node = json!({ "x": src.x + dx, "y": src.y + dy });
+            if let Some(src_node) = source_nodes.as_ref().and_then(|nodes| nodes.get(&src.id)) {
+                if let Some(w) = src_node.get("w") {
+                    node["w"] = w.clone();
+                }
+                if let Some(h) = src_node.get("h") {
+                    node["h"] = h.clone();
+                }
+                if let Some(collapsed) = src_node.get("collapsed") {
+                    node["collapsed"] = collapsed.clone();
+                }
+            }
+            nodes.insert(new_id.clone(), node);
         }
         let layout_json = serde_json::to_string(&layout)
             .map_err(|error| StorageError::Invalid(error.to_string()))?;
@@ -234,7 +249,7 @@ impl Store {
             });
         }
 
-        let (saved_chips, saved_edges) = write_workspace_graph(
+        let (saved_chips, saved_edges, dropped_memos) = write_workspace_graph(
             &mut tx,
             &target,
             &layout_json,
@@ -245,6 +260,9 @@ impl Store {
         )
         .await?;
         tx.commit().await?;
+        for memo_id in dropped_memos {
+            let _ = self.delete_search_document("chip", &memo_id).await;
+        }
         for new_id in id_map.values() {
             search::sync_search_best_effort(self, "chip", self.sync_search_chip(new_id)).await;
         }
@@ -281,7 +299,7 @@ async fn clone_chip(
             require_config_json(config)?;
             insert_config_chip(tx, new_id, src, name, config, now).await
         }
-        "validation" | "sql" | "script" => {
+        "validation" | "sql" | "script" | "memo" => {
             let mut config: Value = src
                 .config_json
                 .as_deref()

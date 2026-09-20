@@ -19,6 +19,7 @@ import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { chipApi } from "@/services/chips/chipApi";
 import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
 import { ServeChipEditorDialog } from "@/components/workspace/ServeChipEditorDialog";
+import { MemoChipEditorDialog } from "@/components/workspace/MemoChipEditorDialog";
 import { nextSequencedChipName } from "@/lib/chipSequence";
 import { chipEditorPath, type Chip, type ChipKind } from "@/types/chip";
 
@@ -30,6 +31,7 @@ const KIND_ORDER: Record<ChipKind, number> = {
   sql: 4,
   script: 5,
   serve: 6,
+  memo: 7,
 };
 
 function kindLabel(kind: ChipKind, messages: ReturnType<typeof useLanguage>["messages"]) {
@@ -39,6 +41,7 @@ function kindLabel(kind: ChipKind, messages: ReturnType<typeof useLanguage>["mes
   if (kind === "sql") return messages.workspace.sql;
   if (kind === "script") return messages.workspace.script;
   if (kind === "serve") return messages.workspace.serve;
+  if (kind === "memo") return messages.workspace.memo;
   return messages.workspace.validation;
 }
 
@@ -59,6 +62,7 @@ export function ChipsPage() {
   const [detail, setDetail] = useState<Chip | null>(null);
   const [sqlEditorChip, setSqlEditorChip] = useState<Chip | null>(null);
   const [serveEditorChip, setServeEditorChip] = useState<Chip | null>(null);
+  const [memoEditorChip, setMemoEditorChip] = useState<Chip | null>(null);
   const [nameQuery, setNameQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<"all" | ChipKind>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
@@ -225,6 +229,7 @@ export function ChipsPage() {
                 { value: "sql", label: kindLabel("sql", messages) },
                 { value: "script", label: kindLabel("script", messages) },
                 { value: "serve", label: kindLabel("serve", messages) },
+                { value: "memo", label: kindLabel("memo", messages) },
               ]}
             />
           </div>
@@ -317,7 +322,7 @@ export function ChipsPage() {
           <Puzzle
             className={cn(
               "size-4",
-              detail?.kind === "transform" ? "text-success" : detail?.kind === "load" ? "text-warning" : detail?.kind === "sql" ? "text-sky-600 dark:text-sky-400" : detail?.kind === "script" ? "text-amber-600 dark:text-amber-400" : detail?.kind === "serve" ? "text-teal-600 dark:text-teal-400" : "text-accent",
+              detail?.kind === "transform" ? "text-success" : detail?.kind === "load" ? "text-warning" : detail?.kind === "sql" ? "text-sky-600 dark:text-sky-400" : detail?.kind === "script" ? "text-amber-600 dark:text-amber-400" : detail?.kind === "serve" ? "text-teal-600 dark:text-teal-400" : detail?.kind === "memo" ? "text-rose-600 dark:text-rose-400" : "text-accent",
             )}
             aria-hidden="true"
           />
@@ -341,6 +346,10 @@ export function ChipsPage() {
                 }
                 if (detail.kind === "serve") {
                   setServeEditorChip(detail);
+                  return;
+                }
+                if (detail.kind === "memo") {
+                  setMemoEditorChip(detail);
                   return;
                 }
                 navigate(chipEditorPath(detail));
@@ -389,6 +398,16 @@ export function ChipsPage() {
           setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
           setDetail((current) => (current?.id === saved.id ? saved : current));
           setServeEditorChip(null);
+        }}
+      />
+      <MemoChipEditorDialog
+        open={Boolean(memoEditorChip)}
+        chip={memoEditorChip}
+        onClose={() => setMemoEditorChip(null)}
+        onSaved={(saved) => {
+          setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+          setDetail((current) => (current?.id === saved.id ? saved : current));
+          setMemoEditorChip(null);
         }}
       />
     </PageShell>

@@ -13,6 +13,7 @@ const TONE: Record<ChipKind, string> = {
   validation: "var(--theme-text-tertiary)",
   serve: "#14b8a6",
   script: "#d97706",
+  memo: "#f43f5e",
 };
 
 export function FunnelWidget() {

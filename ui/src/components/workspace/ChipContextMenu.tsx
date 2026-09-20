@@ -109,21 +109,25 @@ export function ChipContextMenu({
   if (!menu) return null;
 
   const chip = menu.chip;
-  const items: MenuItem[] = [
-    {
+  const runnable = chip.kind !== "memo";
+  const items: MenuItem[] = [];
+  if (runnable) {
+    items.push({
       id: running ? "stop" : "run",
       label: running ? messages.workspace.chipMenuStop : messages.workspace.chipMenuRun,
       icon: running ? Square : Play,
       tone: running ? "danger" : undefined,
       disabled: running ? false : busy,
       onSelect: () => (running ? onStop(chip) : onRun(chip)),
-    },
-    {
+    });
+    items.push({
       id: "logs",
       label: messages.workspace.runLog,
       icon: FileText,
       onSelect: () => onOpenLog(chip),
-    },
+    });
+  }
+  items.push(
     {
       id: "info",
       label: messages.workspace.chipMenuInfo,
@@ -136,10 +140,10 @@ export function ChipContextMenu({
       icon: Settings2,
       onSelect: () => onProperties(chip),
     },
-  ];
+  );
   const extractSource = chip.config.source as { type?: unknown } | undefined;
   const editableExtract = chip.kind === "extract" && extractSource?.type !== "http";
-  if (editableExtract || chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation" || chip.kind === "sql" || chip.kind === "serve" || chip.kind === "script") {
+  if (editableExtract || chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation" || chip.kind === "sql" || chip.kind === "serve" || chip.kind === "script" || chip.kind === "memo") {
     items.push({
       id: "edit",
       label: chip.kind === "extract"
@@ -154,6 +158,8 @@ export function ChipContextMenu({
           ? messages.workspace.chipMenuEditServe
         : chip.kind === "script"
           ? messages.workspace.chipMenuEditScript
+        : chip.kind === "memo"
+          ? messages.workspace.chipMenuEditMemo
         : messages.workspace.chipMenuEditSteps,
       icon: Pencil,
       onSelect: () => onEdit(chip),

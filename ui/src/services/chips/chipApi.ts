@@ -16,7 +16,10 @@ import type {
 } from "@/types/chip";
 
 export const chipApi = {
-  listCatalog: (init?: HttpRequestInit) => httpRequest<ChipListResponse>("/api/chips", init),
+  listCatalog: async (init?: HttpRequestInit) => {
+    const response = await httpRequest<ChipListResponse>("/api/chips", init);
+    return { ...response, chips: response.chips.filter((chip) => chip.kind !== "memo") };
+  },
   register: (request: RegisterChipRequest) =>
     httpRequest<Chip>("/api/chips", {
       method: "POST",

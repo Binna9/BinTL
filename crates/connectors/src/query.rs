@@ -28,6 +28,7 @@ fn schema_search_path_sql(family: &str, schema: &str) -> Option<String> {
 }
 
 const MAX_SQL_CHARS: usize = 20_000;
+const MAX_SQL_SCRIPT_CHARS: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlKind {
@@ -53,14 +54,29 @@ pub fn normalize_sql(raw: &str) -> Result<String, ConnectError> {
     if sql.chars().count() > MAX_SQL_CHARS {
         return Err(ConnectError::Invalid("sql is too long".into()));
     }
-    let stripped = strip_trailing_semicolons(sql);
-    if has_internal_semicolon(&stripped) {
+    let mut statements = split_sql_statements(sql);
+    if statements.len() > 1 {
         return Err(ConnectError::Invalid("one statement only".into()));
     }
+    let stripped = statements.pop().unwrap_or_default();
     if stripped.is_empty() {
         return Err(ConnectError::Invalid("sql is empty".into()));
     }
     Ok(stripped)
+}
+
+pub fn normalize_sql_script(raw: &str) -> Result<String, ConnectError> {
+    let sql = raw.trim();
+    if sql.is_empty() {
+        return Err(ConnectError::Invalid("sql is empty".into()));
+    }
+    if sql.chars().count() > MAX_SQL_SCRIPT_CHARS {
+        return Err(ConnectError::Invalid("sql is too long".into()));
+    }
+    if split_sql_statements(sql).is_empty() {
+        return Err(ConnectError::Invalid("sql is empty".into()));
+    }
+    Ok(sql.to_string())
 }
 
 pub fn sql_kind(sql: &str) -> SqlKind {
@@ -97,6 +113,30 @@ pub async fn run_sql(
         elapsed_ms: started.elapsed().as_millis() as u64,
         ..outcome
     })
+}
+
+pub async fn run_sql_script(
+    c: &LiveConnection,
+    sql: &str,
+    limit: u32,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+    schema: Option<&str>,
+) -> Result<QueryOutcome, ConnectError> {
+    let sql = normalize_sql_script(sql)?;
+    let statements = split_sql_statements(&sql);
+    let mut last = None;
+    for (index, statement) in statements.iter().enumerate() {
+        last = Some(run_sql(c, statement, limit, on_progress, schema).await.map_err(
+            |error| {
+                if statements.len() == 1 {
+                    error
+                } else {
+                    ConnectError::Invalid(format!("statement {}: {error}", index + 1))
+                }
+            },
+        )?);
+    }
+    last.ok_or_else(|| ConnectError::Invalid("sql is empty".into()))
 }
 
 pub async fn extract_query(
@@ -670,11 +710,6 @@ pub fn apply_preview_limit(family: &str, sql: &str, limit: u64) -> String {
     }
 }
 
-fn strip_trailing_semicolons(sql: &str) -> String {
-    sql.trim_end_matches(|c: char| c == ';' || c.is_whitespace())
-        .to_string()
-}
-
 fn postgres_copy_query_ok(sql: &str) -> bool {
     matches!(
         first_keyword(sql).as_str(),
@@ -717,7 +752,9 @@ fn skip_trivia(sql: &str) -> &str {
     &sql[i.min(sql.len())..]
 }
 
-fn has_internal_semicolon(sql: &str) -> bool {
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
     let mut chars = sql.chars().peekable();
     let mut in_single = false;
     let mut in_double = false;
@@ -725,51 +762,67 @@ fn has_internal_semicolon(sql: &str) -> bool {
     let mut in_block = false;
     while let Some(c) = chars.next() {
         if in_line {
+            current.push(c);
             if c == '\n' {
                 in_line = false;
             }
             continue;
         }
         if in_block {
+            current.push(c);
             if c == '*' && chars.peek() == Some(&'/') {
-                chars.next();
+                current.push(chars.next().unwrap());
                 in_block = false;
             }
             continue;
         }
         if !in_single && !in_double {
             if c == '-' && chars.peek() == Some(&'-') {
-                chars.next();
+                current.push(c);
+                current.push(chars.next().unwrap());
                 in_line = true;
                 continue;
             }
             if c == '/' && chars.peek() == Some(&'*') {
-                chars.next();
+                current.push(c);
+                current.push(chars.next().unwrap());
                 in_block = true;
                 continue;
             }
         }
         if c == '\'' && !in_double {
+            current.push(c);
             if in_single && chars.peek() == Some(&'\'') {
-                chars.next();
+                current.push(chars.next().unwrap());
             } else {
                 in_single = !in_single;
             }
             continue;
         }
         if c == '"' && !in_single {
+            current.push(c);
             if in_double && chars.peek() == Some(&'"') {
-                chars.next();
+                current.push(chars.next().unwrap());
             } else {
                 in_double = !in_double;
             }
             continue;
         }
         if c == ';' && !in_single && !in_double {
-            return true;
+            push_sql_statement(&mut statements, std::mem::take(&mut current));
+            continue;
         }
+        current.push(c);
     }
-    false
+    push_sql_statement(&mut statements, current);
+    statements
+}
+
+fn push_sql_statement(statements: &mut Vec<String>, raw: String) {
+    if skip_trivia(raw.trim()).is_empty() {
+        return;
+    }
+    statements.push(raw.trim().to_string());
 }
 
 #[cfg(test)]
@@ -798,6 +851,24 @@ mod tests {
         );
         assert_eq!(sql_kind("UPDATE t SET a = 1"), SqlKind::Exec);
         assert!(normalize_sql("SELECT ';'").is_ok());
+        assert_eq!(normalize_sql("SELECT 1; -- note").unwrap(), "SELECT 1");
+        assert!(normalize_sql_script(
+            "CREATE TABLE t (id INT); COMMENT ON COLUMN t.id IS 'id'; SELECT 1"
+        )
+        .is_ok());
+        let statements = split_sql_statements(
+            "-- hdr\nCREATE TABLE t (id INT);\nCOMMENT ON COLUMN t.id IS 'id';\nSELECT 1",
+        );
+        assert_eq!(statements.len(), 3);
+        assert!(statements[0].contains("CREATE TABLE"));
+        assert!(statements[1].starts_with("COMMENT ON"));
+        assert_eq!(statements[2], "SELECT 1");
+        let long_script = format!(
+            "{}\nSELECT 1",
+            "COMMENT ON COLUMN t.id IS 'x';\n".repeat(2_000)
+        );
+        assert!(long_script.chars().count() > MAX_SQL_CHARS);
+        assert!(normalize_sql_script(&long_script).is_ok());
         assert!(postgres_copy_query_ok("SELECT 1"));
         assert!(postgres_copy_query_ok(
             "WITH a AS (SELECT 1) SELECT * FROM a"

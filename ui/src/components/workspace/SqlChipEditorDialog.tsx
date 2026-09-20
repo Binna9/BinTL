@@ -270,15 +270,17 @@ export function SqlChipEditorDialog({
             <section className="flex h-full min-h-0 flex-col overflow-hidden">
               <PaneHeader title={messages.workspace.sql} description={contextLabel} />
               <div className="relative min-h-0 flex-1">
-                <SqlEditor
-                  value={sqlText}
-                  placeholder={SQL_PLACEHOLDER}
-                  disabled={busy || !connectionId}
-                  driver={active?.driver}
-                  table={selected?.qualified}
-                  columns={connectionColumns}
-                  onChange={setSqlText}
-                />
+                <div className="absolute inset-0">
+                  <SqlEditor
+                    value={sqlText}
+                    placeholder={SQL_PLACEHOLDER}
+                    disabled={busy || !connectionId}
+                    driver={active?.driver}
+                    table={selected?.qualified}
+                    columns={connectionColumns}
+                    onChange={setSqlText}
+                  />
+                </div>
               </div>
             </section>
           </SplitLayout>

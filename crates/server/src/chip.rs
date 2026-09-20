@@ -3,8 +3,9 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use connectors::{
-    extract_query, extract_table, load_table, normalize_sql, parse_delimiter, parse_http_spec,
-    parse_ident, parse_table, run_sql, sniff_delimiter, sql_kind, table_select_sql, with_database,
+    extract_query, extract_table, load_table, normalize_sql, normalize_sql_script, parse_delimiter,
+    parse_http_spec, parse_ident, parse_table, run_sql_script, sniff_delimiter, sql_kind,
+    table_select_sql, with_database,
     ExtractOptions, HttpKv, HttpRequestSpec, SqlKind,
 };
 use engine::{Engine, PolarsEngine, TransformSpec, ValidationSpec};
@@ -511,7 +512,12 @@ async fn update_chip(
             .chip_workspace_hint(&id)
             .await
             .map_err(|error| AppError::bad(error.to_string()))?;
-        if workspace_id.is_none() && kind != "sql" && kind != "serve" && kind != "script" {
+        if workspace_id.is_none()
+            && kind != "sql"
+            && kind != "serve"
+            && kind != "script"
+            && kind != "memo"
+        {
             return Err(AppError::bad("chip is not placed on a workspace"));
         }
         let config = if kind == "serve" {
@@ -651,6 +657,10 @@ async fn queue_chip_run(
                 execution_id,
             )
             .await
+        }
+        "memo" => {
+            access::require_workspace(&state.store, user, workspace_id).await?;
+            Err(AppError::bad("memo chips cannot run"))
         }
         _ => {
             access::require_workspace(&state.store, user, workspace_id).await?;
@@ -1145,7 +1155,7 @@ fn workspace_run_order(
 ) -> Result<Vec<ChipRow>, AppError> {
     let chips = chips
         .into_iter()
-        .filter(|chip| chip.active != 0)
+        .filter(|chip| chip.active != 0 && chip.kind != "memo")
         .collect::<Vec<_>>();
     let mut incoming = chips
         .iter()
@@ -1807,10 +1817,43 @@ pub(crate) async fn validate_config(
             .await
             .map(|(value, _)| value),
         "script" => crate::script::validate_script_config(store, config).await,
+        "memo" => validate_memo_config(config),
         _ => Err(AppError::bad(
-            "chip kind must be extract, transform, load, validation, sql, serve, or script",
+            "chip kind must be extract, transform, load, validation, sql, serve, script, or memo",
         )),
     }
+}
+
+// ponytail: 64KB note ceiling; attachments if a memo outgrows a page.
+const MAX_MEMO_TEXT: usize = 64 * 1024;
+
+const MEMO_FONT_SIZES: [u64; 5] = [14, 16, 18, 20, 24];
+
+fn validate_memo_config(config: Value) -> Result<Value, AppError> {
+    let text = config
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if text.len() > MAX_MEMO_TEXT {
+        return Err(AppError::bad("memo text is too long"));
+    }
+    let font_size = config
+        .get("font_size")
+        .and_then(Value::as_u64)
+        .filter(|size| MEMO_FONT_SIZES.contains(size))
+        .unwrap_or(16);
+    let bold = config.get("bold").and_then(Value::as_bool).unwrap_or(false);
+    let underline = config
+        .get("underline")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(json!({
+        "text": text,
+        "font_size": font_size,
+        "bold": bold,
+        "underline": underline,
+    }))
 }
 
 pub(crate) async fn validate_sql_config(store: &Store, config: Value) -> Result<Value, AppError> {
@@ -1847,7 +1890,8 @@ pub(crate) async fn validate_sql_config(store: &Store, config: Value) -> Result<
     if connection.driver == "http" {
         return Err(AppError::bad("http connection cannot run SQL"));
     }
-    let sql_text = normalize_sql(&sql_text).map_err(|error| AppError::bad(error.to_string()))?;
+    let sql_text =
+        normalize_sql_script(&sql_text).map_err(|error| AppError::bad(error.to_string()))?;
     validate_database(database.as_deref())?;
     validate_database(schema.as_deref())?;
     Ok(json!({
@@ -2244,7 +2288,7 @@ async fn run_sql_chip(store: &Store, run: &ChipRunRow) -> Result<(), String> {
         return Err("http connection cannot run SQL".into());
     }
     let live = with_database(&base, database);
-    let outcome = run_sql(&live, sql_text, 1000, None, schema)
+    let outcome = run_sql_script(&live, sql_text, 1000, None, schema)
         .await
         .map_err(|error| error.to_string())?;
     store

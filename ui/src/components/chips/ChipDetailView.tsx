@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Braces, Database, FileInput, FileOutput, Globe, Layers3, Link2, Settings2, ShieldCheck, Terminal, Workflow, type LucideIcon } from "lucide-react";
+import { Braces, Database, FileInput, FileOutput, Globe, Layers3, Link2, Settings2, ShieldCheck, StickyNote, Terminal, Workflow, type LucideIcon } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import {
@@ -12,6 +12,7 @@ import {
 } from "@/lib/chipDetail";
 import { connectionApi } from "@/services/connections/connectionApi";
 import { datasetApi } from "@/services/transform/datasetApi";
+import { memoStyle, memoTextCss } from "@/components/workspace/MemoChipEditorDialog";
 import type { Chip } from "@/types/chip";
 import type { StepOp } from "@/types/transform";
 
@@ -165,9 +166,9 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
           <DetailRow label={messages.workspace.connection}>{connectionName || sqlConnectionId || unset}</DetailRow>
           <DetailRow label={messages.workspace.database}>{sqlDatabase || unset}</DetailRow>
           <DetailRow label={messages.connectionInfo.schema}>{sqlSchema || unset}</DetailRow>
-          <DetailRow label={messages.workspace.sql} className="items-start">
-            <span className="whitespace-pre-wrap break-all text-left font-mono text-[12px]">{sqlText || unset}</span>
-          </DetailRow>
+          <pre className="scroll-pane m-3 max-h-72 overflow-auto rounded-xl border border-border/70 bg-subtle/55 p-3 text-left font-mono text-[12px] leading-relaxed text-text shadow-inner">
+            {sqlText.trim() || unset}
+          </pre>
         </DetailSection>
       </DetailStack>
     );
@@ -192,6 +193,21 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
             </span>
           </DetailRow>
           <DetailRow label={messages.workspace.serveFreshness}>{freshness}</DetailRow>
+        </DetailSection>
+      </DetailStack>
+    );
+  }
+
+  if (chip.kind === "memo") {
+    const style = memoStyle(chip);
+    return (
+      <DetailStack>
+        <DetailSection icon={StickyNote} title={messages.workspace.memo}>
+          <DetailRow label={messages.workspace.memo} className="items-start">
+            <span className="whitespace-pre-wrap break-words text-left" style={memoTextCss(style)}>
+              {style.text.trim() || messages.workspace.memoEmpty}
+            </span>
+          </DetailRow>
         </DetailSection>
       </DetailStack>
     );

@@ -1,4 +1,4 @@
-import { NODE_H, NODE_W, type Point } from "@/features/workspace/workspaceCanvasModel";
+import { NODE_H, NODE_W, type CanvasNode } from "@/features/workspace/workspaceCanvasModel";
 
 const KEY = "bintl.chip-clipboard";
 
@@ -10,7 +10,8 @@ export type ChipClipboard = {
 
 export function chipSelectionBbox(
   chipIds: string[],
-  positions: Record<string, Point>,
+  positions: Record<string, CanvasNode>,
+  sizeOf: (id: string, node: CanvasNode) => { w: number; h: number } = () => ({ w: NODE_W, h: NODE_H }),
 ): ChipClipboard["bbox"] | null {
   let minX = Infinity;
   let minY = Infinity;
@@ -21,10 +22,11 @@ export function chipSelectionBbox(
     const point = positions[id];
     if (!point) continue;
     found = true;
+    const size = sizeOf(id, point);
     minX = Math.min(minX, point.x);
     minY = Math.min(minY, point.y);
-    maxX = Math.max(maxX, point.x + NODE_W);
-    maxY = Math.max(maxY, point.y + NODE_H);
+    maxX = Math.max(maxX, point.x + size.w);
+    maxY = Math.max(maxY, point.y + size.h);
   }
   if (!found) return null;
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };

@@ -28,6 +28,7 @@ type TimeFilter = "all" | "today" | "7d" | "30d";
 
 const RUN_STATUSES = ["queued", "running", "succeeded", "failed", "skipped", "canceled"] as const;
 const CHIP_KINDS = ["extract", "transform", "load", "validation", "sql", "script", "serve"] as const;
+type RunChipKind = (typeof CHIP_KINDS)[number];
 
 function historyTab(value: string | null): "chip" | "workspace" {
   return value === "workspace" ? "workspace" : "chip";
@@ -38,7 +39,7 @@ function historyStatus(value: string | null) {
 }
 
 function historyKind(value: string | null): "all" | ChipKind {
-  return CHIP_KINDS.includes(value as ChipKind) ? (value as ChipKind) : "all";
+  return CHIP_KINDS.includes(value as RunChipKind) ? (value as RunChipKind) : "all";
 }
 
 function runAt(run: { started_at?: string | null; created_at: string }) {

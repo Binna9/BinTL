@@ -23,7 +23,10 @@ pub use http_extract::{
 };
 pub use inspect::{list_columns, preview_table, ColumnInfo, Preview};
 pub use oracle::{configure_odbc, OdbcSettings};
-pub use query::{extract_query, normalize_sql, run_sql, sql_kind, QueryOutcome, SqlKind};
+pub use query::{
+    extract_query, normalize_sql, normalize_sql_script, run_sql, run_sql_script, sql_kind,
+    QueryOutcome, SqlKind,
+};
 pub use spreadsheet::{export_sheet_to_csv, list_sheets, spreadsheet_format, SheetInfo};
 use tiberius::{AuthMethod, Client, Config, EncryptionLevel};
 use tokio::net::TcpStream;

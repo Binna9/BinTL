@@ -28,8 +28,16 @@ export interface Workspace {
   edges?: ChipEdge[];
 }
 
+export interface WorkspaceLayoutNode {
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+  collapsed?: boolean;
+}
+
 export interface WorkspaceLayout {
-  nodes?: Record<string, { x: number; y: number }>;
+  nodes?: Record<string, WorkspaceLayoutNode>;
   view?: { x: number; y: number };
 }
 

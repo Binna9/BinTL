@@ -21,6 +21,7 @@ export function chipKindLabel(kind: ChipKind, messages: Messages) {
   if (kind === "sql") return messages.workspace.sql;
   if (kind === "serve") return messages.workspace.serve;
   if (kind === "script") return messages.workspace.script;
+  if (kind === "memo") return messages.workspace.memo;
   return messages.workspace.validation;
 }
 
@@ -54,6 +55,13 @@ export function chipRunOrder(chips: Chip[], edges: ChipEdge[]): Chip[] | null {
 }
 export const NODE_W = 100;
 export const NODE_H = 96;
+export const MEMO_DEFAULT_W = 240;
+export const MEMO_DEFAULT_H = 176;
+export const MEMO_MIN_W = 160;
+export const MEMO_MIN_H = 120;
+export const MEMO_MAX_W = 560;
+export const MEMO_MAX_H = 480;
+export const MEMO_COLLAPSED_H = 34;
 export const CHIP_PLACE_GAP = 28;
 export const CANVAS_W = 3200;
 export const CANVAS_H = 2200;
@@ -63,11 +71,12 @@ export const MINIMAP_W = 168;
 export const MINIMAP_H = 116;
 
 export type Point = { x: number; y: number };
-export type CanvasSnapshot = { chips: Chip[]; positions: Record<string, Point>; edges: ChipEdge[] };
+export type CanvasNode = Point & { w?: number; h?: number; collapsed?: boolean };
+export type CanvasSnapshot = { chips: Chip[]; positions: Record<string, CanvasNode>; edges: ChipEdge[] };
 
 export function cloneCanvas(
   chips: Chip[],
-  positions: Record<string, Point>,
+  positions: Record<string, CanvasNode>,
   edges: ChipEdge[],
 ): CanvasSnapshot {
   return JSON.parse(JSON.stringify({ chips, positions, edges })) as CanvasSnapshot;
@@ -87,18 +96,51 @@ export function appendCanvasUndo(
   return [...stack.slice(stack.length - limit + 1), snapshot];
 }
 
-export function nodesFromLayout(layout?: WorkspaceLayout): Record<string, Point> {
+export function nodesFromLayout(layout?: WorkspaceLayout): Record<string, CanvasNode> {
   return layout?.nodes ?? {};
+}
+
+export function chipNodeSize(kind: string | undefined, node?: CanvasNode): { w: number; h: number } {
+  if (kind === "memo") {
+    const w = Math.min(MEMO_MAX_W, Math.max(MEMO_MIN_W, node?.w ?? MEMO_DEFAULT_W));
+    if (node?.collapsed) return { w, h: MEMO_COLLAPSED_H };
+    return { w, h: Math.min(MEMO_MAX_H, Math.max(MEMO_MIN_H, node?.h ?? MEMO_DEFAULT_H)) };
+  }
+  return { w: NODE_W, h: NODE_H };
+}
+
+export function placedCanvasNode(kind: string, origin: Point, node?: CanvasNode): CanvasNode {
+  if (kind !== "memo") return { x: origin.x, y: origin.y };
+  return {
+    x: origin.x,
+    y: origin.y,
+    w: node?.w ?? MEMO_DEFAULT_W,
+    h: node?.h ?? MEMO_DEFAULT_H,
+    ...(node?.collapsed ? { collapsed: true } : {}),
+  };
+}
+
+export function resizeMemoNode(node: CanvasNode, nextW: number, nextH: number): CanvasNode {
+  return {
+    ...node,
+    collapsed: false,
+    w: Math.min(MEMO_MAX_W, Math.max(MEMO_MIN_W, Math.round(nextW))),
+    h: Math.min(MEMO_MAX_H, Math.max(MEMO_MIN_H, Math.round(nextH))),
+  };
 }
 
 export function fallbackPoint(index: number): Point {
   return { x: 96 + (index % 5) * 128, y: 48 + Math.floor(index / 5) * 112 };
 }
 
-export function clampPoint(point: Point, bounds: { width: number; height: number } = { width: CANVAS_W, height: CANVAS_H }): Point {
+export function clampPoint(
+  point: Point,
+  bounds: { width: number; height: number } = { width: CANVAS_W, height: CANVAS_H },
+  size: { width: number; height: number } = { width: NODE_W, height: NODE_H },
+): Point {
   return {
-    x: Math.max(16, Math.min(point.x, Math.max(16, bounds.width - NODE_W - 16))),
-    y: Math.max(16, Math.min(point.y, Math.max(16, bounds.height - NODE_H - 16))),
+    x: Math.max(16, Math.min(point.x, Math.max(16, bounds.width - size.width - 16))),
+    y: Math.max(16, Math.min(point.y, Math.max(16, bounds.height - size.height - 16))),
   };
 }
 
@@ -142,13 +184,17 @@ export function normalizeMarquee(box: MarqueeBox) {
   };
 }
 
-export function chipInMarquee(point: Point, box: MarqueeBox): boolean {
+export function chipInMarquee(
+  point: Point,
+  box: MarqueeBox,
+  size: { w: number; h: number } = { w: NODE_W, h: NODE_H },
+): boolean {
   const area = normalizeMarquee(box);
   return (
     point.x < area.x + area.w &&
-    point.x + NODE_W > area.x &&
+    point.x + size.w > area.x &&
     point.y < area.y + area.h &&
-    point.y + NODE_H > area.y
+    point.y + size.h > area.y
   );
 }
 
@@ -201,8 +247,12 @@ export function edgeInMarquee(from: Point, to: Point, box: MarqueeBox): boolean 
   return false;
 }
 
-export function roundPoint(point: Point): Point {
-  return { x: Math.round(point.x), y: Math.round(point.y) };
+export function roundPoint(point: CanvasNode): CanvasNode {
+  const next: CanvasNode = { x: Math.round(point.x), y: Math.round(point.y) };
+  if (typeof point.w === "number") next.w = Math.round(point.w);
+  if (typeof point.h === "number") next.h = Math.round(point.h);
+  if (point.collapsed) next.collapsed = true;
+  return next;
 }
 
 export function folderPathLabel(
@@ -235,7 +285,7 @@ export function scrollCanvasFromPointer(canvas: HTMLElement, clientX: number, cl
   if (dy !== 0) canvas.scrollTop += dy;
 }
 
-export function omitPoint(positions: Record<string, Point>, id: string): Record<string, Point> {
+export function omitPoint(positions: Record<string, CanvasNode>, id: string): Record<string, CanvasNode> {
   const next = { ...positions };
   delete next[id];
   return next;
@@ -381,6 +431,7 @@ export function wireTone(kind: ChipEdgeKind): "is-data" | "is-success" | "is-err
 
 /** Data wires carry a materialized dataset into transform, load, or validation. */
 export function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
+  if (fromKind === "memo" || toKind === "memo") return false;
   if (toKind === "validation") {
     return fromKind === "extract" || fromKind === "transform" || fromKind === "load" || fromKind === "script";
   }
@@ -392,6 +443,7 @@ export function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
 
 /** Control wires set run order. Sinks cannot feed the ETL pipeline; SQL is the sequencing hatch. */
 export function canHaveControlEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
+  if (fromKind === "memo" || toKind === "memo") return false;
   if (fromKind === "load") return toKind === "load" || toKind === "validation" || toKind === "sql";
   if (fromKind === "validation" || fromKind === "serve") return toKind === "sql";
   if (toKind === "extract") return fromKind === "extract" || fromKind === "sql";
@@ -669,7 +721,7 @@ function stripShortcutControlEdges(edges: ChipEdge[]): ChipEdge[] {
 
 export function withCompanionSuccessEdges(
   edges: ChipEdge[],
-  positions: Record<string, Point>,
+  positions: Record<string, CanvasNode>,
   workspaceId: string,
 ): ChipEdge[] {
   const controlPairs = new Set(
@@ -702,7 +754,7 @@ export function withCompanionSuccessEdges(
 export function attachHiddenDataEdges(
   current: ChipEdge[],
   inputs: { fromId: string; toId: string; toPort?: string }[],
-  positions: Record<string, Point>,
+  positions: Record<string, CanvasNode>,
   workspaceId: string,
 ): ChipEdge[] {
   const dropExact = new Set(
@@ -806,6 +858,17 @@ if (import.meta.env.DEV) {
   console.assert(canHaveDataEdge("script", "transform"), "canvas: script may feed transform");
   console.assert(canHaveDataEdge("extract", "script"), "canvas: extract may feed script");
   console.assert(canHaveDataEdge("script", "script"), "canvas: script may feed script");
+  console.assert(!canHaveDataEdge("memo", "transform"), "canvas: memo is not a data source");
+  console.assert(!canHaveDataEdge("extract", "memo"), "canvas: memo is not a data sink");
+  console.assert(!canHaveControlEdge("extract", "memo"), "canvas: memo is not sequenced");
+  console.assert(chipNodeSize("memo").w === MEMO_DEFAULT_W && chipNodeSize("memo").h === MEMO_DEFAULT_H, "canvas: memo default size");
+  console.assert(chipNodeSize("memo", { x: 0, y: 0, w: 300, h: 200, collapsed: true }).h === MEMO_COLLAPSED_H, "canvas: memo collapsed height");
+  console.assert(resizeMemoNode({ x: 8, y: 8, w: 240, h: 176 }, 80, 900).w === MEMO_MIN_W, "canvas: memo min width");
+  console.assert(resizeMemoNode({ x: 8, y: 8 }, 80, 900).h === MEMO_MAX_H, "canvas: memo max height");
+  console.assert(
+    chipInMarquee({ x: 0, y: 0 }, { x0: 200, y0: 0, x1: 250, y1: 50 }, { w: 240, h: 176 }),
+    "canvas: wide memo is inside marquee",
+  );
   const chip = (id: string, kind: ChipKind): Chip => ({
     id, owner_user_id: "", name: id, kind, config: {}, revision: 0, active: true, created_at: "", updated_at: "",
   });

@@ -57,6 +57,9 @@
   --theme-dock-icon: #5d6570;
   --theme-dock-icon-hi: #ffffff;
   --theme-dock-glow: #2f7dff;
+  --theme-memo: #ffe59a;
+  --theme-memo-ink: #4a3812;
+  --theme-memo-line: #e2c56a;
   --search-page-base: #f6f4f1;
   --search-page-gradient: linear-gradient(
     165deg,
@@ -104,6 +107,9 @@
   --theme-dock-icon: #c8ced6;
   --theme-dock-icon-hi: #f4f6f8;
   --theme-dock-glow: #3b8bff;
+  --theme-memo: #b8923a;
+  --theme-memo-ink: #1f1808;
+  --theme-memo-line: #8a6c28;
   --search-page-base: #0c0d10;
   --search-page-gradient: linear-gradient(
     165deg,
@@ -439,6 +445,7 @@ a {
 }
 
 .sql-editor .cm-editor .cm-scroller {
+  overflow: auto;
   font-family: inherit;
 }
 
@@ -2181,6 +2188,130 @@ a {
     inset 0 1px 0 color-mix(in srgb, white 88%, transparent);
 }
 
+.workspace-memo {
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 0;
+  border-radius: 2px;
+  background: var(--theme-memo);
+  color: var(--theme-memo-ink);
+  box-shadow:
+    1px 1px 0 color-mix(in srgb, var(--theme-memo-ink) 10%, transparent),
+    4px 8px 16px color-mix(in srgb, var(--theme-text) 18%, transparent);
+}
+
+.workspace-memo.is-selected {
+  z-index: 3;
+  box-shadow:
+    1px 1px 0 color-mix(in srgb, var(--theme-memo-ink) 10%, transparent),
+    4px 8px 16px color-mix(in srgb, var(--theme-text) 18%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--theme-accent) 55%, transparent);
+}
+
+.workspace-memo-bar {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0 0.2rem 0 0.55rem;
+  background: color-mix(in srgb, var(--theme-memo-ink) 9%, transparent);
+  cursor: grab;
+}
+
+.workspace-memo-bar button:hover {
+  background: color-mix(in srgb, var(--theme-memo-ink) 12%, transparent);
+}
+
+.workspace-memo-format {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.15rem 0.35rem;
+  color: inherit;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.workspace-memo-format select {
+  height: 1.35rem;
+  border: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  color: inherit;
+  font-size: 11px;
+  outline: none;
+}
+
+.workspace-memo-format button {
+  display: grid;
+  height: 1.35rem;
+  min-width: 1.35rem;
+  place-items: center;
+  border-radius: 2px;
+  font-size: 11px;
+  line-height: 1;
+  color: inherit;
+}
+
+.workspace-memo-format button:hover,
+.workspace-memo-format button.is-on {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.workspace-memo-body {
+  min-height: 0;
+  flex: 1;
+  resize: none;
+  border: 0;
+  background:
+    repeating-linear-gradient(
+      transparent,
+      transparent 21px,
+      color-mix(in srgb, var(--theme-memo-line) 28%, transparent) 21px,
+      color-mix(in srgb, var(--theme-memo-line) 28%, transparent) 22px
+    );
+  background-attachment: local;
+  padding: 0.45rem 0.7rem 1rem;
+  font-size: var(--memo-font-size, 16px);
+  line-height: 1.45;
+  color: var(--theme-memo-ink);
+  outline: none;
+}
+
+.workspace-memo-body::placeholder {
+  color: color-mix(in srgb, var(--theme-memo-ink) 42%, transparent);
+}
+
+.workspace-memo-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background:
+    linear-gradient(
+      135deg,
+      transparent 50%,
+      color-mix(in srgb, var(--theme-memo-ink) 38%, transparent) 50%
+    );
+}
+
+:root.dark .workspace-memo {
+  box-shadow:
+    1px 1px 0 rgba(255, 255, 255, 0.08),
+    5px 10px 18px rgba(0, 0, 0, 0.5);
+}
+
+:root.dark .workspace-memo.is-selected {
+  box-shadow:
+    1px 1px 0 rgba(255, 255, 255, 0.08),
+    5px 10px 18px rgba(0, 0, 0, 0.5),
+    0 0 0 2px color-mix(in srgb, var(--theme-accent) 60%, transparent);
+}
+
 .workspace-marquee {
   border: 1px solid color-mix(in srgb, var(--theme-accent) 70%, transparent);
   border-radius: 0.35rem;
@@ -2233,6 +2364,11 @@ a {
 
 .workspace-node-icon.is-serve {
   color: #14b8a6;
+  background: transparent;
+}
+
+.workspace-node-icon.is-memo {
+  color: #f43f5e;
   background: transparent;
 }
 
@@ -2307,6 +2443,10 @@ a {
 
 .workspace-minimap-chip.is-serve {
   background: #14b8a6;
+}
+
+.workspace-minimap-chip.is-memo {
+  background: #f43f5e;
 }
 
 .workspace-minimap-view {

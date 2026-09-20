@@ -28,50 +28,67 @@ export function useOverviewData() {
   const [sharedAssets, setSharedAssets] = useState<AssetCounts>(EMPTY_ASSETS);
 
   useEffect(() => {
-    void Promise.all([
-      systemApi.getHealth(),
-      workspaceApi.list(),
-      chipApi.listCatalog(),
-      datasetApi.list(),
-      connectionApi.getConnections(),
-    ])
-      .then(async ([health, workspaces, catalog, datasets, connections]) => {
-        const chipMap = new Map(catalog.chips.map((chip) => [chip.id, chip.name]));
-        const mineWorkspaces = workspaces.workspaces.filter((workspace) =>
-          ownedBy(workspace.owner_user_id, user?.id),
-        );
-        const mineWorkspaceIds = new Set(mineWorkspaces.map((workspace) => workspace.id));
-        const batches = await Promise.all(
-          workspaces.workspaces.map(async (workspace) => {
-            const [placed, runs] = await Promise.all([
-              chipApi.list(workspace.id).then((response) => response.chips).catch(() => []),
-              chipApi.listRuns(workspace.id).catch(() => ({ runs: [], workspace_runs: [] })),
-            ]);
-            return {
-              placed,
-              chips: runs.runs.map((run) => ({
-                ...run,
-                chipName: chipMap.get(run.chip_id) ?? messages.chipRuns.unknownChip,
-              })),
-              workspaces: runs.workspace_runs,
-            };
-          }),
-        );
-        setSystemHealth(health);
-        setMineAssets({
-          workspaces: mineWorkspaces.length,
-          chips: catalog.chips.filter((chip) => chip.active).length,
-          datasets: datasets.datasets.filter((dataset) => mineWorkspaceIds.has(dataset.workspace_id)).length,
-          connections: 0,
-        });
-        setSharedAssets({
-          ...EMPTY_ASSETS,
-          connections: connections.connections.length,
-        });
-        setChipRuns(batches.flatMap((batch) => batch.chips));
-        setWorkspaceRuns(batches.flatMap((batch) => batch.workspaces));
-      })
-      .catch((error) => toastError(messages.errors.overview, error));
+    let stopped = false;
+    let timer: number | undefined;
+
+    const refresh = async (options?: { silent?: boolean }) => {
+      const silent = options?.silent ? { silent: true as const } : undefined;
+      const [health, workspaces, catalog, datasets, connections] = await Promise.all([
+        systemApi.getHealth(silent),
+        workspaceApi.list(silent),
+        chipApi.listCatalog(silent),
+        datasetApi.list(silent),
+        connectionApi.getConnections(silent),
+      ]);
+      const chipMap = new Map(catalog.chips.map((chip) => [chip.id, chip.name]));
+      const mineWorkspaces = workspaces.workspaces.filter((workspace) =>
+        ownedBy(workspace.owner_user_id, user?.id),
+      );
+      const mineWorkspaceIds = new Set(mineWorkspaces.map((workspace) => workspace.id));
+      const batches = await Promise.all(
+        workspaces.workspaces.map(async (workspace) => {
+          const runs = await chipApi.listRuns(workspace.id, silent).catch(() => ({
+            runs: [],
+            workspace_runs: [],
+          }));
+          return {
+            chips: runs.runs.map((run) => ({
+              ...run,
+              chipName: chipMap.get(run.chip_id) ?? messages.chipRuns.unknownChip,
+            })),
+            workspaces: runs.workspace_runs,
+          };
+        }),
+      );
+      if (stopped) return;
+      setSystemHealth(health);
+      setMineAssets({
+        workspaces: mineWorkspaces.length,
+        chips: catalog.chips.filter((chip) => chip.active).length,
+        datasets: datasets.datasets.filter((dataset) => mineWorkspaceIds.has(dataset.workspace_id)).length,
+        connections: 0,
+      });
+      setSharedAssets({
+        ...EMPTY_ASSETS,
+        connections: connections.connections.length,
+      });
+      setChipRuns(batches.flatMap((batch) => batch.chips));
+      setWorkspaceRuns(batches.flatMap((batch) => batch.workspaces));
+    };
+
+    const poll = async (silent: boolean) => {
+      try {
+        await refresh({ silent });
+      } catch (error) {
+        if (!silent && !stopped) toastError(messages.errors.overview, error);
+      }
+      if (!stopped) timer = window.setTimeout(() => void poll(true), 2000);
+    };
+    void poll(false);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
   }, [messages, user?.id]);
 
   return {

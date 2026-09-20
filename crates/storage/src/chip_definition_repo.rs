@@ -42,13 +42,24 @@ impl Store {
         &self,
         owner_user_id: &str,
     ) -> Result<Vec<ChipRow>, StorageError> {
+        self.purge_unplaced_memo_chips().await?;
         Ok(sqlx::query_as::<_, ChipRow>(&format!(
             "SELECT {CHIP_COLS} FROM chips
-             WHERE owner_user_id = ? ORDER BY updated_at DESC"
+             WHERE owner_user_id = ? AND kind != 'memo' ORDER BY updated_at DESC"
         ))
         .bind(owner_user_id)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    pub async fn purge_unplaced_memo_chips(&self) -> Result<Vec<String>, StorageError> {
+        let mut tx = self.pool.begin().await?;
+        let dropped = crate::workspace_repo::delete_unplaced_memo_chips(&mut tx).await?;
+        tx.commit().await?;
+        for id in &dropped {
+            let _ = self.delete_search_document("chip", id).await;
+        }
+        Ok(dropped)
     }
 
     pub async fn get_chip(&self, id: &str) -> Result<Option<ChipRow>, StorageError> {
@@ -485,9 +496,12 @@ impl Store {
         config_json: &str,
     ) -> Result<ChipRow, StorageError> {
         let name = required_text(name, "chip name")?;
+        validate_chip_kind(kind)?;
+        if kind == "memo" {
+            self.purge_unplaced_memo_chips().await?;
+        }
         self.ensure_chip_name_available(owner_user_id, name, None)
             .await?;
-        validate_chip_kind(kind)?;
         require_config_json(config_json)?;
         self.require_workspace(workspace_id).await?;
         let id = Uuid::new_v4().to_string();

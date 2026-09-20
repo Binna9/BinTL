@@ -401,6 +401,7 @@ impl Store {
         let subtitle = match chip.kind.as_str() {
             "extract" => "칩 · 추출",
             "transform" => "칩 · 변환",
+            "memo" => "칩 · 메모",
             _ => "칩 · 적재",
         };
         let mut keyword_parts = vec![chip.name.as_str(), chip.kind.as_str()];

@@ -345,10 +345,11 @@ fn trimmed_optional(value: Option<&str>) -> Option<&str> {
 fn validate_chip_kind(kind: &str) -> Result<(), StorageError> {
     if !matches!(
         kind,
-        "extract" | "transform" | "load" | "validation" | "sql" | "serve" | "script"
+        "extract" | "transform" | "load" | "validation" | "sql" | "serve" | "script" | "memo"
     ) {
         return Err(StorageError::Invalid(
-            "chip kind must be extract, transform, load, validation, sql, serve, or script".into(),
+            "chip kind must be extract, transform, load, validation, sql, serve, script, or memo"
+                .into(),
         ));
     }
     Ok(())
@@ -616,6 +617,9 @@ fn validate_edge_kind(
 }
 
 fn control_kinds_allowed(from_kind: &str, to_kind: &str) -> bool {
+    if from_kind == "memo" || to_kind == "memo" {
+        return false;
+    }
     match from_kind {
         "load" => matches!(to_kind, "load" | "validation" | "sql"),
         "validation" | "serve" => to_kind == "sql",
@@ -1306,6 +1310,92 @@ mod tests {
             .unwrap_err();
         assert!(matches!(duplicate, StorageError::Conflict(_)));
 
+        store.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unlinking_memo_from_canvas_deletes_the_chip() {
+        let (root, store, admin) = test_store().await;
+        let workspace = store
+            .insert_workspace("Memo drop", None, &admin.id, None)
+            .await
+            .unwrap();
+        let chip = store
+            .insert_chip(&admin.id, &workspace.id, "메모-01", "memo", r#"{"text":"hi"}"#)
+            .await
+            .unwrap();
+        store
+            .save_workspace(
+                &workspace.id,
+                &format!(r#"{{"nodes":{{"{}":{{"x":10,"y":20}}}}}}"#, chip.id),
+                &[chip.id.clone()],
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(store.get_chip(&chip.id).await.unwrap().is_some());
+
+        store
+            .save_workspace(&workspace.id, r#"{"nodes":{}}"#, &[], &[], Some(2))
+            .await
+            .unwrap();
+        assert!(store.get_chip(&chip.id).await.unwrap().is_none());
+        let leftover: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM chips WHERE id = ? OR name = '메모-01'")
+                .bind(&chip.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(leftover.0, 0);
+
+        store.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn leftover_unplaced_memo_is_purged_and_name_can_be_reused() {
+        let (root, store, admin) = test_store().await;
+        let workspace = store
+            .insert_workspace("Memo leftover", None, &admin.id, None)
+            .await
+            .unwrap();
+        store
+            .insert_chip(&admin.id, &workspace.id, "메모-01", "memo", r#"{"text":"old"}"#)
+            .await
+            .unwrap();
+
+        let catalog = store.list_owned_chips(&admin.id).await.unwrap();
+        assert!(catalog.iter().all(|chip| chip.kind != "memo"));
+        let leftover: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chips WHERE name = '메모-01'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(leftover.0, 0);
+
+        let created = store
+            .insert_chip(&admin.id, &workspace.id, "메모-01", "memo", r#"{"text":"new"}"#)
+            .await
+            .unwrap();
+        assert_eq!(created.name, "메모-01");
+
+        store.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn memo_chip_kind_is_allowed() {
+        let (root, store, admin) = test_store().await;
+        let workspace = store
+            .insert_workspace("Memo", None, &admin.id, None)
+            .await
+            .unwrap();
+        let chip = store
+            .insert_chip(&admin.id, &workspace.id, "Note", "memo", r#"{"text":"hi"}"#)
+            .await
+            .unwrap();
+        assert_eq!(chip.kind, "memo");
         store.pool.close().await;
         std::fs::remove_dir_all(root).unwrap();
     }

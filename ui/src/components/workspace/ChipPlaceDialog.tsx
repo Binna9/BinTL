@@ -16,6 +16,7 @@ import {
   Terminal,
   Search,
   ShieldCheck,
+  StickyNote,
   Workflow,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
@@ -32,7 +33,7 @@ import { slugFromName, newServeApiKey } from "@/components/workspace/ServeChipEd
 import type { Chip, ChipEdge } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
-export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "sql" | "serve" | "script";
+export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "sql" | "serve" | "script" | "memo";
 
 export type TransformPlaceDraft = {
   name: string;
@@ -916,6 +917,78 @@ function TransformNewPanel({
   );
 }
 
+function MemoNamePanel({
+  defaultName,
+  occupiedNames,
+  messages,
+  busy,
+  onClose,
+  onPlace,
+  dragHandleRef,
+}: {
+  defaultName: string;
+  occupiedNames: string[];
+  messages: Messages;
+  busy?: boolean;
+  onClose: () => void;
+  onPlace: (name: string) => void;
+  dragHandleRef: RefObject<HTMLDivElement | null>;
+}) {
+  const [name, setName] = useState(defaultName);
+  useEffect(() => {
+    setName(defaultName);
+  }, [defaultName]);
+  const trimmed = name.trim();
+  const nameTaken = occupiedNames.some(
+    (item) => item.trim().toLocaleLowerCase() === trimmed.toLocaleLowerCase(),
+  );
+  const canSubmit = Boolean(trimmed) && !nameTaken && !busy;
+  const submit = () => {
+    if (!canSubmit) return;
+    onPlace(trimmed);
+  };
+  return (
+    <div className="chip-place-main">
+      <PlacePanelHeader
+        icon={<StickyNote className="size-4" aria-hidden="true" />}
+        iconClassName="bg-rose-500/10 text-rose-600 dark:text-rose-400"
+        title={messages.workspace.placeMemoTitle}
+        hint={messages.workspace.placeMemoSimpleHint}
+        dragHandleRef={dragHandleRef}
+      />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto p-4">
+        <p className="shrink-0 text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
+        <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+          <span className="text-xs font-semibold text-text">{messages.workspace.chipName}</span>
+          <input
+            className="field-control text-sm"
+            value={name}
+            autoFocus
+            disabled={busy}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              submit();
+            }}
+          />
+        </label>
+        {nameTaken ? (
+          <p className="text-xs text-danger">{messages.workspace.duplicateChipName}</p>
+        ) : null}
+      </div>
+      <PlaceDialogFooter
+        cancelLabel={messages.common.cancel}
+        submitLabel={messages.workspace.nameChipConfirm}
+        canSubmit={canSubmit}
+        busy={busy}
+        onCancel={onClose}
+        onSubmit={submit}
+      />
+    </div>
+  );
+}
+
 function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChips, canvasEdges, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, hideRegister, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
   kind?: "load" | "validation" | "sql" | "serve" | "script"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
   emptyChipLabel?: string; catalogHint?: string; registerLabel?: string; submitLabel?: string;
@@ -1181,6 +1254,7 @@ export function ChipPlaceDialog({
   defaultSqlName,
   defaultScriptName,
   defaultServeName,
+  defaultMemoName,
   occupiedNames,
   messages,
   busy,
@@ -1191,6 +1265,7 @@ export function ChipPlaceDialog({
   onPlaceNewValidation,
   onPlaceNewServe,
   onPlaceNewScript,
+  onPlaceNewMemo,
   onRegisterSql,
 }: {
   open: boolean;
@@ -1208,6 +1283,7 @@ export function ChipPlaceDialog({
   defaultSqlName: string;
   defaultScriptName: string;
   defaultServeName: string;
+  defaultMemoName: string;
   occupiedNames: string[];
   messages: Messages;
   busy?: boolean;
@@ -1218,6 +1294,7 @@ export function ChipPlaceDialog({
   onPlaceNewValidation: (draft: EmptyConsumerDraft) => void;
   onPlaceNewServe: (draft: EmptyConsumerDraft) => void;
   onPlaceNewScript: (draft: TransformPlaceDraft) => void;
+  onPlaceNewMemo: (name: string) => void;
   onRegisterSql: () => void;
 }) {
   const navigate = useNavigate();
@@ -1228,7 +1305,8 @@ export function ChipPlaceDialog({
       : kind === "load" ? messages.workspace.placeLoadTitle
         : kind === "sql" ? messages.workspace.placeSqlTitle
           : kind === "script" ? messages.workspace.placeScriptTitle
-            : kind === "serve" ? messages.workspace.placeServeTitle : messages.workspace.placeValidationTitle;
+            : kind === "serve" ? messages.workspace.placeServeTitle
+              : kind === "memo" ? messages.workspace.placeMemoTitle : messages.workspace.placeValidationTitle;
 
   function goDbRegister() {
     onClose();
@@ -1248,13 +1326,23 @@ export function ChipPlaceDialog({
       dragHandleRef={dragHandleRef}
       className={cn(
         "chip-place-dialog flex max-h-[88vh] max-w-[96vw]",
-        "h-[min(40rem,88vh)] w-[26rem]",
+        kind === "memo" ? "h-[min(18rem,88vh)] w-[24rem]" : "h-[min(40rem,88vh)] w-[26rem]",
       )}
-      minWidth={416}
-      minHeight={480}
+      minWidth={kind === "memo" ? 360 : 416}
+      minHeight={kind === "memo" ? 280 : 480}
       onClose={onClose}
     >
-      {kind === "extract" ? (
+      {kind === "memo" ? (
+        <MemoNamePanel
+          defaultName={defaultMemoName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceNewMemo}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : kind === "extract" ? (
         <ExtractNewPanel
           messages={messages}
           busy={busy}

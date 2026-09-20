@@ -469,7 +469,7 @@ impl Store {
         }
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
-        let (saved_chips, saved_edges) = write_workspace_graph(
+        let (saved_chips, saved_edges, dropped_memos) = write_workspace_graph(
             &mut tx,
             &current,
             layout_json,
@@ -480,6 +480,9 @@ impl Store {
         )
         .await?;
         tx.commit().await?;
+        for memo_id in dropped_memos {
+            let _ = self.delete_search_document("chip", &memo_id).await;
+        }
         let workspace = self
             .get_workspace(id)
             .await?
@@ -769,7 +772,7 @@ pub(crate) async fn write_workspace_graph(
     edges: &[WorkspaceSaveEdge],
     expected: i64,
     now: &str,
-) -> Result<(Vec<ChipRow>, Vec<ChipEdgeRow>), StorageError> {
+) -> Result<(Vec<ChipRow>, Vec<ChipEdgeRow>, Vec<String>), StorageError> {
     let id = workspace.id.as_str();
     let version = workspace.version + 1;
     let mut saved_chips = Vec::with_capacity(chip_ids.len());
@@ -889,5 +892,32 @@ pub(crate) async fn write_workspace_graph(
     .bind(now)
     .execute(&mut **tx)
     .await?;
-    Ok((saved_chips, saved_edges))
+    let dropped_memos = delete_unplaced_memo_chips(tx).await?;
+    Ok((saved_chips, saved_edges, dropped_memos))
+}
+
+pub(crate) async fn delete_unplaced_memo_chips(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<Vec<String>, StorageError> {
+    let dropped_memos: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM chips
+         WHERE kind = 'memo'
+           AND NOT EXISTS (SELECT 1 FROM workspace_chips WHERE chip_id = chips.id)",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    if dropped_memos.is_empty() {
+        return Ok(dropped_memos);
+    }
+    let marks = std::iter::repeat("?")
+        .take(dropped_memos.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("DELETE FROM chips WHERE kind = 'memo' AND id IN ({marks})");
+    let mut delete = sqlx::query(&sql);
+    for memo_id in &dropped_memos {
+        delete = delete.bind(memo_id);
+    }
+    delete.execute(&mut **tx).await?;
+    Ok(dropped_memos)
 }
