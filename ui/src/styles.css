@@ -107,9 +107,9 @@
   --theme-dock-icon: #c8ced6;
   --theme-dock-icon-hi: #f4f6f8;
   --theme-dock-glow: #3b8bff;
-  --theme-memo: #b8923a;
-  --theme-memo-ink: #1f1808;
-  --theme-memo-line: #8a6c28;
+  --theme-memo: #ffe59a;
+  --theme-memo-ink: #4a3812;
+  --theme-memo-line: #e2c56a;
   --search-page-base: #0c0d10;
   --search-page-gradient: linear-gradient(
     165deg,

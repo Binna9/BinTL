@@ -11,10 +11,36 @@ impl Store {
     ) -> Result<(), StorageError> {
         let duplicate: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM chips
-             WHERE owner_user_id = ? AND lower(trim(name)) = lower(trim(?))
+             WHERE owner_user_id = ? AND kind != 'memo'
+               AND lower(trim(name)) = lower(trim(?))
                AND (? IS NULL OR id != ?)",
         )
         .bind(owner_user_id)
+        .bind(name)
+        .bind(exclude_id)
+        .bind(exclude_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if duplicate > 0 {
+            return Err(StorageError::Conflict("chip name already exists".into()));
+        }
+        Ok(())
+    }
+
+    async fn ensure_memo_name_available(
+        &self,
+        workspace_id: &str,
+        name: &str,
+        exclude_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let duplicate: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM chips c
+             INNER JOIN workspace_chips wc ON wc.chip_id = c.id
+             WHERE wc.workspace_id = ?
+               AND lower(trim(c.name)) = lower(trim(?))
+               AND (? IS NULL OR c.id != ?)",
+        )
+        .bind(workspace_id)
         .bind(name)
         .bind(exclude_id)
         .bind(exclude_id)
@@ -499,9 +525,12 @@ impl Store {
         validate_chip_kind(kind)?;
         if kind == "memo" {
             self.purge_unplaced_memo_chips().await?;
+            self.ensure_memo_name_available(workspace_id, name, None)
+                .await?;
+        } else {
+            self.ensure_chip_name_available(owner_user_id, name, None)
+                .await?;
         }
-        self.ensure_chip_name_available(owner_user_id, name, None)
-            .await?;
         require_config_json(config_json)?;
         self.require_workspace(workspace_id).await?;
         let id = Uuid::new_v4().to_string();
@@ -578,10 +607,17 @@ impl Store {
             Some(value) => required_text(value, "chip name")?,
             None => current.name.as_str(),
         };
-        self.ensure_chip_name_available(&current.owner_user_id, name, Some(id))
-            .await?;
         let kind = kind.unwrap_or(current.kind.as_str());
         validate_chip_kind(kind)?;
+        if kind == "memo" {
+            if let Some(workspace_id) = self.chip_workspace_hint(id).await? {
+                self.ensure_memo_name_available(&workspace_id, name, Some(id))
+                    .await?;
+            }
+        } else {
+            self.ensure_chip_name_available(&current.owner_user_id, name, Some(id))
+                .await?;
+        }
         let config_json = match config_json {
             Some(value) => {
                 if self.get_chip_binding(id).await?.is_some() {

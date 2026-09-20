@@ -1355,6 +1355,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memo_names_can_repeat_across_workspaces() {
+        let (root, store, admin) = test_store().await;
+        let first = store
+            .insert_workspace("First", None, &admin.id, None)
+            .await
+            .unwrap();
+        let second = store
+            .insert_workspace("Second", None, &admin.id, None)
+            .await
+            .unwrap();
+        let memo = store
+            .insert_chip(&admin.id, &first.id, "메모-01", "memo", r#"{"text":"a"}"#)
+            .await
+            .unwrap();
+        store
+            .save_workspace(
+                &first.id,
+                &format!(r#"{{"nodes":{{"{}":{{"x":10,"y":20}}}}}}"#, memo.id),
+                &[memo.id.clone()],
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let other = store
+            .insert_chip(&admin.id, &second.id, "메모-01", "memo", r#"{"text":"b"}"#)
+            .await
+            .unwrap();
+        assert_eq!(other.name, "메모-01");
+        assert_ne!(other.id, memo.id);
+
+        let same_workspace = store
+            .insert_chip(&admin.id, &first.id, "메모-01", "memo", r#"{"text":"c"}"#)
+            .await
+            .unwrap_err();
+        assert!(matches!(same_workspace, StorageError::Conflict(_)));
+
+        store.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn leftover_unplaced_memo_is_purged_and_name_can_be_reused() {
         let (root, store, admin) = test_store().await;
         let workspace = store

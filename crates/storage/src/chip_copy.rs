@@ -138,20 +138,47 @@ impl Store {
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         let mut taken_names: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut memo_names: HashSet<String> = {
+            let existing: Vec<String> = sqlx::query_scalar(
+                "SELECT c.name FROM chips c
+                 INNER JOIN workspace_chips wc ON wc.chip_id = c.id
+                 WHERE wc.workspace_id = ?",
+            )
+            .bind(target_workspace_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            existing
+                .into_iter()
+                .map(|name| name.trim().to_lowercase())
+                .collect()
+        };
         for src in &sources {
-            let names = taken_names
-                .entry(src.owner_user_id.clone())
-                .or_insert_with(HashSet::new);
-            if names.is_empty() {
-                let existing: Vec<String> =
-                    sqlx::query_scalar("SELECT name FROM chips WHERE owner_user_id = ?")
-                        .bind(&src.owner_user_id)
-                        .fetch_all(&mut *tx)
-                        .await?;
-                names.extend(existing.into_iter().map(|name| name.trim().to_lowercase()));
-            }
-            let name = next_copy_name(&src.name, names);
-            names.insert(name.trim().to_lowercase());
+            let name = if src.kind == "memo" {
+                let key = src.name.trim().to_lowercase();
+                let name = if memo_names.contains(&key) {
+                    next_copy_name(&src.name, &memo_names)
+                } else {
+                    src.name.clone()
+                };
+                memo_names.insert(name.trim().to_lowercase());
+                name
+            } else {
+                let names = taken_names
+                    .entry(src.owner_user_id.clone())
+                    .or_insert_with(HashSet::new);
+                if names.is_empty() {
+                    let existing: Vec<String> = sqlx::query_scalar(
+                        "SELECT name FROM chips WHERE owner_user_id = ? AND kind != 'memo'",
+                    )
+                    .bind(&src.owner_user_id)
+                    .fetch_all(&mut *tx)
+                    .await?;
+                    names.extend(existing.into_iter().map(|name| name.trim().to_lowercase()));
+                }
+                let name = next_copy_name(&src.name, names);
+                names.insert(name.trim().to_lowercase());
+                name
+            };
             clone_chip(
                 &mut tx,
                 src,
