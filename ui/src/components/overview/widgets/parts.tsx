@@ -5,6 +5,37 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtWhen } from "@/lib/format";
 import type { FeedItem } from "../types";
 
+export function DashScopeToggle<T extends string>({
+  value,
+  onChange,
+  label,
+  options,
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  label: string;
+  options: Array<{ id: T; label: string; icon: ReactNode }>;
+}) {
+  return (
+    <div role="tablist" aria-label={label} className="dash-scope" data-scope={value}>
+      <span className="dash-scope-thumb" aria-hidden="true" />
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="tab"
+          aria-selected={value === option.id}
+          className="dash-scope-btn"
+          onClick={() => onChange(option.id)}
+        >
+          {option.icon}
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function OpsCard({
   tone,
   to,
@@ -12,6 +43,7 @@ export function OpsCard({
   title,
   value,
   hint,
+  share,
   bar,
 }: {
   tone: "blue" | "green" | "red";
@@ -20,6 +52,7 @@ export function OpsCard({
   title: string;
   value: string;
   hint: string;
+  share?: string;
   bar?: number;
 }) {
   const glow = tone === "blue" ? "#3b8bff" : tone === "green" ? "#34d399" : "#f87171";
@@ -33,15 +66,20 @@ export function OpsCard({
   return (
     <Link
       to={to}
-      className="ops-shell relative h-full min-h-0 min-w-[10.5rem] flex-1 overflow-hidden rounded-xl no-underline drop-shadow-xl transition-transform duration-200 hover:z-10 hover:scale-[1.03]"
+      className="ops-shell relative h-full min-h-0 min-w-[10.5rem] flex-1 overflow-hidden rounded-xl no-underline"
       style={{ "--ops-glow": glow } as CSSProperties}
     >
       <div className="ops-shell-inner absolute inset-0.5 z-[1] flex flex-col rounded-xl px-3 py-2">
-        <span className={`flex items-center gap-1.5 ${ink}`}>
-          <span className="grid size-6 shrink-0 place-items-center rounded-full border border-current/30">
-            {icon}
+        <span className={`flex items-center justify-between gap-1.5 ${ink}`}>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="grid size-6 shrink-0 place-items-center rounded-full border border-current/30">
+              {icon}
+            </span>
+            <span className="truncate text-[12px] font-semibold tracking-[-0.02em]">{title}</span>
           </span>
-          <span className="text-[12px] font-semibold tracking-[-0.02em]">{title}</span>
+          {share ? (
+            <span className="shrink-0 text-[11px] font-semibold tabular-nums">{share}</span>
+          ) : null}
         </span>
         <span className="flex min-h-0 flex-1 flex-col items-center justify-center text-center">
           <span className={`text-[1.55rem] font-semibold leading-none tracking-[-0.04em] tabular-nums ${ink}`}>
@@ -69,29 +107,21 @@ export function OpsCard({
 
 export function AssetTile({
   to,
-  accent,
   icon,
   label,
   value,
   hint,
 }: {
   to: string;
-  accent: string;
   icon: ReactNode;
   label: string;
   value: string;
   hint: string;
 }) {
   return (
-    <Link to={to} className="asset-tile" style={{ "--asset-accent": accent } as CSSProperties}>
+    <Link to={to} className="asset-tile">
       <span className="flex items-center justify-between gap-2">
-        <span
-          className="grid size-8 place-items-center rounded-lg"
-          style={{
-            background: "color-mix(in srgb, var(--asset-accent) 16%, transparent)",
-            color: "var(--asset-accent)",
-          }}
-        >
+        <span className="grid size-8 place-items-center rounded-lg bg-subtle text-text-secondary">
           {icon}
         </span>
         <ChevronRight className="size-3.5 text-text-tertiary" />
@@ -122,7 +152,13 @@ export function FeedRow({
   return (
     <Link to={item.to} className="dash-feed-row">
       <span className={`dash-kind dash-kind-${item.kind}`}>
-        {item.kind === "extract" ? messages.overview.extract : messages.overview.transform}
+        {item.kind === "extract" ? messages.overview.extract
+          : item.kind === "transform" ? messages.overview.transform
+          : item.kind === "load" ? messages.overview.load
+          : item.kind === "sql" ? messages.workspace.sql
+          : item.kind === "script" ? messages.overview.script
+          : item.kind === "serve" ? messages.workspace.serve
+          : messages.workspace.validation}
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] font-medium text-text">{item.title}</span>

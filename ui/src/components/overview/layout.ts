@@ -2,25 +2,25 @@ import { layout } from "@/lib/layout";
 import type { WidgetId, WidgetLayout } from "./types";
 
 const COLS = layout.dashboard.cols;
-const STORAGE_KEY = "bintl.dashboard-layout.v3";
+const STORAGE_KEY = "bintl.dashboard-layout.v6";
 
 export const DEFAULT_LAYOUT: WidgetLayout[] = [
-  { id: "summary", x: 0, y: 0, w: 8, h: 4, visible: true },
+  { id: "summary", x: 0, y: 0, w: 8, h: 3, visible: true },
   { id: "assets", x: 8, y: 0, w: 4, h: 6, visible: true },
-  { id: "trend", x: 0, y: 4, w: 8, h: 6, visible: true },
-  { id: "funnel", x: 8, y: 6, w: 4, h: 5, visible: true },
-  { id: "attention", x: 0, y: 10, w: 8, h: 6, visible: true },
-  { id: "start", x: 8, y: 11, w: 4, h: 6, visible: true },
-  { id: "activity", x: 0, y: 17, w: 12, h: 4, visible: true },
+  { id: "trend", x: 0, y: 3, w: 8, h: 7, visible: true },
+  { id: "funnel", x: 8, y: 6, w: 4, h: 7, visible: true },
+  { id: "attention", x: 0, y: 10, w: 8, h: 5, visible: true },
+  { id: "start", x: 8, y: 13, w: 4, h: 7, visible: true },
+  { id: "activity", x: 0, y: 15, w: 8, h: 6, visible: true },
 ];
 
 export const WIDGET_BOUNDS: Record<WidgetId, { minW: number; minH: number }> = {
   summary: { minW: 5, minH: 3 },
   assets: { minW: 3, minH: 5 },
   trend: { minW: 5, minH: 4 },
-  funnel: { minW: 3, minH: 4 },
+  funnel: { minW: 3, minH: 5 },
   attention: { minW: 4, minH: 4 },
-  start: { minW: 3, minH: 5 },
+  start: { minW: 3, minH: 6 },
   activity: { minW: 6, minH: 3 },
 };
 
@@ -233,9 +233,15 @@ export function wipeLegacyLayouts() {
   try {
     localStorage.removeItem("bintl.dashboard-layout");
     localStorage.removeItem("bintl.dashboard-layout.v2");
+    localStorage.removeItem("bintl.dashboard-layout.v3");
+    localStorage.removeItem("bintl.dashboard-layout.v4");
+    localStorage.removeItem("bintl.dashboard-layout.v5");
     localStorage.removeItem(STORAGE_KEY);
     sessionStorage.removeItem("bintl.dashboard-layout");
     sessionStorage.removeItem("bintl.dashboard-layout.v2");
+    sessionStorage.removeItem("bintl.dashboard-layout.v3");
+    sessionStorage.removeItem("bintl.dashboard-layout.v4");
+    sessionStorage.removeItem("bintl.dashboard-layout.v5");
   } catch {
     /* ignore quota / private mode */
   }

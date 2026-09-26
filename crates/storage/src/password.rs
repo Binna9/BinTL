@@ -1,4 +1,6 @@
-use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{
+    rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
+};
 use argon2::Argon2;
 
 use crate::StorageError;
@@ -9,7 +11,9 @@ pub fn hash_password(password: &str) -> Result<String, StorageError> {
         return Err(StorageError::Invalid("password required".into()));
     }
     if password.len() < 4 {
-        return Err(StorageError::Invalid("password must be at least 4 characters".into()));
+        return Err(StorageError::Invalid(
+            "password must be at least 4 characters".into(),
+        ));
     }
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()

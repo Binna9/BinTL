@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Braces,
@@ -8,48 +8,210 @@ import {
   Database,
   DatabaseZap,
   FileSpreadsheet,
+  FileOutput,
   FileStack,
+  Globe,
   Layers3,
+  Plus,
+  Terminal,
   Search,
-  Upload,
+  ShieldCheck,
+  StickyNote,
   Workflow,
 } from "lucide-react";
 import { AppDialog } from "@/components/AppDialog";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
+import { emptyKindSearch, KIND_APPEARANCE, KIND_ORDER } from "@/features/transform/transformEditorModel";
+import { MAX_SCRIPT_INPUTS } from "@/features/script/scriptEditorModel";
+import { chipKindLabel, incomingDataChipId, producerChips, validationTargetChips } from "@/features/workspace/workspaceCanvasModel";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
 import { fmtBytes } from "@/lib/format";
 import { selectableClass } from "@/lib/selectable";
-import type { Chip } from "@/types/chip";
+import { slugFromName, newServeApiKey } from "@/components/workspace/ServeChipEditorDialog";
+import type { Chip, ChipEdge } from "@/types/chip";
 import type { Dataset } from "@/types/dataset";
 
-export type ChipPlaceKind = "extract" | "transform";
+export type ChipPlaceKind = "extract" | "transform" | "load" | "validation" | "sql" | "serve" | "script" | "memo";
 
 export type TransformPlaceDraft = {
   name: string;
   inputDatasetId: string;
+  inputDatasetIds?: string[];
+  inputChipId?: string;
+  inputChipIds?: string[];
 };
 
-const DATASET_KIND_ORDER = ["upload", "database", "api"] as const;
-type DatasetKind = (typeof DATASET_KIND_ORDER)[number];
+export type EmptyConsumerDraft = {
+  name: string;
+  inputChipId?: string;
+  inputChipIds?: string[];
+  sourceChipId?: string;
+  targetChipId?: string;
+  slug?: string;
+  apiKey?: string;
+  freshness?: "slot" | "live";
+};
 
-const DATASET_KIND_APPEARANCE = {
-  upload: {
-    icon: Upload,
-    header: "border-accent/20 bg-accent-subtle text-accent",
-    count: "bg-accent/10 text-accent",
+const PRODUCER_KIND_ORDER = ["extract", "transform", "script", "load"] as const;
+type ProducerSelectKind = (typeof PRODUCER_KIND_ORDER)[number];
+
+const PRODUCER_KIND_APPEARANCE = {
+  extract: {
+    icon: DatabaseZap,
+    frame: "border-accent/25",
+    header: "bg-accent-subtle text-accent",
+    count: "bg-accent/15 text-accent",
+    iconWrap: "bg-accent-subtle text-accent ring-1 ring-inset ring-accent/20",
   },
-  database: {
-    icon: Database,
-    header: "border-success/20 bg-success-subtle text-success",
-    count: "bg-success/10 text-success",
+  transform: {
+    icon: Workflow,
+    frame: "border-success/25",
+    header: "bg-success-subtle text-success",
+    count: "bg-success/15 text-success",
+    iconWrap: "bg-success-subtle text-success ring-1 ring-inset ring-success/20",
   },
-  api: {
+  script: {
     icon: Braces,
-    header: "border-warning/20 bg-warning-subtle text-warning",
-    count: "bg-warning/10 text-warning",
+    frame: "border-amber-500/25",
+    header: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    count: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+    iconWrap: "bg-amber-500/10 text-amber-700 ring-1 ring-inset ring-amber-500/20 dark:text-amber-400",
+  },
+  load: {
+    icon: FileOutput,
+    frame: "border-warning/25",
+    header: "bg-warning-subtle text-warning",
+    count: "bg-warning/15 text-warning",
+    iconWrap: "bg-warning-subtle text-warning ring-1 ring-inset ring-warning/20",
   },
 } as const;
+
+const EMPTY_NAME_DIALOG_CLASS = "flex max-h-[min(32rem,86vh)] w-[min(24rem,calc(100vw-1.5rem))] min-w-0 max-w-full";
+const VALIDATION_NAME_DIALOG_CLASS = "flex max-h-[min(86vh,48rem)] w-[min(40rem,calc(100vw-1.5rem))] min-w-0 max-w-full";
+
+export function CanvasProducerSelect({
+  chips,
+  value,
+  values,
+  excludeIds,
+  messages,
+  label,
+  disabled,
+  kinds,
+  max,
+  onChange,
+  onValuesChange,
+}: {
+  chips: Chip[];
+  value?: string;
+  values?: string[];
+  excludeIds?: Iterable<string>;
+  messages: Messages;
+  label: string;
+  disabled?: boolean;
+  kinds?: readonly ProducerSelectKind[];
+  max?: number;
+  onChange?: (id: string) => void;
+  onValuesChange?: (ids: string[]) => void;
+}) {
+  const skip = useMemo(() => new Set(excludeIds ?? []), [excludeIds]);
+  const allowed = kinds ?? (["extract", "transform", "script"] as const);
+  const options = useMemo(() => {
+    const listed = allowed.includes("load") ? validationTargetChips(chips) : producerChips(chips);
+    return listed.filter((chip) => allowed.includes(chip.kind as ProducerSelectKind));
+  }, [allowed, chips]);
+  const grouped = useMemo(
+    () =>
+      PRODUCER_KIND_ORDER.filter((kind) => allowed.includes(kind)).map((kind) => ({
+        kind,
+        items: options.filter((chip) => chip.kind === kind),
+      })),
+    [allowed, options],
+  );
+  const selected = values ?? (value ? [value] : []);
+  const multi = Boolean(onValuesChange);
+
+  return (
+    <div className="flex min-w-0 shrink-0 flex-col gap-2">
+      <span className="text-xs font-semibold text-text">{label}</span>
+      <div
+        className={cn("flex min-w-0 flex-col gap-2", disabled && "pointer-events-none opacity-50")}
+        role="listbox"
+        aria-label={label}
+        aria-disabled={disabled}
+        aria-multiselectable={multi || undefined}
+      >
+        {grouped.map((group) => {
+          const appearance = PRODUCER_KIND_APPEARANCE[group.kind];
+          const KindIcon = appearance.icon;
+          const kindName = chipKindLabel(group.kind, messages);
+          return (
+            <section
+              key={group.kind}
+              className={cn("min-w-0 overflow-hidden rounded-lg border bg-surface", appearance.frame)}
+            >
+              <div className={cn("flex min-w-0 items-center gap-1.5 px-2 py-1.5", appearance.header)}>
+                <KindIcon className="size-3.5 shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-bold">{kindName}</span>
+                <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums", appearance.count)}>
+                  {group.items.length}
+                </span>
+              </div>
+              {group.items.length === 0 ? (
+                <p className="px-2 py-2 text-[11px] leading-4 text-text-tertiary">
+                  {messages.workspace.noKindOnCanvas(kindName)}
+                </p>
+              ) : (
+                <ul className="scroll-pane m-0 max-h-36 list-none overflow-y-auto overflow-x-hidden p-0">
+                  {group.items.map((chip) => {
+                    const picked = selected.includes(chip.id);
+                    const blocked = skip.has(chip.id);
+                    const full = Boolean(max && !picked && selected.length >= max);
+                    return (
+                      <li key={chip.id} className="min-w-0 border-t border-border/70">
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={picked}
+                          disabled={disabled || blocked || full}
+                          className={cn(
+                            "flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left outline-none",
+                            selectableClass(picked),
+                            (blocked || full) && "opacity-50",
+                          )}
+                          onClick={() => {
+                            if (multi) {
+                              onValuesChange?.(
+                                picked
+                                  ? selected.filter((id) => id !== chip.id)
+                                  : [...selected, chip.id],
+                              );
+                              return;
+                            }
+                            onChange?.(picked ? "" : chip.id);
+                          }}
+                        >
+                          <span className={cn("grid size-6 shrink-0 place-items-center rounded-md", appearance.iconWrap)}>
+                            <KindIcon className="size-3.5" aria-hidden="true" />
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-text">{chip.name}</span>
+                          {picked ? <Check className="size-3.5 shrink-0 text-accent" aria-hidden="true" /> : null}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 
 function CatalogChipPanel({
   kind,
@@ -75,11 +237,15 @@ function CatalogChipPanel({
     if (!needle) return options;
     return options.filter((chip) => chip.name.toLowerCase().includes(needle));
   }, [options, query]);
-  const RowIcon = kind === "extract" ? DatabaseZap : Workflow;
-  const iconClassName = kind === "extract" ? "text-accent" : "text-success";
+  const RowIcon = kind === "extract" ? DatabaseZap : kind === "transform" ? Workflow : kind === "validation" ? ShieldCheck : kind === "sql" ? Terminal : kind === "serve" ? Globe : kind === "script" ? Braces : FileOutput;
+  const iconClassName = kind === "extract" ? "text-accent" : kind === "transform" ? "text-success" : kind === "validation" ? "text-violet-600 dark:text-violet-400" : kind === "sql" ? "text-sky-600 dark:text-sky-400" : kind === "serve" ? "text-teal-600 dark:text-teal-400" : kind === "script" ? "text-amber-600 dark:text-amber-400" : "text-warning";
   const emptyHint = kind === "extract"
     ? messages.workspace.emptyCatalogExtract
-    : messages.workspace.emptyCatalogTransform;
+    : kind === "transform" ? messages.workspace.emptyCatalogTransform
+      : kind === "validation" ? messages.workspace.emptyCatalogValidation
+        : kind === "sql" ? messages.workspace.emptyCatalogSql
+          : kind === "serve" ? messages.workspace.emptyCatalogServe
+            : kind === "script" ? messages.workspace.emptyCatalogScript : messages.workspace.emptyCatalogLoad;
 
   if (options.length === 0) {
     return (
@@ -105,14 +271,16 @@ function CatalogChipPanel({
       </div>
       <ul className="m-0 min-h-0 flex-1 list-none divide-y divide-border/50 overflow-y-auto overscroll-contain rounded-lg border border-border/60 p-0">
         {filtered.map((chip) => {
-          const selected = selectedIds.includes(chip.id);
+          const placed = canvasChipIds.has(chip.id);
+          const selected = !placed && selectedIds.includes(chip.id);
           return (
             <li key={chip.id}>
               <button
                 type="button"
+                disabled={placed}
                 className={cn(
                   "flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none",
-                  selected ? "bg-accent-subtle/80" : "hover:bg-subtle/70",
+                  placed ? "cursor-not-allowed opacity-50" : selected ? "bg-accent-subtle/80" : "hover:bg-subtle/70",
                 )}
                 aria-pressed={selected}
                 onClick={() =>
@@ -133,7 +301,7 @@ function CatalogChipPanel({
                 </span>
                 <RowIcon className={cn("size-4 shrink-0", iconClassName)} aria-hidden="true" />
                 <span className="min-w-0 flex-1 truncate text-sm font-medium text-text">{chip.name}</span>
-                {canvasChipIds.has(chip.id) ? (
+                {placed ? (
                   <span className="shrink-0 text-[11px] text-text-tertiary">{messages.workspace.chipOnCanvas}</span>
                 ) : null}
               </button>
@@ -165,7 +333,7 @@ function PlaceDialogFooter({
       <Button type="button" variant="secondary" onClick={onCancel}>
         {cancelLabel}
       </Button>
-      <Button type="button" variant="primary" disabled={busy || !canSubmit} onClick={onSubmit}>
+      <Button type="button" variant="secondary" disabled={busy || !canSubmit} onClick={onSubmit}>
         {submitLabel}
       </Button>
     </div>
@@ -176,6 +344,7 @@ function DatasetPickerPanel({
   title,
   datasets,
   selectedId,
+  selectedIds,
   emptyLabel,
   messages,
   onPick,
@@ -183,40 +352,31 @@ function DatasetPickerPanel({
 }: {
   title: string;
   datasets: Dataset[];
-  selectedId: string;
+  selectedId?: string;
+  selectedIds?: string[];
   emptyLabel: string;
   messages: Messages;
   onPick: (dataset: Dataset) => void;
   className?: string;
 }) {
-  const [expandedKinds, setExpandedKinds] = useState<Set<DatasetKind>>(() => new Set());
-  const [kindSearch, setKindSearch] = useState<Record<DatasetKind, string>>({
-    upload: "",
-    database: "",
-    api: "",
-  });
+  const [expandedKinds, setExpandedKinds] = useState<Set<(typeof KIND_ORDER)[number]>>(() => new Set());
+  const [kindSearch, setKindSearch] = useState(emptyKindSearch);
 
-  const kindLabel: Record<DatasetKind, string> = {
+  const kindLabel: Record<(typeof KIND_ORDER)[number], string> = {
     upload: messages.transform.kindUpload,
     database: messages.transform.kindDatabase,
     api: messages.transform.kindApi,
+    transform: messages.transform.kindTransform,
+    script: messages.transform.kindScript,
   };
 
-  const grouped = useMemo(() => {
-    const buckets: Record<DatasetKind, Dataset[]> = {
-      upload: [],
-      database: [],
-      api: [],
-    };
-    for (const dataset of datasets) {
-      if (dataset.kind === "upload" || dataset.kind === "database" || dataset.kind === "api") {
-        buckets[dataset.kind].push(dataset);
-      }
-    }
-    return DATASET_KIND_ORDER
-      .map((kind) => ({ kind, items: buckets[kind] }))
-      .filter((group) => group.items.length > 0);
-  }, [datasets]);
+  const grouped = useMemo(
+    () => KIND_ORDER
+      .map((kind) => ({ kind, items: datasets.filter((item) => item.kind === kind) }))
+      .filter((group) => group.items.length > 0),
+    [datasets],
+  );
+  const pickedIds = selectedIds ?? (selectedId ? [selectedId] : []);
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col gap-2", className)} aria-label={title}>
@@ -235,7 +395,7 @@ function DatasetPickerPanel({
         ) : (
           <div className="space-y-2 p-0.5">
             {grouped.map((group) => {
-              const appearance = DATASET_KIND_APPEARANCE[group.kind];
+              const appearance = KIND_APPEARANCE[group.kind];
               const KindIcon = appearance.icon;
               const expanded = expandedKinds.has(group.kind);
               const query = kindSearch[group.kind].trim().toLocaleLowerCase();
@@ -314,13 +474,15 @@ function DatasetPickerPanel({
                     </p>
                   ) : null}
                   {expanded
-                    ? visibleItems.map((item) => (
+                    ? visibleItems.map((item) => {
+                        const picked = pickedIds.includes(item.id);
+                        return (
                         <button
                           key={item.id}
                           type="button"
                           className={cn(
                             "flex w-full min-w-0 items-start gap-2 border-b border-border px-2.5 py-2 text-left last:border-b-0",
-                            selectableClass(item.id === selectedId),
+                            selectableClass(picked),
                           )}
                           onClick={() => onPick(item)}
                         >
@@ -331,11 +493,7 @@ function DatasetPickerPanel({
                           <span className="min-w-0 flex-1">
                             <span className="block break-all text-[12px] font-medium leading-4">
                               {item.filename}
-                              {item.status === "planned" ? (
-                                <span className="ml-1 text-[10px] font-normal text-accent">
-                                  ({messages.transform.plannedInput})
-                                </span>
-                              ) : !item.available ? (
+                              {!item.available && item.status !== "connected" ? (
                                 <span className="ml-1 text-[10px] font-normal text-warning">
                                   ({messages.transform.sourceUnavailable})
                                 </span>
@@ -351,8 +509,10 @@ function DatasetPickerPanel({
                                     : item.id.slice(0, 8)}
                             </span>
                           </span>
+                          {picked ? <Check className="mt-0.5 size-3.5 shrink-0 text-accent" aria-hidden="true" /> : null}
                         </button>
-                      ))
+                        );
+                      })
                     : null}
                 </section>
               );
@@ -477,6 +637,7 @@ function ExtractNewPanel({
 }
 
 function TransformNewPanel({
+  kind = "transform",
   datasets,
   defaultName,
   messages,
@@ -486,55 +647,74 @@ function TransformNewPanel({
   onPlaceDataset,
   onPlaceCatalog,
   catalogChips,
+  canvasChips,
   canvasChipIds,
   dragHandleRef,
 }: {
+  kind?: "transform" | "script";
   datasets: Dataset[];
   defaultName: string;
   messages: Messages;
   busy?: boolean;
   onClose: () => void;
-  onPlaceEmpty: (name: string) => void;
+  onPlaceEmpty: (draft: EmptyConsumerDraft) => void;
   onPlaceDataset: (draft: TransformPlaceDraft) => void;
   onPlaceCatalog: (chipIds: string[]) => void;
   catalogChips: Chip[];
+  canvasChips: Chip[];
   canvasChipIds: Set<string>;
   dragHandleRef?: React.RefObject<HTMLDivElement | null>;
 }) {
+  const script = kind === "script";
   const [pickingDataset, setPickingDataset] = useState(false);
   const [namingEmpty, setNamingEmpty] = useState(false);
   const [emptyName, setEmptyName] = useState(defaultName);
+  const [inputChipId, setInputChipId] = useState("");
+  const [inputChipIds, setInputChipIds] = useState<string[]>([]);
   const [inputDatasetId, setInputDatasetId] = useState("");
+  const [inputDatasetIds, setInputDatasetIds] = useState<string[]>([]);
   const [catalogSelectedIds, setCatalogSelectedIds] = useState<string[]>([]);
 
   const inputDatasets = useMemo(
-    () => datasets.filter((dataset) => dataset.kind !== "transform"),
-    [datasets],
+    () => datasets.filter((dataset) =>
+      dataset.kind === "upload"
+      || dataset.kind === "database"
+      || dataset.kind === "api"
+      || dataset.kind === "script"
+      || (script && dataset.kind === "transform")),
+    [datasets, script],
   );
 
   useEffect(() => {
     setPickingDataset(false);
     setNamingEmpty(false);
     setEmptyName(defaultName);
+    setInputChipId("");
+    setInputChipIds([]);
     setInputDatasetId("");
+    setInputDatasetIds([]);
     setCatalogSelectedIds([]);
   }, [defaultName]);
 
   const catalogCanSubmit = catalogSelectedIds.length > 0;
-  const datasetCanSubmit = Boolean(inputDatasetId);
+  const datasetCanSubmit = script ? inputDatasetIds.length > 0 : Boolean(inputDatasetId);
+  const emptyInputReady = script ? inputChipIds.length > 0 : Boolean(inputChipId);
 
   function exitDatasetPick() {
     setPickingDataset(false);
     setInputDatasetId("");
+    setInputDatasetIds([]);
   }
 
   const main = (
     <div className="chip-place-main">
       <PlacePanelHeader
-        icon={<Workflow className="size-4" aria-hidden="true" />}
-        iconClassName="bg-success-subtle text-success"
-        title={messages.workspace.placeTransformTitle}
-        hint={messages.workspace.placeTransformSimpleHint}
+        icon={script
+          ? <Braces className="size-4" aria-hidden="true" />
+          : <Workflow className="size-4" aria-hidden="true" />}
+        iconClassName={script ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "bg-success-subtle text-success"}
+        title={script ? messages.workspace.placeScriptTitle : messages.workspace.placeTransformTitle}
+        hint={script ? messages.workspace.placeScriptSimpleHint : messages.workspace.placeTransformSimpleHint}
         dragHandleRef={dragHandleRef}
       />
 
@@ -551,11 +731,13 @@ function TransformNewPanel({
           onClick={() => {
             if (pickingDataset) exitDatasetPick();
             setEmptyName(defaultName);
+            setInputChipId("");
+            setInputChipIds([]);
             setNamingEmpty(true);
           }}
         >
           <Layers3 className="size-3.5" aria-hidden="true" />
-          {messages.workspace.placeTransformEmptyChip}
+          {script ? messages.workspace.placeScriptEmptyChip : messages.workspace.placeTransformEmptyChip}
         </Button>
         <Button
           type="button"
@@ -578,7 +760,7 @@ function TransformNewPanel({
           }}
         >
           <FileStack className="size-3.5" aria-hidden="true" />
-          {messages.workspace.placeTransformFromDataset}
+          {script ? messages.workspace.placeScriptFromDataset : messages.workspace.placeTransformFromDataset}
         </Button>
       </div>
 
@@ -586,24 +768,35 @@ function TransformNewPanel({
         {pickingDataset ? (
           <>
             <p className="shrink-0 text-[11px] text-text-tertiary">
-              {messages.workspace.placeTransformDatasetHint}
+              {script ? messages.workspace.placeScriptDatasetHint : messages.workspace.placeTransformDatasetHint}
             </p>
             <DatasetPickerPanel
-              title={messages.workspace.placeTransformInputDataset}
+              title={script ? messages.workspace.inputDataset : messages.workspace.placeTransformInputDataset}
               datasets={inputDatasets}
-              selectedId={inputDatasetId}
+              selectedId={script ? undefined : inputDatasetId}
+              selectedIds={script ? inputDatasetIds : undefined}
               emptyLabel={messages.workspace.placeExtractFileEmpty}
               messages={messages}
-              onPick={(dataset) => setInputDatasetId(dataset.id)}
+              onPick={(dataset) => {
+                if (!script) {
+                  setInputDatasetId(dataset.id);
+                  return;
+                }
+                setInputDatasetIds((current) => {
+                  if (current.includes(dataset.id)) return current.filter((id) => id !== dataset.id);
+                  if (current.length >= MAX_SCRIPT_INPUTS) return current;
+                  return [...current, dataset.id];
+                });
+              }}
             />
           </>
         ) : (
           <>
             <p className="shrink-0 text-[11px] text-text-tertiary">
-              {messages.workspace.placeTransformCatalogHint}
+              {script ? messages.workspace.placeScriptCatalogHint : messages.workspace.placeTransformCatalogHint}
             </p>
             <CatalogChipPanel
-              kind="transform"
+              kind={kind}
               chips={catalogChips}
               canvasChipIds={canvasChipIds}
               messages={messages}
@@ -618,7 +811,7 @@ function TransformNewPanel({
         cancelLabel={messages.common.cancel}
         submitLabel={
           pickingDataset
-            ? messages.workspace.placeTransformContinueClean
+            ? (script ? messages.workspace.placeScriptContinue : messages.workspace.placeTransformContinueClean)
             : messages.workspace.pickChipPlace
         }
         canSubmit={pickingDataset ? datasetCanSubmit : catalogCanSubmit}
@@ -633,7 +826,11 @@ function TransformNewPanel({
         onSubmit={() => {
           if (pickingDataset) {
             if (!datasetCanSubmit) return;
-            onPlaceDataset({ name: defaultName, inputDatasetId });
+            onPlaceDataset({
+              name: defaultName,
+              inputDatasetId: script ? (inputDatasetIds[0] ?? "") : inputDatasetId,
+              inputDatasetIds: script ? inputDatasetIds : undefined,
+            });
             return;
           }
           if (!catalogCanSubmit) return;
@@ -651,7 +848,9 @@ function TransformNewPanel({
         open={namingEmpty}
         title={messages.workspace.nameChipTitle}
         zIndex={110}
-        className="w-[min(24rem,92vw)]"
+        className={EMPTY_NAME_DIALOG_CLASS}
+        minWidth={384}
+        minHeight={240}
         onClose={() => setNamingEmpty(false)}
         footer={
           <>
@@ -661,12 +860,14 @@ function TransformNewPanel({
             <Button
               type="button"
               variant="primary"
-              disabled={busy || !emptyName.trim()}
+              disabled={busy || !emptyName.trim() || !emptyInputReady}
               onClick={() => {
                 const trimmed = emptyName.trim();
-                if (!trimmed) return;
+                if (!trimmed || !emptyInputReady) return;
                 setNamingEmpty(false);
-                onPlaceEmpty(trimmed);
+                onPlaceEmpty(script
+                  ? { name: trimmed, inputChipIds }
+                  : { name: trimmed, inputChipId });
               }}
             >
               {messages.workspace.nameChipConfirm}
@@ -674,10 +875,10 @@ function TransformNewPanel({
           </>
         }
       >
-        <div className="flex flex-col gap-3 p-4">
-          <p className="text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
-          <label className="flex min-w-0 flex-col gap-1.5">
-            <span className="text-xs font-medium text-text-secondary">{messages.workspace.chipName}</span>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto p-3">
+          <p className="shrink-0 text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
+          <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+            <span className="text-xs font-semibold text-text">{messages.workspace.chipName}</span>
             <input
               className="field-control text-sm"
               value={emptyName}
@@ -688,12 +889,349 @@ function TransformNewPanel({
                 if (event.key !== "Enter") return;
                 event.preventDefault();
                 const trimmed = emptyName.trim();
-                if (!trimmed || busy) return;
+                if (!trimmed || !emptyInputReady || busy) return;
                 setNamingEmpty(false);
-                onPlaceEmpty(trimmed);
+                onPlaceEmpty(script
+                  ? { name: trimmed, inputChipIds }
+                  : { name: trimmed, inputChipId });
               }}
             />
           </label>
+          <p className="shrink-0 text-xs leading-5 text-text-tertiary">
+            {script ? messages.workspace.scriptInputChipsHint : messages.workspace.inputChipHint}
+          </p>
+          <CanvasProducerSelect
+            chips={canvasChips}
+            value={script ? undefined : inputChipId}
+            values={script ? inputChipIds : undefined}
+            max={script ? MAX_SCRIPT_INPUTS : undefined}
+            messages={messages}
+            label={messages.workspace.inputChip}
+            disabled={busy}
+            onChange={setInputChipId}
+            onValuesChange={script ? setInputChipIds : undefined}
+          />
+        </div>
+      </AppDialog>
+    </>
+  );
+}
+
+function MemoNamePanel({
+  defaultName,
+  occupiedNames,
+  messages,
+  busy,
+  onClose,
+  onPlace,
+  dragHandleRef,
+}: {
+  defaultName: string;
+  occupiedNames: string[];
+  messages: Messages;
+  busy?: boolean;
+  onClose: () => void;
+  onPlace: (name: string) => void;
+  dragHandleRef: RefObject<HTMLDivElement | null>;
+}) {
+  const [name, setName] = useState(defaultName);
+  useEffect(() => {
+    setName(defaultName);
+  }, [defaultName]);
+  const trimmed = name.trim();
+  const nameTaken = occupiedNames.some(
+    (item) => item.trim().toLocaleLowerCase() === trimmed.toLocaleLowerCase(),
+  );
+  const canSubmit = Boolean(trimmed) && !nameTaken && !busy;
+  const submit = () => {
+    if (!canSubmit) return;
+    onPlace(trimmed);
+  };
+  return (
+    <div className="chip-place-main">
+      <PlacePanelHeader
+        icon={<StickyNote className="size-4" aria-hidden="true" />}
+        iconClassName="bg-rose-500/10 text-rose-600 dark:text-rose-400"
+        title={messages.workspace.placeMemoTitle}
+        hint={messages.workspace.placeMemoSimpleHint}
+        dragHandleRef={dragHandleRef}
+      />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto p-4">
+        <p className="shrink-0 text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
+        <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+          <span className="text-xs font-semibold text-text">{messages.workspace.chipName}</span>
+          <input
+            className="field-control text-sm"
+            value={name}
+            autoFocus
+            disabled={busy}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              submit();
+            }}
+          />
+        </label>
+        {nameTaken ? (
+          <p className="text-xs text-danger">{messages.workspace.duplicateChipName}</p>
+        ) : null}
+      </div>
+      <PlaceDialogFooter
+        cancelLabel={messages.common.cancel}
+        submitLabel={messages.workspace.nameChipConfirm}
+        canSubmit={canSubmit}
+        busy={busy}
+        onCancel={onClose}
+        onSubmit={submit}
+      />
+    </div>
+  );
+}
+
+function LoadCatalogPanel({ kind = "load", icon, iconClassName, title, simpleHint, emptyChipLabel, catalogHint, registerLabel, submitLabel, chips, canvasChips, canvasEdges, canvasChipIds, defaultName, occupiedNames, messages, busy, hideEmpty, hideRegister, onClose, onPlace, onPlaceEmpty, onRegister, dragHandleRef }: {
+  kind?: "load" | "validation" | "sql" | "serve" | "script"; icon?: ReactNode; iconClassName?: string; title?: string; simpleHint?: string;
+  emptyChipLabel?: string; catalogHint?: string; registerLabel?: string; submitLabel?: string;
+  chips: Chip[]; canvasChips: Chip[]; canvasEdges?: ChipEdge[]; canvasChipIds: Set<string>; defaultName: string; occupiedNames: string[]; messages: Messages; busy?: boolean;
+  hideEmpty?: boolean;
+  hideRegister?: boolean;
+  onClose: () => void; onPlace: (ids: string[]) => void; onPlaceEmpty?: (draft: EmptyConsumerDraft) => void; onRegister: () => void;
+  dragHandleRef: RefObject<HTMLDivElement | null>;
+}) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const [namingEmpty, setNamingEmpty] = useState(false);
+  const [emptyName, setEmptyName] = useState(defaultName);
+  const [inputChipId, setInputChipId] = useState("");
+  const [sourceChipId, setSourceChipId] = useState("");
+  const [targetChipId, setTargetChipId] = useState("");
+  const [slug, setSlug] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [freshness, setFreshness] = useState<"slot" | "live">("slot");
+
+  useEffect(() => {
+    setNamingEmpty(false);
+    setEmptyName(defaultName);
+    setInputChipId("");
+    setSourceChipId("");
+    setTargetChipId("");
+    setSlug(slugFromName(defaultName));
+    setApiKey(kind === "serve" ? newServeApiKey() : "");
+    setFreshness("slot");
+  }, [defaultName, kind]);
+  const nameTaken = occupiedNames.some((name) => name.trim().toLocaleLowerCase() === emptyName.trim().toLocaleLowerCase());
+  const emptyReady = kind === "validation"
+    ? Boolean(sourceChipId && targetChipId)
+    : kind === "serve"
+      ? Boolean(inputChipId && slug.trim())
+      : Boolean(inputChipId);
+  const confirmEmpty = () => {
+    const trimmed = emptyName.trim();
+    if (!trimmed || busy || nameTaken || !emptyReady) return;
+    setNamingEmpty(false);
+    onPlaceEmpty?.(kind === "validation"
+      ? { name: trimmed, sourceChipId, targetChipId }
+      : kind === "serve"
+        ? { name: trimmed, inputChipId, slug: slug.trim(), apiKey, freshness }
+        : { name: trimmed, inputChipId });
+  };
+
+  return (
+    <>
+      <div className="chip-place-main">
+      <PlacePanelHeader
+        icon={icon ?? <FileOutput className="size-4" aria-hidden="true" />}
+        iconClassName={iconClassName ?? "bg-warning-subtle text-warning"}
+        title={title ?? messages.workspace.placeLoadTitle}
+        hint={simpleHint ?? messages.workspace.placeLoadSimpleHint}
+        dragHandleRef={dragHandleRef}
+      />
+
+      <div className={cn("grid shrink-0 gap-2 px-4 pt-4", hideEmpty || hideRegister ? "grid-cols-1" : "grid-cols-2")}>
+        {hideEmpty ? null : (
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-10 gap-1.5 text-[12px]"
+            disabled={busy}
+            onClick={() => {
+              setEmptyName(defaultName);
+              setInputChipId("");
+              setSourceChipId("");
+              setTargetChipId("");
+              setSlug(slugFromName(defaultName));
+              setApiKey(kind === "serve" ? newServeApiKey() : "");
+              setFreshness("slot");
+              setNamingEmpty(true);
+            }}
+          >
+            <Layers3 className="size-3.5" aria-hidden="true" />
+            {emptyChipLabel ?? messages.workspace.placeLoadEmptyChip}
+          </Button>
+        )}
+        {hideRegister ? null : (
+        <Button
+          type="button"
+          variant="secondary"
+          className="h-10 gap-1.5 text-[12px]"
+          disabled={busy}
+          onClick={onRegister}
+        >
+          <Plus className="size-3.5" aria-hidden="true" />
+          {registerLabel ?? messages.workspace.registerLoadFirst}
+        </Button>
+        )}
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-2 pt-4">
+        <p className="shrink-0 text-[11px] text-text-tertiary">
+          {catalogHint ?? messages.workspace.placeLoadCatalogHint}
+        </p>
+        <CatalogChipPanel
+          kind={kind}
+          chips={chips}
+          canvasChipIds={canvasChipIds}
+          messages={messages}
+          selectedIds={selected}
+          onSelectedIdsChange={setSelected}
+        />
+      </div>
+
+      <PlaceDialogFooter
+        cancelLabel={messages.common.cancel}
+        submitLabel={submitLabel ?? messages.workspace.placeSelected}
+        canSubmit={selected.length > 0}
+        busy={busy}
+        onCancel={onClose}
+        onSubmit={() => onPlace(selected)}
+      />
+      </div>
+      <AppDialog
+        open={namingEmpty}
+        title={messages.workspace.nameChipTitle}
+        zIndex={110}
+        className={kind === "validation" || kind === "serve" ? VALIDATION_NAME_DIALOG_CLASS : EMPTY_NAME_DIALOG_CLASS}
+        minWidth={kind === "validation" || kind === "serve" ? 560 : 384}
+        minHeight={kind === "validation" || kind === "serve" ? 520 : 240}
+        onClose={() => setNamingEmpty(false)}
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setNamingEmpty(false)}>
+              {messages.common.cancel}
+            </Button>
+            <Button type="button" variant="primary" disabled={busy || !emptyName.trim() || nameTaken || !emptyReady} onClick={confirmEmpty}>
+              {messages.workspace.nameChipConfirm}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto p-3">
+          <p className="shrink-0 text-xs leading-5 text-text-secondary">{messages.workspace.nameChipHint}</p>
+          <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+            <span className="text-xs font-semibold text-text">{messages.workspace.chipName}</span>
+            <input
+              className="field-control text-sm"
+              value={emptyName}
+              autoFocus
+              disabled={busy}
+              onChange={(event) => {
+                const next = event.target.value;
+                setEmptyName(next);
+                if (kind === "serve" && (!slug || slug === slugFromName(emptyName))) {
+                  setSlug(slugFromName(next));
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                confirmEmpty();
+              }}
+            />
+            {nameTaken ? <span className="text-xs text-danger">{messages.workspace.duplicateChipName}</span> : null}
+          </label>
+          {kind === "validation" ? (
+            <>
+              <p className="shrink-0 text-xs leading-5 text-text-tertiary">{messages.workspace.validationConfigureHint}</p>
+              <div className="grid min-w-0 grid-cols-2 gap-3">
+                <CanvasProducerSelect
+                  chips={canvasChips}
+                  value={sourceChipId}
+                  excludeIds={targetChipId ? [targetChipId] : undefined}
+                  messages={messages}
+                  label={messages.workspace.validationSourceChip}
+                  disabled={busy}
+                  onChange={setSourceChipId}
+                />
+                <CanvasProducerSelect
+                  chips={canvasChips}
+                  value={targetChipId}
+                  excludeIds={sourceChipId ? [sourceChipId] : undefined}
+                  messages={messages}
+                  label={messages.workspace.validationTargetChip}
+                  kinds={["extract", "transform", "script", "load"]}
+                  disabled={busy}
+                  onChange={(id) => {
+                    setTargetChipId(id);
+                    if (sourceChipId || !id) return;
+                    const chip = canvasChips.find((item) => item.id === id);
+                    if (chip?.kind !== "load") return;
+                    const input = incomingDataChipId(canvasEdges ?? [], id);
+                    if (input) setSourceChipId(input);
+                  }}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="shrink-0 text-xs leading-5 text-text-tertiary">{messages.workspace.inputChipHint}</p>
+              <CanvasProducerSelect
+                chips={canvasChips}
+                value={inputChipId}
+                messages={messages}
+                label={messages.workspace.inputChip}
+                disabled={busy}
+                onChange={setInputChipId}
+              />
+              {kind === "serve" ? (
+                <>
+                  <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+                    <span className="flex min-h-4 min-w-0 items-baseline justify-between gap-2">
+                      <span className="text-xs font-semibold text-text">{messages.workspace.serveSlug}</span>
+                      <span className="min-w-0 truncate text-right text-[11px] text-text-tertiary">{messages.workspace.serveSlugExample}</span>
+                    </span>
+                    <input
+                      className="field-control text-sm"
+                      value={slug}
+                      placeholder={messages.workspace.serveSlugPlaceholder}
+                      disabled={busy}
+                      onChange={(event) => setSlug(event.target.value)}
+                    />
+                    {slug.trim() ? (
+                      <span className="font-mono text-[11px] text-text-tertiary">{messages.workspace.servePathLabel(slug.trim())}</span>
+                    ) : (
+                      <span className="text-[11px] leading-4 text-text-tertiary">{messages.workspace.serveSlugHint}</span>
+                    )}
+                  </label>
+                  <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+                    <span className="text-xs font-semibold text-text">{messages.workspace.serveApiKey}</span>
+                    <input className="field-control font-mono text-[12px]" value={apiKey} readOnly />
+                    <span className="text-[11px] leading-5 text-text-tertiary">{messages.workspace.serveApiKeyHint}</span>
+                  </label>
+                  <label className="flex min-w-0 shrink-0 flex-col gap-1.5">
+                    <span className="text-xs font-semibold text-text">{messages.workspace.serveFreshness}</span>
+                    <Select
+                      value={freshness}
+                      disabled={busy}
+                      options={[
+                        { value: "slot", label: messages.workspace.serveFreshnessSlot },
+                        { value: "live", label: messages.workspace.serveFreshnessLive },
+                      ]}
+                      onChange={(value) => setFreshness(value === "live" ? "live" : "slot")}
+                    />
+                  </label>
+                </>
+              ) : null}
+            </>
+          )}
         </div>
       </AppDialog>
     </>
@@ -703,42 +1241,81 @@ function TransformNewPanel({
 export function ChipPlaceDialog({
   open,
   kind,
+  workspaceId,
+  workspaceReturnState,
   catalogChips,
   datasets,
+  canvasChips,
+  canvasEdges,
   canvasChipIds,
-  defaultTransformIndex,
+  defaultTransformName,
+  defaultLoadName,
+  defaultValidationName,
+  defaultSqlName,
+  defaultScriptName,
+  defaultServeName,
+  defaultMemoName,
+  occupiedNames,
   messages,
   busy,
   onClose,
   onPlaceCatalog,
   onPlaceNewTransform,
+  onPlaceNewLoad,
+  onPlaceNewValidation,
+  onPlaceNewServe,
+  onPlaceNewScript,
+  onPlaceNewMemo,
+  onRegisterSql,
 }: {
   open: boolean;
   kind: ChipPlaceKind;
+  workspaceId?: string;
+  workspaceReturnState?: unknown;
   catalogChips: Chip[];
   datasets: Dataset[];
+  canvasChips: Chip[];
+  canvasEdges?: ChipEdge[];
   canvasChipIds: Set<string>;
-  defaultTransformIndex: number;
+  defaultTransformName: string;
+  defaultLoadName: string;
+  defaultValidationName: string;
+  defaultSqlName: string;
+  defaultScriptName: string;
+  defaultServeName: string;
+  defaultMemoName: string;
+  occupiedNames: string[];
   messages: Messages;
   busy?: boolean;
   onClose: () => void;
   onPlaceCatalog: (chipIds: string[]) => void;
   onPlaceNewTransform: (draft: TransformPlaceDraft) => void;
+  onPlaceNewLoad: (draft: EmptyConsumerDraft) => void;
+  onPlaceNewValidation: (draft: EmptyConsumerDraft) => void;
+  onPlaceNewServe: (draft: EmptyConsumerDraft) => void;
+  onPlaceNewScript: (draft: TransformPlaceDraft) => void;
+  onPlaceNewMemo: (name: string) => void;
+  onRegisterSql: () => void;
 }) {
   const navigate = useNavigate();
   const dragHandleRef = useRef<HTMLDivElement>(null);
   const dialogTitle = kind === "extract"
     ? messages.workspace.placeExtractTitle
-    : messages.workspace.placeTransformTitle;
+    : kind === "transform" ? messages.workspace.placeTransformTitle
+      : kind === "load" ? messages.workspace.placeLoadTitle
+        : kind === "sql" ? messages.workspace.placeSqlTitle
+          : kind === "script" ? messages.workspace.placeScriptTitle
+            : kind === "serve" ? messages.workspace.placeServeTitle
+              : kind === "memo" ? messages.workspace.placeMemoTitle : messages.workspace.placeValidationTitle;
 
   function goDbRegister() {
     onClose();
-    navigate("/db");
+    navigate("/db", { state: workspaceReturnState ?? { returnWorkspaceId: workspaceId } });
   }
 
   function goApiRegister() {
     onClose();
-    navigate("/extract/api");
+    navigate("/extract/api", { state: workspaceReturnState ?? { returnWorkspaceId: workspaceId } });
   }
 
   return (
@@ -749,13 +1326,23 @@ export function ChipPlaceDialog({
       dragHandleRef={dragHandleRef}
       className={cn(
         "chip-place-dialog flex max-h-[88vh] max-w-[96vw]",
-        "h-[min(40rem,88vh)] w-[26rem]",
+        kind === "memo" ? "h-[min(18rem,88vh)] w-[24rem]" : "h-[min(40rem,88vh)] w-[26rem]",
       )}
-      minWidth={416}
-      minHeight={480}
+      minWidth={kind === "memo" ? 360 : 416}
+      minHeight={kind === "memo" ? 280 : 480}
       onClose={onClose}
     >
-      {kind === "extract" ? (
+      {kind === "memo" ? (
+        <MemoNamePanel
+          defaultName={defaultMemoName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceNewMemo}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : kind === "extract" ? (
         <ExtractNewPanel
           messages={messages}
           busy={busy}
@@ -767,18 +1354,135 @@ export function ChipPlaceDialog({
           canvasChipIds={canvasChipIds}
           dragHandleRef={dragHandleRef}
         />
-      ) : (
+      ) : kind === "transform" ? (
         <TransformNewPanel
           datasets={datasets}
-          defaultName={messages.workspace.defaultTransformChipName(defaultTransformIndex)}
+          defaultName={defaultTransformName}
           messages={messages}
           busy={busy}
           onClose={onClose}
-          onPlaceEmpty={(name) => onPlaceNewTransform({ name, inputDatasetId: "" })}
+          onPlaceEmpty={(draft) => onPlaceNewTransform({
+            name: draft.name,
+            inputDatasetId: "",
+            inputChipId: draft.inputChipId,
+          })}
           onPlaceDataset={onPlaceNewTransform}
           onPlaceCatalog={onPlaceCatalog}
           catalogChips={catalogChips}
+          canvasChips={canvasChips}
           canvasChipIds={canvasChipIds}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : kind === "load" ? (
+        <LoadCatalogPanel
+          chips={catalogChips}
+          canvasChips={canvasChips}
+          canvasEdges={canvasEdges}
+          canvasChipIds={canvasChipIds}
+          defaultName={defaultLoadName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceCatalog}
+          onPlaceEmpty={onPlaceNewLoad}
+          onRegister={() => {
+            onClose();
+            navigate("/load", { state: workspaceReturnState ?? { returnWorkspaceId: workspaceId } });
+          }}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : kind === "sql" ? (
+        <LoadCatalogPanel
+          kind="sql"
+          hideEmpty
+          icon={<Terminal className="size-4" aria-hidden="true" />}
+          iconClassName="bg-sky-500/10 text-sky-600 dark:text-sky-400"
+          title={messages.workspace.placeSqlTitle}
+          simpleHint={messages.workspace.placeSqlSimpleHint}
+          catalogHint={messages.workspace.placeSqlCatalogHint}
+          registerLabel={messages.workspace.registerNewChip}
+          submitLabel={messages.workspace.pickChipPlace}
+          chips={catalogChips}
+          canvasChips={canvasChips}
+          canvasEdges={canvasEdges}
+          canvasChipIds={canvasChipIds}
+          defaultName={defaultSqlName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceCatalog}
+          onRegister={onRegisterSql}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : kind === "script" ? (
+        <TransformNewPanel
+          kind="script"
+          datasets={datasets}
+          defaultName={defaultScriptName}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlaceEmpty={(draft) => onPlaceNewScript({
+            name: draft.name,
+            inputDatasetId: "",
+            inputChipId: draft.inputChipId,
+            inputChipIds: draft.inputChipIds,
+          })}
+          onPlaceDataset={onPlaceNewScript}
+          onPlaceCatalog={onPlaceCatalog}
+          catalogChips={catalogChips}
+          canvasChips={canvasChips}
+          canvasChipIds={canvasChipIds}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : kind === "serve" ? (
+        <LoadCatalogPanel
+          kind="serve"
+          hideRegister
+          icon={<Globe className="size-4" aria-hidden="true" />}
+          iconClassName="bg-teal-500/10 text-teal-600 dark:text-teal-400"
+          title={messages.workspace.placeServeTitle}
+          simpleHint={messages.workspace.placeServeSimpleHint}
+          emptyChipLabel={messages.workspace.placeServeEmptyChip}
+          catalogHint={messages.workspace.placeServeCatalogHint}
+          chips={catalogChips}
+          canvasChips={canvasChips}
+          canvasEdges={canvasEdges}
+          canvasChipIds={canvasChipIds}
+          defaultName={defaultServeName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceCatalog}
+          onPlaceEmpty={onPlaceNewServe}
+          onRegister={() => {}}
+          dragHandleRef={dragHandleRef}
+        />
+      ) : (
+        <LoadCatalogPanel
+          kind="validation"
+          icon={<ShieldCheck className="size-4" aria-hidden="true" />}
+          iconClassName="bg-violet-500/10 text-violet-600 dark:text-violet-400"
+          title={messages.workspace.placeValidationTitle}
+          simpleHint={messages.workspace.validationPlaceHint}
+          emptyChipLabel={messages.workspace.placeValidationEmptyChip}
+          catalogHint={messages.workspace.placeValidationCatalogHint}
+          registerLabel={messages.workspace.registerValidationFirst}
+          chips={catalogChips}
+          canvasChips={canvasChips}
+          canvasEdges={canvasEdges}
+          canvasChipIds={canvasChipIds}
+          defaultName={defaultValidationName}
+          occupiedNames={occupiedNames}
+          messages={messages}
+          busy={busy}
+          onClose={onClose}
+          onPlace={onPlaceCatalog}
+          onPlaceEmpty={onPlaceNewValidation}
+          onRegister={() => { onClose(); navigate("/validation"); }}
           dragHandleRef={dragHandleRef}
         />
       )}

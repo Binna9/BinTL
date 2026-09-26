@@ -1,14 +1,202 @@
-import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { ReactNode, useEffect, useId, useMemo, useState } from "react";
+import { Plus, Search, Trash2, Check } from "lucide-react";
 import { columnWidthsForContent, DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { Select } from "@/components/ui/select";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { selectableClass } from "@/lib/selectable";
 import type { Dataset, DatasetColumn, FramePreview } from "@/types/dataset";
 import type { TransformSpecV2, TransformStep } from "@/types/transform";
-import { CAST_TYPES, FILTER_OPS, resolveColumnsAtStep, type FilterOp } from "@/features/transform/transformEditorModel";
+import {
+  CAST_TYPES,
+  DERIVE_OPS,
+  FILTER_OPS,
+  buildDeriveExpr,
+  filterOpNeedsValue,
+  parseDeriveExpr,
+  resolveColumnsAtStep,
+  type DeriveOp,
+  type FilterOp,
+} from "@/features/transform/transformEditorModel";
+
+function ColumnPickerList({
+  columns,
+  emptyLabel,
+  selected,
+  multiple,
+  minSelected = 1,
+  badge,
+  fill = false,
+  className,
+  onToggle,
+  onSetSelected,
+}: {
+  columns: DatasetColumn[];
+  emptyLabel: string;
+  selected: Set<string>;
+  multiple: boolean;
+  minSelected?: number;
+  badge?: (column: DatasetColumn) => string | null;
+  fill?: boolean;
+  className?: string;
+  onToggle: (name: string) => void;
+  onSetSelected?: (columns: string[]) => void;
+}) {
+  const { messages } = useLanguage();
+  const groupId = useId();
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLocaleLowerCase();
+  const visible = needle
+    ? columns.filter((column) => {
+        const dtype = column.dtype ?? "";
+        return (
+          column.name.toLocaleLowerCase().includes(needle)
+          || dtype.toLocaleLowerCase().includes(needle)
+        );
+      })
+    : columns;
+  const selectedCount = columns.filter((column) => selected.has(column.name)).length;
+  const visibleSelected = visible.filter((column) => selected.has(column.name)).length;
+  const showSearch = columns.length > 6;
+
+  function selectVisible() {
+    const visibleNames = new Set(visible.map((column) => column.name));
+    onSetSelected?.(
+      columns
+        .filter((column) => selected.has(column.name) || visibleNames.has(column.name))
+        .map((column) => column.name),
+    );
+  }
+
+  function deselectVisible() {
+    const visibleNames = new Set(visible.map((column) => column.name));
+    const kept = columns
+      .filter((column) => selected.has(column.name) && !visibleNames.has(column.name))
+      .map((column) => column.name);
+    const extras = columns
+      .filter((column) => selected.has(column.name) && visibleNames.has(column.name))
+      .map((column) => column.name);
+    const need = Math.max(0, minSelected - kept.length);
+    onSetSelected?.([...kept, ...extras.slice(0, need)]);
+  }
+
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{emptyLabel}</p>;
+  }
+
+  return (
+    <div
+      className={cn(
+        "flex w-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-surface",
+        fill ? "h-full flex-1" : null,
+        className ?? "w-full",
+      )}
+    >
+      {showSearch || multiple ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border bg-raised px-2 py-2">
+          {showSearch ? (
+            <div className="group flex h-8 min-w-0 flex-1 items-center overflow-hidden rounded-lg border border-border bg-surface focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+              <span className="grid h-full w-8 shrink-0 place-items-center text-text-tertiary group-focus-within:text-accent">
+                <Search className="size-3.5" aria-hidden="true" />
+              </span>
+              <input
+                type="search"
+                className="min-w-0 flex-1 bg-transparent pr-2.5 text-[13px] text-text outline-none placeholder:text-text-tertiary"
+                value={query}
+                placeholder={messages.transform.searchColumns}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </div>
+          ) : null}
+          {multiple ? (
+            <span className="shrink-0 rounded-full bg-accent-subtle px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">
+              {messages.transform.selectedColumns(selectedCount, columns.length)}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {multiple ? (
+        <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
+          <button
+            type="button"
+            className="rounded-md px-2 py-1 text-[12px] font-semibold text-accent hover:bg-accent-subtle disabled:text-text-tertiary disabled:hover:bg-transparent"
+            disabled={visibleSelected === visible.length || visible.length === 0}
+            onClick={selectVisible}
+          >
+            {messages.transform.selectAllColumns}
+          </button>
+          <button
+            type="button"
+            className="rounded-md px-2 py-1 text-[12px] font-semibold text-text-secondary hover:bg-subtle disabled:text-text-tertiary disabled:hover:bg-transparent"
+            disabled={visibleSelected === 0 || selectedCount <= minSelected}
+            onClick={deselectVisible}
+          >
+            {messages.transform.deselectAllColumns}
+          </button>
+        </div>
+      ) : null}
+      <ul
+        className={cn(
+          "scroll-pane m-0 min-h-0 list-none overflow-y-auto p-0",
+          fill ? "flex-1" : "max-h-72",
+        )}
+      >
+        {visible.length === 0 ? (
+          <li className="px-3 py-3 text-[13px] text-text-secondary">{messages.transform.noMatchingColumns}</li>
+        ) : (
+          visible.map((column) => {
+            const active = selected.has(column.name);
+            const extra = badge?.(column);
+            return (
+              <li key={column.name} className="border-b border-border/80 last:border-b-0">
+                <label
+                  className={cn(
+                    "flex cursor-pointer items-center gap-2.5 px-3 py-2 select-none",
+                    selectableClass(active),
+                  )}
+                  title={column.dtype ? `${column.name} (${column.dtype})` : column.name}
+                >
+                  <input
+                    className="sr-only"
+                    type={multiple ? "checkbox" : "radio"}
+                    name={multiple ? undefined : groupId}
+                    checked={active}
+                    onChange={() => onToggle(column.name)}
+                  />
+                  <span
+                    className={cn(
+                      "grid size-4 shrink-0 place-items-center rounded border",
+                      !multiple && "rounded-full",
+                      active
+                        ? "border-accent bg-accent text-white"
+                        : "border-border-strong bg-surface text-transparent",
+                    )}
+                    aria-hidden="true"
+                  >
+                    <Check className="size-3" />
+                  </span>
+                  <span className="min-w-0 flex-1 overflow-hidden">
+                    <span className="block truncate text-[13px] font-semibold text-text">{column.name}</span>
+                    {extra ? (
+                      <span className="mt-0.5 block truncate text-[12px] font-medium text-accent">{extra}</span>
+                    ) : null}
+                  </span>
+                  {column.dtype ? (
+                    <span className="shrink-0 rounded-md bg-subtle px-1.5 py-0.5 font-mono text-[10px] font-medium text-text-secondary">
+                      {column.dtype}
+                    </span>
+                  ) : null}
+                </label>
+              </li>
+            );
+          })
+        )}
+      </ul>
+    </div>
+  );
+}
 
 export function ColumnChipPicker({
   columns,
@@ -16,17 +204,17 @@ export function ColumnChipPicker({
   emptyLabel,
   onChange,
   minSelected = 1,
+  fill = false,
+  className,
 }: {
   columns: DatasetColumn[];
   value: string[];
   emptyLabel: string;
   onChange: (columns: string[]) => void;
   minSelected?: number;
+  fill?: boolean;
+  className?: string;
 }) {
-  if (columns.length === 0) {
-    return <p className="text-xs text-text-tertiary">{emptyLabel}</p>;
-  }
-
   const kept = new Set(value);
 
   function toggle(name: string) {
@@ -39,35 +227,17 @@ export function ColumnChipPicker({
   }
 
   return (
-    <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
-      <div className="flex flex-nowrap gap-1.5 pb-0.5">
-        {columns.map((column) => {
-          const active = kept.has(column.name);
-          return (
-            <button
-              key={column.name}
-              type="button"
-              title={column.dtype ? `${column.name} (${column.dtype})` : column.name}
-              aria-pressed={active}
-              onClick={() => toggle(column.name)}
-              className={cn(
-                "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                active
-                  ? "border-accent bg-accent-subtle text-accent"
-                  : "border-border bg-raised text-text-tertiary hover:border-border hover:bg-subtle hover:text-text-secondary",
-              )}
-            >
-              {column.name}
-              {column.dtype ? (
-                <span className={cn("ml-1 font-normal", active ? "opacity-75" : "text-text-tertiary")}>
-                  {column.dtype}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </div>
-    </div>
+    <ColumnPickerList
+      columns={columns}
+      emptyLabel={emptyLabel}
+      selected={kept}
+      multiple
+      minSelected={minSelected}
+      fill={fill}
+      className={className}
+      onToggle={toggle}
+      onSetSelected={onChange}
+    />
   );
 }
 
@@ -77,50 +247,52 @@ export function ColumnChipSinglePicker({
   emptyLabel,
   onChange,
   badge,
+  fill = false,
+  className,
 }: {
   columns: DatasetColumn[];
   value: string;
   emptyLabel: string;
   onChange: (column: string) => void;
   badge?: (column: DatasetColumn) => string | null;
+  fill?: boolean;
+  className?: string;
 }) {
-  if (columns.length === 0) {
-    return <p className="text-xs text-text-tertiary">{emptyLabel}</p>;
-  }
-
   return (
-    <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
-      <div className="flex flex-nowrap gap-1.5 pb-0.5">
-        {columns.map((column) => {
-          const active = value === column.name;
-          const extra = badge?.(column);
-          return (
-            <button
-              key={column.name}
-              type="button"
-              title={column.dtype ? `${column.name} (${column.dtype})` : column.name}
-              aria-pressed={active}
-              onClick={() => onChange(column.name)}
-              className={cn(
-                "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                active
-                  ? "border-accent bg-accent-subtle text-accent"
-                  : extra
-                    ? "border-success/40 bg-success-subtle/40 text-text-secondary hover:border-success/50"
-                    : "border-border bg-raised text-text-tertiary hover:border-border hover:bg-subtle hover:text-text-secondary",
-              )}
-            >
-              {column.name}
-              {extra ? <span className="ml-1 font-normal opacity-80">{extra}</span> : null}
-              {!extra && column.dtype ? (
-                <span className={cn("ml-1 font-normal", active ? "opacity-75" : "text-text-tertiary")}>
-                  {column.dtype}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </div>
+    <ColumnPickerList
+      columns={columns}
+      emptyLabel={emptyLabel}
+      selected={value ? new Set([value]) : new Set()}
+      multiple={false}
+      badge={badge}
+      fill={fill}
+      className={className}
+      onToggle={onChange}
+    />
+  );
+}
+
+const STEP_PANE_HEIGHT = "h-[16.5rem]";
+const FILTER_OP_GRID: FilterOp[] = [
+  "contains",
+  "not contains",
+  "is null",
+  "is not null",
+  "=",
+  "!=",
+  ">",
+  "<",
+  ">=",
+  "<=",
+];
+
+function StepPane({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-col">
+      <p className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.06em] text-text-tertiary">
+        {label}
+      </p>
+      <div className={cn("flex min-h-0 flex-col", STEP_PANE_HEIGHT)}>{children}</div>
     </div>
   );
 }
@@ -392,6 +564,18 @@ export function usableSteps(steps: TransformStep[], baseColumns: DatasetColumn[]
       case "filter":
         if (step.expr.trim().length > 0) out.push(step);
         break;
+      case "derive":
+        if (step.name.trim() && step.expr.trim()) out.push(step);
+        break;
+      case "trim":
+        if (step.columns.length > 0) out.push(step);
+        break;
+      case "replace":
+        if (step.column.trim() && step.find.length > 0) out.push(step);
+        break;
+      case "split":
+        if (step.column.trim() && step.delimiter.length > 0 && step.name.trim()) out.push(step);
+        break;
       case "fill_null":
         if (step.columns.length > 0 && step.value.trim().length > 0) out.push(step);
         break;
@@ -477,8 +661,13 @@ export function formatFilterValue(value: string, dtype?: string): string {
 }
 
 export function buildFilterExpr(column: string, op: FilterOp, value: string, dtype?: string): string {
-  const rhs = formatFilterValue(value, dtype);
-  if (!column.trim() || !rhs) return "";
+  if (!column.trim()) return "";
+  if (!filterOpNeedsValue(op)) return `${column.trim()} ${op}`;
+  const rhs = formatFilterValue(
+    value,
+    op === "contains" || op === "not contains" ? "String" : dtype,
+  );
+  if (!rhs) return "";
   return `${column.trim()} ${op} ${rhs}`;
 }
 
@@ -499,6 +688,14 @@ export function filterOpMeta(
       return { label: "≥", title: messages.transform.filterOpGte };
     case "<=":
       return { label: "≤", title: messages.transform.filterOpLte };
+    case "contains":
+      return { label: messages.transform.filterOpContains, title: messages.transform.filterOpContains };
+    case "not contains":
+      return { label: messages.transform.filterOpNotContains, title: messages.transform.filterOpNotContains };
+    case "is null":
+      return { label: messages.transform.filterOpIsNull, title: messages.transform.filterOpIsNull };
+    case "is not null":
+      return { label: messages.transform.filterOpNotNull, title: messages.transform.filterOpNotNull };
   }
 }
 
@@ -541,53 +738,172 @@ export function FilterStepFields({
   }
 
   const preview =
-    column && value.trim()
-      ? messages.transform.filterPreview(column, op, value.trim())
+    column && (!filterOpNeedsValue(op) || value.trim())
+      ? messages.transform.filterPreview(column, op, filterOpNeedsValue(op) ? value.trim() : "")
       : null;
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
-        <div className="flex flex-nowrap gap-1.5 pb-0.5">
-          {columns.map((item) => {
-            const active = column === item.name;
+    <div className="grid items-start gap-3 min-[42rem]:grid-cols-3">
+      <StepPane label={messages.common.columns}>
+        <ColumnChipSinglePicker
+          fill
+          columns={columns}
+          value={column}
+          emptyLabel={messages.transform.noColumns}
+          className="max-w-none"
+          onChange={(name) => {
+            setColumn(name);
+            commit(name, op, value);
+          }}
+        />
+      </StepPane>
+      <StepPane label={messages.transform.filterOperators}>
+        <div className="grid h-full min-h-0 grid-cols-2 grid-rows-5 gap-1.5 rounded-lg border border-border bg-surface p-1.5">
+          {FILTER_OP_GRID.map((item) => {
+            const meta = filterOpMeta(item, messages);
+            const active = op === item;
             return (
               <button
-                key={item.name}
+                key={item}
                 type="button"
-                title={item.dtype ? `${item.name} (${item.dtype})` : item.name}
+                title={meta.title}
                 aria-pressed={active}
                 onClick={() => {
-                  setColumn(item.name);
-                  commit(item.name, op, value);
+                  setOp(item);
+                  commit(column, item, value);
                 }}
                 className={cn(
-                  "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                  "flex min-w-0 items-center justify-center rounded-md border px-2 text-center text-[12px] font-semibold leading-tight whitespace-nowrap transition-colors",
                   active
                     ? "border-accent bg-accent-subtle text-accent"
-                    : "border-border bg-surface text-text-secondary hover:border-accent/40 hover:bg-subtle",
+                    : "border-border bg-surface text-text-secondary hover:bg-subtle",
                 )}
               >
-                {item.name}
-                {item.dtype ? (
-                  <span className={cn("ml-1 font-normal", active ? "opacity-75" : "text-text-tertiary")}>
-                    {item.dtype}
-                  </span>
-                ) : null}
+                {meta.label}
               </button>
             );
           })}
         </div>
-      </div>
+      </StepPane>
+      <StepPane label={messages.transform.filterValueLabel}>
+        <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-raised/40 p-3">
+          {column ? (
+            <>
+              {filterOpNeedsValue(op) ? (
+                <input
+                  className="field-control technical"
+                  value={value}
+                  placeholder={messages.transform.filterValuePlaceholder}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setValue(next);
+                    commit(column, op, next);
+                  }}
+                />
+              ) : (
+                <p className="text-[11px] leading-5 text-text-tertiary">
+                  {messages.transform.filterNoValue}
+                </p>
+              )}
+              {preview ? (
+                <p className="mt-auto pt-3 font-mono text-[11px] leading-5 text-text-secondary">
+                  {preview}
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <p className="m-auto max-w-[12rem] text-center text-[11px] leading-5 text-text-tertiary">
+              {messages.transform.filterPickColumn}
+            </p>
+          )}
+        </div>
+      </StepPane>
+    </div>
+  );
+}
 
-      {column ? (
-        <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-raised/40 p-2.5">
-          <div className="text-[10px] font-medium uppercase tracking-[0.06em] text-text-tertiary">
-            {messages.transform.filterOperators}
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {FILTER_OPS.map((item) => {
-              const meta = filterOpMeta(item, messages);
+function deriveOpMeta(
+  op: DeriveOp,
+  messages: ReturnType<typeof useLanguage>["messages"],
+): { label: string; title: string } {
+  switch (op) {
+    case "+":
+      return { label: "+", title: messages.transform.deriveOpAdd };
+    case "-":
+      return { label: "−", title: messages.transform.deriveOpSub };
+    case "*":
+      return { label: "×", title: messages.transform.deriveOpMul };
+    case "/":
+      return { label: "÷", title: messages.transform.deriveOpDiv };
+  }
+}
+
+export function DeriveStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "derive" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  const parsed = useMemo(() => parseDeriveExpr(step.expr), [step.expr]);
+  const [name, setName] = useState(step.name);
+  const [left, setLeft] = useState(parsed?.left ?? "");
+  const [op, setOp] = useState<DeriveOp>(parsed?.op ?? "+");
+  const [right, setRight] = useState(parsed?.right ?? "");
+
+  useEffect(() => {
+    const next = parseDeriveExpr(step.expr);
+    setName(step.name);
+    setLeft(next?.left ?? "");
+    setOp(next?.op ?? "+");
+    setRight(next?.right ?? "");
+  }, [step.expr, step.name]);
+
+  function commit(nextName: string, nextLeft: string, nextOp: DeriveOp, nextRight: string) {
+    const leftCol = nextLeft.trim();
+    onChange({
+      op: "derive",
+      name: nextName.trim() || leftCol,
+      expr: buildDeriveExpr(leftCol, nextOp, nextRight),
+    });
+  }
+
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+
+  const resultName = name.trim() || left;
+  const preview =
+    left && right.trim()
+      ? messages.transform.derivePreview(resultName || left, left, op, right.trim())
+      : null;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid items-start gap-3 min-[42rem]:grid-cols-3">
+        <StepPane label={messages.transform.deriveLeftLabel}>
+          <ColumnChipSinglePicker
+            fill
+            columns={columns}
+            value={left}
+            emptyLabel={messages.transform.noColumns}
+            className="max-w-none"
+            onChange={(item) => {
+              const nextName = !name.trim() || name.trim() === left ? item : name;
+              setLeft(item);
+              setName(nextName);
+              commit(nextName, item, op, right);
+            }}
+          />
+        </StepPane>
+        <StepPane label={messages.transform.deriveOperators}>
+          <div className="grid h-full min-h-0 grid-cols-2 grid-rows-2 gap-1.5 rounded-lg border border-border bg-surface p-2">
+            {DERIVE_OPS.map((item) => {
+              const meta = deriveOpMeta(item, messages);
               const active = op === item;
               return (
                 <button
@@ -597,10 +913,10 @@ export function FilterStepFields({
                   aria-pressed={active}
                   onClick={() => {
                     setOp(item);
-                    commit(column, item, value);
+                    commit(name, left, item, right);
                   }}
                   className={cn(
-                    "min-w-[2.25rem] rounded-lg border px-2 py-1 text-xs font-semibold transition-colors",
+                    "flex items-center justify-center rounded-md border text-lg font-semibold transition-colors",
                     active
                       ? "border-accent bg-accent-subtle text-accent"
                       : "border-border bg-surface text-text-secondary hover:bg-subtle",
@@ -611,24 +927,175 @@ export function FilterStepFields({
               );
             })}
           </div>
-          <FormField label={messages.transform.filterValueLabel}>
+        </StepPane>
+        <StepPane label={messages.transform.deriveRightLabel}>
+          <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-surface">
+            <div className="shrink-0 border-b border-border p-2">
+              <input
+                className="field-control technical"
+                value={right}
+                placeholder={messages.transform.deriveRightPlaceholder}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setRight(next);
+                  commit(name, left, op, next);
+                }}
+              />
+            </div>
+            <div className="min-h-0 flex-1">
+              <ColumnChipSinglePicker
+                fill
+                columns={columns}
+                value={columns.some((item) => item.name === right) ? right : ""}
+                emptyLabel={messages.transform.noColumns}
+                className="h-full max-w-none rounded-none border-0"
+                onChange={(item) => {
+                  setRight(item);
+                  commit(name, left, op, item);
+                }}
+              />
+            </div>
+          </div>
+        </StepPane>
+      </div>
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="w-full max-w-xs">
+          <FormField label={messages.transform.deriveResultName}>
             <input
-              className="field-control technical"
-              value={value}
-              placeholder={messages.transform.filterValuePlaceholder}
+              className="field-control"
+              value={name}
+              placeholder={left || messages.transform.deriveResultPlaceholder}
               onChange={(event) => {
                 const next = event.target.value;
-                setValue(next);
-                commit(column, op, next);
+                setName(next);
+                commit(next, left, op, right);
               }}
             />
           </FormField>
-          {preview ? (
-            <p className="font-mono text-[11px] text-text-secondary">{preview}</p>
-          ) : null}
+        </div>
+        {preview ? (
+          <p className="mb-1 font-mono text-[11px] leading-5 text-text-secondary">{preview}</p>
+        ) : (
+          <p className="mb-1 text-[11px] leading-5 text-text-tertiary">{messages.transform.derivePickColumn}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+export function ReplaceStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "replace" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <ColumnChipSinglePicker
+        columns={columns}
+        value={step.column}
+        emptyLabel={messages.transform.noColumns}
+        onChange={(column) => onChange({ ...step, column })}
+      />
+      {step.column ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-raised/40 p-2.5">
+          <FormField label={messages.transform.replaceFind}>
+            <input
+              className="field-control technical"
+              value={step.find}
+              placeholder={messages.transform.replaceFindPlaceholder}
+              onChange={(event) => onChange({ ...step, find: event.target.value })}
+            />
+          </FormField>
+          <FormField label={messages.transform.replaceWith}>
+            <input
+              className="field-control technical"
+              value={step.replacement}
+              placeholder={messages.transform.replaceWithPlaceholder}
+              onChange={(event) => onChange({ ...step, replacement: event.target.value })}
+            />
+          </FormField>
         </div>
       ) : (
-        <p className="text-[11px] text-text-tertiary">{messages.transform.filterPickColumn}</p>
+        <p className="text-[11px] text-text-tertiary">{messages.transform.pickColumn}</p>
+      )}
+    </div>
+  );
+}
+
+export function SplitStepFields({
+  step,
+  columns,
+  onChange,
+  messages,
+}: {
+  step: Extract<TransformStep, { op: "split" }>;
+  columns: DatasetColumn[];
+  onChange: (step: TransformStep) => void;
+  messages: ReturnType<typeof useLanguage>["messages"];
+}) {
+  if (columns.length === 0) {
+    return <p className="text-xs text-text-tertiary">{messages.transform.noColumns}</p>;
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <ColumnChipSinglePicker
+        columns={columns}
+        value={step.column}
+        emptyLabel={messages.transform.noColumns}
+        onChange={(column) =>
+          onChange({
+            ...step,
+            column,
+            name: step.name.trim() && step.name !== step.column ? step.name : column,
+          })
+        }
+      />
+      {step.column ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-raised/40 p-2.5">
+          <FormField label={messages.transform.splitDelimiter}>
+            <input
+              className="field-control technical"
+              value={step.delimiter}
+              placeholder={messages.transform.splitDelimiterPlaceholder}
+              onChange={(event) => onChange({ ...step, delimiter: event.target.value })}
+            />
+          </FormField>
+          <FormField label={messages.transform.splitIndex}>
+            <input
+              className="field-control technical"
+              type="number"
+              min={1}
+              value={step.index + 1}
+              onChange={(event) => {
+                const next = Number.parseInt(event.target.value, 10);
+                onChange({
+                  ...step,
+                  index: Number.isFinite(next) ? Math.max(0, next - 1) : 0,
+                });
+              }}
+            />
+          </FormField>
+          <FormField label={messages.transform.splitName}>
+            <input
+              className="field-control"
+              value={step.name}
+              placeholder={step.column || messages.transform.splitNamePlaceholder}
+              onChange={(event) => onChange({ ...step, name: event.target.value })}
+            />
+          </FormField>
+        </div>
+      ) : (
+        <p className="text-[11px] text-text-tertiary">{messages.transform.pickColumn}</p>
       )}
     </div>
   );
@@ -706,6 +1173,43 @@ export function StepFields({
     case "filter":
       return (
         <FilterStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
+        />
+      );
+    case "derive":
+      return (
+        <DeriveStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
+        />
+      );
+    case "trim":
+      return (
+        <ColumnChipPicker
+          columns={columns}
+          value={step.columns}
+          emptyLabel={messages.transform.noColumns}
+          minSelected={0}
+          onChange={(next) => onChange({ ...step, columns: next })}
+        />
+      );
+    case "replace":
+      return (
+        <ReplaceStepFields
+          step={step}
+          columns={columns}
+          onChange={onChange}
+          messages={messages}
+        />
+      );
+    case "split":
+      return (
+        <SplitStepFields
           step={step}
           columns={columns}
           onChange={onChange}

@@ -4,23 +4,34 @@ import {
   columnWidthsForContent,
   DataGrid,
   EmptyGridRow,
+  EmptyState,
   GridCell,
   GridRow,
 } from "@/components/DataGrid";
+import { NavIcon } from "@/components/ui/nav-icons";
 import { AppDialog } from "@/components/AppDialog";
+import { PaginationBar } from "@/components/PaginationBar";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
+import { SplitLayout } from "@/layouts/SplitLayout";
 import { ActionAnchor, Button } from "@/components/ui/button";
 import { MetaField } from "@/components/ui/meta-field";
 import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
+import { WorkspaceFileCatalog } from "@/components/workspace/WorkspaceFileCatalog";
+import { filterItemsByFileTree, type FileTreeSelection } from "@/features/workspace/fileWorkspaceTree";
+import { useWorkspaceTree } from "@/hooks/workspace/useWorkspaceTree";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtWhen } from "@/lib/format";
-import { showConfirm, toastDeleteError, toastError } from "@/lib/notifications";
+import { layout } from "@/lib/layout";
+import { usePagination } from "@/lib/pagination";
+import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { datasetApi } from "@/services/transform/datasetApi";
 import type { Dataset, FramePreview } from "@/types/dataset";
 
 export function TransformFilesPage() {
   const { messages } = useLanguage();
+  const { folders, workspaces } = useWorkspaceTree();
+  const [treeSelection, setTreeSelection] = useState<FileTreeSelection>({ type: "all" });
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
@@ -32,8 +43,21 @@ export function TransformFilesPage() {
     () => datasets.filter((item) => item.kind === "transform"),
     [datasets],
   );
+  const visibleFiles = useMemo(
+    () => filterItemsByFileTree(files, treeSelection, folders, workspaces),
+    [files, folders, treeSelection, workspaces],
+  );
+  const catalogFiles = useMemo(
+    () => files.map((item) => ({ id: item.id, name: item.filename, workspace_id: item.workspace_id })),
+    [files],
+  );
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const allSelected = files.length > 0 && selected.length === files.length;
+  const paging = usePagination(
+    visibleFiles,
+    treeSelection.type === "all" ? "all" : `${treeSelection.type}:${treeSelection.id}`,
+  );
+  const pageFiles = paging.items;
+  const allSelected = pageFiles.length > 0 && pageFiles.every((item) => selectedSet.has(item.id));
   const previewHeaders = preview?.columns.map((column) => column.name) ?? [];
   const previewWidths = useMemo(
     () => (preview ? columnWidthsForContent(previewHeaders, preview.rows) : undefined),
@@ -49,14 +73,13 @@ export function TransformFilesPage() {
     void refresh().catch((err) => toastError(messages.errors.workspace, err));
   }, [messages]);
 
-  function toggleOne(id: string) {
-    setSelected((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
-  }
-
   function toggleAll() {
-    setSelected(allSelected ? [] : files.map((item) => item.id));
+    setSelected((current) => {
+      const pageIds = new Set(pageFiles.map((item) => item.id));
+      return allSelected
+        ? current.filter((id) => !pageIds.has(id))
+        : [...new Set([...current, ...pageIds])];
+    });
   }
 
   async function deleteSelected() {
@@ -78,6 +101,7 @@ export function TransformFilesPage() {
       }
       setSelected([]);
       await refresh();
+      toastSuccess(messages.transformFiles.deleteDone);
     } catch (err) {
       toastDeleteError(messages.errors.deleteDataset, messages.errors.deleteBlocked, err);
       await refresh();
@@ -114,27 +138,43 @@ export function TransformFilesPage() {
   return (
     <PageShell>
       <PageHeader
-        iconName="jobs"
+        iconName="transformFiles"
         eyebrow={messages.transformFiles.eyebrow}
         title={messages.transformFiles.title}
         description={messages.transformFiles.description}
       />
-      <Panel tall>
-        <Toolbar>
+      <Panel tall className="overflow-hidden">
+        <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.sidebar]}>
+          <WorkspaceFileCatalog
+            folders={folders}
+            workspaces={workspaces}
+            files={catalogFiles}
+            selection={treeSelection}
+            activeFileId={previewing?.id}
+            onSelect={setTreeSelection}
+            onFileClick={(id) => {
+              const item = files.find((file) => file.id === id);
+              if (!item) return;
+              setTreeSelection({ type: "workspace", id: item.workspace_id });
+              void openPreview(item);
+            }}
+          />
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
               <input
                 className="field-control"
                 type="checkbox"
                 checked={allSelected}
-                disabled={files.length === 0 || busy}
+                disabled={pageFiles.length === 0 || busy}
                 onChange={toggleAll}
                 aria-label={messages.transformFiles.selectAll}
               />
               <span>{messages.transformFiles.resultFiles}</span>
             </label>
             <span className="rounded-full bg-subtle px-2 py-0.5 text-[10px] font-semibold tabular-nums text-text-secondary">
-              {messages.common.count(files.length)}
+              {messages.common.count(visibleFiles.length)}
             </span>
             <span className="ml-1 border-l border-border pl-3 text-xs font-normal text-text-tertiary">
               {messages.transformFiles.resultHint}
@@ -156,25 +196,26 @@ export function TransformFilesPage() {
           className="min-h-0 flex-1"
           headers={[...messages.transformFiles.headers]}
           columnWidths={[56, 280, 100, 96, 140, 110]}
+          selectedIds={selected}
+          onSelectedIdsChange={setSelected}
+          empty={visibleFiles.length === 0 ? <EmptyState icon={<NavIcon name="transformFiles" />} title={files.length === 0 ? messages.empty.transformFiles : messages.workspace.fileCatalogEmpty} hint={files.length === 0 ? messages.empty.transformFilesHint : undefined} /> : undefined}
         >
-          {files.length === 0 ? (
-            <EmptyGridRow cols={6} text={messages.empty.transformFiles} />
-          ) : (
-            files.map((item) => (
+          {visibleFiles.length === 0 ? null : pageFiles.map((item) => (
               <GridRow
                 key={item.id}
+                rowId={item.id}
                 selected={selectedSet.has(item.id)}
                 onClick={() => void openPreview(item)}
               >
-                <GridCell>
+                <GridCell select>
                   <input
-                    className="field-control"
+                    className="field-control pointer-events-none"
                     type="checkbox"
                     checked={selectedSet.has(item.id)}
                     disabled={busy}
-                    aria-label={item.filename}
-                    onChange={() => toggleOne(item.id)}
-                    onClick={(event) => event.stopPropagation()}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onChange={() => {}}
                   />
                 </GridCell>
                 <GridCell>{item.filename}</GridCell>
@@ -197,9 +238,20 @@ export function TransformFilesPage() {
                   )}
                 </GridCell>
               </GridRow>
-            ))
-          )}
+            ))}
         </DataGrid>
+        <PaginationBar
+          page={paging.page}
+          pageCount={paging.pageCount}
+          pageSize={paging.pageSize}
+          total={paging.total}
+          start={paging.start}
+          end={paging.end}
+          onPageChange={paging.setPage}
+          onPageSizeChange={paging.setPageSize}
+        />
+          </div>
+        </SplitLayout>
       </Panel>
 
       <AppDialog

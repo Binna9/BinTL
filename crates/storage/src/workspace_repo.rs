@@ -56,7 +56,7 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO workspaces
-             (id, name, description, layout_json, version, created_at, updated_at, owner_user_id, folder_id)
+             (id, name, description, viewport_json, version, created_at, updated_at, owner_user_id, folder_id)
              VALUES (?, ?, ?, '{}', 1, ?, ?, ?, ?)",
         )
         .bind(&id)
@@ -127,7 +127,7 @@ impl Store {
         }
         sqlx::query(
             "UPDATE workspaces
-             SET name = ?, description = ?, layout_json = ?, folder_id = ?, updated_at = ?
+             SET name = ?, description = ?, viewport_json = ?, folder_id = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(name)
@@ -158,54 +158,24 @@ impl Store {
         if found.is_none() {
             return Err(StorageError::NotFound("workspace not found".into()));
         }
-        // Catalog extract defs may still point at this workspace (no ON DELETE).
-        sqlx::query("UPDATE extract_definitions SET workspace_id = NULL WHERE workspace_id = ?")
+        let stored_paths: Vec<String> =
+            sqlx::query_scalar("SELECT stored_path FROM data_files WHERE workspace_id = ?")
+                .bind(id)
+                .fetch_all(&mut *tx)
+                .await?;
+        sqlx::query("DELETE FROM executions WHERE workspace_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE transforms SET workspace_id = ? WHERE workspace_id = ?")
-            .bind(DEFAULT_WORKSPACE_ID)
+        sqlx::query("DELETE FROM validation_results WHERE workspace_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE extracts SET workspace_id = ? WHERE workspace_id = ?")
-            .bind(DEFAULT_WORKSPACE_ID)
+        sqlx::query("DELETE FROM data_files WHERE workspace_id = ?")
             .bind(id)
             .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE jobs SET workspace_id = ? WHERE workspace_id = ?")
-            .bind(DEFAULT_WORKSPACE_ID)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "UPDATE datasets SET producer_chip_run_id = NULL
-             WHERE producer_chip_run_id IN (SELECT id FROM chip_runs WHERE workspace_id = ?)",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query("UPDATE datasets SET workspace_id = ? WHERE workspace_id = ?")
-            .bind(DEFAULT_WORKSPACE_ID)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM chip_edges WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM chip_runs WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM workspace_revisions WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(delete_guard::map_delete_sql)?;
         let result = sqlx::query("DELETE FROM workspaces WHERE id = ?")
             .bind(id)
             .execute(&mut *tx)
@@ -215,7 +185,33 @@ impl Store {
             return Err(StorageError::NotFound("workspace not found".into()));
         }
         tx.commit().await?;
-        let _ = self.delete_search_document("workspace", id).await;
+        for path in stored_paths {
+            let resolved = self.resolve(&path);
+            match tokio::fs::remove_file(&resolved).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            if let Some(parent) = resolved.parent() {
+                if parent.starts_with(&self.data_dir) && parent != self.data_dir {
+                    let _ = tokio::fs::remove_dir(parent).await;
+                }
+            }
+        }
+        for rel in [chip_slot::REL_CHIP_OUTPUTS.to_string(), "loads".to_string()] {
+            match tokio::fs::remove_dir_all(self.data_dir.join(rel).join(id)).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let _ = sqlx::query(
+            "DELETE FROM search_documents WHERE workspace_id = ? OR (entity_type = 'workspace' AND entity_id = ?)",
+        )
+        .bind(id)
+        .bind(id)
+        .execute(&self.pool)
+        .await;
         Ok(())
     }
 
@@ -458,64 +454,35 @@ impl Store {
         layout_json: &str,
         chip_ids: &[String],
         edges: &[WorkspaceSaveEdge],
+        expected_version: Option<i64>,
     ) -> Result<(WorkspaceRow, Vec<ChipRow>, Vec<ChipEdgeRow>), StorageError> {
         require_config_json(layout_json)?;
         let current = self
             .get_workspace(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("workspace not found".into()))?;
+        let expected = expected_version.unwrap_or(current.version);
+        if expected != current.version {
+            return Err(StorageError::Conflict(
+                "workspace has changed, reload and save again".into(),
+            ));
+        }
         let now = now_rfc3339();
-        let version = current.version + 1;
         let mut tx = self.pool.begin().await?;
-        let mut saved_chips = Vec::with_capacity(chip_ids.len());
-        for chip_id in chip_ids {
-            let chip_id = required_text(chip_id, "chip id")?;
-            let chip = sqlx::query_as::<_, ChipRow>(&format!(
-                "SELECT {CHIP_COLS} FROM chips WHERE id = ?"
-            ))
-            .bind(chip_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| StorageError::NotFound(format!("chip {chip_id} not found")))?;
-            saved_chips.push(chip);
-        }
-        sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        for chip in &saved_chips {
-            sqlx::query(
-                "INSERT INTO workspace_chips (workspace_id, chip_id, created_at)
-                 VALUES (?, ?, ?)",
-            )
-            .bind(id)
-            .bind(&chip.id)
-            .bind(&now)
-            .execute(&mut *tx)
-            .await?;
-        }
-        let saved_edges = replace_workspace_edges(&mut tx, id, edges, &saved_chips, &now).await?;
-        sqlx::query(
-            "UPDATE workspaces SET layout_json = ?, version = ?, updated_at = ? WHERE id = ?",
+        let (saved_chips, saved_edges, dropped_memos) = write_workspace_graph(
+            &mut tx,
+            &current,
+            layout_json,
+            chip_ids,
+            edges,
+            expected,
+            &now,
         )
-        .bind(layout_json)
-        .bind(version)
-        .bind(&now)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-        let snapshot = workspace_snapshot_json(layout_json, &saved_chips, &saved_edges)?;
-        sqlx::query(
-            "INSERT INTO workspace_revisions (workspace_id, version, snapshot_json, created_at)
-             VALUES (?, ?, ?, ?)",
-        )
-        .bind(id)
-        .bind(version)
-        .bind(&snapshot)
-        .bind(&now)
-        .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        for memo_id in dropped_memos {
+            let _ = self.delete_search_document("chip", &memo_id).await;
+        }
         let workspace = self
             .get_workspace(id)
             .await?
@@ -561,4 +528,396 @@ impl Store {
         }
         Ok(())
     }
+
+    /// sqlx's SQLite migrator wraps every migration in a transaction, so
+    /// `PRAGMA foreign_keys=OFF` in table-rebuild scripts is a no-op and
+    /// `DROP TABLE chips` / `DROP TABLE execution_steps` CASCADE-wipes canvas
+    /// placements and output links. Restore those from the last saved revision.
+    pub(crate) async fn repair_canvas_from_revisions(&self) -> Result<(), StorageError> {
+        let now = now_rfc3339();
+        let snapshots: Vec<(String, String)> = sqlx::query_as(
+            "SELECT r.workspace_id, r.snapshot_json
+             FROM workspace_revisions r
+             INNER JOIN workspaces w ON w.id = r.workspace_id AND w.version = r.version",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for (workspace_id, snapshot_json) in snapshots {
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&snapshot_json).unwrap_or_else(|_| serde_json::json!({}));
+            let nodes = snapshot
+                .pointer("/layout/nodes")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            for chip in snapshot
+                .get("chips")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+            {
+                let Some(chip_id) = chip.get("id").and_then(|value| value.as_str()) else {
+                    continue;
+                };
+                let position = nodes.get(chip_id);
+                let x = position
+                    .and_then(|node| node.get("x"))
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or(0.0);
+                let y = position
+                    .and_then(|node| node.get("y"))
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or(0.0);
+                sqlx::query(
+                    "INSERT INTO workspace_chips (id, workspace_id, chip_id, x, y, created_at, updated_at)
+                     SELECT ?, ?, ?, ?, ?, ?, ?
+                     WHERE EXISTS (SELECT 1 FROM chips WHERE id = ?)
+                       AND NOT EXISTS (
+                         SELECT 1 FROM workspace_chips WHERE workspace_id = ? AND chip_id = ?
+                       )",
+                )
+                .bind(workspace_chip_id(&workspace_id, chip_id))
+                .bind(&workspace_id)
+                .bind(chip_id)
+                .bind(x)
+                .bind(y)
+                .bind(&now)
+                .bind(&now)
+                .bind(chip_id)
+                .bind(&workspace_id)
+                .bind(chip_id)
+                .execute(&self.pool)
+                .await?;
+            }
+            let edge_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM workspace_edges WHERE workspace_id = ?")
+                    .bind(&workspace_id)
+                    .fetch_one(&self.pool)
+                    .await?;
+            if edge_count > 0 {
+                continue;
+            }
+            for edge in snapshot
+                .get("edges")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+            {
+                let (Some(id), Some(from_id), Some(to_id), Some(kind)) = (
+                    edge.get("id").and_then(|value| value.as_str()),
+                    edge.get("from_chip_id").and_then(|value| value.as_str()),
+                    edge.get("to_chip_id").and_then(|value| value.as_str()),
+                    edge.get("kind").and_then(|value| value.as_str()),
+                ) else {
+                    continue;
+                };
+                let from_port = edge
+                    .get("from_port")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("out");
+                let to_port = edge
+                    .get("to_port")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("in");
+                sqlx::query(
+                    "INSERT INTO workspace_edges
+                     (id, workspace_id, from_workspace_chip_id, to_workspace_chip_id, kind, from_port, to_port, created_at)
+                     SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                     WHERE EXISTS (SELECT 1 FROM workspace_chips WHERE id = ?)
+                       AND EXISTS (SELECT 1 FROM workspace_chips WHERE id = ?)
+                       AND NOT EXISTS (SELECT 1 FROM workspace_edges WHERE id = ?)",
+                )
+                .bind(id)
+                .bind(&workspace_id)
+                .bind(workspace_chip_id(&workspace_id, from_id))
+                .bind(workspace_chip_id(&workspace_id, to_id))
+                .bind(kind)
+                .bind(from_port)
+                .bind(to_port)
+                .bind(&now)
+                .bind(workspace_chip_id(&workspace_id, from_id))
+                .bind(workspace_chip_id(&workspace_id, to_id))
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        sqlx::query(
+            "INSERT INTO workspace_chip_outputs
+             (workspace_chip_id, port_name, expected_filename, definition_revision, updated_at)
+             SELECT wc.id, 'out',
+                    CASE c.kind
+                      WHEN 'extract' THEN COALESCE(e.output_filename, c.name || '.csv')
+                      WHEN 'transform' THEN COALESCE(t.output_filename_template, c.name || '.parquet')
+                      WHEN 'script' THEN COALESCE(NULLIF(json_extract(c.config_json, '$.output_filename'), ''), c.name || '.parquet')
+                    END,
+                    c.revision, ?
+             FROM workspace_chips wc
+             INNER JOIN chips c ON c.id = wc.chip_id
+             LEFT JOIN extracts e ON e.id = c.extract_id
+             LEFT JOIN transforms t ON t.id = c.transform_id
+             WHERE c.kind IN ('extract', 'transform', 'script')
+             ON CONFLICT(workspace_chip_id, port_name) DO NOTHING",
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE workspace_chip_outputs
+             SET current_data_file_id = (
+               SELECT d.id FROM data_files d
+               WHERE d.deleted_at IS NULL
+                 AND d.stored_path LIKE 'chip_outputs/' || replace(workspace_chip_outputs.workspace_chip_id, ':', '/') || '/%'
+               ORDER BY d.updated_at DESC LIMIT 1
+             ), updated_at = ?
+             WHERE current_data_file_id IS NULL",
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET chip_id = (
+               SELECT c.id FROM chips c WHERE c.extract_id = execution_steps.extract_id LIMIT 1
+             ) WHERE chip_id IS NULL AND extract_id IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET chip_id = (
+               SELECT c.id FROM chips c WHERE c.transform_id = execution_steps.transform_id LIMIT 1
+             ) WHERE chip_id IS NULL AND transform_id IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET chip_id = (
+               SELECT c.id FROM chips c WHERE c.load_id = execution_steps.load_id LIMIT 1
+             ) WHERE chip_id IS NULL AND load_id IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET chip_id = (
+               SELECT c.id FROM chips c
+               INNER JOIN executions e ON e.id = execution_steps.execution_id
+               WHERE execution_steps.output_path LIKE 'chip_outputs/' || e.workspace_id || '/' || c.id || '/%'
+               LIMIT 1
+             ) WHERE chip_id IS NULL AND output_path LIKE 'chip_outputs/%'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_steps SET workspace_chip_id = (
+               SELECT wc.id FROM workspace_chips wc
+               INNER JOIN executions e ON e.id = execution_steps.execution_id
+               WHERE wc.workspace_id = e.workspace_id AND wc.chip_id = execution_steps.chip_id
+             ) WHERE workspace_chip_id IS NULL AND chip_id IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO execution_outputs (execution_step_id, port_name, data_file_id)
+             SELECT s.id, 'out', json_extract(s.result_json, '$.data_file_id')
+             FROM execution_steps s
+             INNER JOIN data_files d ON d.id = json_extract(s.result_json, '$.data_file_id')
+             WHERE json_extract(s.result_json, '$.data_file_id') IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO execution_outputs (execution_step_id, port_name, data_file_id)
+             SELECT s.id, 'out', json_extract(s.result_json, '$.output_data_file_id')
+             FROM execution_steps s
+             INNER JOIN data_files d ON d.id = json_extract(s.result_json, '$.output_data_file_id')
+             WHERE json_extract(s.result_json, '$.output_data_file_id') IS NOT NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO execution_outputs (execution_step_id, port_name, data_file_id)
+             SELECT s.id, 'out', d.id
+             FROM execution_steps s
+             INNER JOIN data_files d ON d.stored_path = s.output_path
+             WHERE s.output_path IS NOT NULL AND s.output_path != ''",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+pub(crate) fn workspace_chip_id(workspace_id: &str, chip_id: &str) -> String {
+    format!("{workspace_id}:{chip_id}")
+}
+
+pub(crate) fn chip_matches_workspace_owner(
+    chip: &ChipRow,
+    workspace: &WorkspaceRow,
+) -> Result<(), StorageError> {
+    match workspace.owner_user_id.as_deref() {
+        Some(owner) if chip.owner_user_id == owner => Ok(()),
+        Some(_) => Err(StorageError::Invalid(
+            "chip does not belong to this workspace".into(),
+        )),
+        None => Ok(()),
+    }
+}
+
+pub(crate) async fn write_workspace_graph(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    workspace: &WorkspaceRow,
+    layout_json: &str,
+    chip_ids: &[String],
+    edges: &[WorkspaceSaveEdge],
+    expected: i64,
+    now: &str,
+) -> Result<(Vec<ChipRow>, Vec<ChipEdgeRow>, Vec<String>), StorageError> {
+    let id = workspace.id.as_str();
+    let version = workspace.version + 1;
+    let mut saved_chips = Vec::with_capacity(chip_ids.len());
+    for chip_id in chip_ids {
+        let chip_id = required_text(chip_id, "chip id")?;
+        let chip =
+            sqlx::query_as::<_, ChipRow>(&format!("SELECT {CHIP_COLS} FROM chips WHERE id = ?"))
+                .bind(chip_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(|| StorageError::NotFound(format!("chip {chip_id} not found")))?;
+        chip_matches_workspace_owner(&chip, workspace)?;
+        saved_chips.push(chip);
+    }
+    sqlx::query("DELETE FROM workspace_edges WHERE workspace_id = ?")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    if saved_chips.is_empty() {
+        sqlx::query("DELETE FROM workspace_chips WHERE workspace_id = ?")
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+    } else {
+        let marks = std::iter::repeat("?")
+            .take(saved_chips.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "DELETE FROM workspace_chips WHERE workspace_id = ? AND chip_id NOT IN ({marks})"
+        );
+        let mut delete = sqlx::query(&sql).bind(id);
+        for chip in &saved_chips {
+            delete = delete.bind(&chip.id);
+        }
+        delete.execute(&mut **tx).await?;
+    }
+    for chip in &saved_chips {
+        let position = serde_json::from_str::<serde_json::Value>(layout_json)
+            .ok()
+            .and_then(|layout| {
+                layout
+                    .get("nodes")
+                    .and_then(|nodes| nodes.get(&chip.id))
+                    .cloned()
+            });
+        let x = position
+            .as_ref()
+            .and_then(|node| node.get("x"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let y = position
+            .as_ref()
+            .and_then(|node| node.get("y"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        sqlx::query(
+            "INSERT INTO workspace_chips (id, workspace_id, chip_id, x, y, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET x=excluded.x, y=excluded.y, updated_at=excluded.updated_at",
+        )
+        .bind(workspace_chip_id(id, &chip.id))
+        .bind(id)
+        .bind(&chip.id)
+        .bind(x)
+        .bind(y)
+        .bind(now)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO workspace_chip_outputs
+         (workspace_chip_id, port_name, expected_filename, definition_revision, updated_at)
+         SELECT wc.id, 'out',
+                CASE c.kind
+                  WHEN 'extract' THEN COALESCE(e.output_filename, c.name || '.csv')
+                  WHEN 'transform' THEN COALESCE(t.output_filename_template, c.name || '.parquet')
+                  WHEN 'script' THEN COALESCE(NULLIF(json_extract(c.config_json, '$.output_filename'), ''), c.name || '.parquet')
+                END,
+                c.revision, ?
+         FROM workspace_chips wc
+         INNER JOIN chips c ON c.id = wc.chip_id
+         LEFT JOIN extracts e ON e.id = c.extract_id
+         LEFT JOIN transforms t ON t.id = c.transform_id
+         WHERE wc.workspace_id = ? AND c.kind IN ('extract', 'transform', 'script')
+         ON CONFLICT(workspace_chip_id, port_name) DO NOTHING",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    let saved_edges = replace_workspace_edges(tx, id, edges, &saved_chips, now).await?;
+    let bumped = sqlx::query(
+        "UPDATE workspaces SET viewport_json = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?",
+    )
+    .bind(layout_json)
+    .bind(version)
+    .bind(now)
+    .bind(id)
+    .bind(expected)
+    .execute(&mut **tx)
+    .await?;
+    if bumped.rows_affected() == 0 {
+        return Err(StorageError::Conflict(
+            "workspace has changed, reload and save again".into(),
+        ));
+    }
+    let snapshot = workspace_snapshot_json(layout_json, &saved_chips, &saved_edges)?;
+    sqlx::query(
+        "INSERT INTO workspace_revisions (workspace_id, version, snapshot_json, created_at)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(version)
+    .bind(&snapshot)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    let dropped_memos = delete_unplaced_memo_chips(tx).await?;
+    Ok((saved_chips, saved_edges, dropped_memos))
+}
+
+pub(crate) async fn delete_unplaced_memo_chips(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<Vec<String>, StorageError> {
+    let dropped_memos: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM chips
+         WHERE kind = 'memo'
+           AND NOT EXISTS (SELECT 1 FROM workspace_chips WHERE chip_id = chips.id)",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    if dropped_memos.is_empty() {
+        return Ok(dropped_memos);
+    }
+    let marks = std::iter::repeat("?")
+        .take(dropped_memos.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("DELETE FROM chips WHERE kind = 'memo' AND id IN ({marks})");
+    let mut delete = sqlx::query(&sql);
+    for memo_id in &dropped_memos {
+        delete = delete.bind(memo_id);
+    }
+    delete.execute(&mut **tx).await?;
+    Ok(dropped_memos)
 }

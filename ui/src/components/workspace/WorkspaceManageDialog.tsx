@@ -1,8 +1,14 @@
-import { DragEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, MouseEvent as ReactMouseEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AppWindow,
+  Ban,
+  CheckCircle2,
+  Circle,
+  Clock,
+  LoaderCircle,
+  XCircle,
   Check,
   ChevronDown,
   Folder,
@@ -20,8 +26,9 @@ import { FormField } from "@/components/ui/form-field";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { isNotificationDialogOpen, showConfirm } from "@/lib/notifications";
+import { chipApi } from "@/services/chips/chipApi";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
-import type { Workspace, WorkspaceFolder } from "@/types/workspace";
+import { isDefaultWorkspace, type Workspace, type WorkspaceFolder } from "@/types/workspace";
 
 type Editor =
   | { mode: "create-folder"; parentId: string | null }
@@ -29,7 +36,10 @@ type Editor =
   | { mode: "edit-folder"; id: string }
   | { mode: "edit-workspace"; id: string };
 
-type DragPayload = { type: "folder"; id: string } | { type: "workspace"; id: string };
+type ItemKey = `folder:${string}` | `workspace:${string}`;
+type DragPayload = ({ type: "folder"; id: string } | { type: "workspace"; id: string }) & {
+  items?: ItemKey[];
+};
 
 const DRAG_MIME = "application/x-bintl-manage";
 const DRAFT_PREFIX = "draft:";
@@ -195,21 +205,17 @@ export function WorkspaceManageDialog({
   folders,
   workspaces,
   focusFolderId,
-  currentWorkspaceId,
   onClose,
   onFoldersChange,
   onWorkspacesChange,
-  onOpenWorkspace,
 }: {
   open: boolean;
   folders: WorkspaceFolder[];
   workspaces: Workspace[];
   focusFolderId: string | null;
-  currentWorkspaceId?: string;
   onClose: () => void;
   onFoldersChange: (folders: WorkspaceFolder[]) => void;
   onWorkspacesChange: (workspaces: Workspace[]) => void;
-  onOpenWorkspace: (workspaceId: string) => void;
 }) {
   const { messages } = useLanguage();
   const originalFoldersRef = useRef<WorkspaceFolder[]>([]);
@@ -225,6 +231,8 @@ export function WorkspaceManageDialog({
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState<DragPayload | null>(null);
   const [dropTarget, setDropTarget] = useState<string | "root" | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<Set<ItemKey>>(new Set());
+  const [selectionAnchor, setSelectionAnchor] = useState<ItemKey | null>(null);
   const confirmingSaveRef = useRef(false);
   const wasOpenRef = useRef(false);
 
@@ -236,6 +244,8 @@ export function WorkspaceManageDialog({
       setBusy(false);
       setDragging(null);
       setDropTarget(null);
+      setSelectedKeys(new Set());
+      setSelectionAnchor(null);
       return;
     }
     // Seed drafts only when the dialog opens so prop refreshes don't wipe unsaved edits.
@@ -247,6 +257,62 @@ export function WorkspaceManageDialog({
     setDraftWorkspaces(workspaces);
     setTreeOpen(ancestorOpenMap(folders, focusFolderId));
   }, [open, focusFolderId, folders, workspaces]);
+
+  const [executionStatuses, setExecutionStatuses] = useState<Record<string, string | null>>({});
+  const executionWorkspaceIds = JSON.stringify(
+    draftWorkspaces.filter((workspace) => !isDraftId(workspace.id)).map((workspace) => workspace.id).sort(),
+  );
+
+  useEffect(() => {
+    if (!open) {
+      setExecutionStatuses({});
+      return;
+    }
+    const ids: string[] = JSON.parse(executionWorkspaceIds);
+    if (ids.length === 0) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      const results = await Promise.allSettled(ids.map(async (id) => {
+        const response = await chipApi.listWorkspaceRuns(id, { silent: true });
+        return [id, response.runs[0]?.status ?? null] as const;
+      }));
+      if (cancelled) return;
+      setExecutionStatuses((current) => {
+        const next = { ...current };
+        for (const result of results) {
+          if (result.status === "fulfilled") next[result.value[0]] = result.value[1];
+        }
+        return next;
+      });
+      timer = window.setTimeout(() => void refresh(), 2000);
+    };
+    void refresh();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [open, executionWorkspaceIds]);
+
+  function executionStatusIcon(workspaceId: string) {
+    const status = isDraftId(workspaceId) ? null : executionStatuses[workspaceId];
+    if (status === undefined) return <span className="size-3 shrink-0" aria-hidden="true" />;
+    const Icon = status === "succeeded" ? CheckCircle2
+      : status === "failed" ? XCircle
+      : status === "running" ? LoaderCircle
+      : status === "queued" ? Clock
+      : status === "canceled" ? Ban : Circle;
+    const label = status === "succeeded" ? messages.chipRuns.success
+      : status === "running" ? messages.chipRuns.running
+      : status === "failed" ? messages.status.failed
+      : status === "queued" ? messages.status.queued
+      : status === "canceled" ? messages.status.canceled : messages.chipRuns.notRun;
+    return (
+      <span className="inline-flex size-3 shrink-0" role="img" aria-label={label} title={label}>
+        <Icon className={cn("size-3", status === "succeeded" ? "text-success"
+          : status === "failed" ? "text-danger"
+          : status === "running" ? "animate-spin text-accent motion-reduce:animate-none"
+          : "text-text-tertiary")} aria-hidden="true" />
+      </span>
+    );
+  }
 
   const isDirty = useMemo(
     () =>
@@ -269,6 +335,40 @@ export function WorkspaceManageDialog({
         .sort((a, b) => a.name.localeCompare(b.name)),
     [draftWorkspaces],
   );
+
+  const visibleItemKeys = useMemo(() => {
+    const result: ItemKey[] = [];
+    const visit = (folder: WorkspaceFolder) => {
+      result.push(`folder:${folder.id}`);
+      if (!treeOpen[folder.id]) return;
+      for (const child of draftFolders.filter((item) => item.parent_id === folder.id).sort((a, b) => a.name.localeCompare(b.name))) visit(child);
+      for (const workspace of draftWorkspaces.filter((item) => item.folder_id === folder.id).sort((a, b) => a.name.localeCompare(b.name))) result.push(`workspace:${workspace.id}`);
+    };
+    for (const folder of rootFolders) visit(folder);
+    for (const workspace of rootWorkspaces) result.push(`workspace:${workspace.id}`);
+    return result;
+  }, [draftFolders, draftWorkspaces, rootFolders, rootWorkspaces, treeOpen]);
+
+  function selectItem(key: ItemKey, event: ReactMouseEvent) {
+    if (event.shiftKey && selectionAnchor) {
+      const from = visibleItemKeys.indexOf(selectionAnchor);
+      const to = visibleItemKeys.indexOf(key);
+      if (from >= 0 && to >= 0) {
+        const range = visibleItemKeys.slice(Math.min(from, to), Math.max(from, to) + 1);
+        setSelectedKeys(new Set((event.ctrlKey || event.metaKey) ? [...selectedKeys, ...range] : range));
+        return;
+      }
+    }
+    if (event.ctrlKey || event.metaKey) {
+      const next = new Set(selectedKeys);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      setSelectedKeys(next);
+      setSelectionAnchor(key);
+      return;
+    }
+    setSelectedKeys(new Set([key]));
+    setSelectionAnchor(key);
+  }
 
   function childFolders(parent: string) {
     return draftFolders
@@ -344,6 +444,13 @@ export function WorkspaceManageDialog({
 
   function canDropOnFolder(folderId: string, payload: DragPayload | null) {
     if (!payload) return false;
+    if (payload.items?.length) {
+      return !payload.items.some((key) => {
+        if (!key.startsWith("folder:")) return false;
+        const id = key.slice("folder:".length);
+        return id === folderId || isFolderDescendant(draftFolders, folderId, id);
+      });
+    }
     if (payload.type === "workspace") return true;
     if (payload.id === folderId) return false;
     return !isFolderDescendant(draftFolders, folderId, payload.id);
@@ -351,6 +458,16 @@ export function WorkspaceManageDialog({
 
   function canDropOnRoot(payload: DragPayload | null) {
     if (!payload) return false;
+    if (payload.items?.length) {
+      return payload.items.some((key) => {
+        if (key.startsWith("workspace:")) {
+          const workspace = draftWorkspaces.find((item) => item.id === key.slice("workspace:".length));
+          return Boolean(workspace?.folder_id);
+        }
+        const folder = draftFolders.find((item) => item.id === key.slice("folder:".length));
+        return Boolean(folder?.parent_id);
+      });
+    }
     if (payload.type === "workspace") return true;
     const folder = draftFolders.find((item) => item.id === payload.id);
     return Boolean(folder?.parent_id);
@@ -408,11 +525,32 @@ export function WorkspaceManageDialog({
     setDropTarget(null);
     setDragging(null);
     if (!payload) return;
+    if (payload.items?.length) {
+      moveItemKeys(payload.items, targetFolderId);
+      return;
+    }
     if (payload.type === "folder") {
       moveFolder(payload.id, targetFolderId);
       return;
     }
     moveWorkspace(payload.id, targetFolderId);
+  }
+
+  function moveItemKeys(keys: ItemKey[], target: string | null) {
+    const folderIds = keys.filter((key) => key.startsWith("folder:")).map((key) => key.slice("folder:".length));
+    if (target && folderIds.some((id) => id === target || isFolderDescendant(draftFolders, target, id))) {
+      setError(messages.workspace.folderMoveIntoSelf);
+      return;
+    }
+    const keySet = new Set(keys);
+    setDraftFolders((current) => current.map((folder) =>
+      folderIds.includes(folder.id) ? { ...folder, parent_id: target } : folder,
+    ));
+    setDraftWorkspaces((current) => current.map((workspace) =>
+      keySet.has(`workspace:${workspace.id}`) ? { ...workspace, folder_id: target } : workspace,
+    ));
+    if (target) setTreeOpen((current) => ({ ...current, [target]: true }));
+    setError("");
   }
 
   function bindDropZone(target: string | "root", folderId: string | null) {
@@ -559,6 +697,11 @@ export function WorkspaceManageDialog({
     cancelEditor();
   }
 
+  const commitEditorRef = useRef(commitEditor);
+  commitEditorRef.current = commitEditor;
+  const editorActiveRef = useRef(Boolean(editor));
+  editorActiveRef.current = Boolean(editor);
+
   async function saveDraft() {
     if (!isDirty || busy || confirmingSaveRef.current) return;
     confirmingSaveRef.current = true;
@@ -644,10 +787,14 @@ export function WorkspaceManageDialog({
         draftWorkspaces.filter((workspace) => !isDraftId(workspace.id)).map((w) => w.id),
       );
       const workspacesToDelete = originalWorkspaces.filter(
-        (workspace) => !keptWorkspaceIds.has(workspace.id),
+        (workspace) => !keptWorkspaceIds.has(workspace.id) && !isDefaultWorkspace(workspace.id),
       );
       for (const workspace of workspacesToDelete) {
         await workspaceApi.delete(workspace.id);
+      }
+      const defaultWorkspace = originalWorkspaces.find((workspace) => isDefaultWorkspace(workspace.id));
+      if (defaultWorkspace && !nextWorkspaces.some((workspace) => workspace.id === defaultWorkspace.id)) {
+        nextWorkspaces = [...nextWorkspaces, defaultWorkspace];
       }
 
       const keptFolderIds = new Set(
@@ -667,6 +814,8 @@ export function WorkspaceManageDialog({
       const message = reason instanceof Error ? reason.message : String(reason);
       if (message.includes("already exists")) {
         setError(messages.workspace.folderNameTaken);
+      } else if (message.includes("cannot delete the default workspace")) {
+        setError(messages.workspace.cannotDeleteDefault);
       } else {
         setError(`${messages.workspace.manageSaveError}: ${message}`);
       }
@@ -676,21 +825,10 @@ export function WorkspaceManageDialog({
     }
   }
 
-  async function openWorkspace(workspaceId: string) {
-    if (isDraftId(workspaceId) || busy) return;
-    if (isDirty) {
-      const confirmed = await showConfirm(
-        messages.workspace.manageDiscardTitle,
-        messages.workspace.manageDiscardMessage,
-        { tone: "danger", confirmLabel: messages.common.close },
-      );
-      if (!confirmed) return;
-    }
-    onOpenWorkspace(workspaceId);
-  }
-
   const saveDraftRef = useRef(saveDraft);
   saveDraftRef.current = saveDraft;
+  const removeSelectedRef = useRef(removeSelected);
+  removeSelectedRef.current = removeSelected;
 
   const triggerSaveRef = useRef<() => void>(() => {});
   triggerSaveRef.current = () => {
@@ -716,6 +854,15 @@ export function WorkspaceManageDialog({
     function onKeyDown(event: KeyboardEvent) {
       // Confirm/alert dialogs sit above this popup — let them own Enter/Ctrl+S.
       if (isNotificationDialogOpen()) return;
+      if (event.key === "Delete" || event.key === "Backspace") {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+        if (selectedKeys.size === 0) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!event.repeat) void removeSelectedRef.current();
+        return;
+      }
       const mod = event.ctrlKey || event.metaKey;
       if (mod && event.key.toLowerCase() === "s") {
         event.preventDefault();
@@ -728,11 +875,15 @@ export function WorkspaceManageDialog({
       if (event.target instanceof HTMLTextAreaElement) return;
       event.preventDefault();
       event.stopPropagation();
+      if (editorActiveRef.current) {
+        if (!event.repeat) commitEditorRef.current();
+        return;
+      }
       triggerSaveRef.current();
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open]);
+  }, [open, selectedKeys.size]);
 
   async function removeFolder(folder: WorkspaceFolder) {
     const confirmed = await showConfirm(
@@ -764,6 +915,10 @@ export function WorkspaceManageDialog({
   }
 
   async function removeWorkspace(workspace: Workspace) {
+    if (isDefaultWorkspace(workspace.id)) {
+      setError(messages.workspace.cannotDeleteDefault);
+      return;
+    }
     const confirmed = await showConfirm(
       messages.workspace.deleteWorkspaceTitle,
       messages.workspace.deleteWorkspaceMessage(workspace.name),
@@ -774,9 +929,55 @@ export function WorkspaceManageDialog({
     const next = draftWorkspaces.filter((item) => item.id !== workspace.id);
     setDraftWorkspaces(next);
     if (editor?.mode === "edit-workspace" && editor.id === workspace.id) cancelEditor();
-    if (currentWorkspaceId === workspace.id && !isDraftId(workspace.id)) {
-      onOpenWorkspace(next.find((item) => !isDraftId(item.id))?.id ?? "");
+  }
+
+  async function removeSelected() {
+    if (selectedKeys.size === 0) return;
+    const selectedWorkspaceIds = [...selectedKeys]
+      .filter((key) => key.startsWith("workspace:"))
+      .map((key) => key.slice("workspace:".length));
+    const dropWorkspaceIds = new Set(selectedWorkspaceIds.filter((id) => !isDefaultWorkspace(id)));
+    const selectedFolderCount = [...selectedKeys].filter((key) => key.startsWith("folder:")).length;
+    if (dropWorkspaceIds.size === 0 && selectedFolderCount === 0) {
+      setError(messages.workspace.cannotDeleteDefault);
+      return;
     }
+    const hasContents = [...dropWorkspaceIds].some((id) => {
+      const workspace = draftWorkspaces.find((item) => item.id === id);
+      return Boolean(
+        workspace
+        && (Object.keys(workspace.layout.nodes ?? {}).length > 0 || (workspace.edges?.length ?? 0) > 0),
+      );
+    });
+    const confirmed = await showConfirm(
+      messages.workspace.deleteSelectedTitle,
+      messages.workspace.deleteSelectedMessage(dropWorkspaceIds.size, selectedFolderCount, hasContents),
+      { tone: "danger", confirmLabel: messages.common.delete },
+    );
+    if (!confirmed) return;
+    if (selectedWorkspaceIds.some(isDefaultWorkspace)) setError(messages.workspace.cannotDeleteDefault);
+    const folderIds = new Set(
+      [...selectedKeys].filter((key) => key.startsWith("folder:")).map((key) => key.slice("folder:".length)),
+    );
+    const queue = [...folderIds];
+    while (queue.length > 0) {
+      const id = queue.pop()!;
+      for (const child of draftFolders) {
+        if (child.parent_id === id && !folderIds.has(child.id)) {
+          folderIds.add(child.id);
+          queue.push(child.id);
+        }
+      }
+    }
+    setDraftFolders((current) => current.filter((folder) => !folderIds.has(folder.id)));
+    setDraftWorkspaces((current) => current
+      .filter((workspace) => !dropWorkspaceIds.has(workspace.id))
+      .map((workspace) => workspace.folder_id && folderIds.has(workspace.folder_id)
+        ? { ...workspace, folder_id: null }
+        : workspace));
+    setSelectedKeys(new Set());
+    setSelectionAnchor(null);
+    if (editor && "id" in editor && (folderIds.has(editor.id) || dropWorkspaceIds.has(editor.id))) cancelEditor();
   }
 
   async function requestClose() {
@@ -829,7 +1030,8 @@ export function WorkspaceManageDialog({
     const nestedFolders = childFolders(folder.id);
     const nestedWorkspaces = childWorkspaces(folder.id);
     const hasChildren = nestedFolders.length > 0 || nestedWorkspaces.length > 0;
-    const selected = Boolean(editor) && parentId === folder.id;
+    const parentSelected = Boolean(editor) && parentId === folder.id;
+    const multiSelected = selectedKeys.has(`folder:${folder.id}`);
     const banned =
       editor?.mode === "edit-folder" &&
       (folder.id === editor.id || isFolderDescendant(draftFolders, folder.id, editor.id));
@@ -844,7 +1046,7 @@ export function WorkspaceManageDialog({
             "group flex w-full min-w-0 items-center gap-1 rounded-lg px-1 py-0.5 text-[12px] transition-colors",
             banned
               ? "opacity-40"
-              : selected
+              : parentSelected || multiSelected
                 ? "bg-accent-subtle font-semibold text-accent hover:bg-accent/15"
                 : "text-text hover:bg-subtle",
             isDragging && "opacity-45",
@@ -859,21 +1061,25 @@ export function WorkspaceManageDialog({
             className="flex min-w-0 flex-1 cursor-grab items-center gap-2 rounded-lg px-1 py-1 text-left outline-none active:cursor-grabbing"
             aria-expanded={openNode}
             disabled={banned}
-            onClick={() => {
+            onClick={(event) => {
               if (editor) {
-                selectParent(selected ? null : folder.id);
+                selectParent(parentSelected ? null : folder.id);
                 return;
               }
-              if (hasChildren) {
-                setTreeOpen((current) => ({ ...current, [folder.id]: !current[folder.id] }));
-              }
+              selectItem(`folder:${folder.id}`, event);
             }}
             onDragStart={(event) => {
               if (busy || banned) {
                 event.preventDefault();
                 return;
               }
-              const payload: DragPayload = { type: "folder", id: folder.id };
+            const key: ItemKey = `folder:${folder.id}`;
+            const items = selectedKeys.has(key) ? [...selectedKeys] : [key];
+            if (!selectedKeys.has(key)) {
+              setSelectedKeys(new Set([key]));
+              setSelectionAnchor(key);
+            }
+            const payload: DragPayload = { type: "folder", id: folder.id, items };
               event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
               event.dataTransfer.effectAllowed = "move";
               setDragging(payload);
@@ -951,6 +1157,7 @@ export function WorkspaceManageDialog({
   function renderWorkspaceNode(workspace: Workspace) {
     const isDragging = dragging?.type === "workspace" && dragging.id === workspace.id;
     const isDraft = isDraftId(workspace.id);
+    const selected = selectedKeys.has(`workspace:${workspace.id}`);
 
     return (
       <div
@@ -958,6 +1165,7 @@ export function WorkspaceManageDialog({
         className={cn(
           "group flex w-full min-w-0 items-center gap-1 rounded-lg px-1 py-0.5 text-[12px] text-text-secondary transition-colors hover:bg-subtle hover:text-text",
           isDragging && "opacity-45",
+          selected && "bg-accent-subtle font-semibold text-accent ring-1 ring-inset ring-accent/25",
           isDraft && "border border-dashed border-accent/35",
         )}
       >
@@ -965,15 +1173,19 @@ export function WorkspaceManageDialog({
           type="button"
           draggable={!busy}
           className="flex min-w-0 flex-1 cursor-grab items-center gap-2 rounded-lg px-1 py-1 text-left outline-none active:cursor-grabbing"
-          onClick={() => {
-            void openWorkspace(workspace.id);
-          }}
+          onClick={(event) => selectItem(`workspace:${workspace.id}`, event)}
           onDragStart={(event) => {
             if (busy) {
               event.preventDefault();
               return;
             }
-            const payload: DragPayload = { type: "workspace", id: workspace.id };
+            const key: ItemKey = `workspace:${workspace.id}`;
+            const items = selectedKeys.has(key) ? [...selectedKeys] : [key];
+            if (!selectedKeys.has(key)) {
+              setSelectedKeys(new Set([key]));
+              setSelectionAnchor(key);
+            }
+            const payload: DragPayload = { type: "workspace", id: workspace.id, items };
             event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
             event.dataTransfer.effectAllowed = "move";
             setDragging(payload);
@@ -983,15 +1195,21 @@ export function WorkspaceManageDialog({
             setDropTarget(null);
           }}
         >
+          {executionStatusIcon(workspace.id)}
           <AppWindow className="size-3.5 shrink-0" aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
+          {isDefaultWorkspace(workspace.id) ? (
+            <span className="shrink-0 rounded-full bg-accent-subtle px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+              {messages.workspace.defaultWorkspaceBadge}
+            </span>
+          ) : null}
         </button>
         {rowActions(
           <>
             {iconButton(messages.common.edit, () => startEditWorkspace(workspace), (
               <Pencil className="size-3.5" aria-hidden="true" />
             ))}
-            {iconButton(
+            {isDefaultWorkspace(workspace.id) ? null : iconButton(
               messages.common.delete,
               () => void removeWorkspace(workspace),
               <Trash2 className="size-3.5" aria-hidden="true" />,
@@ -1131,6 +1349,11 @@ export function WorkspaceManageDialog({
       open={open}
       title={messages.workspace.manageTitle}
       icon={<FolderOpen className="size-4 text-accent" aria-hidden="true" />}
+      headerExtra={
+        <span className="ml-auto truncate text-[11px] font-normal text-text-tertiary">
+          {messages.workspace.multiSelectHint}
+        </span>
+      }
       className="h-[min(48rem,92vh)] w-[min(42rem,94vw)]"
       minWidth={420}
       minHeight={400}

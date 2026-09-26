@@ -58,6 +58,37 @@ pub struct CombineSpec {
     pub how: Option<String>,
 }
 
+/// Ordered recipe operation used by version 3 specs. Unlike the legacy
+/// `combine` field, these operations run exactly in the order they are stored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RecipeOperation {
+    Clean {
+        steps: Vec<Step>,
+    },
+    Join {
+        right_dataset_id: String,
+        on: Vec<String>,
+        #[serde(default)]
+        how: Option<String>,
+    },
+    Union {
+        dataset_ids: Vec<String>,
+    },
+    Aggregate {
+        #[serde(default)]
+        group_by: Vec<String>,
+        aggregations: Vec<AggregationSpec>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AggregationSpec {
+    pub column: String,
+    pub function: String,
+    pub alias: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Step {
@@ -72,6 +103,25 @@ pub enum Step {
     },
     Filter {
         expr: String,
+    },
+    Derive {
+        name: String,
+        expr: String,
+    },
+    Trim {
+        columns: Vec<String>,
+    },
+    Replace {
+        column: String,
+        find: String,
+        replacement: String,
+    },
+    Split {
+        column: String,
+        delimiter: String,
+        #[serde(default)]
+        index: i64,
+        name: String,
     },
     Cast {
         columns: BTreeMap<String, String>,
@@ -124,6 +174,8 @@ pub struct TransformSpec {
     pub steps: Vec<Step>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub combine: Option<CombineSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<RecipeOperation>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved_paths: BTreeMap<String, String>,
 }
@@ -151,6 +203,7 @@ impl TransformSpec {
             read: None,
             steps: Vec::new(),
             combine: None,
+            operations: Vec::new(),
             resolved_paths: BTreeMap::new(),
         }
     }
@@ -169,8 +222,15 @@ impl TransformSpec {
             read: None,
             steps: Vec::new(),
             combine: None,
+            operations: Vec::new(),
             resolved_paths: BTreeMap::new(),
         }
+    }
+
+    pub fn v3() -> Self {
+        let mut spec = Self::v2();
+        spec.version = 3;
+        spec
     }
 
     pub fn with_read(mut self, delimiter: Option<String>, has_header: Option<bool>) -> Self {
@@ -198,7 +258,8 @@ impl TransformSpec {
     }
 
     pub fn parse_json(json: &str) -> Result<Self, EngineError> {
-        let spec: Self = serde_json::from_str(json).map_err(|e| EngineError::Spec(e.to_string()))?;
+        let spec: Self =
+            serde_json::from_str(json).map_err(|e| EngineError::Spec(e.to_string()))?;
         spec.validate()?;
         Ok(spec)
     }
@@ -223,6 +284,16 @@ impl TransformSpec {
                     validate_combine(combine)?;
                 }
             }
+            3 => {
+                if self.dest.is_some() {
+                    return Err(EngineError::Spec(
+                        "version 3 spec cannot include dest; load is a separate stage".into(),
+                    ));
+                }
+                for operation in &self.operations {
+                    validate_operation(operation)?;
+                }
+            }
             other => {
                 return Err(EngineError::Spec(format!("unsupported version {other}")));
             }
@@ -241,6 +312,61 @@ impl TransformSpec {
     }
 }
 
+fn validate_operation(operation: &RecipeOperation) -> Result<(), EngineError> {
+    match operation {
+        RecipeOperation::Clean { steps } => {
+            for step in steps {
+                validate_step(step)?;
+            }
+            Ok(())
+        }
+        RecipeOperation::Join {
+            right_dataset_id,
+            on,
+            how,
+        } => {
+            let combine = CombineSpec {
+                mode: "join".into(),
+                right_dataset_id: Some(right_dataset_id.clone()),
+                on: on.clone(),
+                how: how.clone(),
+                ..Default::default()
+            };
+            validate_combine(&combine)
+        }
+        RecipeOperation::Union { dataset_ids } => {
+            let combine = CombineSpec {
+                mode: "union".into(),
+                union_dataset_ids: dataset_ids.clone(),
+                ..Default::default()
+            };
+            validate_combine(&combine)
+        }
+        RecipeOperation::Aggregate { aggregations, .. } => {
+            if aggregations.is_empty() {
+                return Err(EngineError::Spec("aggregate needs aggregations".into()));
+            }
+            for aggregation in aggregations {
+                if aggregation.column.trim().is_empty() || aggregation.alias.trim().is_empty() {
+                    return Err(EngineError::Spec(
+                        "aggregate column and alias are required".into(),
+                    ));
+                }
+                if !matches!(
+                    aggregation.function.as_str(),
+                    "sum" | "count" | "mean" | "min" | "max"
+                ) {
+                    return Err(EngineError::Spec(format!(
+                        "unsupported aggregate function `{}`",
+                        aggregation.function
+                    )));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn validate_combine(combine: &CombineSpec) -> Result<(), EngineError> {
     match combine.mode.as_str() {
         "join" => {
@@ -256,9 +382,7 @@ fn validate_combine(combine: &CombineSpec) -> Result<(), EngineError> {
             }
             if let Some(how) = combine.how.as_deref() {
                 if how != "left" && how != "inner" {
-                    return Err(EngineError::Spec(
-                        "join how must be left or inner".into(),
-                    ));
+                    return Err(EngineError::Spec("join how must be left or inner".into()));
                 }
             }
         }
@@ -285,6 +409,28 @@ fn validate_step(step: &Step) -> Result<(), EngineError> {
         }
         Step::Filter { expr } if expr.trim().is_empty() => {
             Err(EngineError::Spec("filter needs an expr".into()))
+        }
+        Step::Derive { name, expr } if name.trim().is_empty() || expr.trim().is_empty() => {
+            Err(EngineError::Spec("derive needs name and expr".into()))
+        }
+        Step::Trim { columns } if columns.is_empty() => {
+            Err(EngineError::Spec("trim needs columns".into()))
+        }
+        Step::Replace { column, find, .. } if column.trim().is_empty() || find.is_empty() => {
+            Err(EngineError::Spec("replace needs column and find".into()))
+        }
+        Step::Split {
+            column,
+            delimiter,
+            name,
+            ..
+        } if column.trim().is_empty() || delimiter.is_empty() || name.trim().is_empty() => {
+            Err(EngineError::Spec(
+                "split needs column, delimiter, and name".into(),
+            ))
+        }
+        Step::Split { index, .. } if *index < 0 => {
+            Err(EngineError::Spec("split index must be >= 0".into()))
         }
         Step::Cast { columns } if columns.is_empty() => {
             Err(EngineError::Spec("cast needs columns".into()))
@@ -322,6 +468,38 @@ pub struct FramePreview {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationSpec {
+    #[serde(default)]
+    pub keys: Vec<String>,
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default = "validation_true")]
+    pub compare_row_count: bool,
+    #[serde(default = "validation_true")]
+    pub compare_schema: bool,
+    #[serde(default)]
+    pub ignore_extra_keys: bool,
+}
+
+fn validation_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationReport {
+    pub passed: bool,
+    pub source_rows: usize,
+    pub target_rows: usize,
+    pub missing_keys: usize,
+    pub extra_keys: usize,
+    pub duplicate_source_keys: usize,
+    pub duplicate_target_keys: usize,
+    pub mismatched_rows: usize,
+    pub schema_matches: bool,
+    pub samples: Vec<String>,
+}
+
 /// Engine knows files and a spec. It does not know HTTP, SQLite, or the UI.
 pub trait Engine: Send + Sync {
     fn transform(
@@ -346,25 +524,192 @@ impl Engine for PolarsEngine {
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
         }
-        let df = apply(load_combined(input, spec, None)?, spec)?;
+        let df = execute_recipe(input, spec, None)?;
         write_parquet(df, output)
     }
 }
 
 impl PolarsEngine {
+    pub fn validate_files(
+        &self,
+        source: &Path,
+        target: &Path,
+        source_spec: &TransformSpec,
+        target_spec: &TransformSpec,
+        spec: &ValidationSpec,
+    ) -> Result<ValidationReport, EngineError> {
+        use std::collections::HashMap;
+        let source_df = read_any(source, source_spec, None)?;
+        let target_df = read_any(target, target_spec, None)?;
+        let source_names: Vec<String> = source_df
+            .get_column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let target_names: Vec<String> = target_df
+            .get_column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let schema_matches = source_names == target_names;
+        for key in &spec.keys {
+            if !source_names.contains(key) || !target_names.contains(key) {
+                return Err(EngineError::Spec(format!(
+                    "validation key `{key}` is missing"
+                )));
+            }
+        }
+        let compare_columns = if spec.columns.is_empty() {
+            source_names
+                .iter()
+                .filter(|name| !spec.keys.contains(name))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            spec.columns.clone()
+        };
+        for column in &compare_columns {
+            if !source_names.contains(column) || !target_names.contains(column) {
+                return Err(EngineError::Spec(format!(
+                    "validation column `{column}` is missing"
+                )));
+            }
+        }
+        let row_values = |frame: &DataFrame,
+                          row: usize,
+                          columns: &[String]|
+         -> Result<Vec<String>, EngineError> {
+            columns
+                .iter()
+                .map(|name| {
+                    frame
+                        .column(name)
+                        .map_err(EngineError::from)?
+                        .get(row)
+                        .map(|value| value.to_string())
+                        .map_err(EngineError::from)
+                })
+                .collect()
+        };
+        let mut source_map = HashMap::<Vec<String>, Vec<String>>::new();
+        let mut target_map = HashMap::<Vec<String>, Vec<String>>::new();
+        let mut duplicate_source_keys = 0;
+        let mut duplicate_target_keys = 0;
+        if !spec.keys.is_empty() {
+            for row in 0..source_df.height() {
+                let key = row_values(&source_df, row, &spec.keys)?;
+                if source_map
+                    .insert(key, row_values(&source_df, row, &compare_columns)?)
+                    .is_some()
+                {
+                    duplicate_source_keys += 1;
+                }
+            }
+            for row in 0..target_df.height() {
+                let key = row_values(&target_df, row, &spec.keys)?;
+                if target_map
+                    .insert(key, row_values(&target_df, row, &compare_columns)?)
+                    .is_some()
+                {
+                    duplicate_target_keys += 1;
+                }
+            }
+        }
+        let missing = source_map
+            .keys()
+            .filter(|key| !target_map.contains_key(*key))
+            .collect::<Vec<_>>();
+        let extra = target_map
+            .keys()
+            .filter(|key| !source_map.contains_key(*key))
+            .collect::<Vec<_>>();
+        let mismatched = source_map
+            .iter()
+            .filter(|(key, value)| target_map.get(*key).is_some_and(|other| other != *value))
+            .collect::<Vec<_>>();
+        let mut samples = missing
+            .iter()
+            .take(20)
+            .map(|key| format!("missing: {}", key.join(" | ")))
+            .collect::<Vec<_>>();
+        samples.extend(
+            extra
+                .iter()
+                .take(20)
+                .map(|key| format!("extra: {}", key.join(" | "))),
+        );
+        samples.extend(mismatched.iter().take(20).map(|(key, value)| {
+            let other = target_map.get(*key).expect("mismatch requires a target row");
+            let diffs = compare_columns
+                .iter()
+                .zip(value.iter().zip(other.iter()))
+                .filter(|(_, (left, right))| left != right)
+                .map(|(column, (left, right))| format!("{column} {left} vs {right}"))
+                .collect::<Vec<_>>();
+            format!("mismatch: {} | {}", key.join(" | "), diffs.join(", "))
+        }));
+        let passed = (!spec.compare_row_count || source_df.height() == target_df.height())
+            && (!spec.compare_schema || schema_matches)
+            && missing.is_empty()
+            && (spec.ignore_extra_keys || extra.is_empty())
+            && mismatched.is_empty()
+            && duplicate_source_keys == 0
+            && duplicate_target_keys == 0;
+        Ok(ValidationReport {
+            passed,
+            source_rows: source_df.height(),
+            target_rows: target_df.height(),
+            missing_keys: missing.len(),
+            extra_keys: extra.len(),
+            duplicate_source_keys,
+            duplicate_target_keys,
+            mismatched_rows: mismatched.len(),
+            schema_matches,
+            samples,
+        })
+    }
+
     pub fn export_csv(parquet: &Path, csv: &Path) -> Result<(), EngineError> {
+        Self::export_csv_with_null_value(parquet, csv, None)
+    }
+
+    pub fn export_csv_bytes(parquet: &Path) -> Result<Vec<u8>, EngineError> {
+        Self::csv_bytes_from_parquet(parquet, None)
+    }
+
+    pub fn export_csv_with_null_value(
+        parquet: &Path,
+        csv: &Path,
+        null_value: Option<&str>,
+    ) -> Result<(), EngineError> {
+        let bytes = Self::csv_bytes_from_parquet(parquet, null_value)?;
+        if let Some(parent) = csv.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(csv, bytes)?;
+        Ok(())
+    }
+
+    fn csv_bytes_from_parquet(
+        parquet: &Path,
+        null_value: Option<&str>,
+    ) -> Result<Vec<u8>, EngineError> {
         let mut df = {
             let file = fs::File::open(parquet)?;
             ParquetReader::new(file).finish()?
         };
-        if let Some(parent) = csv.parent() {
-            fs::create_dir_all(parent)?;
+        let mut buf = Vec::new();
+        let mut writer = CsvWriter::new(&mut buf).include_header(true);
+        if let Some(null_value) = null_value {
+            writer = writer.with_null_value(null_value.to_string());
         }
-        let mut file = fs::File::create(csv)?;
-        CsvWriter::new(&mut file)
-            .include_header(true)
-            .finish(&mut df)?;
-        Ok(())
+        writer.finish(&mut df)?;
+        Ok(buf)
+    }
+
+    /// Fast parquet footer row count. Used after a transform write.
+    pub fn file_row_count(path: &Path) -> Option<u64> {
+        parquet_row_count(path)
     }
 
     /// Schema + sample rows. Does not apply transform steps.
@@ -390,14 +735,265 @@ impl PolarsEngine {
     ) -> Result<FramePreview, EngineError> {
         spec.validate()?;
         let limit = limit.max(1);
-        let df = apply(
-            load_combined(input, spec, Some(PREVIEW_READ_CAP))?,
-            spec,
-        )?;
+        let df = execute_recipe(input, spec, Some(PREVIEW_READ_CAP))?;
         let sampled = df.height();
         let truncated = sampled >= PREVIEW_READ_CAP || sampled > limit;
         Ok(dataframe_to_preview(df, None, limit).with_truncated(truncated))
     }
+
+    pub fn records_from_file(path: &Path, limit: usize) -> Result<Vec<serde_json::Value>, EngineError> {
+        let limit = limit.max(1);
+        let mut df = read_any(path, &TransformSpec::identity(), Some(limit))?;
+        if df.height() > limit {
+            df = df.slice(0, limit);
+        }
+        dataframe_to_records(df)
+    }
+
+    pub fn write_records(rows: &[serde_json::Value], output: &Path) -> Result<u64, EngineError> {
+        let mut writer = RecordWriter::new();
+        writer.push(rows)?;
+        writer.finish(output)
+    }
+
+    pub fn open_records(path: &Path) -> Result<RecordTable, EngineError> {
+        Ok(RecordTable {
+            df: read_any(path, &TransformSpec::identity(), None)?,
+        })
+    }
+}
+
+/// Polars table kept off-heap so script JS only sees one batch at a time.
+pub struct RecordTable {
+    df: DataFrame,
+}
+
+impl RecordTable {
+    pub fn height(&self) -> usize {
+        self.df.height()
+    }
+
+    pub fn slice(&self, offset: usize, limit: usize) -> Result<Vec<serde_json::Value>, EngineError> {
+        let height = self.df.height();
+        if offset >= height || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let take = limit.min(height - offset);
+        dataframe_to_records(self.df.slice(offset as i64, take))
+    }
+}
+
+pub struct RecordWriter {
+    acc: Option<DataFrame>,
+}
+
+impl RecordWriter {
+    pub fn new() -> Self {
+        Self { acc: None }
+    }
+
+    pub fn push(&mut self, rows: &[serde_json::Value]) -> Result<(), EngineError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let next = json_rows_to_df(rows)?;
+        self.acc = Some(match self.acc.take() {
+            None => next,
+            Some(prev) => concat_diagonal(prev, next)?,
+        });
+        Ok(())
+    }
+
+    pub fn finish(self, output: &Path) -> Result<u64, EngineError> {
+        self.finish_with(None, output)
+    }
+
+    /// Recast columns that still exist on `like` after the JSON round-trip.
+    /// New JS columns stay inferred. Failed casts keep the JSON dtype.
+    pub fn finish_like(self, like: &RecordTable, output: &Path) -> Result<u64, EngineError> {
+        self.finish_with(Some(like), output)
+    }
+
+    fn finish_with(self, like: Option<&RecordTable>, output: &Path) -> Result<u64, EngineError> {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let df = self.acc.unwrap_or_else(DataFrame::empty);
+        let df = match like {
+            Some(table) => restore_like(df, &table.df),
+            None => df,
+        };
+        let count = df.height() as u64;
+        write_parquet(df, output)?;
+        Ok(count)
+    }
+}
+
+fn restore_like(df: DataFrame, like: &DataFrame) -> DataFrame {
+    let cols: Vec<Column> = df
+        .get_columns()
+        .iter()
+        .map(|col| match like.column(col.name()) {
+            Ok(src) if src.dtype() != col.dtype() => {
+                let Ok(casted) = col.cast(src.dtype()) else {
+                    return col.clone();
+                };
+                if casted.dtype() == src.dtype()
+                    && (col.len() == col.null_count() || casted.null_count() < col.len())
+                {
+                    casted
+                } else {
+                    col.clone()
+                }
+            }
+            _ => col.clone(),
+        })
+        .collect();
+    DataFrame::new(cols).unwrap_or(df)
+}
+
+fn json_rows_to_df(rows: &[serde_json::Value]) -> Result<DataFrame, EngineError> {
+    let buf = serde_json::to_vec(rows)
+        .map_err(|error| EngineError::Spec(format!("script rows are not JSON: {error}")))?;
+    let cursor = std::io::Cursor::new(buf);
+    Ok(JsonReader::new(cursor).finish()?)
+}
+
+fn concat_diagonal(left: DataFrame, right: DataFrame) -> Result<DataFrame, EngineError> {
+    Ok(concat(
+        &[left.lazy(), right.lazy()],
+        UnionArgs {
+            rechunk: true,
+            to_supertypes: true,
+            diagonal: true,
+            ..Default::default()
+        },
+    )?
+    .collect()?)
+}
+
+fn execute_recipe(
+    input: &Path,
+    spec: &TransformSpec,
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    if spec.version < 3 {
+        return apply(load_combined(input, spec, n_rows)?, spec);
+    }
+    let mut frame = read_any(input, spec, n_rows)?;
+    for operation in &spec.operations {
+        frame = match operation {
+            RecipeOperation::Clean { steps } => apply_steps(frame, steps)?,
+            RecipeOperation::Join {
+                right_dataset_id,
+                on,
+                how,
+            } => join_frame(frame, spec, right_dataset_id, on, how.as_deref(), n_rows)?,
+            RecipeOperation::Union { dataset_ids } => {
+                union_frames(frame, spec, dataset_ids, n_rows)?
+            }
+            RecipeOperation::Aggregate {
+                group_by,
+                aggregations,
+            } => aggregate_frame(frame, group_by, aggregations)?,
+        };
+    }
+    Ok(frame)
+}
+
+fn aggregate_frame(
+    frame: DataFrame,
+    group_by: &[String],
+    aggregations: &[AggregationSpec],
+) -> Result<DataFrame, EngineError> {
+    let expressions: Vec<Expr> = aggregations
+        .iter()
+        .map(|aggregation| {
+            let expression = match aggregation.function.as_str() {
+                "sum" => col(&aggregation.column).sum(),
+                "count" => col(&aggregation.column).count(),
+                "mean" => col(&aggregation.column).mean(),
+                "min" => col(&aggregation.column).min(),
+                "max" => col(&aggregation.column).max(),
+                _ => unreachable!("validated aggregate function"),
+            };
+            expression.alias(&aggregation.alias)
+        })
+        .collect();
+    let lazy = frame.lazy();
+    if group_by.is_empty() {
+        return Ok(lazy.select(expressions).collect()?);
+    }
+    let group_expressions: Vec<Expr> = group_by.iter().map(|column| col(column)).collect();
+    Ok(lazy
+        .group_by(group_expressions)
+        .agg(expressions)
+        .collect()?)
+}
+
+fn apply_steps(df: DataFrame, steps: &[Step]) -> Result<DataFrame, EngineError> {
+    let mut lf = df.lazy();
+    for step in steps {
+        lf = apply_step(lf, step)?;
+    }
+    Ok(lf.collect()?)
+}
+
+fn join_frame(
+    left: DataFrame,
+    spec: &TransformSpec,
+    right_id: &str,
+    on: &[String],
+    how: Option<&str>,
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    let path = spec
+        .resolved_paths
+        .get(right_id)
+        .ok_or_else(|| EngineError::Spec(format!("missing path for join dataset `{right_id}`")))?;
+    let right = read_any(Path::new(path), spec, n_rows)?;
+    let join_type = match how.unwrap_or("left") {
+        "inner" => JoinType::Inner,
+        "left" => JoinType::Left,
+        other => return Err(EngineError::Spec(format!("unsupported join how `{other}`"))),
+    };
+    let on_cols: Vec<Expr> = on.iter().map(|column| col(column)).collect();
+    Ok(left
+        .lazy()
+        .join(
+            right.lazy(),
+            on_cols.clone(),
+            on_cols,
+            JoinArgs::new(join_type),
+        )
+        .collect()?)
+}
+
+fn union_frames(
+    first: DataFrame,
+    spec: &TransformSpec,
+    dataset_ids: &[String],
+    n_rows: Option<usize>,
+) -> Result<DataFrame, EngineError> {
+    let mut frames = vec![first];
+    for id in dataset_ids {
+        let path = spec
+            .resolved_paths
+            .get(id)
+            .ok_or_else(|| EngineError::Spec(format!("missing path for union dataset `{id}`")))?;
+        frames.push(read_any(Path::new(path), spec, n_rows)?);
+    }
+    let lazy: Vec<LazyFrame> = frames.into_iter().map(|frame| frame.lazy()).collect();
+    Ok(concat(
+        &lazy,
+        UnionArgs {
+            rechunk: true,
+            to_supertypes: true,
+            diagonal: true,
+            ..Default::default()
+        },
+    )?
+    .collect()?)
 }
 
 impl FramePreview {
@@ -431,9 +1027,10 @@ fn load_union(
     let combine = spec.combine.as_ref().expect("union");
     let mut dfs = vec![left];
     for id in &combine.union_dataset_ids {
-        let path = spec.resolved_paths.get(id).ok_or_else(|| {
-            EngineError::Spec(format!("missing path for union dataset `{id}`"))
-        })?;
+        let path = spec
+            .resolved_paths
+            .get(id)
+            .ok_or_else(|| EngineError::Spec(format!("missing path for union dataset `{id}`")))?;
         dfs.push(read_any(Path::new(path), spec, n_rows)?);
     }
     if dfs.len() == 1 {
@@ -465,9 +1062,10 @@ fn load_join(
     if combine.on.is_empty() {
         return Err(EngineError::Spec("join needs on columns".into()));
     }
-    let path = spec.resolved_paths.get(right_id).ok_or_else(|| {
-        EngineError::Spec(format!("missing path for join dataset `{right_id}`"))
-    })?;
+    let path = spec
+        .resolved_paths
+        .get(right_id)
+        .ok_or_else(|| EngineError::Spec(format!("missing path for join dataset `{right_id}`")))?;
     let right = read_any(Path::new(path), spec, n_rows)?;
     let join_type = match combine.how.as_deref().unwrap_or("left") {
         "inner" => JoinType::Inner,
@@ -530,6 +1128,44 @@ fn apply_step(lf: LazyFrame, step: &Step) -> Result<LazyFrame, EngineError> {
             let schema = lf.clone().collect_schema()?;
             Ok(lf.filter(parse_filter(schema.as_ref(), expr)?))
         }
+        Step::Derive { name, expr } => {
+            let schema = lf.clone().collect_schema()?;
+            Ok(lf.with_columns([parse_derive(schema.as_ref(), expr)?.alias(name.as_str())]))
+        }
+        Step::Trim { columns } => {
+            let exprs: Vec<Expr> = columns
+                .iter()
+                .map(|name| {
+                    col(name)
+                        .cast(DataType::String)
+                        .str()
+                        .strip_chars(lit(NULL))
+                        .alias(name.as_str())
+                })
+                .collect();
+            Ok(lf.with_columns(exprs))
+        }
+        Step::Replace {
+            column,
+            find,
+            replacement,
+        } => Ok(lf.with_columns([col(column)
+            .cast(DataType::String)
+            .str()
+            .replace_all(lit(find.as_str()), lit(replacement.as_str()), true)
+            .alias(column.as_str())])),
+        Step::Split {
+            column,
+            delimiter,
+            index,
+            name,
+        } => Ok(lf.with_columns([col(column)
+            .cast(DataType::String)
+            .str()
+            .split(lit(delimiter.as_str()))
+            .list()
+            .get(lit(*index), true)
+            .alias(name.as_str())])),
         Step::Cast { columns } => {
             let exprs: Result<Vec<Expr>, EngineError> = columns
                 .iter()
@@ -583,6 +1219,39 @@ fn parse_dtype(raw: &str) -> Result<DataType, EngineError> {
 
 fn parse_filter(schema: &Schema, raw: &str) -> Result<Expr, EngineError> {
     let s = raw.trim();
+    for op in ["not contains", "contains", "is not null", "is null"] {
+        if let Some(at) = find_word_op(s, op) {
+            let left = s[..at].trim();
+            let right = s[at + op.len()..].trim();
+            if !is_col_name(left) {
+                return Err(EngineError::Spec(format!("bad filter column `{left}`")));
+            }
+            if schema.get(left).is_none() {
+                return Err(EngineError::Spec(format!("unknown filter column `{left}`")));
+            }
+            let lhs = col(left);
+            return Ok(match op {
+                "is null" => lhs
+                    .clone()
+                    .is_null()
+                    .or(lhs.cast(DataType::String).eq(lit(""))),
+                "is not null" => lhs
+                    .clone()
+                    .is_not_null()
+                    .and(lhs.cast(DataType::String).neq(lit(""))),
+                "contains" => lhs
+                    .cast(DataType::String)
+                    .str()
+                    .contains_literal(parse_filter_text(right)),
+                "not contains" => lhs
+                    .cast(DataType::String)
+                    .str()
+                    .contains_literal(parse_filter_text(right))
+                    .not(),
+                _ => unreachable!(),
+            });
+        }
+    }
     for op in [">=", "<=", "!=", "=", ">", "<"] {
         if let Some(at) = s.find(op) {
             let left = s[..at].trim();
@@ -590,9 +1259,9 @@ fn parse_filter(schema: &Schema, raw: &str) -> Result<Expr, EngineError> {
             if !is_col_name(left) {
                 return Err(EngineError::Spec(format!("bad filter column `{left}`")));
             }
-            let dtype = schema.get(left).ok_or_else(|| {
-                EngineError::Spec(format!("unknown filter column `{left}`"))
-            })?;
+            let dtype = schema
+                .get(left)
+                .ok_or_else(|| EngineError::Spec(format!("unknown filter column `{left}`")))?;
             let lhs = col(left);
             let rhs = parse_lit_for_dtype(right, dtype)?;
             return Ok(match op {
@@ -607,8 +1276,82 @@ fn parse_filter(schema: &Schema, raw: &str) -> Result<Expr, EngineError> {
         }
     }
     Err(EngineError::Spec(
-        "filter must look like `컬럼 >= 1` or `컬럼 = ok`".into(),
+        "filter must look like `컬럼 >= 1`, `컬럼 contains ok`, or `컬럼 is null`".into(),
     ))
+}
+
+fn find_word_op(raw: &str, op: &str) -> Option<usize> {
+    let padded = format!(" {op} ");
+    if let Some(at) = raw.find(&padded) {
+        return Some(at + 1);
+    }
+    let suffix = format!(" {op}");
+    if raw.ends_with(&suffix) {
+        return Some(raw.len() - op.len());
+    }
+    None
+}
+
+fn parse_filter_text(raw: &str) -> Expr {
+    lit(raw.trim().trim_matches('"').trim_matches('\'').to_string())
+}
+
+fn parse_derive(schema: &Schema, raw: &str) -> Result<Expr, EngineError> {
+    let s = raw.trim();
+    for op in ["+", "-", "*", "/"] {
+        let padded = format!(" {op} ");
+        if let Some(at) = s.find(&padded) {
+            return derive_binop(schema, &s[..at], op, &s[at + padded.len()..]);
+        }
+    }
+    for op in ["+", "-", "*", "/"] {
+        if let Some(at) = s.find(op) {
+            if at == 0 {
+                continue;
+            }
+            return derive_binop(schema, &s[..at], op, &s[at + op.len()..]);
+        }
+    }
+    Err(EngineError::Spec(
+        "derive must look like `컬럼 + 1` or `컬럼 * 컬럼`".into(),
+    ))
+}
+
+fn derive_binop(schema: &Schema, left: &str, op: &str, right: &str) -> Result<Expr, EngineError> {
+    let left = left.trim();
+    let right = right.trim();
+    if !is_col_name(left) {
+        return Err(EngineError::Spec(format!("bad derive column `{left}`")));
+    }
+    if schema.get(left).is_none() {
+        return Err(EngineError::Spec(format!("unknown derive column `{left}`")));
+    }
+    let lhs = col(left);
+    let rhs = if is_col_name(right) && schema.get(right).is_some() {
+        col(right)
+    } else {
+        parse_derive_lit(right)?
+    };
+    Ok(match op {
+        "+" => lhs + rhs,
+        "-" => lhs - rhs,
+        "*" => lhs * rhs,
+        "/" => lhs.cast(DataType::Float64) / rhs.cast(DataType::Float64),
+        _ => unreachable!(),
+    })
+}
+
+fn parse_derive_lit(raw: &str) -> Result<Expr, EngineError> {
+    let trimmed = raw.trim().trim_matches('"').trim_matches('\'');
+    if let Ok(n) = trimmed.parse::<i64>() {
+        return Ok(lit(n));
+    }
+    if let Ok(n) = trimmed.parse::<f64>() {
+        return Ok(lit(n));
+    }
+    Err(EngineError::Spec(format!(
+        "derive right side must be a column or number, got `{raw}`"
+    )))
 }
 
 fn is_string_dtype(dtype: &DataType) -> bool {
@@ -650,15 +1393,15 @@ fn parse_lit_for_dtype(raw: &str, dtype: &DataType) -> Result<Expr, EngineError>
         };
     }
     if is_integer_dtype(dtype) {
-        let n: i64 = unquoted.parse().map_err(|_| {
-            EngineError::Spec(format!("bad integer `{trimmed}` for {dtype}"))
-        })?;
+        let n: i64 = unquoted
+            .parse()
+            .map_err(|_| EngineError::Spec(format!("bad integer `{trimmed}` for {dtype}")))?;
         return Ok(lit(n).cast(dtype.clone()));
     }
     if is_float_dtype(dtype) {
-        let n: f64 = unquoted.parse().map_err(|_| {
-            EngineError::Spec(format!("bad float `{trimmed}` for {dtype}"))
-        })?;
+        let n: f64 = unquoted
+            .parse()
+            .map_err(|_| EngineError::Spec(format!("bad float `{trimmed}` for {dtype}")))?;
         return Ok(lit(n).cast(dtype.clone()));
     }
     Ok(lit(unquoted.to_string()))
@@ -719,7 +1462,11 @@ fn read_any(
             let has_header = spec.has_header().unwrap_or(true);
             let mut opts = CsvReadOptions::default()
                 .with_has_header(has_header)
-                .map_parse_options(|o| o.with_separator(separator));
+                .map_parse_options(|o| {
+                    // ponytail: extra fields beyond the header are dropped, same as upload preview (flexible CSV).
+                    o.with_separator(separator)
+                        .with_truncate_ragged_lines(true)
+                });
             if let Some(n) = n_rows {
                 opts = opts.with_n_rows(Some(n));
             }
@@ -767,11 +1514,7 @@ fn count_delimited_rows(path: &Path, has_header: bool) -> Result<u64, EngineErro
 fn dataframe_to_preview(df: DataFrame, row_count: Option<u64>, limit: usize) -> FramePreview {
     let height = df.height();
     let truncated = height > limit;
-    let df = if truncated {
-        df.slice(0, limit)
-    } else {
-        df
-    };
+    let df = if truncated { df.slice(0, limit) } else { df };
     let columns: Vec<PreviewColumn> = df
         .get_columns()
         .iter()
@@ -805,6 +1548,17 @@ fn dataframe_to_preview(df: DataFrame, row_count: Option<u64>, limit: usize) -> 
         row_count,
         truncated,
     }
+}
+
+fn dataframe_to_records(mut df: DataFrame) -> Result<Vec<serde_json::Value>, EngineError> {
+    if df.height() == 0 {
+        return Ok(Vec::new());
+    }
+    let mut buf = Vec::new();
+    JsonWriter::new(&mut buf)
+        .with_json_format(JsonFormat::Json)
+        .finish(&mut df)?;
+    serde_json::from_slice(&buf).map_err(|error| EngineError::Spec(format!("json rows: {error}")))
 }
 
 fn any_to_string(value: AnyValue<'_>) -> String {
@@ -865,6 +1619,169 @@ mod tests {
             .finish()
             .unwrap();
         assert_eq!(back.height(), 2);
+        let csv = PolarsEngine::export_csv_bytes(&out).unwrap();
+        let text = String::from_utf8(csv).unwrap();
+        assert!(text.contains("a,b"));
+        assert!(text.contains("1,2"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn records_roundtrip_parquet() {
+        let dir = tmp("records");
+        let out = dir.join("out.parquet");
+        let rows = vec![serde_json::json!({"id": 1, "name": "a"})];
+        assert_eq!(PolarsEngine::write_records(&rows, &out).unwrap(), 1);
+        let back = PolarsEngine::records_from_file(&out, 10).unwrap();
+        assert_eq!(back[0]["name"], "a");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_table_slices_and_writer_concat() {
+        let dir = tmp("batches");
+        let src = dir.join("in.parquet");
+        let rows = vec![
+            serde_json::json!({"id": 1}),
+            serde_json::json!({"id": 2}),
+            serde_json::json!({"id": 3}),
+        ];
+        PolarsEngine::write_records(&rows, &src).unwrap();
+        let table = PolarsEngine::open_records(&src).unwrap();
+        assert_eq!(table.height(), 3);
+        assert_eq!(table.slice(0, 2).unwrap().len(), 2);
+        assert_eq!(table.slice(2, 2).unwrap().len(), 1);
+        let mut writer = RecordWriter::new();
+        writer.push(&table.slice(0, 2).unwrap()).unwrap();
+        writer.push(&table.slice(2, 2).unwrap()).unwrap();
+        let out = dir.join("out.parquet");
+        assert_eq!(writer.finish(&out).unwrap(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writer_restores_input_types_after_json() {
+        let dir = tmp("restore");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "id,when,amt\n1,2024-01-15,10.5\n2,2024-01-16,20\n").unwrap();
+        let src = dir.join("in.parquet");
+        PolarsEngine
+            .transform(&csv, &src, &TransformSpec::identity())
+            .unwrap();
+        let table = PolarsEngine::open_records(&src).unwrap();
+        let when = table
+            .df
+            .column("when")
+            .unwrap()
+            .cast(&DataType::Date)
+            .unwrap();
+        let typed = DataFrame::new(vec![
+            table.df.column("id").unwrap().clone(),
+            when,
+            table.df.column("amt").unwrap().clone(),
+        ])
+        .unwrap();
+        write_parquet(typed, &src).unwrap();
+        let table = PolarsEngine::open_records(&src).unwrap();
+        assert_eq!(table.df.column("id").unwrap().dtype(), &DataType::Int64);
+        assert_eq!(table.df.column("when").unwrap().dtype(), &DataType::Date);
+
+        let rows = vec![
+            serde_json::json!({"id": "1", "when": "2024-01-15", "amt": "10.5", "extra": "x"}),
+            serde_json::json!({"id": "2", "when": "2024-01-16", "amt": "20", "extra": "y"}),
+        ];
+        let mut writer = RecordWriter::new();
+        writer.push(&rows).unwrap();
+        let out = dir.join("out.parquet");
+        writer.finish_like(&table, &out).unwrap();
+        let back = ParquetReader::new(fs::File::open(&out).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(back.column("id").unwrap().dtype(), &DataType::Int64);
+        assert_eq!(back.column("when").unwrap().dtype(), &DataType::Date);
+        assert_eq!(back.column("amt").unwrap().dtype(), table.df.column("amt").unwrap().dtype());
+        assert_eq!(back.column("extra").unwrap().dtype(), &DataType::String);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validation_reports_missing_extra_and_changed_rows() {
+        let dir = tmp("validation");
+        let source = dir.join("source.csv");
+        let target = dir.join("target.csv");
+        fs::write(
+            &source,
+            "id,name,amount\n1,alpha,10\n2,beta,20\n3,gamma,30\n",
+        )
+        .unwrap();
+        fs::write(
+            &target,
+            "id,name,amount\n1,alpha,10\n2,beta,25\n4,delta,40\n",
+        )
+        .unwrap();
+
+        let report = PolarsEngine
+            .validate_files(
+                &source,
+                &target,
+                &TransformSpec::identity(),
+                &TransformSpec::identity(),
+                &ValidationSpec {
+                    keys: vec!["id".into()],
+                    columns: vec!["name".into(), "amount".into()],
+                    compare_row_count: true,
+                    compare_schema: true,
+                    ignore_extra_keys: false,
+                },
+            )
+            .unwrap();
+
+        assert!(!report.passed);
+        assert_eq!(report.source_rows, 3);
+        assert_eq!(report.target_rows, 3);
+        assert_eq!(report.missing_keys, 1);
+        assert_eq!(report.extra_keys, 1);
+        assert_eq!(report.mismatched_rows, 1);
+        assert!(report.schema_matches);
+        assert!(report
+            .samples
+            .iter()
+            .any(|sample| sample.starts_with("missing:")));
+        assert!(report
+            .samples
+            .iter()
+            .any(|sample| sample.starts_with("extra:")));
+        assert!(report
+            .samples
+            .iter()
+            .any(|sample| sample.contains("mismatch:") && sample.contains("amount") && sample.contains("vs")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validation_can_ignore_extra_keys() {
+        let dir = tmp("validation-extra");
+        let source = dir.join("source.csv");
+        let target = dir.join("target.csv");
+        fs::write(&source, "id,name\n1,alpha\n").unwrap();
+        fs::write(&target, "id,name\n1,alpha\n9,old\n").unwrap();
+        let report = PolarsEngine
+            .validate_files(
+                &source,
+                &target,
+                &TransformSpec::identity(),
+                &TransformSpec::identity(),
+                &ValidationSpec {
+                    keys: vec!["id".into()],
+                    columns: vec!["name".into()],
+                    compare_row_count: false,
+                    compare_schema: true,
+                    ignore_extra_keys: true,
+                },
+            )
+            .unwrap();
+        assert!(report.passed);
+        assert_eq!(report.extra_keys, 1);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -902,6 +1819,27 @@ mod tests {
             .unwrap();
         assert_eq!(back.height(), 2);
         assert_eq!(back.get_column_names(), &["a", "b"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn csv_preview_truncates_ragged_lines() {
+        let dir = tmp("ragged");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "a,b\n1,2,extra\n3,4\n").unwrap();
+        let preview = PolarsEngine
+            .preview(&csv, &TransformSpec::identity(), 10)
+            .unwrap();
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(preview.rows[0], vec!["1", "2"]);
+        assert_eq!(preview.rows[1], vec!["3", "4"]);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1008,6 +1946,97 @@ mod tests {
     }
 
     #[test]
+    fn v2_derive_add_literal_and_multiply_columns() {
+        let dir = tmp("derive");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "number,qty\n1,2\n3,4\n").unwrap();
+        let spec = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [
+                    {"op": "derive", "name": "number", "expr": "number + 1"},
+                    {"op": "derive", "name": "amount", "expr": "number * qty"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &spec, 10).unwrap();
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["number", "qty", "amount"]
+        );
+        assert_eq!(preview.rows[0], vec!["2", "2", "4"]);
+        assert_eq!(preview.rows[1], vec!["4", "4", "16"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_text_trim_replace_split() {
+        let dir = tmp("text");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "name,code\n a ,x-y\n b ,p-q\n").unwrap();
+        let spec = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [
+                    {"op": "trim", "columns": ["name"]},
+                    {"op": "replace", "column": "code", "find": "-", "replacement": "_"},
+                    {"op": "split", "column": "code", "delimiter": "_", "index": 0, "name": "prefix"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &spec, 10).unwrap();
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["name", "code", "prefix"]
+        );
+        assert_eq!(preview.rows[0], vec!["a", "x_y", "x"]);
+        assert_eq!(preview.rows[1], vec!["b", "p_q", "p"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_filter_contains_and_is_null() {
+        let dir = tmp("filter-text");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "code,note\nfoo-1,\nbar-2,keep\nbaz-3,drop\n").unwrap();
+        let contains = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [{"op": "filter", "expr": "code contains foo"}]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &contains, 10).unwrap();
+        assert_eq!(preview.rows.len(), 1);
+        assert_eq!(preview.rows[0][0], "foo-1");
+        let missing = TransformSpec::parse_json(
+            r#"{
+                "version": 2,
+                "sink": "parquet",
+                "steps": [{"op": "filter", "expr": "note is null"}]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&csv, &missing, 10).unwrap();
+        assert_eq!(preview.rows.len(), 1);
+        assert_eq!(preview.rows[0][0], "foo-1");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn combine_join_left() {
         let dir = tmp("join");
         let left = dir.join("left.csv");
@@ -1029,10 +2058,8 @@ mod tests {
             }"#,
         )
         .unwrap();
-        spec.resolved_paths.insert(
-            "right".into(),
-            right.to_string_lossy().into_owned(),
-        );
+        spec.resolved_paths
+            .insert("right".into(), right.to_string_lossy().into_owned());
         PolarsEngine.transform(&left, &out, &spec).unwrap();
         let back = ParquetReader::new(fs::File::open(&out).unwrap())
             .finish()
@@ -1061,12 +2088,85 @@ mod tests {
             }"#,
         )
         .unwrap();
-        spec.resolved_paths.insert("b".into(), b.to_string_lossy().into_owned());
+        spec.resolved_paths
+            .insert("b".into(), b.to_string_lossy().into_owned());
         PolarsEngine.transform(&a, &out, &spec).unwrap();
         let back = ParquetReader::new(fs::File::open(&out).unwrap())
             .finish()
             .unwrap();
         assert_eq!(back.height(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v3_runs_clean_before_join_in_recipe_order() {
+        let dir = tmp("v3-clean-join");
+        let left = dir.join("left.csv");
+        let right = dir.join("right.csv");
+        fs::write(&left, "id,name\n1,alpha\n2,beta\n").unwrap();
+        fs::write(&right, "key,score\n1,10\n2,20\n").unwrap();
+        let mut spec = TransformSpec::parse_json(
+            r#"{
+              "version": 3,
+              "sink": "parquet",
+              "operations": [
+                {"type": "clean", "steps": [
+                  {"op": "rename", "map": {"id": "key"}}
+                ]},
+                {
+                  "type": "join",
+                  "right_dataset_id": "right",
+                  "on": ["key"],
+                  "how": "left"
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        spec.resolved_paths
+            .insert("right".into(), right.to_string_lossy().into_owned());
+        let preview = PolarsEngine.preview(&left, &spec, 10).unwrap();
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["key", "name", "score"]
+        );
+        assert_eq!(preview.rows.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v3_aggregates_recipe_result() {
+        let dir = tmp("v3-aggregate");
+        let input = dir.join("input.csv");
+        fs::write(&input, "team,amount\na,10\na,20\nb,7\n").unwrap();
+        let spec = TransformSpec::parse_json(
+            r#"{
+              "version": 3,
+              "sink": "parquet",
+              "operations": [{
+                "type": "aggregate",
+                "group_by": ["team"],
+                "aggregations": [
+                  {"column": "amount", "function": "sum", "alias": "total"}
+                ]
+              }]
+            }"#,
+        )
+        .unwrap();
+        let preview = PolarsEngine.preview(&input, &spec, 10).unwrap();
+        assert_eq!(preview.rows.len(), 2);
+        assert_eq!(
+            preview
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["team", "total"]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

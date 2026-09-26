@@ -27,6 +27,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, locale);
     document.documentElement.lang = locale;
+    document.title = locale === "ko" ? ko.brand.name : en.brand.name;
   }, [locale]);
 
   const value = useMemo<LanguageContextValue>(

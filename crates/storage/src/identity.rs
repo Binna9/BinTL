@@ -4,16 +4,17 @@ use serde::Serialize;
 use sqlx::Error as SqlxError;
 use uuid::Uuid;
 
-use super::{
-    now_rfc3339, required_text, StorageError, Store, WorkspaceRow, DEFAULT_WORKSPACE_ID,
-};
+use super::{now_rfc3339, required_text, StorageError, Store, WorkspaceRow, DEFAULT_WORKSPACE_ID};
 use crate::password::{hash_password, verify_password};
 
 pub const PERM_USER_MANAGE: &str = "USER_MANAGE";
 pub const PERM_CONNECTION_WRITE: &str = "CONNECTION_WRITE";
 pub const PERM_WORKSPACE_ALL: &str = "WORKSPACE_ALL";
+pub const PERM_EXTRACT_RUN: &str = "EXTRACT_RUN";
+pub const PERM_TRANSFORM_RUN: &str = "TRANSFORM_RUN";
 
-const USER_COLS: &str = "id, userid, username, active, created_at, updated_at";
+const USER_COLS: &str =
+    "id, userid, username, avatar_path AS avatar_data_url, active, created_at, updated_at";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct RoleRow {
@@ -51,6 +52,7 @@ pub struct UserRow {
     pub id: String,
     pub userid: String,
     pub username: String,
+    pub avatar_data_url: Option<String>,
     pub active: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -74,6 +76,22 @@ impl UserRow {
     pub fn can_see_all_workspaces(&self) -> bool {
         self.has_permission(PERM_WORKSPACE_ALL)
     }
+
+    pub fn can_run_extract(&self) -> bool {
+        self.has_permission(PERM_EXTRACT_RUN)
+    }
+
+    pub fn can_run_transform(&self) -> bool {
+        self.has_permission(PERM_TRANSFORM_RUN)
+    }
+
+    pub fn can_run_etl(&self) -> bool {
+        self.can_run_extract() || self.can_run_transform()
+    }
+
+    pub fn can_use_connections(&self) -> bool {
+        self.can_write_connections() || self.can_run_etl()
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -81,6 +99,7 @@ struct UserCoreRow {
     pub id: String,
     pub userid: String,
     pub username: String,
+    pub avatar_data_url: Option<String>,
     pub active: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -121,6 +140,7 @@ impl UserCoreRow {
             id: self.id,
             userid: self.userid,
             username: self.username,
+            avatar_data_url: self.avatar_data_url,
             active: self.active,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -131,29 +151,29 @@ impl UserCoreRow {
 }
 
 impl Store {
-    pub async fn ensure_bootstrap(
-        &self,
-        userid: &str,
-        password: &str,
-    ) -> Result<UserRow, StorageError> {
+    pub const BOOTSTRAP_USERID: &str = "admin";
+    const BOOTSTRAP_PASSWORD: &str = "admin";
+
+    pub async fn ensure_bootstrap(&self) -> Result<UserRow, StorageError> {
         if let Some(existing) = self.count_users().await? {
             if existing > 0 {
                 if let Some(admin) = self.find_bootstrap_admin().await? {
                     self.claim_unowned_workspaces(&admin.id).await?;
                     return Ok(admin);
                 }
-                return self
-                    .list_users()
-                    .await?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| {
-                        StorageError::Invalid("users exist but none could be loaded".into())
-                    });
+                return self.list_users().await?.into_iter().next().ok_or_else(|| {
+                    StorageError::Invalid("users exist but none could be loaded".into())
+                });
             }
         }
-        self.create_user_inner(userid, userid, password, &["admin".into()], true)
-            .await
+        self.create_user_inner(
+            Self::BOOTSTRAP_USERID,
+            Self::BOOTSTRAP_USERID,
+            Self::BOOTSTRAP_PASSWORD,
+            &["admin".into()],
+            true,
+        )
+        .await
     }
 
     pub async fn authenticate(
@@ -162,7 +182,7 @@ impl Store {
         password: &str,
     ) -> Result<Option<UserRow>, StorageError> {
         let row = sqlx::query_as::<_, UserSecretRow>(
-            "SELECT id, password, active FROM users WHERE userid = ? COLLATE NOCASE",
+            "SELECT id, password_hash AS password, active FROM users WHERE userid = ? COLLATE NOCASE",
         )
         .bind(userid.trim())
         .fetch_optional(&self.pool)
@@ -283,12 +303,17 @@ impl Store {
         let next_roles = match roles {
             Some(value) if !value.is_empty() => value.to_vec(),
             Some(_) => {
-                return Err(StorageError::Invalid("at least one role is required".into()));
+                return Err(StorageError::Invalid(
+                    "at least one role is required".into(),
+                ));
             }
             None => current.roles.clone(),
         };
         let losing_manage = current.can_manage_users()
-            && (active == 0 || !self.roles_have_permission(&next_roles, PERM_USER_MANAGE).await?);
+            && (active == 0
+                || !self
+                    .roles_have_permission(&next_roles, PERM_USER_MANAGE)
+                    .await?);
         if losing_manage {
             self.guard_last_admin(&current.id).await?;
         }
@@ -300,7 +325,7 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         if let Some(hash) = password_hash {
             sqlx::query(
-                "UPDATE users SET username = ?, active = ?, password = ?, updated_at = ?
+                "UPDATE users SET username = ?, active = ?, password_hash = ?, updated_at = ?
                  WHERE id = ?",
             )
             .bind(&username)
@@ -326,6 +351,31 @@ impl Store {
             .ok_or_else(|| StorageError::NotFound("user disappeared after update".into()))
     }
 
+    pub async fn update_user_profile(
+        &self,
+        id: &str,
+        username: &str,
+        avatar_data_url: Option<&str>,
+    ) -> Result<UserRow, StorageError> {
+        let username = required_text(username, "username")?;
+        let now = now_rfc3339();
+        let result = sqlx::query(
+            "UPDATE users SET username = ?, avatar_path = COALESCE(?, avatar_path), updated_at = ? WHERE id = ?",
+        )
+        .bind(username)
+        .bind(avatar_data_url)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound("user not found".into()));
+        }
+        self.get_user(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound("user disappeared".into()))
+    }
+
     pub async fn require_workspace_access(
         &self,
         user_id: &str,
@@ -343,24 +393,6 @@ impl Store {
             return Ok(workspace);
         }
         Err(StorageError::NotFound("workspace not found".into()))
-    }
-
-    pub async fn resolve_write_workspace(
-        &self,
-        scope: &DataScope,
-    ) -> Result<String, StorageError> {
-        if let Some(workspace_id) = scope.workspace_id.as_deref() {
-            self.require_workspace_access(&scope.user_id, scope.admin, workspace_id)
-                .await?;
-            return Ok(workspace_id.to_string());
-        }
-        let owned = self.list_visible_workspaces(Some(scope)).await?;
-        let Some(workspace) = owned.first() else {
-            return Err(StorageError::Invalid(
-                "workspace required: create a workspace first".into(),
-            ));
-        };
-        Ok(workspace.id.clone())
     }
 
     pub fn workspace_scope_sql(scope: &DataScope, column: &str) -> (String, Vec<String>) {
@@ -397,7 +429,7 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let insert = sqlx::query(
             "INSERT INTO users
-             (id, userid, username, password, active, created_at, updated_at)
+             (id, userid, username, password_hash, active, created_at, updated_at)
              VALUES (?, ?, ?, ?, 1, ?, ?)",
         )
         .bind(&id)
@@ -414,22 +446,19 @@ impl Store {
         replace_user_roles(&mut tx, &id, &role_codes, &now).await?;
 
         if bootstrap {
-            let default_exists = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM workspaces WHERE id = ?",
-            )
-            .bind(DEFAULT_WORKSPACE_ID)
-            .fetch_one(&mut *tx)
-            .await?
-                > 0;
+            let default_exists =
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM workspaces WHERE id = ?")
+                    .bind(DEFAULT_WORKSPACE_ID)
+                    .fetch_one(&mut *tx)
+                    .await?
+                    > 0;
             if default_exists {
-                sqlx::query(
-                    "UPDATE workspaces SET owner_user_id = ?, updated_at = ? WHERE id = ?",
-                )
-                .bind(&id)
-                .bind(&now)
-                .bind(DEFAULT_WORKSPACE_ID)
-                .execute(&mut *tx)
-                .await?;
+                sqlx::query("UPDATE workspaces SET owner_user_id = ?, updated_at = ? WHERE id = ?")
+                    .bind(&id)
+                    .bind(&now)
+                    .bind(DEFAULT_WORKSPACE_ID)
+                    .execute(&mut *tx)
+                    .await?;
             } else {
                 insert_owned_workspace(&mut tx, &id, username, &now).await?;
             }
@@ -581,15 +610,18 @@ async fn replace_user_roles(
     now: &str,
 ) -> Result<(), StorageError> {
     if role_codes.is_empty() {
-        return Err(StorageError::Invalid("at least one role is required".into()));
+        return Err(StorageError::Invalid(
+            "at least one role is required".into(),
+        ));
     }
     let mut role_ids = Vec::with_capacity(role_codes.len());
     for code in role_codes {
-        let id = sqlx::query_scalar::<_, String>("SELECT id FROM roles WHERE code = ? COLLATE NOCASE")
-            .bind(code.trim())
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or_else(|| StorageError::Invalid(format!("unknown role '{code}'")))?;
+        let id =
+            sqlx::query_scalar::<_, String>("SELECT id FROM roles WHERE code = ? COLLATE NOCASE")
+                .bind(code.trim())
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(|| StorageError::Invalid(format!("unknown role '{code}'")))?;
         role_ids.push(id);
     }
     sqlx::query("DELETE FROM user_roles WHERE user_id = ?")
@@ -616,7 +648,7 @@ async fn insert_owned_workspace(
     let id = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO workspaces
-         (id, name, description, layout_json, version, created_at, updated_at, owner_user_id)
+         (id, name, description, viewport_json, version, created_at, updated_at, owner_user_id)
          VALUES (?, ?, NULL, '{}', 1, ?, ?, ?)",
     )
     .bind(&id)
@@ -641,7 +673,9 @@ async fn insert_owned_workspace(
 fn normalize_userid(value: &str) -> Result<&str, StorageError> {
     let value = required_text(value, "userid")?;
     if value.len() < 2 || value.len() > 64 {
-        return Err(StorageError::Invalid("userid must be 2-64 characters".into()));
+        return Err(StorageError::Invalid(
+            "userid must be 2-64 characters".into(),
+        ));
     }
     if !value
         .chars()

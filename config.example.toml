@@ -1,10 +1,19 @@
+# 복사: cp config.example.toml config.toml
+
 bind = "0.0.0.0:8083"
 data_dir = "./data"
 max_upload_mb = 512
 max_concurrent_jobs = 1
-session_secret = "change-me"
+
+session_secret = "change-me-session-secret"
+encryption_secret = "change-me-encryption-secret"
+
+# 개발만. 운영은 false.(로그인 인증 미적용)
 skip_auth = false
 
-[auth]
-username = "admin"
-password = "admin"
+# Oracle은 ODBC. Tibero는 JDBC(맥 포함). jar가 없으면 Maven에서 받는다.
+# [odbc]
+# oracle_driver = "Oracle 21c ODBC driver"
+# tibero_driver = "Tibero 6 ODBC DRIVER"
+# tibero_jdbc = "vendor/tibero/tbjdbc17-7.2.6.jar"
+# sys_ini = "/etc"

@@ -3,12 +3,14 @@ use std::path::Path;
 
 use csv::WriterBuilder;
 use futures_util::TryStreamExt;
+use sqlx::postgres::PgPoolCopyExt;
 use storage::LiveConnection;
+use tokio::io::AsyncWriteExt;
 
 use crate::inspect::list_columns;
 use crate::{
-    driver_family, mssql_client, my_pool, parse_table, pg_pool, qualified, sqlite_pool,
-    stringify_ms, stringify_my, stringify_pg, stringify_sqlite, ConnectError,
+    driver_family, mssql_client, my_pool, oracle, parse_table, pg_pool, qualified, sql_lit,
+    sqlite_pool, stringify_ms, stringify_my, stringify_pg, stringify_sqlite, ConnectError,
 };
 
 #[derive(Debug, Clone)]
@@ -151,10 +153,16 @@ pub async fn extract_table(
     let q = qualified(family, &parsed);
     let cols = list_columns(c, table).await?;
     if cols.is_empty() {
-        return Err(ConnectError::Invalid(format!("no columns for table {table}")));
+        return Err(ConnectError::Invalid(format!(
+            "no columns for table {table}"
+        )));
     }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+    if c.driver == "postgres" && !opts.add_sequence {
+        let sql = postgres_copy_to_sql(&q, opts.header, opts.delimiter, opts.quote);
+        return copy_postgres_to_file(c, &sql, dest, opts.header, opts.quote, on_progress).await;
     }
     let mut wtr = WriterBuilder::new()
         .delimiter(opts.delimiter)
@@ -173,6 +181,7 @@ pub async fn extract_table(
         "mysql" => stream_my(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
         "sqlite" => stream_sqlite(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
         "mssql" => stream_ms(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress).await?,
+        "oracle" => stream_oracle(c, &q, &mut wtr, ncols, opts.add_sequence, on_progress)?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     wtr.flush()?;
@@ -193,6 +202,103 @@ pub(crate) fn tick_progress_at(
 
 pub(crate) fn tick_progress(on_progress: Option<&(dyn Fn(u64) + Send + Sync)>, n: u64) {
     tick_progress_at(on_progress, n, 10_000);
+}
+
+pub(crate) fn postgres_copy_to_sql(source: &str, header: bool, delimiter: u8, quote: u8) -> String {
+    format!(
+        "COPY {source} TO STDOUT WITH (FORMAT csv, HEADER {}, DELIMITER {}, QUOTE {})",
+        if header { "true" } else { "false" },
+        sql_lit(std::str::from_utf8(&[delimiter]).unwrap_or(",")),
+        sql_lit(std::str::from_utf8(&[quote]).unwrap_or("\"")),
+    )
+}
+
+pub(crate) fn postgres_copy_to_query(sql: &str, header: bool, delimiter: u8, quote: u8) -> String {
+    postgres_copy_to_sql(&format!("({sql})"), header, delimiter, quote)
+}
+
+pub(crate) async fn copy_postgres_to_file(
+    c: &LiveConnection,
+    copy_sql: &str,
+    dest: &Path,
+    header: bool,
+    quote: u8,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+) -> Result<u64, ConnectError> {
+    let pool = pg_pool(c).await?;
+    let mut stream = pool.copy_out_raw(copy_sql).await?;
+    let mut out = tokio::fs::File::create(dest).await?;
+    let mut counter = CsvRecordCounter::new(quote);
+    while let Some(chunk) = stream.try_next().await? {
+        out.write_all(&chunk).await?;
+        counter.push(&chunk);
+        let n = counter.data_rows(header);
+        if n > 0 {
+            tick_progress(on_progress, n);
+        }
+    }
+    out.flush().await?;
+    pool.close().await;
+    Ok(counter.data_rows(header))
+}
+
+struct CsvRecordCounter {
+    in_quotes: bool,
+    pending_quote: bool,
+    records: u64,
+    quote: u8,
+}
+
+impl CsvRecordCounter {
+    fn new(quote: u8) -> Self {
+        Self {
+            in_quotes: false,
+            pending_quote: false,
+            records: 0,
+            quote,
+        }
+    }
+
+    fn data_rows(&self, header: bool) -> u64 {
+        if header {
+            self.records.saturating_sub(1)
+        } else {
+            self.records
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        let mut i = 0;
+        if self.pending_quote {
+            self.pending_quote = false;
+            if bytes.first() == Some(&self.quote) {
+                i = 1;
+            } else {
+                self.in_quotes = false;
+            }
+        }
+        while i < bytes.len() {
+            let b = bytes[i];
+            if self.in_quotes {
+                if b == self.quote {
+                    if i + 1 == bytes.len() {
+                        self.pending_quote = true;
+                        return;
+                    }
+                    if bytes[i + 1] == self.quote {
+                        i += 2;
+                        continue;
+                    }
+                    self.in_quotes = false;
+                }
+            } else if b == self.quote {
+                self.in_quotes = true;
+            } else if b == b'\n' {
+                self.records += 1;
+            }
+            i += 1;
+        }
+    }
 }
 
 async fn stream_pg(
@@ -282,6 +388,33 @@ async fn stream_ms(
     Ok(n)
 }
 
+fn stream_oracle(
+    c: &LiveConnection,
+    q: &str,
+    wtr: &mut csv::Writer<File>,
+    ncols: usize,
+    add_sequence: bool,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+) -> Result<u64, ConnectError> {
+    oracle::with_conn(c, |conn| {
+        let sql = format!("SELECT * FROM {q}");
+        let mut n = 0u64;
+        oracle::stream_query(
+            conn,
+            &sql,
+            |_| Ok(()),
+            |rec| {
+                n += 1;
+                let row: Vec<String> = rec.iter().take(ncols).cloned().collect();
+                wtr.write_record(&with_sequence(add_sequence, n, row))?;
+                tick_progress(on_progress, n);
+                Ok(())
+            },
+        )?;
+        Ok(n)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +455,36 @@ mod tests {
             with_sequence_header(true, vec!["name".into()]),
             vec!["#", "name"]
         );
-        assert_eq!(with_sequence_header(false, vec!["name".into()]), vec!["name"]);
+        assert_eq!(
+            with_sequence_header(false, vec!["name".into()]),
+            vec!["name"]
+        );
+    }
+
+    #[test]
+    fn postgres_copy_to_sql_matches_extract_options() {
+        assert_eq!(
+            postgres_copy_to_sql("\"public\".\"users\"", true, b',', b'"'),
+            "COPY \"public\".\"users\" TO STDOUT WITH (FORMAT csv, HEADER true, DELIMITER ',', QUOTE '\"')"
+        );
+        assert_eq!(
+            postgres_copy_to_query("SELECT 1 AS id", false, b'|', b'"'),
+            "COPY (SELECT 1 AS id) TO STDOUT WITH (FORMAT csv, HEADER false, DELIMITER '|', QUOTE '\"')"
+        );
+    }
+
+    #[test]
+    fn csv_record_counter_counts_data_rows_across_chunks() {
+        let mut counter = CsvRecordCounter::new(b'"');
+        counter.push(b"id,name\n1,");
+        counter.push(b"\"a\"\"b\"\n");
+        assert_eq!(counter.data_rows(true), 1);
+        let mut quoted_newline = CsvRecordCounter::new(b'"');
+        quoted_newline.push(b"h\n\"a\nb\",c\n");
+        assert_eq!(quoted_newline.data_rows(true), 1);
+        let mut split_quote = CsvRecordCounter::new(b'"');
+        split_quote.push(b"h\n\"a");
+        split_quote.push(b"\"\"b\",c\n");
+        assert_eq!(split_quote.data_rows(true), 1);
     }
 }

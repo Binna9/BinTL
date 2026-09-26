@@ -10,6 +10,7 @@ export type ExtractConfigView = {
   method: string;
   path: string;
   recordsPath: string;
+  outputFilename: string;
   delimiter: string;
   header: boolean;
 };
@@ -17,6 +18,16 @@ export type ExtractConfigView = {
 export type TransformConfigView = {
   inputDatasetId: string;
   steps: TransformStep[];
+};
+
+export type LoadConfigView = {
+  inputDatasetId: string;
+  destinationType: "database" | "file";
+  connectionId: string;
+  table: string;
+  format: string;
+  filename: string;
+  writeMode: string;
 };
 
 function textValue(config: ChipConfig, key: string, fallback = ""): string {
@@ -51,6 +62,7 @@ export function parseExtractConfig(config: ChipConfig): ExtractConfigView | null
     method: textValue(source, "method", "GET"),
     path: textValue(source, "path"),
     recordsPath: textValue(source, "records_path"),
+    outputFilename: textValue(config, "output_filename"),
     delimiter: textValue(config, "delimiter", ","),
     header: boolValue(config, "header", true),
   };
@@ -58,11 +70,43 @@ export function parseExtractConfig(config: ChipConfig): ExtractConfigView | null
 
 export function parseTransformConfig(config: ChipConfig): TransformConfigView | null {
   const spec = objectValue(config, "spec");
-  const rawSteps = spec.steps;
-  const steps = Array.isArray(rawSteps) ? rawSteps.filter(isTransformStep) : [];
+  const legacySteps = Array.isArray(spec.steps)
+    ? spec.steps.filter(isTransformStep)
+    : [];
+  const cleanOperation = Array.isArray(spec.operations)
+    ? spec.operations.find(
+        (operation) =>
+          operation != null
+          && typeof operation === "object"
+          && !Array.isArray(operation)
+          && (operation as { type?: unknown }).type === "clean",
+      )
+    : undefined;
+  const operationSteps =
+    cleanOperation != null
+    && typeof cleanOperation === "object"
+    && !Array.isArray(cleanOperation)
+    && Array.isArray((cleanOperation as { steps?: unknown }).steps)
+      ? (cleanOperation as { steps: unknown[] }).steps.filter(isTransformStep)
+      : [];
   return {
     inputDatasetId: textValue(config, "input_dataset_id"),
-    steps,
+    steps: cleanOperation === undefined ? legacySteps : operationSteps,
+  };
+}
+
+export function parseLoadConfig(config: ChipConfig): LoadConfigView | null {
+  const destination = objectValue(config, "destination");
+  const type = textValue(destination, "type");
+  if (type !== "database" && type !== "file") return null;
+  return {
+    inputDatasetId: textValue(config, "input_dataset_id"),
+    destinationType: type,
+    connectionId: textValue(destination, "connection_id"),
+    table: textValue(destination, "table"),
+    format: textValue(destination, "format"),
+    filename: textValue(destination, "filename"),
+    writeMode: textValue(config, "write_mode", "append"),
   };
 }
 
@@ -78,6 +122,20 @@ export function formatTransformStepSummary(step: TransformStep): string {
         .join(", ") || "—";
     case "filter":
       return step.expr.trim() || "—";
+    case "derive":
+      return step.name.trim() && step.expr.trim()
+        ? `${step.name.trim()} = ${step.expr.trim()}`
+        : step.expr.trim() || "—";
+    case "trim":
+      return step.columns.length > 0 ? step.columns.join(", ") : "—";
+    case "replace":
+      return step.column.trim()
+        ? `${step.column} : ${step.find} → ${step.replacement}`
+        : "—";
+    case "split":
+      return step.column.trim()
+        ? `${step.column} ${step.delimiter} [${step.index + 1}] → ${step.name || "—"}`
+        : "—";
     case "cast":
       return Object.entries(step.columns)
         .map(([column, type]) => `${column}: ${type}`)
@@ -102,14 +160,15 @@ export function formatTransformStepSummary(step: TransformStep): string {
 export function bindingKindLabel(
   refKind: string,
   messages: {
-    chips: { bindingExtract: string; bindingTransform: string };
+    chips: { bindingExtract: string; bindingTransform: string; bindingLoad: string };
   },
 ): string {
   if (refKind === "extract_definition") return messages.chips.bindingExtract;
   if (refKind === "transform") return messages.chips.bindingTransform;
+  if (refKind === "load_definition") return messages.chips.bindingLoad;
   return refKind;
 }
 
 export function supportsReadableDetail(kind: ChipKind): boolean {
-  return kind === "extract" || kind === "transform";
+  return kind === "extract" || kind === "transform" || kind === "load";
 }

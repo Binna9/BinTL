@@ -6,15 +6,17 @@ export function Panel({
   children,
   className,
   tall = false,
+  fill = false,
   style,
   ...props
-}: HTMLAttributes<HTMLDivElement> & { children: ReactNode; tall?: boolean }) {
+}: HTMLAttributes<HTMLDivElement> & { children: ReactNode; tall?: boolean; fill?: boolean }) {
   return (
     <section
       {...props}
       className={cn(
         "overflow-hidden rounded-xl bg-surface shadow-[0_1px_3px_rgba(15,23,42,0.045)] dark:border dark:border-white/15 dark:shadow-[0_2px_8px_rgba(0,0,0,0.16)]",
-        tall && "flex flex-col",
+        (tall || fill) && "flex flex-col",
+        fill && "min-h-0 flex-1",
         className,
       )}
       style={
@@ -37,6 +39,7 @@ export function PanelHeader({
   description,
   actions,
   icon,
+  iconMuted = false,
   className,
   onPointerDown,
 }: {
@@ -44,20 +47,26 @@ export function PanelHeader({
   description?: string;
   actions?: ReactNode;
   icon?: ReactNode;
+  iconMuted?: boolean;
   className?: string;
   onPointerDown?: HTMLAttributes<HTMLElement>["onPointerDown"];
 }) {
   return (
     <header
       className={cn(
-        "flex min-h-11 items-center justify-between gap-4 rounded-t-xl border-b border-border bg-surface px-4 py-2.5",
+        "flex min-h-11 shrink-0 items-center justify-between gap-4 rounded-t-xl border-b border-border bg-surface px-4 py-2.5",
         className,
       )}
       onPointerDown={onPointerDown}
     >
       <div className="flex min-w-0 items-center gap-2.5">
         {icon ? (
-          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-accent-subtle text-accent">
+          <span
+            className={cn(
+              "grid size-7 shrink-0 place-items-center rounded-lg",
+              iconMuted ? "bg-subtle text-text-secondary" : "bg-accent-subtle text-accent",
+            )}
+          >
             {icon}
           </span>
         ) : null}
@@ -70,7 +79,11 @@ export function PanelHeader({
           ) : null}
         </div>
       </div>
-      {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
+      {actions ? (
+        <div className="flex shrink-0 items-center gap-1.5" onPointerDown={(event) => event.stopPropagation()}>
+          {actions}
+        </div>
+      ) : null}
     </header>
   );
 }

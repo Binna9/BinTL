@@ -9,13 +9,11 @@ export const layout = {
     inspect: 420,
     columns: 240,
     editor: 256,
-    builder: 192,
     settings: 248,
     minSettings: 168,
     maxSettings: 400,
     minPane: 160,
     minStack: 120,
-    minBuilder: 140,
   },
   grid: {
     minColumnWidth: 80,

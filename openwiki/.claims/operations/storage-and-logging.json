@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:6e956898d2b8fbba19c1f9bb902bed988569c55320c6431ef86c8e5f0176f02c",
+  "claims": [
+    {
+      "id": "claim_24150c1bfc3741cbb84a394e747ece50",
+      "statement": "Store::open은 data_dir/etl.db를 WAL과 FK 검사로 열고 sqlx 마이그레이션을 적용하며, 검색 인덱스 복구 실패는 권위 데이터 오픈을 막지 않는다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/storage/src/lib.rs#L73-L104",
+          "version": "repo-lines-v1:sha256:70ac5bd5676a42486c5e81bf078e9e27dfee36aad7b3b7f8ab722e40a918d143:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyN2FkYWE5NjE4NTE1ODQxYTczYjQ0MWM3NWRhZTJiMjNiOWFjMjVmNjdmYjIyNzdhM2UyY2MzZjBhOTgwYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkZjRmZGZmMjk1ZjE2ZTU4Nzg0OGQwMDcxN2M3MDIyMjJkZDM0ODhjMDU1MDg0YzMwMzA4YzhhZmVmOTlmYjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwZDczMTI0Y2RiMmNlNTBlNGViMmQzOWJjNGQyMjdlNjg3NThlYzFmZTIyNGFjNWQ4YzgyYmYyYjRiOTU4MzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMyMmI4OTdmOGFlNTE3N2RkZTg1MTJlMzY4NDYyZTcxMmJhMzBkNGJiOWU3MzJmYTc2MDk0YzdlOWE3ZjIwYWEifQ"
+        },
+        {
+          "resource": "repo://docs/schema.md#L1-L3",
+          "version": "repo-lines-v1:sha256:777fda9242405c5263f0af9333a7a1ef2bda1cd071540374d4009513ad549a95:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTU0M2RmNzQ5Nzc3NzI3MTBmNjRkZjhmMzU4NzI1YTZjZDMwMmQ4Y2U4YjM2MTYwNmNmYzRmZjA4NDZlZDU5MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOGY1NjU3MjcyZTJmZDZmZjVmMTQ5ZDYwYzFiNThkYTJlY2Q2YTM0YTE1NzMxNmI5NmNiOTMyNWZkYTRjYmFlNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYmFhNDc2MmQ5ZjM5ZGFmN2NjMGI3ZTBjZTM2NTk0Yjg5M2IxODNiODE0YWIzZDI1Y2VmM2VjN2Q4YTIyNjE1ZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_96de9cdf78e14654b2a4137eb212ab4c",
+      "statement": "실재 파일만 data_files에 등록하고, 예상 스키마는 workspace_chip_outputs 계약이며, 칩 최신 출력은 chip_outputs/{workspace}/{chip}/ 슬롯에 둔다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/storage/src/chip_slot.rs#L3-L18",
+          "version": "repo-lines-v1:sha256:46250b244f2771fba897d60a035d13744c149b34cba2f2547645c47ea8e007bf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhZTk3YTNmMzBlMjU0MGViNzhiNDk4MjdkM2EzMzQ1Yjg5YTY5YWI5ZDg5OTVjY2U4N2Y2N2Q5OTQzOThmNTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4MzEyMzNkMjhkOTUzNWQ3YjM3NjFkMjFhM2U5YWU0M2Q4MTYwZmQ1MTAzNWExNTM3ZDAxODJlODY4OGY4OWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0ZTg1MjBjNjgxMjM0YTJkNWY2ZGM4YmJjNzk5MDkyOGQ4N2M1ZGYzOTI4ZjE4Y2YzNmQyNGIzODM5MjllY2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEwMWY4YmY1Zjg3YzU4NWNiOTg0YWZkOGUzNDBhZWJiMjc2MzNmMjE3MzNmZGY0ZWZhZTczMzk5OWUwYWQyMDYifQ"
+        },
+        {
+          "resource": "repo://crates/storage/src/lib.rs#L60-L68",
+          "version": "repo-lines-v1:sha256:33cbf606abcd2fe7b63e41c3b0cd8f998224ae6f6c02261c2de62f1b561d4157:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWI3ODczNmUyZGMzM2VmZWJlYmFlY2M3Mzk5NTQ5NzQzNWIyMWJjMmRkZjQxMDQ0NDZjOTc0NDcwZWYzOTJmNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDE5YmJmZjQzMWUwMTRkYTBlMmY5YmJlZGE2NDU0YTY5YWFjNjk0Zjg2MmFlODVmZmNlNWJlMjFjMWU2NmRlYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmY0NGIxMTc1NjY3MjU5ZmU1OGZiYzAzOWQ4MjA0ODgxZmRhYmRjYzAwMTI0NjAyNTcwZjMyZjliYmNkNjA0YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjc2NTZhZDYzM2NjMDFlOWU3M2Q1MWNjYTljMmViNGQ5YmRlZmI1ODI5Y2RhOGZhMzYxZjlkZWUwZWYyMmE3OCJ9"
+        },
+        {
+          "resource": "repo://docs/schema.md#L9-L11",
+          "version": "repo-lines-v1:sha256:90d0f1bcc716985c8f116f4488493c6151640d7b4348ebc354566ae9ccbb5c71:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTc5OTFkMWI3YWFjYWU3NDZhOTBlNWJmYzEzOTg5MWJlZDgzOTQ4NDZlYjJkOGY4Yzg4Yzk1Y2Y3NTA1NjU1ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTk5NGU0ZmMxMDNmYjMyODlhMDFkOWRkNmIxOWY1YWRlNTFkNTlmMjI1OWYxNjBhYTUxYmE3NzQ0YWNhODM4NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGU3MjQyZTM1NDhlYTBmNjg3OWZiYjM2YTc3YTUwNDE5NWRlYmIxN2E2NjBjMmI0NDk0YTcwMmYwMDg1ODU5NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjc1NWUyMGY1ZjdkODJhOGIxODk5ZGEwNDE4MTYwMWQ5ZDI1YzdiZjY1ZWJlNjZjNjcwNTIxODNlMzI1YzBlNiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_d10aa5496b704f308fa6c88c538b4ebf",
+      "statement": "칩 실행 로그 원본은 execution_logs이며 단계당 최근 500개를 유지하고, data/logs는 칩 이력이 아니라 운영 진단용이다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/storage/src/execution_repo.rs#L236-L252",
+          "version": "repo-lines-v1:sha256:46fa0635764e4fccf34c5bd81cec00cecd58e3df3ffb7d34b0cee291b1cb1fb1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZTQwMmVjMzY5NDEyMDU4NjE4OWFiYWIwMGEzMzA1MjdlNmJiMjUwZDE1Y2FlYjZkN2JkYjdkOTkwMDFmOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNTI3MjQ1MDdjNzRjMjc2MDhmZDYyNWEzZWEyMGIwZTNiNjNiNmUzNDRhYTBmYTYzYzAzMjMwMmNiN2I0YmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2YjU3ZmRkNTA5NmJjN2EwMjRjNDNiNDMyODc0OTUzZTFmNDAwYTY0ZjU1NTg3Nzg1NDJkMmYxMjhhMmRlYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiNDM4NmJiNGI4Njg5N2JiZDVhMTg2Y2QzZTUyOGMwNTQxY2E3ODdkNzJkZTQ0M2IzNDI0NzBkZmNmMGY1OTcifQ"
+        },
+        {
+          "resource": "repo://docs/logging.md#L3-L22",
+          "version": "repo-lines-v1:sha256:3b544dcda7925d64e0cf7e8949c2c78216cfb47ff3b092e6e8a4e987cafd8d0d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1YTRkNmIxY2JjMzU2MDAzNTExNTQzYWRhMGZmYjJhNjNmYjQ2M2I5NzUxZWRlNGU0OWQwODYwYWE4OTExMjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5YWY2YzZhMzQxYTA1ODRlNDJhZWY4NDBiNzMwY2IxNjU3NTAyMGEzZTVjYTEzYjljMDFkYTVhNjViYjNmZTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE2ZTNlYWM0MjEwYjI4MzA2MTEzYmVmZGNjYWNlMzI5ODg1ZDYwOTMwM2I5NTU2Njc3MjUzMmQ2NWNiMzZmYTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE3YjMxYTM1YzE5NGQ3ZDE3NDM2ZWU3YzJiMDU3YTIzY2FjOTJkM2EyMzYwMTRmZmEwZGMyOGE4MmQ1N2YzZTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1911f964820745bb8bc76931f5606a2e",
+      "statement": "칩 상태 트리거는 source != workspace인 실행만 갱신하고, 워크스페이스 전체 실행 상태는 서버 조정 로직이 확정한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/storage/migrations/0006_workspace_execution_history.sql#L1-L16",
+          "version": "repo-lines-v1:sha256:bc0fd80f9aace657773bdf687d6547b76f8dd7d450d767e27c1eef4053600466:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4MTZlNGY0OTFkMTk1Y2IxZTkzNDkzZTY0YzI4ZmU0MzFkZmEzODM1MzU1NjcyMzA5ODQ1NTc2MjViODAwNDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjNzgyZTQ4MGQ0NDNlMzM5ODk3NzljNjJjOTQ4Njg0OTliYTU2MmRhYTI5NzdiNWQ4ZWJkMmE0N2JmOGM0MDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ1ZWIwMGY1ODg2YTg0MTEwNmEwZjE4YWJmMDI1ZDJiYTNiNDYzZGU3NmE3MzlmM2Q2ODJiZWZjYjNjZjM5NTQifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

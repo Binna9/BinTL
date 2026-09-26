@@ -1,11 +1,22 @@
+use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
-use chrono::{SecondsFormat, Utc};
 
 use crate::{StorageError, Store};
 
 const MAX_RECENT_SEARCHES: i64 = 8;
+
+const LIVE_SEARCH_DOCUMENT_SQL: &str = "(
+    (entity_type = 'workspace_folder' AND EXISTS (SELECT 1 FROM workspace_folders source WHERE source.id = search_documents.entity_id))
+ OR (entity_type = 'workspace' AND EXISTS (SELECT 1 FROM workspaces source WHERE source.id = search_documents.entity_id))
+ OR (entity_type = 'chip' AND EXISTS (SELECT 1 FROM chips source WHERE source.id = search_documents.entity_id))
+ OR (entity_type = 'connection' AND EXISTS (SELECT 1 FROM connections source WHERE source.id = search_documents.entity_id))
+ OR (entity_type = 'extract' AND EXISTS (SELECT 1 FROM execution_steps source WHERE source.id = search_documents.entity_id AND source.kind = 'extract'))
+ OR (entity_type = 'transform' AND EXISTS (SELECT 1 FROM transforms source WHERE source.id = search_documents.entity_id))
+ OR (entity_type = 'load' AND EXISTS (SELECT 1 FROM loads source WHERE source.id = search_documents.entity_id))
+ OR (entity_type = 'data_file' AND EXISTS (SELECT 1 FROM data_files source WHERE source.id = search_documents.entity_id AND source.deleted_at IS NULL))
+)";
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct SearchHit {
@@ -43,15 +54,18 @@ impl Store {
         let needle = query.trim();
         let limit = limit.clamp(1, 50);
         if needle.is_empty() {
-            return self.browse_search_documents(user_id, can_see_all, limit.max(24)).await;
+            return self
+                .browse_search_documents(user_id, can_see_all, limit.max(24))
+                .await;
         }
         let pattern = like_pattern(needle);
         let can_all = i64::from(can_see_all);
-        sqlx::query_as::<_, SearchHit>(
+        let sql = format!(
             "SELECT entity_type, entity_id, title, subtitle, route, updated_at,
                     substr(keywords, 1, 140) AS preview
              FROM search_documents
-             WHERE (
+             WHERE {LIVE_SEARCH_DOCUMENT_SQL}
+             AND (
                  scope = 'global'
                  OR (scope = 'user' AND owner_user_id = ?)
                  OR (
@@ -76,20 +90,21 @@ impl Store {
                      ELSE 2
                  END,
                  updated_at DESC
-             LIMIT ?",
-        )
-        .bind(user_id)
-        .bind(can_all)
-        .bind(user_id)
-        .bind(&pattern)
-        .bind(&pattern)
-        .bind(&pattern)
-        .bind(format!("{}%", escape_like(needle).to_lowercase()))
-        .bind(&pattern)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StorageError::from)
+             LIMIT ?"
+        );
+        sqlx::query_as::<_, SearchHit>(&sql)
+            .bind(user_id)
+            .bind(can_all)
+            .bind(user_id)
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(format!("{}%", escape_like(needle).to_lowercase()))
+            .bind(&pattern)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StorageError::from)
     }
 
     pub async fn browse_search_documents(
@@ -100,11 +115,12 @@ impl Store {
     ) -> Result<Vec<SearchHit>, StorageError> {
         let limit = limit.clamp(1, 60);
         let can_all = i64::from(can_see_all);
-        sqlx::query_as::<_, SearchHit>(
+        let sql = format!(
             "SELECT entity_type, entity_id, title, subtitle, route, updated_at,
                     substr(keywords, 1, 140) AS preview
              FROM search_documents
-             WHERE (
+             WHERE {LIVE_SEARCH_DOCUMENT_SQL}
+             AND (
                  scope = 'global'
                  OR (scope = 'user' AND owner_user_id = ?)
                  OR (
@@ -118,15 +134,16 @@ impl Store {
                  )
              )
              ORDER BY updated_at DESC
-             LIMIT ?",
-        )
-        .bind(user_id)
-        .bind(can_all)
-        .bind(user_id)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StorageError::from)
+             LIMIT ?"
+        );
+        sqlx::query_as::<_, SearchHit>(&sql)
+            .bind(user_id)
+            .bind(can_all)
+            .bind(user_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StorageError::from)
     }
 
     pub async fn list_recent_searches(
@@ -156,7 +173,9 @@ impl Store {
     ) -> Result<Vec<String>, StorageError> {
         let needle = query.trim();
         if needle.is_empty() {
-            return self.list_recent_searches(user_id, MAX_RECENT_SEARCHES).await;
+            return self
+                .list_recent_searches(user_id, MAX_RECENT_SEARCHES)
+                .await;
         }
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let id = Uuid::new_v4().to_string();
@@ -196,7 +215,8 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        self.list_recent_searches(user_id, MAX_RECENT_SEARCHES).await
+        self.list_recent_searches(user_id, MAX_RECENT_SEARCHES)
+            .await
     }
 
     pub async fn delete_search_document(
@@ -209,6 +229,82 @@ impl Store {
             .bind(entity_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    /// Rebuilds the derived search index from authoritative application tables.
+    /// This is intentionally safe to run repeatedly during server startup.
+    pub async fn reconcile_search_documents(&self) -> Result<(), StorageError> {
+        let delete_sql =
+            format!("DELETE FROM search_documents WHERE NOT {LIVE_SEARCH_DOCUMENT_SQL}");
+        let removed = sqlx::query(&delete_sql)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+
+        let folders = sqlx::query_scalar::<_, String>("SELECT id FROM workspace_folders")
+            .fetch_all(&self.pool)
+            .await?;
+        let workspaces = sqlx::query_scalar::<_, String>("SELECT id FROM workspaces")
+            .fetch_all(&self.pool)
+            .await?;
+        let chips = sqlx::query_scalar::<_, String>("SELECT id FROM chips")
+            .fetch_all(&self.pool)
+            .await?;
+        let connections = sqlx::query_scalar::<_, String>("SELECT id FROM connections")
+            .fetch_all(&self.pool)
+            .await?;
+        let extracts = sqlx::query_scalar::<_, String>(
+            "SELECT s.id FROM execution_steps s
+             INNER JOIN executions e ON e.id = s.execution_id
+             WHERE s.kind = 'extract' AND e.source = 'extract_page'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let transforms = sqlx::query_scalar::<_, String>("SELECT id FROM transforms")
+            .fetch_all(&self.pool)
+            .await?;
+        let loads = sqlx::query_scalar::<_, String>("SELECT id FROM loads")
+            .fetch_all(&self.pool)
+            .await?;
+        let datasets =
+            sqlx::query_scalar::<_, String>("SELECT id FROM data_files WHERE deleted_at IS NULL")
+                .fetch_all(&self.pool)
+                .await?;
+
+        let total = folders.len()
+            + workspaces.len()
+            + chips.len()
+            + connections.len()
+            + extracts.len()
+            + transforms.len()
+            + loads.len()
+            + datasets.len();
+        for id in folders {
+            self.sync_search_workspace_folder(&id).await?;
+        }
+        for id in workspaces {
+            self.sync_search_workspace(&id).await?;
+        }
+        for id in chips {
+            self.sync_search_chip(&id).await?;
+        }
+        for id in connections {
+            self.sync_search_connection(&id).await?;
+        }
+        for id in extracts {
+            self.sync_search_extract(&id).await?;
+        }
+        for id in transforms {
+            self.sync_search_transform(&id).await?;
+        }
+        for id in loads {
+            self.sync_search_load(&id).await?;
+        }
+        for id in datasets {
+            self.sync_search_dataset(&id).await?;
+        }
+        tracing::info!(removed, synchronized = total, "search index reconciled");
         Ok(())
     }
 
@@ -247,7 +343,9 @@ impl Store {
 
     pub async fn sync_search_workspace_folder(&self, folder_id: &str) -> Result<(), StorageError> {
         let Some(folder) = self.get_folder(folder_id).await? else {
-            return self.delete_search_document("workspace_folder", folder_id).await;
+            return self
+                .delete_search_document("workspace_folder", folder_id)
+                .await;
         };
         let path = self.folder_path_label(folder_id).await?;
         self.upsert_search_document(SearchDocInput {
@@ -303,6 +401,7 @@ impl Store {
         let subtitle = match chip.kind.as_str() {
             "extract" => "칩 · 추출",
             "transform" => "칩 · 변환",
+            "memo" => "칩 · 메모",
             _ => "칩 · 적재",
         };
         let mut keyword_parts = vec![chip.name.as_str(), chip.kind.as_str()];
@@ -325,7 +424,7 @@ impl Store {
 
     pub async fn sync_search_dataset(&self, dataset_id: &str) -> Result<(), StorageError> {
         let Some(dataset) = self.get_dataset(dataset_id).await? else {
-            return self.delete_search_document("dataset", dataset_id).await;
+            return self.delete_search_document("data_file", dataset_id).await;
         };
         let subtitle = match dataset.kind.as_str() {
             "upload" => "파일 · 업로드",
@@ -340,7 +439,7 @@ impl Store {
             "/transform/clean".into()
         };
         self.upsert_search_document(SearchDocInput {
-            entity_type: "dataset",
+            entity_type: "data_file",
             entity_id: dataset.id.clone(),
             title: dataset.filename.clone(),
             subtitle: subtitle.into(),
@@ -360,7 +459,9 @@ impl Store {
 
     pub async fn sync_search_connection(&self, connection_id: &str) -> Result<(), StorageError> {
         let Some(connection) = self.get_connection(connection_id).await? else {
-            return self.delete_search_document("connection", connection_id).await;
+            return self
+                .delete_search_document("connection", connection_id)
+                .await;
         };
         self.upsert_search_document(SearchDocInput {
             entity_type: "connection",
@@ -416,7 +517,7 @@ impl Store {
                 extract.sql_text.as_deref().unwrap_or(""),
                 extract.kind.as_str(),
             ]),
-            route: "/extracts".into(),
+            route: "/extract_runs".into(),
             scope: "workspace",
             workspace_id: Some(extract.workspace_id.clone()),
             owner_user_id: None,
@@ -449,6 +550,25 @@ impl Store {
         .await
     }
 
+    pub async fn sync_search_load(&self, load_id: &str) -> Result<(), StorageError> {
+        let Some(load) = self.get_load_definition(load_id).await? else {
+            return self.delete_search_document("load", load_id).await;
+        };
+        self.upsert_search_document(SearchDocInput {
+            entity_type: "load",
+            entity_id: load.id.clone(),
+            title: load.name.clone(),
+            subtitle: "적재 정의".into(),
+            keywords: join_keywords([&load.name, &load.destination_type, &load.spec_json]),
+            route: "/load".into(),
+            scope: "user",
+            workspace_id: None,
+            owner_user_id: Some(load.owner_user_id.clone()),
+            updated_at: load.updated_at.clone(),
+        })
+        .await
+    }
+
     async fn folder_path_label(&self, folder_id: &str) -> Result<String, StorageError> {
         let mut segments = Vec::new();
         let mut cursor = Some(folder_id.to_string());
@@ -468,7 +588,7 @@ impl Store {
             return Ok(String::new());
         };
         match binding.ref_kind.as_str() {
-            "extract_definition" => {
+            "extract_recipe" => {
                 let Some(def) = self.get_extract_definition(&binding.ref_id).await? else {
                     return Ok(String::new());
                 };
@@ -484,6 +604,16 @@ impl Store {
                     return Ok(String::new());
                 };
                 Ok(transform.name)
+            }
+            "load_recipe" => {
+                let Some(definition) = self.get_load_definition(&binding.ref_id).await? else {
+                    return Ok(String::new());
+                };
+                Ok(join_keywords([
+                    &definition.name,
+                    &definition.destination_type,
+                    &definition.spec_json,
+                ]))
             }
             _ => Ok(String::new()),
         }
@@ -509,7 +639,11 @@ fn like_pattern(raw: &str) -> String {
     format!("%{}%", escape_like(raw).to_lowercase())
 }
 
-pub(crate) async fn sync_search_best_effort(_store: &Store, label: &str, sync: impl std::future::Future<Output = Result<(), StorageError>>) {
+pub(crate) async fn sync_search_best_effort(
+    _store: &Store,
+    label: &str,
+    sync: impl std::future::Future<Output = Result<(), StorageError>>,
+) {
     if let Err(error) = sync.await {
         tracing::warn!(%error, target = label, "search index sync failed");
     }
@@ -523,14 +657,16 @@ mod tests {
     async fn test_store() -> (Store, String) {
         let root = std::env::temp_dir().join(format!("bintl-search-recent-{}", Uuid::new_v4()));
         let store = Store::open(&root, "test-session-secret").await.unwrap();
-        let admin = store.ensure_bootstrap("admin", "admin").await.unwrap();
+        let admin = store.ensure_bootstrap().await.unwrap();
         (store, admin.id)
     }
 
     #[tokio::test]
     async fn recent_searches_dedupe_and_cap() {
         let (store, user_id) = test_store().await;
-        for query in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota"] {
+        for query in [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota",
+        ] {
             store.record_recent_search(&user_id, query).await.unwrap();
         }
         let recent = store.list_recent_searches(&user_id, 8).await.unwrap();
@@ -541,6 +677,36 @@ mod tests {
         let recent = store.list_recent_searches(&user_id, 8).await.unwrap();
         assert_eq!(recent[0], "beta");
         assert_eq!(recent.iter().filter(|item| **item == "beta").count(), 1);
+        store.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn orphaned_documents_are_hidden_and_reconciled() {
+        let (store, user_id) = test_store().await;
+        sqlx::query(
+            "INSERT INTO search_documents
+             (id, entity_type, entity_id, title, subtitle, keywords, route, scope, updated_at)
+             VALUES ('chip:missing', 'chip', 'missing', 'ghost chip', '', 'ghost', '/chips', 'global', ?)",
+        )
+        .bind(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let hits = store
+            .search_documents(&user_id, true, "ghost", 10)
+            .await
+            .unwrap();
+        assert!(hits.is_empty());
+
+        store.reconcile_search_documents().await.unwrap();
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM search_documents WHERE entity_type = 'chip' AND entity_id = 'missing'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
         store.pool.close().await;
     }
 }

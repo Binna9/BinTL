@@ -44,6 +44,7 @@ export function DashboardWidget({
         )}
         onPointerDown={interactive ? (event) => onMoveStart(event, id) : undefined}
         icon={<Icon className="size-3.5" aria-hidden="true" />}
+        iconMuted
         title={title}
         description={def.description(messages)}
         actions={

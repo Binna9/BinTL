@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Cable, ChevronRight, AppWindow, Upload } from "lucide-react";
+import { AppWindow, Braces, Cable, ChevronRight, Upload } from "lucide-react";
 import { PanelBody } from "@/components/ui/panel";
 import { useLanguage } from "@/i18n/LanguageProvider";
 
@@ -25,6 +25,16 @@ export function StartWidget() {
         <span className="min-w-0 flex-1">
           <span className="block text-[13px] font-semibold text-text">{messages.overview.startWorkspace}</span>
           <span className="mt-0.5 block text-[11px] text-text-secondary">{messages.overview.startWorkspaceHint}</span>
+        </span>
+        <ChevronRight className="size-4 text-text-tertiary" />
+      </Link>
+      <Link to="/script" className="dash-start flex-1">
+        <span className="dash-start-icon">
+          <Braces className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-semibold text-text">{messages.overview.startScript}</span>
+          <span className="mt-0.5 block text-[11px] text-text-secondary">{messages.overview.startScriptHint}</span>
         </span>
         <ChevronRight className="size-4 text-text-tertiary" />
       </Link>

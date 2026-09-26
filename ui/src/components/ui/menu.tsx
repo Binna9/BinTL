@@ -1,6 +1,6 @@
 import * as React from "react";
-import { AnimatePresence, motion, type Variants } from "framer-motion";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import { ChevronDown, ChevronRight, ListCollapse, ListTree } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useRenderLocation } from "@/hooks/useViewTransitionLocation";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -29,28 +29,76 @@ function hasActiveDescendant(pathname: string, item: MenuItem, inactive: boolean
   return item.children.some((child) => hasActiveDescendant(pathname, child, inactive));
 }
 
+function collectGroupKeys(entries: MenuItem[]): string[] {
+  const keys: string[] = [];
+  for (const item of entries) {
+    if (!item.children?.length) continue;
+    keys.push(item.to);
+    keys.push(...collectGroupKeys(item.children));
+  }
+  return keys;
+}
+
+function findMenuItem(entries: MenuItem[], key: string): MenuItem | undefined {
+  for (const item of entries) {
+    if (item.to === key) return item;
+    if (item.children?.length) {
+      const found = findMenuItem(item.children, key);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function nextOpenGroups(current: Set<string>, items: MenuItem[], key: string, open: boolean): Set<string> {
+  if (open) {
+    if (current.has(key)) return current;
+    const next = new Set(current);
+    next.add(key);
+    return next;
+  }
+  const node = findMenuItem(items, key);
+  const closing = [key, ...collectGroupKeys(node?.children ?? [])];
+  let changed = false;
+  const next = new Set(current);
+  for (const groupKey of closing) {
+    if (next.delete(groupKey)) changed = true;
+  }
+  return changed ? next : current;
+}
+
 interface MenuSidebarProps {
   items: MenuItem[];
   className?: string;
   inactive?: boolean;
 }
 
-const sidebarVariants: Variants = {
-  hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: { staggerChildren: 0.06 },
-  },
-};
+const MENU_OPEN_STORAGE_KEY = "bintl.sidebar.open-groups";
 
-const itemVariants: Variants = {
-  hidden: { opacity: 0, x: -12 },
-  visible: {
-    opacity: 1,
-    x: 0,
-    transition: { type: "spring", stiffness: 130, damping: 18 },
-  },
-};
+function pruneHiddenGroups(open: Set<string>, items: MenuItem[]): Set<string> {
+  const next = new Set<string>();
+  function walk(entries: MenuItem[], parentOpen: boolean) {
+    for (const item of entries) {
+      if (!item.children?.length) continue;
+      const isOpen = parentOpen && open.has(item.to);
+      if (isOpen) next.add(item.to);
+      walk(item.children, isOpen);
+    }
+  }
+  walk(items, true);
+  return next;
+}
+
+function storedOpenGroups(items: MenuItem[]): Set<string> {
+  try {
+    const raw = window.sessionStorage.getItem(MENU_OPEN_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    const stored = new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []);
+    return pruneHiddenGroups(stored, items);
+  } catch {
+    return new Set();
+  }
+}
 
 function MenuLink({
   item,
@@ -141,15 +189,27 @@ function MenuLink({
   );
 }
 
-function MenuGroup({ item, depth = 0, inactive = false }: { item: MenuItem; depth?: number; inactive?: boolean }) {
+function MenuGroup({
+  item,
+  depth = 0,
+  inactive = false,
+  openGroups,
+  setGroupOpen,
+}: {
+  item: MenuItem;
+  depth?: number;
+  inactive?: boolean;
+  openGroups: Set<string>;
+  setGroupOpen: (key: string, open: boolean) => void;
+}) {
   const location = useRenderLocation();
   const { messages } = useLanguage();
   const childActive = hasActiveDescendant(location.pathname, item, inactive);
-  const [isOpen, setIsOpen] = React.useState(childActive);
+  const isOpen = openGroups.has(item.to);
 
   React.useEffect(() => {
-    if (childActive) setIsOpen(true);
-  }, [childActive]);
+    if (childActive) setGroupOpen(item.to, true);
+  }, [childActive, item.to, setGroupOpen]);
 
   return (
     <>
@@ -161,7 +221,7 @@ function MenuGroup({ item, depth = 0, inactive = false }: { item: MenuItem; dept
           childActive ? "bg-subtle" : "hover:bg-subtle",
         )}
         aria-expanded={isOpen}
-        onClick={() => setIsOpen((open) => !open)}
+        onClick={() => setGroupOpen(item.to, !isOpen)}
       >
         <span className="h-5 w-[3px] shrink-0 rounded-full bg-transparent" aria-hidden="true" />
         <span
@@ -203,7 +263,14 @@ function MenuGroup({ item, depth = 0, inactive = false }: { item: MenuItem; dept
             >
               {item.children?.map((child) =>
                 child.children?.length ? (
-                  <MenuGroup key={child.to} item={child} depth={depth + 1} inactive={inactive} />
+                  <MenuGroup
+                    key={child.to}
+                    item={child}
+                    depth={depth + 1}
+                    inactive={inactive}
+                    openGroups={openGroups}
+                    setGroupOpen={setGroupOpen}
+                  />
                 ) : (
                   <MenuLink key={child.to} item={child} nested inactive={inactive} />
                 ),
@@ -219,6 +286,18 @@ function MenuGroup({ item, depth = 0, inactive = false }: { item: MenuItem; dept
 export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
   ({ items, className, inactive = false }, ref) => {
     const { messages } = useLanguage();
+    const [openGroups, setOpenGroups] = React.useState<Set<string>>(() => storedOpenGroups(items));
+    const groupKeys = React.useMemo(() => collectGroupKeys(items), [items]);
+    React.useEffect(() => {
+      try {
+        window.sessionStorage.setItem(MENU_OPEN_STORAGE_KEY, JSON.stringify([...openGroups]));
+      } catch {
+        // Storage may be unavailable in privacy-restricted browser contexts.
+      }
+    }, [openGroups]);
+    const setGroupOpen = React.useCallback((key: string, open: boolean) => {
+      setOpenGroups((current) => nextOpenGroups(current, items, key, open));
+    }, [items]);
     return (
       <motion.aside
         ref={ref}
@@ -226,19 +305,47 @@ export const MenuSidebar = React.forwardRef<HTMLElement, MenuSidebarProps>(
           "flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-surface p-3 text-text",
           className,
         )}
-        initial="hidden"
-        animate="visible"
-        variants={sidebarVariants}
+        initial={false}
         aria-label={messages.nav.mainMenu}
       >
+        <div className="mb-2 flex shrink-0 items-center gap-1 border-b border-border pb-2 pl-3">
+          <span className="mr-auto text-xs font-semibold tracking-wide text-text-secondary">
+            {messages.nav.menuTitle}
+          </span>
+          <button
+            type="button"
+            title={messages.nav.expandAll}
+            aria-label={messages.nav.expandAll}
+            disabled={groupKeys.length === 0 || groupKeys.every((key) => openGroups.has(key))}
+            className="grid size-8 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default disabled:opacity-40"
+            onClick={() => setOpenGroups(new Set(groupKeys))}
+          >
+            <ListTree className="size-[17px]" strokeWidth={1.75} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            title={messages.nav.collapseAll}
+            aria-label={messages.nav.collapseAll}
+            disabled={!groupKeys.some((key) => openGroups.has(key))}
+            className="grid size-8 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default disabled:opacity-40"
+            onClick={() => setOpenGroups(new Set())}
+          >
+            <ListCollapse className="size-[17px]" strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        </div>
         <nav
           className="scroll-pane min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain"
           aria-label={messages.nav.platform}
         >
           {items.map((item) => (
-            <motion.div key={item.to} variants={itemVariants}>
+            <motion.div key={item.to}>
               {item.children ? (
-                <MenuGroup item={item} inactive={inactive} />
+                <MenuGroup
+                  item={item}
+                  inactive={inactive}
+                  openGroups={openGroups}
+                  setGroupOpen={setGroupOpen}
+                />
               ) : (
                 <MenuLink item={item} inactive={inactive} />
               )}

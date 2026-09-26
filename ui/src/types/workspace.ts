@@ -9,6 +9,12 @@ export interface WorkspaceFolder {
   updated_at: string;
 }
 
+export const DEFAULT_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
+
+export function isDefaultWorkspace(id: string) {
+  return id === DEFAULT_WORKSPACE_ID;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -22,8 +28,16 @@ export interface Workspace {
   edges?: ChipEdge[];
 }
 
+export interface WorkspaceLayoutNode {
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+  collapsed?: boolean;
+}
+
 export interface WorkspaceLayout {
-  nodes?: Record<string, { x: number; y: number }>;
+  nodes?: Record<string, WorkspaceLayoutNode>;
   view?: { x: number; y: number };
 }
 
@@ -69,6 +83,7 @@ export interface SaveWorkspaceEdge {
 
 export interface SaveWorkspaceRequest {
   layout: WorkspaceLayout;
+  version: number;
   chips: string[];
   edges: SaveWorkspaceEdge[];
 }
@@ -77,4 +92,15 @@ export interface SaveWorkspaceResponse {
   workspace: Workspace;
   chips: Chip[];
   edges: ChipEdge[];
+}
+
+export interface PasteChipsRequest {
+  source_workspace_id: string;
+  chip_ids: string[];
+  origin: { x: number; y: number };
+  version: number;
+}
+
+export interface PasteChipsResponse extends SaveWorkspaceResponse {
+  id_map: Record<string, string>;
 }

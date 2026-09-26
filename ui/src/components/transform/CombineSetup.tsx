@@ -1,4 +1,5 @@
 import { FileSpreadsheet, GitMerge, Layers } from "lucide-react";
+import { ColumnChipPicker } from "@/components/transform/TransformEditorParts";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { Select } from "@/components/ui/select";
@@ -8,58 +9,6 @@ import type { CombineDraft } from "@/lib/transformEditor";
 import type { Messages } from "@/i18n/ko";
 import type { Dataset, DatasetColumn } from "@/types/dataset";
 
-function ColumnChipPicker({
-  columns,
-  value,
-  emptyLabel,
-  onChange,
-  minSelected = 1,
-}: {
-  columns: DatasetColumn[];
-  value: string[];
-  emptyLabel: string;
-  onChange: (columns: string[]) => void;
-  minSelected?: number;
-}) {
-  if (columns.length === 0) {
-    return <p className="text-xs text-text-tertiary">{emptyLabel}</p>;
-  }
-  const kept = new Set(value);
-  function toggle(name: string) {
-    if (kept.has(name)) {
-      if (kept.size <= minSelected) return;
-      onChange(value.filter((column) => column !== name));
-      return;
-    }
-    onChange([...value, name]);
-  }
-  return (
-    <div className="scroll-pane -mx-0.5 overflow-x-auto px-0.5">
-      <div className="flex flex-nowrap gap-1.5 pb-0.5">
-        {columns.map((column) => {
-          const active = kept.has(column.name);
-          return (
-            <button
-              key={column.name}
-              type="button"
-              aria-pressed={active}
-              onClick={() => toggle(column.name)}
-              className={cn(
-                "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                active
-                  ? "border-accent bg-accent-subtle text-accent"
-                  : "border-border bg-raised text-text-tertiary hover:border-border hover:bg-subtle hover:text-text-secondary",
-              )}
-            >
-              {column.name}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 export function CombineSetup({
   messages,
   draft,
@@ -68,7 +17,6 @@ export function CombineSetup({
   leftColumns,
   commonJoinKeys,
   onChange,
-  onDisable,
 }: {
   messages: Messages;
   draft: CombineDraft;
@@ -77,7 +25,6 @@ export function CombineSetup({
   leftColumns: DatasetColumn[];
   commonJoinKeys: DatasetColumn[];
   onChange: (draft: CombineDraft) => void;
-  onDisable?: () => void;
 }) {
   const t = messages.transform;
 
@@ -110,11 +57,6 @@ export function CombineSetup({
             <Layers className="size-3.5" aria-hidden="true" />
             {t.combineModeUnion}
           </Button>
-          {onDisable ? (
-            <Button type="button" variant="quiet" onClick={onDisable}>
-              {t.combineDisable}
-            </Button>
-          ) : null}
         </div>
 
         {draft.mode === "join" ? (

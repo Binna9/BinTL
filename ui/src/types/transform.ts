@@ -3,6 +3,10 @@ export type TransformStep =
   | { op: "drop"; columns: string[] }
   | { op: "rename"; map: Record<string, string> }
   | { op: "filter"; expr: string }
+  | { op: "derive"; name: string; expr: string }
+  | { op: "trim"; columns: string[] }
+  | { op: "replace"; column: string; find: string; replacement: string }
+  | { op: "split"; column: string; delimiter: string; index: number; name: string }
   | { op: "cast"; columns: Record<string, string> }
   | { op: "fill_null"; value: string; columns: string[] }
   | { op: "sort"; by: { column: string; descending: boolean }[] }
@@ -18,12 +22,32 @@ export interface CombineSpec {
   how?: "left" | "inner";
 }
 
+export type TransformOperation =
+  | { type: "clean"; steps: TransformStep[] }
+  | {
+      type: "join";
+      right_dataset_id: string;
+      on: string[];
+      how?: "left" | "inner";
+    }
+  | { type: "union"; dataset_ids: string[] }
+  | {
+      type: "aggregate";
+      group_by: string[];
+      aggregations: Array<{
+        column: string;
+        function: "sum" | "count" | "mean" | "min" | "max";
+        alias: string;
+      }>;
+    };
+
 export interface TransformSpecV2 {
-  version: 2;
+  version: 2 | 3;
   read?: { delimiter?: string; has_header?: boolean };
-  steps: TransformStep[];
+  steps?: TransformStep[];
   sink: "parquet";
   combine?: CombineSpec;
+  operations?: TransformOperation[];
 }
 
 export interface SavedTransform {
@@ -37,6 +61,7 @@ export interface SavedTransform {
     sink?: string;
     read?: { delimiter?: string; has_header?: boolean };
     combine?: CombineSpec;
+    operations?: TransformOperation[];
   };
   created_at: string;
   updated_at: string;

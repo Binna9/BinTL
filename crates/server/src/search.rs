@@ -57,10 +57,7 @@ async fn list_recent(
     State(state): State<AppState>,
     user: CurrentUser,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let items = state
-        .store
-        .list_recent_searches(user.id(), 8)
-        .await?;
+    let items = state.store.list_recent_searches(user.id(), 8).await?;
     Ok(Json(json!({ "items": items })))
 }
 

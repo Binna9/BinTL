@@ -1,0 +1,35 @@
+---
+description: 세로 스크롤 패널·목록·사이드 메뉴는 스크롤바로 가로 폭이 흔들리지 않게 한다
+globs: ui/**/*.{tsx,ts,css}
+alwaysApply: true
+---
+
+# 스크롤 패널 규칙
+
+사이드 메뉴, 데이터 카탈로그, 트리 피커처럼 **세로 스크롤이 생기는 고정 폭 패널**에는 반드시 `scroll-pane` 클래스를 붙인다.
+
+`scroll-pane`은 `styles.css`에 정의되어 있으며 `scrollbar-gutter: stable`로 스크롤바 자리를 미리 확보해, 스크롤 유무와 관계없이 콘텐츠 가로 폭이 변하지 않는다.
+
+## 적용 대상
+
+- 왼쪽 네비(`MenuSidebar`의 `nav`)
+- DB·변환·커넥션 페이지 사이드 카탈로그/목록
+- `WorkspaceTreePicker`, `WorkspaceManageDialog` 트리 영역
+- `DataGrid` 래퍼
+- `Select` 드롭다운(`.field-select-menu` — CSS에 이미 포함)
+
+## 적용하지 않음
+
+- 전체 페이지 스크롤(`App` main)
+- 캔버스·로그 뷰어 등 가로·세로 자유 스크롤 영역(필요 시 별도 판단)
+- `textarea` 입력 필드
+
+```tsx
+// ❌ BAD — 스크롤 생기면 목록 가로가 줄어듦
+<div className="min-h-0 flex-1 overflow-y-auto bg-surface">
+
+// ✅ GOOD
+<div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
+```
+
+새 스크롤 목록을 만들 때 `overflow-y-auto` / `overflow-auto`만 쓰지 말고 `scroll-pane`을 함께 추가한다.

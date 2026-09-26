@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:dfa6e096de5e8624500d922bd2d3c5442ba7af2e156292ff66c6405b9921273e",
+  "claims": [
+    {
+      "id": "claim_66c54a3132bb4a53acc6bfccc546d331",
+      "statement": "driver_family는 postgres/mysql/mssql/sqlite/http 와이어 패밀리로 묶고, 별칭(redshift, cockroach, mariadb, sqlserver)을 같은 컴파일 드라이버로 커버한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/connectors/src/lib.rs#L49-L59",
+          "version": "repo-lines-v1:sha256:d03b5cc97980f70c1cdd4fc99e381acc390aa4299094ff7888226c4e8f8ae965:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5N2VkMjE3Y2ZhYWNkNDVlYzE2NTA2Y2M5MWM2YmJhNjNmMzUxNDIwMzhjOTQ4OGVhY2FkYmY2NDU2YzFmNTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhYWI4NDU3ZDY1YjY2YjEyZWMyZGI2NzczNjBlOTUzMmRkODA1YTVlNzI4MWQyY2I1NGM1Yjc0MmViZWQyZWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEzYzVhYjliY2VmOTVkYjU5NGQ0MzQxMzRhM2ZlZTgxMzUzYTQzMWJhNTQ0MjAxZGYwMjM4OGU5NjAwMmNjZjYifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/api/connections.rs#L22-L28",
+          "version": "repo-lines-v1:sha256:aeb755dd5bb31b22d5488de3cfd7b9a17749401d49e695675d2dacbd2ae44a5c:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWRlNzM5ZDMzMGQ3ODIxY2JiOWM1Njg5NWM0MDg0MTkzNDZlYmE0MmU3ZjNkMjZhNTkxMmEwNjJlZmNmYjg0NSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjQ3NWU5NGE5MDRhYzQ5YjMxNTRkNDY3MmE2NmU4NjI5Yjg2ZGFjNzRlM2UyOTM3YmU2OTI3YWUzZGExMWM1MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTc4ODA5ZDY3YjhkNzlkNThjNGJjY2QxNGM3ZmU2MTE2M2ZkZGU4MjA2YmQ3ZWRjNjYzYzFlMWRlMDZkMjczNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjUzMWUwOTMzYmE4MDFhMjY2MDM0MWI2NzZiZWE2MTg1MDY4OTJhYTZkYjk4NWIzNjcwMDZmODJlZDEzZDE5ZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_07d64e59dbb24dd7be4c516402b7d064",
+      "statement": "테이블은 name 또는 schema.name이며 [A-Za-z0-9_]만 허용하고, 추출 쿼리는 normalize_sql이 한 문장의 Rows SQL만 받는다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/connectors/src/lib.rs#L67-L107",
+          "version": "repo-lines-v1:sha256:c878b185a19e0b50a0bb200633581f4cfb87cbbc5e7db630328507edad792070:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiMDQ4ZGYwYzZjNDZiYjY0OWM1ZWY4OGFiNTc0NTVmNTk5NmI5YzNlNzg4NzUxNDYyOGQxOWY3MzYxYWFmMWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlOTkzZTFmNzkwY2M2OTNmMTc1Y2ZlMDExOTZjODM2YjdlMzU3OTA1NGMxYjVkYjFiZjI0ZTBkYjc3NTkzOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwMTRjZTAwZWNmODI4NGFjMTE4NDg1MGNjYjU5MDVmNzRhY2JiOTJjMTNkNjAwYjEzZDZjYjNlMWJhMDQ1N2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRjNWE2ZTE2ZWQ2MjA1YTljNTI2ZDZjNjVjZjM5YTIwMDAyZjAzMjFhZTFmYjgyOWNhZGNlZjNiODc0NzY0ZjIifQ"
+        },
+        {
+          "resource": "repo://crates/connectors/src/query.rs#L53-L96",
+          "version": "repo-lines-v1:sha256:78ac8e4bf2b0fc20c2294f98afbaab67d9c4c4e90efa447adbac2395cddd2860:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYzE1MTkzNTFjZmQxZjRjNWYwNzIxYmRiYmU0YTIzYTlmNTQ2NzJiY2I0MmJhMGVkOTE2YTk0M2YyNzFiZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE3YzY1NTUzYjcwZmE4ZGJmM2RmNTkwNzBhNzllNDBkMzIzNjM5YjlkMGE4ZTRkMjk2MTNjYjg1OWFiOGM4NjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxNGExNzY0YmM4NGZiMTRlOGYzZDM4NTgwYjVkMjI0NmI3MTA2YWJhM2E0NjczYWZjZTZjMTU4NjIxOGZhY2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c55c6aa7da02411692961d3686ab9cab",
+      "statement": "extract_table은 list_columns로 헤더를 만든 뒤 SELECT *를 행 스트림으로 CSV에 쓰며, 컬럼이 없으면 실패하고 테이블 전체를 fetch_all로 RAM에 올리지 않는다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/connectors/src/extract.rs#L142-L181",
+          "version": "repo-lines-v1:sha256:9e1cc6d58e59b35473cd7e8db2ef8d1ec9b805cbd5c65c778ed49b58ab4b5bdb:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliOTkzODkzOTJjODg3MGU0YTNhNDEwNTM2ZGQ1N2U1YmFmMmEzNGE0ZjI3MGZjNDRkMzk5YWRjOWE1M2VkOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2NWIxYjBkNWIzNzU1YTViMGM4MmQ1ZGE3ZmFiMGU4MjY1MzlmOTQ2YTliNzQ1ODMwY2VmMGQzNGM1MjBhMjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiMzE2OWFlMTNjYzA0YzIyNWIyOTYyNDNiYTBlZDIxMDQzOWYzYTAxOWFhOTYzMDcxZGM0MjgyOWE5MTE3N2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4NTk4OWE2ZWIzYjdmYTBjMDY4ODg1MzQ0ZDY3M2JhMzEyNzZjZTc1ZjE3ZGVlOTRkOTdmYTA5NzRlODlhZWYifQ"
+        },
+        {
+          "resource": "repo://crates/connectors/src/extract.rs#L200-L219",
+          "version": "repo-lines-v1:sha256:77f67b436435574483da929c587ed08978f4a8d4e0c5aaa526a702e2b679eb0e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiODUzNzUzOWMwMTUxMDdjY2YyN2JjNTBlNzNjOThiOTZlZmQxMzliYmNmNzk4YTM2ZGE2NTcyMDc1MTkxZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2NWIxYjBkNWIzNzU1YTViMGM4MmQ1ZGE3ZmFiMGU4MjY1MzlmOTQ2YTliNzQ1ODMwY2VmMGQzNGM1MjBhMjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliNDM2MTMxZGI5MWVkMGI1NTMzNmQ5Njc4ZWQyNzZmMTJiNGQ5MGUwYzZkNjM3NjljZGZiYmViNDVmYzRhNTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxNjNkOGM5NGFkMDY5ZGRiY2I4MWVhZmQxMmZmNjAyODEyY2Q1ZDM4ODJkYjY2YzU0MGM0Y2RkNDE1YzczYzEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_869b4b2cc0044554b64f9bca41c4382d",
+      "statement": "load_table은 append/truncate/upsert/recreate/replace만 허용하고, 커넥션 비밀번호는 storage가 암호화해 두며 칩 설정에 복사하지 않는다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/connectors/src/lib.rs#L479-L520",
+          "version": "repo-lines-v1:sha256:c24b740cf218e1b7af4a0c773a2d2f1a037d2818e18585697737cc3c57ca4712:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU0NDM1Y2ExYTFiOWRjZTkxNjNhNDI1OWUyZjk1MzZhZGFmNDE2M2MwYjc2MTRjNGE1N2Y5NjI3ZjIxMzE3YTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhOGFiNjQ2Nzg5NDM3NDgwN2NmY2RlZDUzMGI2ZGQyOTg1ZTZkMGZhYzUxM2FjN2JjOTQxMzRhZDU2NDc3NTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0MjkxZDk0MjUyMjQ4ZjY5N2NiZTgwM2RlOGFkYTk5MWZkZGQwNmUyNzA2ZTE4M2JjNTYxZmZjMzUxZGUwYTQifQ"
+        },
+        {
+          "resource": "repo://crates/storage/src/connection_repo.rs#L37-L40",
+          "version": "repo-lines-v1:sha256:a6c6cbe955989cfff270bb626b00e67e3739eeb97dda0cade3b2f42fd80c4da5:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzk1OWZmYzJjOWYwMDhmN2EyYTA1NzliNjJlZTRiOWZkNzJlMTQzZTQ4MGVmYjRjNjc1MjQ5MjgyNGQ3NDg2ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTc3YzViNTA4OTUzODc2MWRlOWU4M2EwMGFkYmRhMjdmN2NiMDUyNzU5YjY1ZmQ3YTk1ODRiODliMzRhNWY0MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWRhNzhlNjZkMTcxY2YyOTIxYmNmNWIxNzUyYWU3ODg4MWM5NzFlYWU0ZTYwYzYwZDc3ZjEyNDYzMThiZmQ2NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmIwMjhjOGQwZGMxNWVlNGJjMzk4ZWIyYzhhMDE1ZGEyOTlmNjY2NzkwNTQ4MmY0NjI5MDQ5NGQ3ZjU0NjFkZiJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

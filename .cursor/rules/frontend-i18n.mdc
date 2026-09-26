@@ -1,0 +1,26 @@
+---
+description: UI 문구는 i18n en.ts / ko.ts로만 관리
+globs: ui/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Frontend i18n
+
+화면·컴포넌트·훅에 사용자에게 보이는 문구를 하드코딩하지 않는다. `ui/src/i18n/en.ts`와 `ui/src/i18n/ko.ts`에 키를 추가하고 `useLanguage()`의 `messages`로 조회한다.
+
+## Rules
+
+- 새 문구는 **en.ts와 ko.ts에 같은 키 구조로 동시 추가**한다. 한쪽만 두지 않는다.
+- 타입 기준은 `ko.ts`의 `Messages`다. 키/중첩 구조를 바꿀 때 두 파일과 호출부를 함께 맞춘다.
+- 페이지·컴포넌트·훅·empty copy·aria-label·title·placeholder·버튼 라벨·에러 메시지 모두 메시지 키를 쓴다.
+- 동적 문구는 문자열 연결 대신 메시지 함수로 둔다. 예: `messages.common.count(n)`.
+- 로케일 전환은 `LanguageProvider` / `setLocale` / `toggleLocale`만 사용한다.
+
+```tsx
+// ❌ BAD
+<button>저장</button>
+
+// ✅ GOOD
+const { messages } = useLanguage();
+<button>{messages.common.save}</button>
+```

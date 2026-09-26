@@ -144,15 +144,6 @@ export function GlobalNotifications() {
     if (!activeDialog) return;
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Enter" || event.shiftKey || event.repeat) return;
-      const target = event.target;
-      if (target instanceof HTMLElement && target.isContentEditable) return;
-      if (
-        target instanceof HTMLTextAreaElement
-        || (target instanceof HTMLInputElement && target.type !== "button" && target.type !== "submit")
-        || target instanceof HTMLSelectElement
-      ) {
-        return;
-      }
       event.preventDefault();
       event.stopPropagation();
       settleDialog(true);

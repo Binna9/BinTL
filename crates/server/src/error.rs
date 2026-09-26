@@ -36,6 +36,10 @@ impl AppError {
     pub fn conflict(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, msg)
     }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl IntoResponse for AppError {
@@ -47,8 +51,9 @@ impl IntoResponse for AppError {
 impl From<connectors::ConnectError> for AppError {
     fn from(err: connectors::ConnectError) -> Self {
         match &err {
-            connectors::ConnectError::Invalid(m)
-            | connectors::ConnectError::Spreadsheet(m) => Self::bad(m.clone()),
+            connectors::ConnectError::Invalid(m) | connectors::ConnectError::Spreadsheet(m) => {
+                Self::bad(m.clone())
+            }
             _ => Self::new(StatusCode::BAD_GATEWAY, err.to_string()),
         }
     }
@@ -69,8 +74,9 @@ impl From<engine::EngineError> for AppError {
     fn from(err: engine::EngineError) -> Self {
         match &err {
             engine::EngineError::Spec(message) => Self::bad(message.clone()),
-            engine::EngineError::UnsupportedOp(_)
-            | engine::EngineError::UnsupportedSink(_) => Self::bad(err.to_string()),
+            engine::EngineError::UnsupportedOp(_) | engine::EngineError::UnsupportedSink(_) => {
+                Self::bad(err.to_string())
+            }
             _ => Self::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         }
     }

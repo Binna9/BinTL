@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:c011be669d607173217c34c2d1f573f96f96a7b351e573465c67b4091cbac607",
+  "claims": [
+    {
+      "id": "claim_3dfb5ddfe56d4e19bba6731ba713a6dc",
+      "statement": "검증은 두 materialized 파일을 비교하고 새 execution_outputs나 workspace_chip_outputs를 만들지 않으며, 결과는 result_json과 validation_results에 남긴다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip.rs#L1676-L1774",
+          "version": "repo-lines-v1:sha256:0325d4ec526d475e050f16df30af041c6b1a19caa28f1de727e465c824f94170:eyJzZWxlY3RlZExpbmVDb3VudCI6OTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiMWM5NWE2OWNhZjc0N2QwZmIwOTVmOTJlN2M4NzQ3OTBhMDRkYjI4MTk4MTM3MGRiYTE5NjQzMGU5OGM1N2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1ZDE0MmQ2YzcwNDlkNDY4ZGJiMjk4NjU4NDYxMzA5MWEzODkxNzNlNDMyNGNhMjljMGI1ZWRmOGMxMjVlMWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAzYTEwMzdmMDcxOTYxZmIzYjEzYTdkYWZmNjlhY2MyYmFiODEwZmU4YmRhMTZhMmIyMjcxNTU0MzcxNGNjNzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM1ZjZmNDY2ZTU5Y2ZjMzA3MDNjNDVmNzJhZjY1ZGU1NGFjMzYzZDM1NGNjMWEzMzMwMzUwYWNkNDUyNDM0YzQifQ"
+        },
+        {
+          "resource": "repo://docs/schema.md#L51-L55",
+          "version": "repo-lines-v1:sha256:725c10bb386dfdeac7ec10d3e73c1b450f1d4db1041b60425b96cd67a24c29b8:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWE1NzVkNWExYjIyNjcwNDU3OTFkYTBhYzNmZWI4YzMxYTRlYzYzZWIwNDEyNTQ4MDMwNzcxODQ1ZGE5NmU2MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2RhZTFjZmI1ZmZmNzRiNzhlMzNlYjVhOWY1ZTY0ZDkxZTk0NWI0ZjkyYjBlYmNjMTUxNWE2MThiOGE5ZTYzMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWY5ODMzZTIyOWFjYTJmYzAzMWEzYjJiZTI2YzE1M2RjMmE2Y2JlMTBjYmU4N2E3NTNiMDA5MzdhODgwYjI0NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTczODQ1MTdlZTRkZTk4MTQ2NjM1ZmEzODQwNjk0NmU1ZjBiZjhmNjdkYWViZmI5ZmNjYTA3MWYzMzliZDI5YyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_6edde591777545e7ae6e15e92f81aa3b",
+      "statement": "캔버스 검증의 target은 업스트림 최신 출력이고 source는 비교 기준이며, 독립 실행은 서로 다른 두 data_file id와 실재 파일을 요구한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip/workspace_execution.rs#L36-L48",
+          "version": "repo-lines-v1:sha256:dbe95d6ab817d3bda883239e41b31b94a8187c772afeeea5072a4213ea2f9124:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhNjgxMTgxOGMxMzE4NmFkZjFiNGMxYmUyNGQ0MzU5NmExYTRkYmY2ZjViODk1YjAwNDA5OWUyYjE4NmE5MWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkNmI1NWM2ODQyOGJkOWU4ZDZiNGU0Y2YwYmJmYmI4Mjc4MWEzMjU4NjEwYWU5ZTAxMjI3NzA0NjM1MGQwN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjMGMzNmQ2OGU0Mzk4NGFkODZlOTBkNGIwMjlkNTgwMjI2YTZiYmIwYTUxNTVmYTZlZWI1MzkwNTYwZDhiOTIifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/validation.rs#L199-L247",
+          "version": "repo-lines-v1:sha256:dcdbbb4dca7b38227e1e2892631c3562ea08153735171a248305222ed4f7c5fe:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxMjRlZTM2YTI4NWMxN2Q0MTNhOTQxMjM5OTdjYTAxY2I1YjFiZDNiYWM3MWJmZjgxMjdmYzJmMDVjZjQ1YWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNDViMzRmNWI0OWNjZjE0MGEwOTE5YjE1MzI4Njg5ZWU4MzQ0NTg3OTEzZjBkMTQ4NGY5ZTk0ODE3OThmNzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzMmRhOTU0Y2Y1YTJiN2YzMjI4ZDBmZTUyZWQwMmZmOWE2OTI1MGViODM4MTMyNDk1Mzk2NzJmNTZlZGVkMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1MGM0NWUyMjJkOGNmNGUyOTBkMzFkY2M3Y2NiYTZlY2ZjYTBiODljYzNhMmNjMmVjNmNiMDk5YTlkNTIzNGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a994f54ce97a490886e519e1775dee5c",
+      "statement": "차이가 있으면 검증 단계는 failed가 되어 on_error를 탈 수 있고, 조건에 따른 건너뜀은 실패가 아니다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip.rs#L1733-L1754",
+          "version": "repo-lines-v1:sha256:4ed889045018d13821306475c33344a973e2094c3c3c24de9059e4cf36eccd0e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzMWU5ZjcwMGFhY2IyN2ZiZDg4MjJhYTU3NzQ4MzMyNmZhMzJmMTkyNzY4NmNlNmM4N2I2NWYwZDYxZGVkMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYyYTIyM2EyMjU3YjllMWM3NzI4MGU4N2EyNzEwY2YxMmU4ZTczMDU4NmIzMTRmYzI5NzY4MmY4YTZiYTkzZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY5M2Y1NTBkZjI3ZDBmZmQwNTA0NmJjYmJjYWVlZWMwYmU0ZTA0M2NlOGI3MjEwYTMwOWMxMzhlYzAxYTk2NDYifQ"
+        },
+        {
+          "resource": "repo://docs/schema.md#L55-L55",
+          "version": "repo-lines-v1:sha256:cdae1cfb5fff74b78e33eb5a9f5e64d91e945b4f92b0ebcc1515a618b8a9e631:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2RhZTFjZmI1ZmZmNzRiNzhlMzNlYjVhOWY1ZTY0ZDkxZTk0NWI0ZjkyYjBlYmNjMTUxNWE2MThiOGE5ZTYzMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2RhZTFjZmI1ZmZmNzRiNzhlMzNlYjVhOWY1ZTY0ZDkxZTk0NWI0ZjkyYjBlYmNjMTUxNWE2MThiOGE5ZTYzMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGM4ZjczNWI3ZDI4MDIxZjdlYWE4MzE1OGU0ODhlNDEzMTI0MGNmZjg4MTMyYThkYjRjZjJlZTgzYTNlYWRiNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTczODQ1MTdlZTRkZTk4MTQ2NjM1ZmEzODQwNjk0NmU1ZjBiZjhmNjdkYWViZmI5ZmNjYTA3MWYzMzliZDI5YyJ9"
+        },
+        {
+          "resource": "repo://docs/workspace.md#L129-L133",
+          "version": "repo-lines-v1:sha256:9835e057e829c1bd5be4988b396969ae5ceb27da3e902e08c7a2cc7f35c6289a:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjI0NWY1MTM1MDc2YzU0YjgzYjg5OTdmODczZTFkZGQwNjg4OWY5ZWM5ZmQ5MDgwMGJiMGVlYjIwNWM1MzEwMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTQxZDNmMWM0MTcwNjJlOWYzYWUzYjYwODlmZTRiMmM3OTIxNjYzNmEzYzlkNjY2ZDI3MWIwMzRlOTY0YzYzNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWNmNjQwY2M3OGRlYWRjYWY0YzRkMWYyM2IzZmRiMGU4YWY1YWMyOTUyMjM1NDcxMjM2OGI4MDQzNTA1ZTdkZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjE3ZjY2YjY1MjQ1ZGQ2NjhhZDI3YjZkZDY2MTQxOWNiMDY4NzE3YjhkMzQ1NjMzMjljNWE1NDJhMDk5ODBhNCJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

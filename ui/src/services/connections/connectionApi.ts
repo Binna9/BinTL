@@ -1,4 +1,4 @@
-import { httpRequest } from "@/services/httpClient";
+import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
 import type { ApiSuccess, TestConnectionResponse } from "@/types/api";
 import type {
   CatalogEntry,
@@ -40,7 +40,7 @@ interface ColumnListResponse {
 }
 
 export const connectionApi = {
-  getConnections: () => httpRequest<ConnectionListResponse>("/api/connections"),
+  getConnections: (init?: HttpRequestInit) => httpRequest<ConnectionListResponse>("/api/connections", init),
   createConnection: (request: CreateConnectionRequest) =>
     httpRequest<DataConnection>("/api/connections", {
       method: "POST",
@@ -76,11 +76,13 @@ export const connectionApi = {
     connectionId: string,
     table: string,
     database?: string,
+    init?: HttpRequestInit,
   ) => {
     const query = new URLSearchParams({ table });
     if (database) query.set("database", database);
     return httpRequest<ColumnListResponse>(
       `/api/connections/${connectionId}/columns?${query}`,
+      init,
     );
   },
   getPreview: (

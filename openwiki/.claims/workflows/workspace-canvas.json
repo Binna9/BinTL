@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:573ad4ebff0d2ae818a6923588249173b75f7205dc08fcf94065d05f2f8bb43b",
+  "claims": [
+    {
+      "id": "claim_4635113092bc498f9af26b223f60d1d4",
+      "statement": "캔버스 초안 칩은 저장 시 실제 id로 만들어진 뒤 PUT /save가 배치와 에지를 커밋하고 workspaces.version을 올리며 workspace_revisions 스냅샷을 남긴다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/workspace.rs#L180-L219",
+          "version": "repo-lines-v1:sha256:a9aefb45c6d0447d68dc1dcbf0eba59dbd813dee385791acd181dbaff0c84c53:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwOGI2ZmJiZmExNDJjZmVmOTFiNjk5ZTM4YjlkMjY4YzdmNTk4ZmM3YTQzM2E5MmY1MTNjZDAyOTJmOWQ3MDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViOWE0M2Q5ZDFhYjJjYTE1ZmJkOGFlNWFiNDI1ZWQyMDBlNTMyMTAzNzdlODk5NDc1MzNhMTc2NzczODRmMjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1ZDk4ODk2OTIyOGNkZTUxNDAyMjFjMTIzOGI2ZGE0M2MxZDUxOWI2ZTgxODcwYjk3Mjc2MDg2MmY2YWJjYWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhNTBhZjdjZTViYmE2MmMwODczNjZhMzM4ODZkNjI5MjczNDdlODQyMmI3OWVlNGM1MjUyYTIyM2Y0ODdiMmEifQ"
+        },
+        {
+          "resource": "repo://crates/storage/src/workspace_repo.rs#L417-L430",
+          "version": "repo-lines-v1:sha256:d47bb01c460cd408ff889f7b42f22a1f461f32676e041b04a8c769767b398f49:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiMDAxNjExNjk2NjAxNjY0MzlkNDBkNDc5MmVkNmQ3NzU0ZGM0ODFjNzkyMjRkODJkYzM5NmM2OTg1OWQ2ZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2MjI0NzAyOTYwOTRkYTNkNjIxYjlmODZiYWFjYWNkYTE2YmVhYmQzZjc0ZTNjMGVlZmU1MTMyMjY5N2FiNzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1M2MyY2Y4YTY5ODRlMzExZTcwMjczY2NhODRmMTJlZjhiYzExMmJkYmMxZGQ2Y2JiZDRhMGEyYjU5ODI3MTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwZGQ2ZjFhNWYyNGM0MzNiNmMxM2I1Njg2NWU0NDU4NzE5N2MyMGQ1YzRiMzE0MmJkODBmYWIzOGRiZGJhOTYifQ"
+        },
+        {
+          "resource": "repo://ui/src/pages/WorkspacePage.tsx#L1217-L1254",
+          "version": "repo-lines-v1:sha256:cb80efc05884ec1413348989cb67028a811b873269338eb13530baf81faaf1a4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiMDQ4ZmY2Zjk4NjY4ZjNmMjU3NGYzOTg5MjNlYjZkMjNkNDc0MDNlMjJkNTZkNjU2MTA0NWRiYjMyMzc3MDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliNjJmNjBkODU5MGE1NzljZjQ2ZjhkNjczNzhjNGM1NzJiOTYyY2VjY2RiOTBjN2E1ZjdiNDJiOTYwNzgyYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEzNjQ2Zjg1NzllNmJhZDc1ZDFjMWI3OTkwOTFjNzM0NDIzNGIyMzAyNTY1OGQ0ZmYxMTAwYjYwOGYyY2YxM2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjMGFlMzZhYTQ1NjdhYjhmOTVlODM3NmVlZDVjNDVlMmM4MGU3NGE3ZTdjZjRiYzc5NjIzN2YyNGJlNzU4NTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_77a7fe125184482c8dae9bdd02e91a5a",
+      "statement": "에지는 data/on_success/on_error/always이며, data 에지는 업스트림 최신 출력 계약이지 dataset_id 선택이 아니고, 파일이 없으면 업스트림 레시피 컬럼으로 체인을 짠다.",
+      "evidence": [
+        {
+          "resource": "repo://.cursor/rules/workspace-pipeline.mdc#L14-L21",
+          "version": "repo-lines-v1:sha256:55a8f8c405892d19983b2833d3eba81902b69f998d42c673585c8282a6d18a5e:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzc2YTEzMzYyNzM0ZjRhNzQxY2FiNDkzYzBiMTIyMzE1Nzc4NGNlZTEyYzRjOWUwZGY1ZDAzMGM1MmJjNTBmZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg0M2M0NWEzMjc2NmNiYTMwYmQ1Yjg1YjQxYjlhMTkyZmIwNmJhM2QwNjk0YTdlZmJiZmQ5YWUyZjRkMzRkMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMWM0Yzg0M2JiMTQ2N2ExODIzZmU3MTYzYWQ3ZmIzNjBhZjExNjFmZDIyMjg2ODg0MGFiZmVlOWExZWQwOWM4YyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWUwZGZmNGRhNmYzNWUyZDBkYjg3M2UzZmM3ZjNjZDg4YTQ1YWM5MGQ2OWZiMmJhZjU1MzE0YzMyOWQ4ZmQ3MyJ9"
+        },
+        {
+          "resource": "repo://crates/storage/migrations/0001_schema.sql#L232-L242",
+          "version": "repo-lines-v1:sha256:57bb26fa2a88b716628b4a7328a242501943bf7bfeefeacd0082e6ffb9529ff7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0NWVlYWMxZjBlODE5MWY0ZjRiY2U3NGVmZDk3OGFiMGRkN2M3MGRkOTU1OTE1NWI2YjZhYmYxZGY5MDFmMjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1ZDMyNjAzY2MzMmI2MDY1OGE4OTRkNTUwMGRmZWIwOGQ0Mzg2YzRmNDJkNTU1Yjc5NGQ2N2YzOGJkNGIwZWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhZmZhMGU0YjZjNDEwY2Y0ZmMyMmVhZmVlNjQ3YmM3ODU0YWNjMWM1OTA1N2I4Nzk3NDdlMjVmYzM1MzRiM2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkNzk3ODMzNjk2M2QyNjRmY2Q4Y2I5MzQyNjJlODE3ZjdlNzExMDNkYjVkODk5OGY1Y2RmNTBhYjc3ODJkNjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0c51a61777f4468ba3e47eca564394ed",
+      "statement": "/workspace가 제품 화면이고 /db·/transform은 칩을 만들거나 고치는 도구이며, 변환 칩 편집은 workspace와 chip 쿼리로 들어가 파일 카탈로그를 보여 주지 않는다.",
+      "evidence": [
+        {
+          "resource": "repo://.cursor/rules/workspace-pipeline.mdc#L24-L27",
+          "version": "repo-lines-v1:sha256:6b49e13f757ca5354aeea4230a0431c70d18b72d83002db79174ef06bdc60735:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDQyZmZlODNjYjA1NzMwZTY3YjBmYjBhMTAzMTlmNjg2NzBlMWYwZGNhZWZmOWU1Mzc5MWM0NTAyYjQ0NGMxNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGUzODNkYjU4Y2M1MmM5ZDIxMjFjZWZmMzI1MTk2NDEwOTBkMjdjOGZjMjUzNTEyYjg4Zjg2N2IzY2RlNTIwNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDQyOWM2MWY4MTQ4YTcwOTJhMzc2ZDg3Mzk4OGRlZGVmOGIxZjlmMTVjOTdkMGE4YTZjYWQ5YTc5OGVmNWIyOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmQ4M2YyYWQzMDg0ODk3NjkxZjUyZTJjMDNkNTU1YzRmZTNmZmMzMTNhZmEyNTYwYmQyOWFlZWYzMWRjYWI4ZiJ9"
+        },
+        {
+          "resource": "repo://docs/workspace.md#L117-L119",
+          "version": "repo-lines-v1:sha256:50ebe7315752d84d8d9a8299947bcc21dfb09ffbeb53ac90faaf01c25e970109:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWQ4ODllODgxNjk3N2JmOTgwZmNlN2I2MzNhNTUyMTRiNjMwZThjOGUyZGJkNDA5YTJhNjU5ZjU0NzQ4MzE1YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWU0ODEyYjk3MzQ0Nzc4MzE5MDhkYzdjM2QyNTI0MzRkMjE5ZTk0MWM3MDYyYjdmMWZiZmVlNDU2NzRhYjc3YSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmMwOTVkZGJkOGJhNmM1NzExMjg3ZGVjMjllYjc5N2QyNDEwNWQ4Y2RjMGMxMTNiMGFhN2MzMGViMDZhN2UzYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWEyOWJkMjFhYjgxOTI2MTlkNTYwYWJmNDBkMDgxN2RlMzZhZjA0NzNlMmM0NWMxMGFjN2M4Nzk5ODEzNzczYyJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

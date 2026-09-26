@@ -167,6 +167,7 @@ export function ExcelSheetDialog({
                 className="field-control"
                 type="checkbox"
                 checked={allSelected}
+                disabled={saving}
                 onChange={() =>
                   setSelected(
                     allSelected ? [] : workbook.sheets.map((sheet) => sheet.name),
@@ -191,6 +192,7 @@ export function ExcelSheetDialog({
                     className="field-control"
                     type="checkbox"
                     checked={checked}
+                    disabled={saving}
                     aria-label={sheet.name}
                     onChange={() =>
                       setSelected((current) =>

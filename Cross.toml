@@ -1,0 +1,5 @@
+# cross does not pass host CC into the container. A Windows ~/.cargo/config.toml
+# [env] CC (w64devkit) is mounted via CARGO_HOME and would compile ring with a
+# path that does not exist in the image. Pin the image compilers instead.
+[build.env]
+passthrough = ["CC=gcc", "CXX=g++", "AR=ar"]

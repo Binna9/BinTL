@@ -1,8 +1,20 @@
 /target
-/.cursor
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/mcp.json
+!.cursor/skills/
+!.cursor/skills/**
 /ui/node_modules/
 /ui/dist/
 /data/
-.config.example.toml
+/dist/
 .DS_Store
+
+# OpenWiki in-progress checkpoint. Durable wiki + Claims stay tracked.
+openwiki/.run.json
+
+/vendor/tibero/*.jar
+/crates/connectors/vendor/tibero/*.jar
+/config.toml
 

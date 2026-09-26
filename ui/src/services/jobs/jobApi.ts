@@ -1,21 +1,12 @@
-import { httpRequest } from "@/services/httpClient";
+import { httpRequest, type HttpRequestInit } from "@/services/httpClient";
 import type { RunJobResponse } from "@/types/api";
-import type { CreateEtlJobRequest, EtlJob, EtlJobRun } from "@/types/job";
-
-interface JobListResponse {
-  jobs: EtlJob[];
-}
+import type { EtlJob, EtlJobRun } from "@/types/job";
 
 export const jobApi = {
-  getJobs: (limit = 20) =>
-    httpRequest<JobListResponse>(`/api/jobs?limit=${limit}`),
+  list: (limit = 200, init?: HttpRequestInit) =>
+    httpRequest<{ jobs: EtlJob[] }>(`/api/jobs?limit=${limit}`, init),
   getJobRun: (jobId: string) =>
     httpRequest<EtlJobRun>(`/api/jobs/${jobId}`, { silent: true }),
-  createJob: (request: CreateEtlJobRequest) =>
-    httpRequest<EtlJob>("/api/jobs", {
-      method: "POST",
-      body: JSON.stringify(request),
-    }),
   runJob: (jobId: string) =>
     httpRequest<RunJobResponse>(`/api/jobs/${jobId}/run`, {
       method: "POST",

@@ -8,22 +8,22 @@ use extracts::*;
 use files::*;
 use jobs::*;
 
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, SET_COOKIE};
 use axum::http::{HeaderValue, StatusCode};
-use axum::response::{AppendHeaders, IntoResponse};
+use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use connectors::{
-    catalog_layout, db_source_path, export_sheet_to_csv, list_columns, list_databases,
-    list_relations, list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter,
-    parse_http_spec, parse_ident, parse_table, preview_http, preview_table, run_sql,
-    sniff_delimiter, spreadsheet_format, sql_kind, test_connection, with_database, HttpKv,
-    HttpRequestSpec, SqlKind,
+    catalog_layout, export_sheet_to_csv, list_columns, list_databases, list_relations,
+    list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter, parse_http_spec,
+    parse_ident, parse_table, preview_http, preview_table, run_sql, sniff_delimiter,
+    spreadsheet_format, sql_kind, test_connection, with_database, HttpKv, HttpRequestSpec, SqlKind,
 };
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashSet};
+use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::Path as FsPath;
 
 use crate::access::{self, CurrentUser};
@@ -80,15 +80,18 @@ pub fn protected_routes(max_upload_bytes: usize) -> Router<AppState> {
             "/api/extracts/{id}",
             get(get_extract).delete(delete_extract),
         )
-        .route("/api/jobs", post(create_job).get(list_jobs))
+        .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/run", post(run_job))
         .route("/api/jobs/{id}/result", get(job_result))
         .merge(crate::workspace::routes())
         .merge(crate::chip::routes())
         .merge(crate::transform::routes())
+        .merge(crate::load::routes())
+        .merge(crate::validation::routes())
         .merge(crate::users::routes())
         .merge(crate::search::routes())
+        .merge(crate::schedule::routes())
         .layer(DefaultBodyLimit::max(max_upload_bytes))
 }
 
@@ -173,5 +176,22 @@ mod tests {
             },
         ])
         .is_err());
+    }
+
+    #[test]
+    fn commit_stream_events_are_single_ndjson_lines() {
+        let progress = ndjson_line(json!({
+            "type": "progress",
+            "current": 1,
+            "total": 2,
+            "name": "Sales",
+        }));
+        let text = String::from_utf8(progress.to_vec()).unwrap();
+        assert!(text.ends_with('\n'));
+        assert_eq!(text.matches('\n').count(), 1);
+        let parsed: Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(parsed["type"], "progress");
+        assert_eq!(parsed["current"], 1);
+        assert_eq!(parsed["name"], "Sales");
     }
 }

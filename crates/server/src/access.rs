@@ -1,7 +1,7 @@
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use storage::{
-    ChipRow, DatasetRow, DataScope, ExtractRow, JobRow, TransformRow, UserRow, WorkspaceFolderRow,
+    ChipRow, DataScope, DatasetRow, ExtractRow, JobRow, TransformRow, UserRow, WorkspaceFolderRow,
     WorkspaceRow,
 };
 
@@ -28,6 +28,22 @@ impl CurrentUser {
         self.0.can_see_all_workspaces()
     }
 
+    pub fn can_use_connections(&self) -> bool {
+        self.0.can_use_connections()
+    }
+
+    pub fn can_run_extract(&self) -> bool {
+        self.0.can_run_extract()
+    }
+
+    pub fn can_run_transform(&self) -> bool {
+        self.0.can_run_transform()
+    }
+
+    pub fn can_run_etl(&self) -> bool {
+        self.0.can_run_etl()
+    }
+
     pub fn scope(&self, workspace_id: Option<String>) -> DataScope {
         DataScope::for_user(&self.0).workspace(workspace_id)
     }
@@ -36,7 +52,10 @@ impl CurrentUser {
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = AppError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         parts
             .extensions
             .get::<CurrentUser>()
@@ -61,6 +80,38 @@ pub fn require_connection_write(user: &CurrentUser) -> Result<(), AppError> {
     }
 }
 
+pub fn require_connection_use(user: &CurrentUser) -> Result<(), AppError> {
+    if user.can_use_connections() {
+        Ok(())
+    } else {
+        Err(AppError::forbidden())
+    }
+}
+
+pub fn require_extract_run(user: &CurrentUser) -> Result<(), AppError> {
+    if user.can_run_extract() {
+        Ok(())
+    } else {
+        Err(AppError::forbidden())
+    }
+}
+
+pub fn require_transform_run(user: &CurrentUser) -> Result<(), AppError> {
+    if user.can_run_transform() {
+        Ok(())
+    } else {
+        Err(AppError::forbidden())
+    }
+}
+
+pub fn require_etl_run(user: &CurrentUser) -> Result<(), AppError> {
+    if user.can_run_etl() {
+        Ok(())
+    } else {
+        Err(AppError::forbidden())
+    }
+}
+
 pub async fn require_workspace(
     store: &storage::Store,
     user: &CurrentUser,
@@ -71,14 +122,17 @@ pub async fn require_workspace(
         .await?)
 }
 
-pub async fn write_workspace(
+pub async fn require_write_workspace(
     store: &storage::Store,
     user: &CurrentUser,
     requested: Option<String>,
 ) -> Result<String, AppError> {
-    Ok(store
-        .resolve_write_workspace(&user.scope(requested))
-        .await?)
+    let workspace_id = requested
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::bad("workspace_id required"))?;
+    require_workspace(store, user, &workspace_id).await?;
+    Ok(workspace_id)
 }
 
 pub async fn require_folder(

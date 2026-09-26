@@ -1,153 +1,94 @@
-# 작업 공간과 작업 단위
+# 작업 공간
 
-작성: 2026-08-27
+작성: 2026-09-13
 
-## 목적
+작업 공간은 ETL 설정, 실행 이력, 파일 산출물을 묶는 프로젝트 경계다. 제품 화면은 `/workspace` 캔버스다. `/db`, `/files`, `/transform/*`, `/script`는 칩을 만들거나 고치는 도구다.
 
-작업 공간은 ETL 설정, 실행 이력, 파일 산출물을 묶는 프로젝트 경계다.
-칩 정의와 실행 기록을 분리하므로 같은 설정을 반복 실행해도 정의는 하나,
-실행과 산출물은 매번 새로 남는다.
+한 설치는 회사 하나다. 사용자는 워크스페이스를 소유하고, 커넥션만 조직 전역이다.
 
-한 설치는 회사 하나다. 사용자는 작업 공간을 소유하고, 커넥션만 조직 전역이다.
+업로드·단독 결과 내보내기 파일은 작업구분 트리에서 고른 워크스페이스에 붙는다. 칩 실행 산출은 그 칩이 놓인 워크스페이스를 따른다. `/files`, `/extracts`, `/transforms` 목록은 같은 작업구분 트리로 본다. 브라우저 다운로드는 워크스페이스를 고르지 않는다.
 
-```
-user
-  ├─ workspace_folders (중첩)
-  └─ workspaces (여러 개, folder_id 선택)
-        ├─ chip (extract | transform | load)
-        │    ├─ chip run
-        │    └─ chip edges
-        └─ datasets / extracts / jobs / transforms
-```
+## 세 개념
 
-커넥션은 여러 작업 공간에서 재사용하는 전역 자원이다. 비밀번호는 작업 설정이나
-실행 스냅샷에 복사하지 않고 `connection_id`로만 참조한다. 조회는 전원, 등록·수정은
-`CONNECTION_WRITE` 권한이 있는 역할만 한다.
+- **Chip**: 이름 있는 레시피 (`extract` | `transform` | `load` | `validation` | `sql` | `serve` | `script`). 사용자가 보는 정체는 칩 이름이다. `extracts/…/{uuid}` 경로가 아니다.
+- **Run**: 추가 전용 이력. 모든 실행은 `executions` → `execution_steps`다. 칩 단독은 `source='chip'`, 캔버스 전체는 `source='workspace'`.
+- **Current output**: 워크스페이스+칩당 파일 하나. `workspace_chip_outputs`와 디스크 `chip_outputs/{workspace}/{chip}/current.*`. 성공한 재실행만 슬롯을 덮어쓴다. 실패·취소·중단은 tmp에만 쓰고 `current.*`는 직전 성공본을 유지한다. 다음 칩은 카탈로그 UUID가 아니라 이 슬롯을 읽는다.
 
-## 사용자와 소유
+배선은 **data 에지**다. 변환 입력은 업스트림 칩의 최신 출력이다.
 
-- `users`: `userid`(로그인 아이디), `username`(사용자명), `password`(해시). 역할·홈 워크스페이스 컬럼은 없다.
-- `roles`, `permissions`, `user_roles`, `role_permissions`: 사용자·역할·권한 매핑.
-- `workspace_folders`: 소유자별 디렉터리. `parent_id`로 중첩.
-- `workspaces.owner_user_id`: 사용자가 프로젝트를 여러 개 소유. `folder_id`로 폴더에 넣는다.
-- 사용자 생성 시 시작용 워크스페이스 하나를 만들 수 있지만, 특별 홈 타입이 아니다.
-- `/workspace`는 최근 수정 순으로 보이는 첫 워크스페이스를 연다.
-- 세션 쿠키는 `users.id` HMAC이다.
-- 작업 공간 멤버 공유는 이번 범위 밖이다.
+### 설계 대 실행
 
-## 저장 모델
+- 파일 없음: 컬럼은 업스트림 extract 레시피(DB inspect / SQL 미리보기). `workspace_chip_outputs`의 `schema_id`와 `expected_filename`만 남긴다. `data_files`에 가짜 행을 넣지 않는다. API가 주는 planned 뷰는 `status=planned`, 합성 id `contract:{workspace}:{consumer}`인 메모리 값이다.
+- 파일 있음: 미리보기와 실행은 슬롯 파일을 읽는다.
+- 실행인데 파일 없음: 업스트림 extract를 동기 실행하거나 `"extract has not run"` / `"upstream extract did not produce a dataset"`으로 실패한다. 사용자 대신 가짜 dataset을 만들지 않는다.
 
-- `workspace_folders`: 이름, `parent_id`, `owner_user_id`.
-- `workspaces`: 이름, 설명, 캔버스 배치, **version**, `owner_user_id`, `folder_id`.
-- `workspace_revisions`: 저장할 때마다 layout+chips+edges 스냅샷. 초기화는 마지막 저장본으로 되돌린다.
-- `chips`: 재사용할 최소 작업 단위. `kind`, `config_json`, `revision`을 가진다.
-- `chip_edges`: 칩과 칩을 잇는 선. `data`는 산출 dataset을 넘기고, `then`은 순서만, `on_error`는 실패 경로다.
-- `chip_runs`: 한 번의 실행. 실행 당시 설정을 `config_snapshot_json`으로 고정한다.
-- `datasets`: 업로드, DB 추출, 변환 결과 파일의 카탈로그. 작업 공간과 생산한
-  `task_run`을 추적한다.
-- `extracts`, `jobs`, `transforms`: 기존 화면과 API 호환을 위해 유지하는 실행/정의
-  레코드다. 새 작업 실행은 이 구현을 재사용한다.
+연결선을 끊으면 downstream은 그 슬롯을 입력으로 보지 않는다. 과거 파일과 실행 이력은 남는다.
 
-기존 데이터는 마이그레이션 시 기본 Workspace에 배정되고, 부트스트랩 admin의 홈이 된다.
+단독 페이지의 `transforms.default_input_file_id` / `loads.default_input_file_id`는 기본 입력이다. 캔버스 data 에지가 우선한다. planned `contract:` id는 입력 FK로 묶지 않는다.
 
-## 작업 종류
+## 소유
 
-### Extract
+- `users`: `userid`, `username`, `password_hash`. 빈 DB를 열면 `admin`/`admin`을 넣는다. 홈 워크스페이스 타입 컬럼은 없다.
+- `workspace_folders`: 소유자별, `parent_id`로 중첩. 최상위는 `parent_id IS NULL`.
+- `workspaces.owner_user_id`. `/workspace`는 최근 수정 순 첫 공간을 연다.
+- 세션 쿠키는 `users.id` HMAC.
+- 멤버 공유는 없다. `WORKSPACE_ALL`만 전부 본다.
+- 커넥션 비밀번호는 칩 설정이나 실행 스냅샷에 복사하지 않고 `connection_id`로만 참조한다.
 
-테이블 또는 SQL 쿼리를 서버 파일로 추출한다.
+## 캔버스 저장
 
-```json
-{
-  "connection_id": "connection-id",
-  "source": {
-    "type": "table",
-    "table": "public.users",
-    "database": null
-  },
-  "delimiter": ",",
-  "header": true
-}
-```
+새로 놓은 칩은 로컬 `draft:` 초안이다. 우측 하단 **저장**이 초안을 `POST …/chips`로 만든 뒤 `PUT /api/workspaces/:id/save`로 배치·에지를 커밋하고 `version`을 1 올린다. 요청에 현재 `version`이 필요하고, 다른 저장이 먼저면 409다. `workspace_revisions`에 스냅샷을 남긴다. 초기화는 마지막 저장본이다. 배치하는 칩은 워크스페이스 소유자 것이어야 하고, 같은 칩을 한 캔버스에 두 번 놓지 않는다.
 
-쿼리 작업은 `source.type`을 `query`로 두고 `source.sql`을 저장한다. 실행이
-성공하면 기존 `extracts` 이력과 함께 새 `dataset`이 등록된다.
+에지 `kind`: `data` | `on_success` | `on_error` | `always`. 한 칩으로 들어오는 data 에지는 검증(source/target) 말고는 둘 이상이면 거절한다.
 
-### Transform
+`/db`에서 칩으로 저장하면 extract 칩을 만들고 실행한다. 같은 동작으로 두 번째 단독 추출 파일을 쓰지 않는다.
 
-Dataset 파일과 TransformSpec v2를 입력으로 받아 parquet를 만든다.
+## 전체 실행
 
-```json
-{
-  "input_dataset_id": "dataset-id",
-  "spec": {
-    "version": 2,
-    "steps": [],
-    "sink": "parquet"
-  }
-}
-```
+저장된 활성 칩을 연결 의존 순으로 한 번에 하나씩 돈다. 내부 병렬은 없다.
 
-실행 요청의 `input_dataset_id`로 정의의 입력을 덮어쓸 수 있다. 결과 parquet도
-Dataset으로 등록되므로 다음 작업의 입력으로 사용할 수 있다.
+1. 레시피·연결을 모두 사전 검증하고 설정을 스냅샷에 고정한다. 오류 칩은 실패로 남기고 큐에 넣지 않는다. 검증을 통과한 칩은 이어서 순차 실행한다.
+2. 통과하면 설정·연결·검증 비교 옵션을 스냅샷에 고정한다.
+3. data 선은 **이번 실행에서 만든 결과만** 전달한다. 과거 성공 슬롯으로 대체하지 않는다.
+4. `on_success`는 성공, `on_error`는 실제 실패, `always`는 앞 칩이 처리된 뒤. 건너뜀은 실패가 아니다.
+5. 실제 실패가 하나면 전체는 실패다. 조건 건너뜀만으로는 전체를 실패로 만들지 않는다.
 
-### Load
+`POST /api/workspaces/:id/run`은 `execution_id`와 `running`을 바로 돌려 주고, 스케줄러는 같은 `run_workspace_internal`로 끝날 때까지 기다린다. 이미 활성 전체 실행이 있으면 생성은 409, 스케줄은 `skipped`다.
 
-종류는 예약되어 있지만 이번 MVP에서는 생성과 실행을 지원하지 않는다. 기존 v1
-job의 적재 경로는 호환용으로만 남는다.
+실행 중 취소는 현재 칩을 `canceled`로 닫고 남은 queued 칩을 건너뛴다. 전체 실행도 `canceled`다. 캔버스 실행 버튼이 중단으로 바뀌고, 돌고 있는 칩을 우클릭해도 중단할 수 있다. 추출 스트림은 연결을 끊는다. Polars 변환과 Oracle 동기 fetch는 취소 표시 후에도 백그라운드에서 끝날 수 있다.
+
+기동 시 미완료 워크스페이스 실행(`queued`/`running`)과 그 leftover 칩, 그리고 돌고 있던 단독 `running`은 `EXECUTION_INTERRUPTED`로 닫는다. 워크스페이스 중간부터 자동 재개하지 않는다. 아직 `queued`인 단독 칩·추출·변환·적재는 그대로 두고 디스패처가 다시 집는다.
+
+칩 단독 `POST /api/chips/:id/run`은 `source='chip'`이다. 같은 워크스페이스에서 그 칩이 이미 `queued`/`running`이면 409다. 이력 화면은 둘을 분리한다. `GET /api/workspaces/:id/runs`는 `runs`와 `workspace_runs`를 같이 준다.
 
 ## API
 
-- `GET /api/me`
-- `GET/POST /api/users`, `PATCH /api/users/:id` — admin. 비밀번호를 비우면 유지
-- `GET/POST /api/workspaces` — 목록은 소유 범위. 생성 시 `folder_id` 선택
-- `GET/PATCH /api/workspaces/:id` — `folder_id`로 폴더 이동(null이면 루트)
+- `GET/POST /api/workspaces`, `GET/PATCH/DELETE /api/workspaces/:id`
 - `GET/POST /api/workspace-folders`, `PATCH/DELETE /api/workspace-folders/:id`
-- `PUT /api/workspaces/:id/save` — 캔버스 칩+배치+연결선을 커밋하고 version을 1 올린다
-- `GET/POST /api/workspaces/:id/chips`
-- `GET/PATCH /api/chips/:id`
-- `POST /api/chips/:id/run`
-- `GET /api/workspaces/:id/runs`
-- `GET /api/chip-runs/:id`
-- `GET /api/chip-runs/:id/logs`
+- `PUT /api/workspaces/:id/save`
+- `GET/POST /api/workspaces/:id/chips`, `GET/PATCH/DELETE /api/chips/:id`
+- `POST /api/chips/:id/run`, `POST /api/workspaces/:id/run`
+- `POST /api/chip-runs/:id/cancel`, `POST /api/workspaces/:id/executions/:execution_id/cancel`
+- `GET /api/workspaces/:id/runs`, `GET /api/workspaces/:id/executions`
+- `GET /api/chip-runs/:id`, `GET /api/chip-runs/:id/logs`
+- `GET/POST /api/schedules`, `PATCH/DELETE /api/schedules/:id`
 
-실행 API는 즉시 `queued` run을 반환한다. UI는 실행 중인 run이 있을 때만 목록을
-주기적으로 다시 읽는다.
+## 불변
 
-## 화면
+- 사용자 정체 = 칩 이름 + 최신 출력. `stored_path`를 화면에 노출하지 않는다.
+- 한 단계는 `queued`에서 `running`으로 한 번만 간다.
+- 레시피를 고쳐도 과거 단계의 snapshot은 안 바뀐다.
+- 자격 증명과 결과 경로를 칩 설정에 넣지 않는다.
+- 파일이 없으면 transform/load는 시작하지 않고 실패한다.
 
-- `/workspace`: 왼쪽에서 폴더·워크스페이스 트리를 고른다. 툴을 흰 캔버스에 끌어 칩을 배치한다. 연결선으로 잇고, 칩을 누르면 설정한다. 우측 하단 **저장** 전까지는 SQLite에 쓰지 않는다.
+워크스페이스를 삭제하면 그 공간의 파일, 실행 이력, 캔버스 배치·연결선이 같이 사라진다. 칩 정의는 작업 단위라서 남고, 다른 캔버스에 다시 놓을 수 있다.
 
-기존 `/db`, `/extracts`, `/transform`, `/history`, `/jobs/:id` 경로는 유지한다.
+## 아직 없는 것
 
-## Flow
-
-저장된 칩을 연결선으로 잇는다. `data` 선이 있으면 Transform 입력은 config의 `input_dataset_id`보다 앞 칩의 최신 성공 산출을 쓴다. 첫 실행은 칩 단위다. 그래프 전체 순차 실행은 이후 범위다.
-
-후속 범위:
-
-- 독립 Load 작업과 E→T→L
-- 재시도와 취소
-- 수동/주기 스케줄
-- 분기와 병합 DAG
-- Dataset 보존 및 정리 정책
-
-현재 ChipRun 큐는 단일 서버 프로세스의 메모리 큐다. 동시 실행 수는
-`max_concurrent_jobs`를 따르지만, 서버가 재시작되면 남아 있는 `queued`/`running`
-실행을 자동 재개하지 않는다.
-
-## 상태와 불변 조건
-
-- 한 run은 `queued`에서 한 번만 `running`으로 전이한다.
-- 성공한 run은 output dataset을 가리키고, 실패한 run은 오류를 남긴다.
-- 칩 정의를 수정해도 과거 run의 설정 snapshot은 바뀌지 않는다.
-- 작업 설정에는 자격 증명과 실행 결과 경로를 저장하지 않는다.
-- Dataset 파일이 없으면 Transform 실행은 시작하지 않고 실패 처리한다.
+재시도, 워크스페이스 멤버 공유, Postgres 외 Bulk(upsert COPY 포함), 대량 검증 리포트 파일.
 
 ## 로컬 확인
 
-1. 설정에서 사용자를 추가하고 새 계정으로 로그인한다.
-2. 그 계정은 자기 홈 작업 공간과 파일만 보이고, 커넥션은 공유된다.
-3. analyst는 커넥션 추가·수정 버튼이 없다.
-4. `/workspace`에서 작업 공간을 만든다.
-5. DB 테이블 또는 SQL Extract 작업을 저장하고 두 번 실행한다.
-6. 각 실행과 output dataset이 별도로 생기는지 확인한다.
+1. 사용자를 추가하고 그 계정으로 로그인한다. 자기 워크스페이스만 보이고 커넥션은 공유된다. analyst는 커넥션 쓰기 버튼이 없다.
+2. `/workspace`에서 extract를 저장하고 두 번 실행한다. 정의는 하나, 이력은 두 줄, 슬롯은 덮어쓴다.
+3. 그 출력을 입력으로 transform을 잇고 실행한다.

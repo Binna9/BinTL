@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:60707fe2ec3f1c0e309462a1afd4309ba00206c36c855d40e1d8e6bd7c6ad36d",
+  "claims": [
+    {
+      "id": "claim_8c6ce9a49a9b47a7859d99bc76e064ad",
+      "statement": "운영 프로세스는 bintl 하나이며, Axum이 공개/보호 API와 맞지 않는 비-/api 경로의 embed 또는 ETL_UI_DIR 정적 UI를 같이 서빙한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/main.rs#L153-L160",
+          "version": "repo-lines-v1:sha256:9ecba5e330b650f55958fe5dd1f227940e9a14127af6430ee54295bf93972ba9:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmI4OWFhNTAzYjIwNTkyYzc2N2VjMzhhMmZlNjNlZjUzNGE2MjI3MzAzYTk2NWY5Zjc0YTdjODY5ODM2ZjAzNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2U5NDMyNGViYzljMTk5MjJlNWNmZWRkNWQwMWNhOTUxMmY4ZjhmZjcxNGJjMTcxMzBhMWVmOTIyOGYzODI5MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTEyMTkxNmE1OWE1NTBiOWY3MzkwMDhiYTY2NTE1MGM3YzRjYjBkMTNhMDE5ZmY5NzFhOGFjMDMxNDE4NmU0MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTNkZGViOWY1N2I1NDc3OWYyYTQ5ODNjOWZiMDYyMGVhMmEwYzEwNmJkMTM4NjlkMGZlYzQ2YzgzZGRmN2Q0NCJ9"
+        },
+        {
+          "resource": "repo://crates/server/src/main.rs#L38-L42",
+          "version": "repo-lines-v1:sha256:349c6c3da4d2a1588f9ea44f7025ef31575904abbbf349d9c34934e51fab7465:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTk5YjkzY2I4NWRkNjBmOTk1NzI5ZjY2MTliOTdmOTdmMGMzNDM1MDA5Y2U3NTM5MDU3MGJkZDU4M2YwMGFlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOTEzYmVlNDI0MDQ2OWNlMzBhMjk1Mzg3ZTk3NTYyODkzZjRkNjAwNWIwOTBhMjY3NmUzN2MwMTkyOGU5ZDY4NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTUwMzJiODU5Njc4NzAxMjQxNmE5NzgzNjAxYmYxZjFiMDIzNWU4YzZmMWY5YjcwMTE2NjVlNGJmMTZhMTYxNyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWRiM2NjOGVmYzgxMzcyMTY5ZGQ4MDViYTZhNmRlMGI2ZDE1YzllOGU0NmNkYTkwMTlkN2VlY2Q0MDJjOTA2ZCJ9"
+        },
+        {
+          "resource": "repo://crates/server/src/ui.rs#L11-L33",
+          "version": "repo-lines-v1:sha256:4bdc4dcee2d72b59aa96936783c676e1f180aa397bbb163a3e892afeb1c22a1c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMmRjYWUxNTMwZWVhZDFmOWQ4NTJjOWFkYTY4NDEzMTY0Yjg1MzIwMWNkYmM5MWYzNmViMmMxNzMzZjk2ZTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlY2FkZGY5N2I0NDdjMjQ1NmIxMTY5OWNhMzVjYmE1ZjQwY2NmMWE0ZmNhNDE0ZWU5Y2RmZDVlZWUwMmRjYjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3ZTc3Mzg2MmE0ZTQ0MzAzOWU3ZDA1ZGQxNjliZTg2M2E2M2RlMDUxOTZkY2VkNDkxYmE2NWFhNWU0NTgwMmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4267ff6f801147cc8ccd882c5e439d95",
+      "statement": "engine crate는 Polars와 spec 직렬화만 의존하고 axum/sqlx/UI 타입을 알지 못하며, connectors는 외부 I/O만 담당하고 Workspace 화면 상태를 알지 못한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/connectors/src/lib.rs#L17-L24",
+          "version": "repo-lines-v1:sha256:1acb3944c222cc52a7168019e8d0688b03d9acc3bf275057cfc5e8bb3257b1b1:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWI0ZmZjZWI4NTk4NDY1MjUxYjVlZjM4ODE2YzQxZTVlNTU4ZTY2YzZlMTk2ZGNmYmY0NzJlY2ZlYjlmYzgwNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDAyODI2YTJkNzQ3YjRkMTc2YzNkYTc0NTZkM2FiM2U4MDg5Y2FjZmRlM2JjNDI0N2YxNTA4NDg4M2U4MTQ5MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjE2ZmFjZTNmNjhhZjU5MzJiMzkyNzZlOTMyMmViNzM2OGZlNTdkYzYxZDRmMDI5OWY2OWRhNGYzYjM5Zjc5OSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWEyZjk2MzliMTUxNTA4MDU0NzNhMjMxNzkyMGFjNzllNDhhMWI4YTI2NTNiOTUzZGVkNmQwOWVlZTA1NmFkZCJ9"
+        },
+        {
+          "resource": "repo://crates/engine/Cargo.toml#L7-L16",
+          "version": "repo-lines-v1:sha256:4a00285b81cc6b1c630ef1fb1a1bc38938ee352f05b20704eb83a459786f2d39:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZGY2YzcxNGM5OTRkMDhkYzg1YWFmZmU2MWVjNjRlMDI1NWJlMmI4YmY2Y2NhYzc1NmYxNzkwYWM5OTQwYzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhNTk4NGI2ZGRjYmJlYmM1ZWY2ZGViZTc4MTU3OWE0ODQwN2ZjNmM1NjNjNTc3ZjZjOThlYzdhNGQ2M2JhNWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiM2IzODY4NDI4ZmI3MmNjODQyODQzOTRjMTRmZTc0M2VhMDdiYTNlMGZmNTM3MDA5YTY5OGZmMmM4OGNjMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://docs/architecture.md#L15-L16",
+          "version": "repo-lines-v1:sha256:238d51a73fcc32b1041e7303e96c064f5b637aa76a2c1e6b8f6fb7c4e7751b55:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzg2ZWI2OWNlZDA5OGM1ZGI5N2JkMjJhNWZiMGVkYmYxODU1ZTBlOTQ3ZTI0ZWNiYzRlMzFjNmJiNjVkZTU0YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTM1ODJiMWUwYjdkNmM4MmRjMzYzMmU1N2MwYmZmOWUyZjJkNzg0ZmZlYmRkMjg3MTVmMDMxZWVjMGQ5ZjlmYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjNkM2VlZTM0MTIwMDk2NmQxYzcxNWM4YTBmMTkwMzRjNGY0MmMxMmE0M2Q5OTVkY2Y3NDJmNTFiNmJlZDcyMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGY1ODc3Y2JiOTFkYTQzODhhMjc2MWNlMzZhNjdjMzc5YzQ2NDBkYmEzMTA0Y2NkYWYzYjBiODMwNGMzODAzMSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_08f15d114f7d492b801a71c9ee4de588",
+      "statement": "기동 시 Store를 열고 부트스트랩 사용자를 만든 뒤, 끄긴 워크스페이스 실행을 오류로 닫고, max_concurrent_jobs 세마포어와 mpsc 실행 큐를 실행한 다음 스케줄러 루프를 떨운다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/main.rs#L59-L123",
+          "version": "repo-lines-v1:sha256:c42ab247ca035d8776206432495a2c3501bc2b8bdacbf4abe057a834a86f3438:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3YmY0NDFmNTYzZjFjYTk0MmM0NmJjNjk5M2E2NzgyNzQ5M2FhYmIwZDlhMmY1NTJlYzAyMTA5OTViYTczMjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlMGYzZmZjZmU4ZGQzMjIxYmEzMmI1MGE5YzhmMTc5MTAyOTk2OWVhYTk3MjA4ZmVlZDk5OWNmNWQ3YzAxNTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM3ZWU2MmFhYmU4ODM3ZmMzYTYzZjNlNTMwM2E5ZDQwYjdhNDExYjRlZmRjYWJiODE1M2Y3MzBlNTU0YTM3ZGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxNDBkZTRkZjQyYWZiZTYyYzc3MjE4ZWY0Zjc2NTZmNTY3M2Q0ZDUxZmYzNzQ1OThiNDEwYzQzNGJkYWEwNjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_86b173708ff447f3acf55989090f8125",
+      "statement": "인프로세스 실행 큐는 ExecutionTask::Job과 ExecutionTask::Chip 두 종류이며, HTTP 핸들러는 변환본문을 직접 돌리지 않고 queued 레코드를 만든 뒤 채널에 try_send한다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/api/jobs.rs#L168-L168",
+          "version": "repo-lines-v1:sha256:54b7d32848109472658fbd8bfe32592bc75aa2a1a7630905736055930a7a4004:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTRiN2QzMjg0ODEwOTQ3MjY1OGZiZDhiZmUzMjU5MmJjNzVhYTJhMWE3NjMwOTA1NzM2MDU1OTMwYTdhNDAwNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTRiN2QzMjg0ODEwOTQ3MjY1OGZiZDhiZmUzMjU5MmJjNzVhYTJhMWE3NjMwOTA1NzM2MDU1OTMwYTdhNDAwNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzRlMDgyZGFjNjQ2NWNlNTY1NDU2YzhhOWY2NGJmMzQ0Nzg3OWVhZDgxYmQzYTYxZDY5YmVjYWJmZjMwMDAwZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTQwNTcwYTA5OWY2NDZlZjQ0NmViMWVjOGEwZmUwNzBjMjMyZGY0ZjFjNGUwMGJmODA4M2UwMGM2ODY2OGI5YiJ9"
+        },
+        {
+          "resource": "repo://crates/server/src/main.rs#L92-L112",
+          "version": "repo-lines-v1:sha256:0bf740d67ef60c7d267f38513379fa32ea5075b26abe2e77b653b191cbbebd43:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiNmQxNjcxYjQ4ODYzNGMyOWI2ZjgyOTY4NGM3M2RlZTE1NTA5MWYxZjI1OGE4Yjk2ZGNiYzY1MDBmNDgxZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkYjMzOWMxN2Q0Y2M1NGU3MGM0ZmNmZWNiNjExYmI5ZTdkMzYzZjI1YjE4ZTA5MjNhMWQzMDZjYzk1OTI0ZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU3MGFhZmQ2YmYxZTI2OTJlYmQwYjUzMWM1MDlmZTQ3ODFiNTgzNzk4Y2E4ZGZhODZmZmQ2NTFlOWFmZTdjYTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhhMmM4M2ZhYzA0NTI2ZjM0MTExNTk4ZGMzZDgyZDRhNWRkNmVlY2Q0YjQ0YWE3NGNkYTk0OGQxZDc2Y2I2NDAifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/state.rs#L7-L11",
+          "version": "repo-lines-v1:sha256:efbab89526229cc497f45d32178b546be392f8270829ec3845b43b8f8537dc00:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjA3ZGU3M2MyNjYyY2NmMmFlNTQ2YTc3ZjdmMjI0OTZlNzBiZTNiOTM1MjlkNjQ1ZjM3MjZjMjM1MTUyZjM1YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGM2MzViZjlkYWNiNzllNGEyY2VhZDE1YmI4OTRlOTExNDI4NzljODVkYjVmOGM0MTZmMmE2OGZmNDU0OGM0MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTczYWI0ZDY3MmJlNjdjOWI5ODFkM2YxYmE2YmY0OWVlNzBhYzU2MDE3NTk3YTBmMzFkY2JmMWIwMWUzYjkxZSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_53d95d817c12486eb60f1cff54bbe696",
+      "statement": "jobs::execute 안에서 Polars 변환은 tokio::task::spawn_blocking으로만 돌리며, 칩이 연결된 잡은 chip_output_slots 경로에 겹어쓰고 레거시 단독 잡은 outputs/{job_id}/result.parquet에 쓴다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/jobs/src/lib.rs#L147-L156",
+          "version": "repo-lines-v1:sha256:b60a642c3dbcdcbb6eda17d4d332cc6344fa462e093a651b45c9d8f1179d5ddc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmZWNiOWU4ZGY0ZWEyZTU1MTAxYWNmZmU1NmNlYWU0NmEwYzY1ZThlOTZkZmY2Yzc4NjQ1OTYwOWJiYWRiOGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4M2JkZmM3MTdjM2E3ZGNiNTNiZWMxZTc4NmM3ZmQxNTExNGYyNzY5OWQ5M2YzYTY1ZmRmNGVjMDhlNjg4N2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZjMzlhYWYzYTA4ZWMyNzZiNDJkNjdkNGZkMTk2ZWZjODg0NzA2NzA4N2I5YTRkYjFjYTMxMmI4YmMzZThjYTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhMjUzNWYyMmFmMmU5ZjdhNzMxYTE0ZTZiZjYyZjU5NWQ0MjQ1OWEyNjU0NWYxYjdiMDJiMzlmMzllYzhmZDkifQ"
+        },
+        {
+          "resource": "repo://crates/jobs/src/lib.rs#L80-L93",
+          "version": "repo-lines-v1:sha256:1ddba239c1bfdbd2545f9f0bd87401cbd3fe83d21914901a94f338a2b294958a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlOTc5MDZlYjc1MWU3MDI1NTlmMDE3NjljYjE2ZmYyMTI2ZDliMTg5MGQ2ODk0ZTFiMDJmOTcyZmRmMTRhZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0YTI3NTE0NGM5Y2E2ZGFmODBiNTQyZWIwODIxYzBkZmQ5MzEyZGMzYWQ2OTdiMDc1YjcyOGVhYWE0OGEzMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5MWUxY2U1YTBkOGYxYjY3ZjZhZTVhYWM0Njg0M2ViZjQ2MGYyNjA1ZTM2MTczODdmZDBkMWViOGIxNjlmNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyOTRlY2EzZDkwZjhmYzg0MDJmMTFiMzMzY2ViM2M5Yzc4OTg5Yjc4MjY2MGMwOTJmN2VhNmEwNDFmNTVjZGEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

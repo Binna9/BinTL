@@ -1,0 +1,25 @@
+---
+description: UI는 라이트/다크 모드 토글을 전제로 디자인·구현
+globs: ui/**/*.{ts,tsx,css}
+alwaysApply: false
+---
+
+# Frontend light / dark theme
+
+UI 작업은 항상 라이트 모드와 다크 모드 토글을 전제로 한다. 한쪽만 보고 색·그림자를 고정하지 않는다.
+
+## Rules
+
+- 색은 `styles.css`의 테마 토큰(`bg-surface`, `text-text`, `border-border`, `bg-accent` 등)을 쓴다. `#fff`, `#000`, `bg-white`, `text-black` 같은 고정 색은 피한다.
+- 새 색이 필요하면 `:root`와 `:root.dark`에 토큰을 같이 추가한 뒤 `@theme` / Tailwind 유틸로 쓴다.
+- 그림자·보더는 라이트/다크에서 대비가 달라질 수 있으므로 `dark:` 변형을 함께 검토한다.
+- 테마 전환은 기존 `useTheme` / `ColorTheme` / `document.documentElement.dark` 흐름을 유지한다.
+- 아이콘·호버·선택·그라데이션도 두 모드에서 가독성과 대비를 확인한다.
+
+```tsx
+// ❌ BAD
+<div className="bg-white text-black shadow-black/20" />
+
+// ✅ GOOD
+<div className="bg-surface text-text shadow-[...] dark:shadow-[...]" />
+```

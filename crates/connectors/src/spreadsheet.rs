@@ -69,7 +69,11 @@ pub fn export_sheet_to_csv(
         if header && index == 0 {
             writer.write_record(&with_sequence_header(add_sequence, cells))?;
         } else {
-            let seq = if header { index as u64 } else { index as u64 + 1 };
+            let seq = if header {
+                index as u64
+            } else {
+                index as u64 + 1
+            };
             writer.write_record(&with_sequence(add_sequence, seq, cells))?;
         }
     }
@@ -172,7 +176,10 @@ mod tests {
         let csv = export_sheet_to_csv(&path, "Sales", b',', true, false).unwrap();
         assert_eq!(String::from_utf8(csv).unwrap(), "name,value\nalpha,1\n");
         let sequenced = export_sheet_to_csv(&path, "Sales", b',', true, true).unwrap();
-        assert_eq!(String::from_utf8(sequenced).unwrap(), "#,name,value\n1,alpha,1\n");
+        assert_eq!(
+            String::from_utf8(sequenced).unwrap(),
+            "#,name,value\n1,alpha,1\n"
+        );
         let piped = export_sheet_to_csv(&path, "Sales", b'|', true, false).unwrap();
         assert_eq!(String::from_utf8(piped).unwrap(), "name|value\nalpha|1\n");
         std::fs::remove_file(path).unwrap();

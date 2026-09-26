@@ -7,9 +7,10 @@ const tone: Record<string, string> = {
   succeeded: "text-success before:bg-success",
   failed: "text-danger before:bg-danger",
   canceled: "text-text-tertiary before:bg-text-tertiary",
+  skipped: "text-text-tertiary before:bg-text-tertiary",
 };
 
-export function StatusPill({ value }: { value: string }) {
+export function StatusPill({ value, label }: { value: string; label?: string }) {
   const { messages } = useLanguage();
   const labels: Record<string, string> = messages.status;
   return (
@@ -19,7 +20,7 @@ export function StatusPill({ value }: { value: string }) {
         tone[value] ?? "text-text-secondary before:bg-text-tertiary",
       )}
     >
-      {labels[value] ?? value}
+      {label ?? labels[value] ?? value}
     </span>
   );
 }

@@ -3,8 +3,9 @@ use sqlx::Row;
 use storage::LiveConnection;
 
 use crate::{
-    driver_family, mssql_client, my_pool, parse_table, pg_pool, qualified, schema_or, sqlite_pool,
-    stringify_ms, stringify_my, stringify_pg, stringify_sqlite, ConnectError,
+    driver_family, mssql_client, my_pool, oracle, parse_table, pg_pool, qualified, schema_or,
+    schema_or_user, sqlite_pool, stringify_ms, stringify_my, stringify_pg, stringify_sqlite,
+    ConnectError,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -252,7 +253,11 @@ pub async fn list_columns(
                         .flatten()
                         .map(str::to_string),
                     max_length: r.try_get::<i32, usize>(5).ok().flatten().map(|v| v as i64),
-                    numeric_precision: r.try_get::<u8, usize>(6).ok().flatten().map(|v| v as i64)
+                    numeric_precision: r
+                        .try_get::<u8, usize>(6)
+                        .ok()
+                        .flatten()
+                        .map(|v| v as i64)
                         .or_else(|| r.try_get::<i32, usize>(6).ok().flatten().map(|v| v as i64)),
                     numeric_scale: r.try_get::<i32, usize>(7).ok().flatten().map(|v| v as i64),
                     primary_key: r
@@ -274,6 +279,115 @@ pub async fn list_columns(
                 })
                 .collect())
         }
+        "oracle" => {
+            let schema = schema_or_user(family, &parsed, &c.username).to_ascii_uppercase();
+            let table = parsed.table.to_ascii_uppercase();
+            oracle::with_conn(c, |conn| {
+                if let oracle::OraConn::Jdbc(jdbc) = conn {
+                    return Ok(crate::tibero_jdbc::columns(jdbc, &schema, &table)?
+                        .into_iter()
+                        .map(|col| ColumnInfo {
+                            ordinal: col.ordinal,
+                            name: col.name,
+                            data_type: col.data_type,
+                            nullable: col.nullable,
+                            default_value: col.default_value,
+                            max_length: col.max_length,
+                            numeric_precision: None,
+                            numeric_scale: col.numeric_scale,
+                            primary_key: false,
+                            extra: None,
+                            comment: col.comment,
+                        })
+                        .collect());
+                }
+                let all = format!(
+                    "SELECT
+                        c.COLUMN_ID,
+                        c.COLUMN_NAME,
+                        CASE
+                          WHEN c.DATA_TYPE IN ('VARCHAR2','NVARCHAR2','CHAR','NCHAR','RAW')
+                               AND c.DATA_LENGTH IS NOT NULL
+                            THEN c.DATA_TYPE || '(' || c.DATA_LENGTH || ')'
+                          WHEN c.DATA_TYPE = 'NUMBER' AND c.DATA_PRECISION IS NOT NULL
+                            THEN c.DATA_TYPE || '(' || c.DATA_PRECISION || ',' || NVL(c.DATA_SCALE, 0) || ')'
+                          ELSE c.DATA_TYPE
+                        END,
+                        c.NULLABLE,
+                        NULL,
+                        c.DATA_LENGTH,
+                        c.DATA_PRECISION,
+                        c.DATA_SCALE,
+                        CASE WHEN p.COLUMN_NAME IS NULL THEN 'N' ELSE 'Y' END,
+                        NULL,
+                        cc.COMMENTS
+                     FROM SYS.ALL_TAB_COLUMNS c
+                     LEFT JOIN (
+                       SELECT cols.COLUMN_NAME
+                       FROM SYS.ALL_CONSTRAINTS cons
+                       JOIN SYS.ALL_CONS_COLUMNS cols
+                         ON cons.OWNER = cols.OWNER
+                        AND cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME
+                       WHERE cons.CONSTRAINT_TYPE = 'P'
+                         AND cons.OWNER = '{schema}'
+                         AND cons.TABLE_NAME = '{table}'
+                     ) p ON p.COLUMN_NAME = c.COLUMN_NAME
+                     LEFT JOIN SYS.ALL_COL_COMMENTS cc
+                       ON cc.OWNER = c.OWNER
+                      AND cc.TABLE_NAME = c.TABLE_NAME
+                      AND cc.COLUMN_NAME = c.COLUMN_NAME
+                     WHERE c.OWNER = '{schema}' AND c.TABLE_NAME = '{table}'
+                     ORDER BY c.COLUMN_ID"
+                );
+                let pub_all = all.replace("SYS.ALL_", "ALL_");
+                let user = format!(
+                    "SELECT
+                        COLUMN_ID,
+                        COLUMN_NAME,
+                        DATA_TYPE,
+                        NULLABLE,
+                        NULL,
+                        DATA_LENGTH,
+                        DATA_PRECISION,
+                        DATA_SCALE,
+                        'N',
+                        NULL,
+                        NULL
+                     FROM USER_TAB_COLUMNS
+                     WHERE TABLE_NAME = '{table}'
+                     ORDER BY COLUMN_ID"
+                );
+                let (_, rows) =
+                    oracle::query_rows_any(conn, &[all.as_str(), pub_all.as_str(), user.as_str()])?;
+                Ok(rows
+                    .into_iter()
+                    .map(|row| {
+                        let get = |i: usize| row.get(i).cloned().unwrap_or_default();
+                        let nullable = !get(3).eq_ignore_ascii_case("N");
+                        ColumnInfo {
+                            ordinal: get(0).parse().unwrap_or(0),
+                            name: get(1),
+                            data_type: get(2),
+                            nullable,
+                            default_value: None,
+                            max_length: get(5).parse().ok(),
+                            numeric_precision: get(6).parse().ok(),
+                            numeric_scale: get(7).parse().ok(),
+                            primary_key: get(8).eq_ignore_ascii_case("Y"),
+                            extra: None,
+                            comment: {
+                                let comment = get(10);
+                                if comment.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(comment)
+                                }
+                            },
+                        }
+                    })
+                    .collect())
+            })
+        }
         other => Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
 }
@@ -286,7 +400,9 @@ pub async fn preview_table(
     let limit = limit.clamp(1, 200);
     let cols = list_columns(c, table).await?;
     if cols.is_empty() {
-        return Err(ConnectError::Invalid(format!("no columns for table {table}")));
+        return Err(ConnectError::Invalid(format!(
+            "no columns for table {table}"
+        )));
     }
     let names: Vec<String> = cols.into_iter().map(|c| c.name).collect();
     let family = driver_family(&c.driver)?;
@@ -332,6 +448,11 @@ pub async fn preview_table(
                 .map(|r| (0..ncols).map(|i| stringify_ms(r, i)).collect())
                 .collect()
         }
+        "oracle" => oracle::with_conn(c, |conn| {
+            let sql = format!("SELECT * FROM {q} WHERE ROWNUM <= {limit}");
+            let (_, rows) = oracle::query_rows(conn, &sql)?;
+            Ok(rows)
+        })?,
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     };
     Ok(Preview {
@@ -398,9 +519,19 @@ where
         .ok()
         .flatten()
         .or_else(|| row.try_get::<i64, _>(i).ok())
-        .or_else(|| row.try_get::<Option<i32>, _>(i).ok().flatten().map(|v| v as i64))
+        .or_else(|| {
+            row.try_get::<Option<i32>, _>(i)
+                .ok()
+                .flatten()
+                .map(|v| v as i64)
+        })
         .or_else(|| row.try_get::<i32, _>(i).ok().map(|v| v as i64))
-        .or_else(|| row.try_get::<Option<i16>, _>(i).ok().flatten().map(|v| v as i64))
+        .or_else(|| {
+            row.try_get::<Option<i16>, _>(i)
+                .ok()
+                .flatten()
+                .map(|v| v as i64)
+        })
 }
 
 fn sqlx_opt_string<'r, R: Row>(row: &'r R, i: usize) -> Option<String>
@@ -434,8 +565,9 @@ where
         .or_else(|_| row.try_get::<i64, _>(i).map(|v| v != 0))
         .or_else(|_| row.try_get::<i32, _>(i).map(|v| v != 0))
         .or_else(|_| {
-            row.try_get::<String, _>(i)
-                .map(|s| s.eq_ignore_ascii_case("YES") || s == "1" || s.eq_ignore_ascii_case("true"))
+            row.try_get::<String, _>(i).map(|s| {
+                s.eq_ignore_ascii_case("YES") || s == "1" || s.eq_ignore_ascii_case("true")
+            })
         })
         .unwrap_or(false)
 }

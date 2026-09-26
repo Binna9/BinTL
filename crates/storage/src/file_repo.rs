@@ -43,6 +43,7 @@ impl Store {
             filename,
             size: bytes.len() as u64,
             stored_path: rel,
+            workspace_id: workspace_id.to_string(),
         })
     }
 
@@ -118,43 +119,9 @@ impl Store {
                 filename: row.filename,
                 size: row.size_bytes.unwrap_or(0) as u64,
                 stored_path: row.stored_path,
+                workspace_id: row.workspace_id,
             })
             .collect())
-    }
-
-    pub(crate) async fn list_upload_dirs(&self) -> Result<Vec<FileMeta>, StorageError> {
-        let mut out = Vec::new();
-        let root = self.uploads_dir();
-        let mut dirs = match tokio::fs::read_dir(&root).await {
-            Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-            Err(e) => return Err(e.into()),
-        };
-        while let Some(entry) = dirs.next_entry().await? {
-            if !entry.file_type().await?.is_dir() {
-                continue;
-            }
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if Uuid::parse_str(&id).is_err() {
-                continue;
-            }
-            let mut files = tokio::fs::read_dir(entry.path()).await?;
-            while let Some(file) = files.next_entry().await? {
-                if !file.file_type().await?.is_file() {
-                    continue;
-                }
-                let filename = file.file_name().to_string_lossy().into_owned();
-                let size = file.metadata().await?.len();
-                out.push(FileMeta {
-                    id: id.clone(),
-                    filename,
-                    size,
-                    stored_path: upload_rel(&id, &file.file_name().to_string_lossy()),
-                });
-            }
-        }
-        out.sort_by(|a, b| b.id.cmp(&a.id));
-        Ok(out)
     }
 
     pub(crate) async fn first_upload_file(
@@ -183,11 +150,17 @@ impl Store {
 
     pub async fn get_upload(&self, id: &str) -> Result<FileMeta, StorageError> {
         let (filename, _, size) = self.first_upload_file(id).await?;
+        let workspace_id = self
+            .get_dataset(id)
+            .await?
+            .map(|row| row.workspace_id)
+            .unwrap_or_default();
         Ok(FileMeta {
             id: id.to_string(),
             filename: filename.clone(),
             size,
             stored_path: upload_rel(id, &filename),
+            workspace_id,
         })
     }
 
@@ -210,12 +183,16 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let transform_ids =
             delete_guard::delete_transforms_for_datasets(&mut tx, &dataset_ids).await?;
-        let deleted = sqlx::query("DELETE FROM datasets WHERE id = ? OR stored_path LIKE ?")
-            .bind(id)
-            .bind(&prefix)
-            .execute(&mut *tx)
-            .await
-            .map_err(delete_guard::map_delete_sql)?;
+        let deleted = sqlx::query(
+            "UPDATE data_files SET deleted_at=?, updated_at=? WHERE id = ? OR stored_path LIKE ?",
+        )
+        .bind(now_rfc3339())
+        .bind(now_rfc3339())
+        .bind(id)
+        .bind(&prefix)
+        .execute(&mut *tx)
+        .await
+        .map_err(delete_guard::map_delete_sql)?;
         tx.commit().await?;
         if !dir_exists && deleted.rows_affected() == 0 && transform_ids.is_empty() {
             return Err(StorageError::NotFound(format!("file {id} not found")));
@@ -224,7 +201,7 @@ impl Store {
             let _ = self.delete_search_document("transform", transform_id).await;
         }
         for dataset_id in &dataset_ids {
-            let _ = self.delete_search_document("dataset", dataset_id).await;
+            let _ = self.delete_search_document("data_file", dataset_id).await;
         }
         if dir_exists {
             match tokio::fs::remove_dir_all(&dir).await {
@@ -241,26 +218,13 @@ impl Store {
         id: &str,
     ) -> Result<Vec<String>, StorageError> {
         let prefix = format!("{REL_UPLOADS}/{id}/%");
-        Ok(
-            sqlx::query_scalar("SELECT id FROM datasets WHERE id = ? OR stored_path LIKE ?")
-                .bind(id)
-                .bind(&prefix)
-                .fetch_all(&self.pool)
-                .await?,
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM data_files WHERE deleted_at IS NULL AND (id = ? OR stored_path LIKE ?)",
         )
-    }
-
-    pub(crate) async fn dataset_ids_for_extract(
-        &self,
-        id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        Ok(
-            sqlx::query_scalar("SELECT id FROM datasets WHERE id = ? OR extract_id = ?")
-                .bind(id)
-                .bind(id)
-                .fetch_all(&self.pool)
-                .await?,
-        )
+        .bind(id)
+        .bind(&prefix)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     pub async fn source_for_file_id(&self, file_id: &str) -> Result<String, StorageError> {

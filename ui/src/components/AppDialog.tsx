@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { ResizeGrip } from "@/components/ui/resize-grip";
 import { DialogContentTransition } from "@/components/DialogContentTransition";
@@ -208,7 +209,7 @@ export function AppDialog({
 
   if (!visible) return null;
 
-  return (
+  return createPortal(
     <div
       className={cn(
         "fixed inset-0 grid place-items-center bg-workspace/60 p-3 backdrop-blur-[1px]",
@@ -240,7 +241,7 @@ export function AppDialog({
         >
           <h2
             id={labelledBy ?? titleId}
-            className="flex min-w-0 shrink-0 items-center gap-2 text-sm font-semibold text-text"
+            className="flex min-w-0 items-center gap-2 text-sm font-semibold text-text"
           >
             {icon}
             {title}
@@ -283,6 +284,7 @@ export function AppDialog({
           onDoubleClick={() => setSize(null)}
         />
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }

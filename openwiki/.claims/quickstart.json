@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:f063c085b68707c35a68d5c6810027879ce44b5fcff2c4ed8f456c4dc2b77ca9",
+  "claims": [
+    {
+      "id": "claim_fdf932dc6d7a456ca4cac4d6aee7c8a9",
+      "statement": "운영 단위는 config를 받는 bintl 한 프로세스이며 React는 embed되고, just run 또는 cargo run -p bintl -- --config config.example.toml로 로컬 기동한다.",
+      "evidence": [
+        {
+          "resource": "repo://README.md#L1-L9",
+          "version": "repo-lines-v1:sha256:b17939d445245ece2f5fd0b5b6d42ee56cbf2cd5ee1c80a78151693afde3c9c8:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZmZTJkNzA0OTBhMDE2MGM0NDMzYmU5OTcwNjM1M2ExNThhZWQ1MjRlMDdkM2ZiZGFjNjE3YjQ0M2U3YWQ2ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjE3MWEyOGRlYzBkYjM3OTA5ZDI4MmFkMzViMzQ5MWU2MmQzZmNjZTliZmU1NzdlNDc4NWI4ZmY3ZDZmZTQwZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2VkNTBmYzRhZmJhYzRkMDcyMmQ2MGI5MmQ5MDc4Zjk0NDhlZjVhZGExZTE1Y2M1MWYxNmMyZTMxNTRhOGFlMCJ9"
+        },
+        {
+          "resource": "repo://justfile#L17-L18",
+          "version": "repo-lines-v1:sha256:0437512b4d2bd43085a0d30bb15f563d936be2aac226dec51a8ea670c335585d:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmQzYWI0MTRlYTNlOWFjOWRiYjAzNTY3NTJiOTczYWI1Y2Y1YTM4NDJiNjZhODc5MTgzNTEwOWE5NThiYTYzZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTYzN2IzMTE3NDI5Nzk1YmNjYmJlMzYzMWU0ODIyZjk3ZGU4OGM4MDA3NjcxNjRjY2FkNDVhMzAxODMzNzhmZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjhlOTEwYTBlZjRiZTAxYmNiYzdiYmQ1YWJiODhjMjkxMDU4ZWY1NzRkMDg4OWQzODAwMGUzNGIzMGRmMDkxYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGYxMzMzM2NiNGRiNmIwNDE1MGM0MDJiNDA5MjFhNmU2ZjYxYTlkMDIzNjcwNTk1NWNiNTAwMTA3N2M1NjYxZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_cccaf61182b94c8292e35cdc8143f470",
+      "statement": "제품 중심은 /workspace 캔버스의 칩·실행·최신 출력이고, /db·/files·/transform은 칩을 만들거나 고치는 도구이며 UUID 경로 파이프라인을 키우지 않는다.",
+      "evidence": [
+        {
+          "resource": "repo://.cursor/rules/workspace-pipeline.mdc#L7-L16",
+          "version": "repo-lines-v1:sha256:b690dbfac32275d854aeb47ad784afba8a69ddf019fa60100da47b2e597dc05a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzZDY3OTM3MGNiZDY0NDQwYWIyNzE1YWRkNGRiMDBhNTg1NTAzM2RiYTAyMjRiNmM4NjA4ZmNhYWM1ZDMwOWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQxOTIxYzgwYzY0MWU4OWYxNzQ1YTU1NDcwNTFlZmExMjNlOTI4ZGYxN2U1YThjMjBlOGRiNTg0YmYyOWExMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcxOGZhYTAyNDZhNjRlYTY1OTk2NjYxOTdhMWM4N2FmNjYzZTIzOTMxMzk5OWE1YjY4ZTUxYjdmZGRhZDNmMWMifQ"
+        },
+        {
+          "resource": "repo://docs/workspace.md#L117-L119",
+          "version": "repo-lines-v1:sha256:50ebe7315752d84d8d9a8299947bcc21dfb09ffbeb53ac90faaf01c25e970109:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWQ4ODllODgxNjk3N2JmOTgwZmNlN2I2MzNhNTUyMTRiNjMwZThjOGUyZGJkNDA5YTJhNjU5ZjU0NzQ4MzE1YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWU0ODEyYjk3MzQ0Nzc4MzE5MDhkYzdjM2QyNTI0MzRkMjE5ZTk0MWM3MDYyYjdmMWZiZmVlNDU2NzRhYjc3YSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmMwOTVkZGJkOGJhNmM1NzExMjg3ZGVjMjllYjc5N2QyNDEwNWQ4Y2RjMGMxMTNiMGFhN2MzMGViMDZhN2UzYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWEyOWJkMjFhYjgxOTI2MTlkNTYwYWJmNDBkMDgxN2RlMzZhZjA0NzNlMmM0NWMxMGFjN2M4Nzk5ODEzNzczYyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_f537d71723514c158e56d17f244bfe6d",
+      "statement": "요청은 UI에서 Axum으로 들어가 jobs/chip 워커와 storage/connectors/engine으로 내려가며, engine은 HTTP와 SQLite를 모른다.",
+      "evidence": [
+        {
+          "resource": "repo://README.md#L176-L184",
+          "version": "repo-lines-v1:sha256:4ff8a2b29d4b7a363e683f9cb9d85ff5fa5bd403744cd94254c3820e5f784a5e:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjVkYTJjMTc5OGFkYmJjODJmYjg2ODE3ZGY5YTI4NGMzZTFmMDQzMWU1MmQ4NmE1YTkxMzczOWViZTdkZDY4OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmExNzViN2JjMzNmYjAwNDViY2VmMTVmMzUwOWM1MDRlZGZkNDgyMmVjMTA1MTBjM2UwNzZlMzI2NWRlNjgxZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTY0ZmYzODQzMWQ2OTdiYWU5Y2E2YWVlMjNmYWVlNjAwZDBlZDVhZjRiYjY3YzExZGFkZTJjMjk1YzVjZTZlOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        },
+        {
+          "resource": "repo://docs/architecture.md#L8-L16",
+          "version": "repo-lines-v1:sha256:c127a1e09668594e575001b86195fd24fff2659f8c2a22c776ba24899d205aa0:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTM1ODJiMWUwYjdkNmM4MmRjMzYzMmU1N2MwYmZmOWUyZjJkNzg0ZmZlYmRkMjg3MTVmMDMxZWVjMGQ5ZjlmYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTY0YmE2ZTgxOTg2MTc3MzMyNGU4Yzc0YzM5NGMyYWU1MTMyODZlM2E5M2ZmMzMwNTcyYTI1MGM5ODYwYTU2NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGY1ODc3Y2JiOTFkYTQzODhhMjc2MWNlMzZhNjdjMzc5YzQ2NDBkYmEzMTA0Y2NkYWYzYjBiODMwNGMzODAzMSJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

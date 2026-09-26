@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::postgres::{PgConnectOptions, PgPoolCopyExt, PgPoolOptions, PgSslMode};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{MySql, Pool, Postgres, Row, Sqlite};
 use storage::LiveConnection;
@@ -11,8 +11,10 @@ mod catalog;
 mod extract;
 mod http_extract;
 mod inspect;
+mod oracle;
 mod query;
 mod spreadsheet;
+mod tibero_jdbc;
 
 pub use catalog::{catalog_layout, list_databases, list_relations, list_schemas, CatalogItem};
 pub use extract::{extract_table, parse_delimiter, sniff_delimiter, ExtractOptions};
@@ -20,7 +22,11 @@ pub use http_extract::{
     extract_http, parse_http_spec, ping_http, preview_http, HttpKv, HttpPreview, HttpRequestSpec,
 };
 pub use inspect::{list_columns, preview_table, ColumnInfo, Preview};
-pub use query::{extract_query, normalize_sql, run_sql, sql_kind, QueryOutcome, SqlKind};
+pub use oracle::{configure_odbc, OdbcSettings};
+pub use query::{
+    extract_query, normalize_sql, normalize_sql_script, run_sql, run_sql_script, sql_kind,
+    QueryOutcome, SqlKind,
+};
 pub use spreadsheet::{export_sheet_to_csv, list_sheets, spreadsheet_format, SheetInfo};
 use tiberius::{AuthMethod, Client, Config, EncryptionLevel};
 use tokio::net::TcpStream;
@@ -33,7 +39,7 @@ pub enum ConnectError {
     #[error("connect timeout")]
     Timeout,
     #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
+    Sqlx(sqlx::Error),
     #[error(transparent)]
     Tiberius(#[from] tiberius::error::Error),
     #[error(transparent)]
@@ -53,6 +59,7 @@ pub fn driver_family(driver: &str) -> Result<&'static str, ConnectError> {
         "mysql" | "mariadb" => Ok("mysql"),
         "mssql" | "sqlserver" => Ok("mssql"),
         "sqlite" => Ok("sqlite"),
+        "oracle" | "tibero" => Ok("oracle"),
         "http" => Ok("http"),
         other => Err(ConnectError::Invalid(format!("unsupported driver {other}"))),
     }
@@ -64,15 +71,23 @@ pub struct TableName {
     pub table: String,
 }
 
+fn is_sql_ident_char(c: char) -> bool {
+    // Oracle/Tibero unquoted identifiers also allow $ and # (OUTLN.OL$, USER$).
+    c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '#'
+}
+
 pub fn parse_table(raw: &str) -> Result<TableName, ConnectError> {
-    let parts: Vec<&str> = raw.split('.').collect();
+    let raw = raw.trim();
+    let parts: Vec<&str> = raw.split('.').map(str::trim).collect();
     if parts.is_empty() || parts.len() > 2 {
-        return Err(ConnectError::Invalid("table must be name or schema.name".into()));
+        return Err(ConnectError::Invalid(
+            "table must be name or schema.name".into(),
+        ));
     }
     for p in &parts {
-        if p.is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if p.is_empty() || !p.chars().all(is_sql_ident_char) {
             return Err(ConnectError::Invalid(
-                "table/schema may only contain letters, digits, underscore".into(),
+                "table/schema may only contain letters, digits, underscore, $, #".into(),
             ));
         }
     }
@@ -94,15 +109,29 @@ pub fn parse_ident(raw: &str) -> Result<&str, ConnectError> {
     if raw.is_empty() || raw.len() > 128 {
         return Err(ConnectError::Invalid("invalid identifier".into()));
     }
-    if !raw
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
+    if !raw.chars().all(|c| is_sql_ident_char(c) || c == '-') {
         return Err(ConnectError::Invalid(
-            "identifier may only contain letters, digits, underscore, hyphen".into(),
+            "identifier may only contain letters, digits, underscore, hyphen, $, #".into(),
         ));
     }
     Ok(raw)
+}
+
+pub fn table_select_sql(
+    driver: &str,
+    table: &str,
+    columns: &[String],
+) -> Result<String, ConnectError> {
+    let family = driver_family(driver)?;
+    let from = qualified(family, &parse_table(table)?);
+    if columns.is_empty() {
+        return Ok(format!("SELECT * FROM {from}"));
+    }
+    let mut quoted = Vec::with_capacity(columns.len());
+    for column in columns {
+        quoted.push(quote_ident(family, parse_ident(column)?));
+    }
+    Ok(format!("SELECT {} FROM {from}", quoted.join(", ")))
 }
 
 pub fn with_database(c: &LiveConnection, database: Option<&str>) -> LiveConnection {
@@ -121,13 +150,21 @@ pub(crate) fn quote_ident(family: &str, ident: &str) -> String {
     match family {
         "mysql" => format!("`{}`", ident.replace('`', "``")),
         "mssql" => format!("[{}]", ident.replace(']', "]]")),
+        "oracle" => {
+            let ident = ident.to_ascii_uppercase();
+            format!("\"{}\"", ident.replace('"', "\"\""))
+        }
         _ => format!("\"{}\"", ident.replace('"', "\"\"")),
     }
 }
 
 pub(crate) fn qualified(family: &str, t: &TableName) -> String {
     match &t.schema {
-        Some(s) => format!("{}.{}", quote_ident(family, s), quote_ident(family, &t.table)),
+        Some(s) => format!(
+            "{}.{}",
+            quote_ident(family, s),
+            quote_ident(family, &t.table)
+        ),
         None => quote_ident(family, &t.table),
     }
 }
@@ -138,6 +175,45 @@ pub(crate) fn schema_or<'a>(family: &str, t: &'a TableName) -> &'a str {
         "mssql" => "dbo",
         _ => "",
     })
+}
+
+pub(crate) fn schema_or_user(family: &str, t: &TableName, username: &str) -> String {
+    if let Some(schema) = &t.schema {
+        return schema.clone();
+    }
+    match family {
+        "postgres" => "public".into(),
+        "mssql" => "dbo".into(),
+        "oracle" => username
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect::<String>()
+            .to_ascii_uppercase(),
+        _ => String::new(),
+    }
+}
+
+impl From<sqlx::Error> for ConnectError {
+    fn from(error: sqlx::Error) -> Self {
+        map_sqlx_error(error)
+    }
+}
+
+fn map_sqlx_error(error: sqlx::Error) -> ConnectError {
+    if postgres_non_utf8_protocol(&error.to_string()) {
+        return ConnectError::Invalid(
+            "Postgres 로그인에 실패했습니다. 사용자, 비밀번호, 데이터베이스를 확인하세요. 자세한 원인은 서버 로그를 보세요.".into(),
+        );
+    }
+    ConnectError::Sqlx(error)
+}
+
+fn postgres_non_utf8_protocol(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("non-utf-8")
+        && (lower.contains("errorresponse")
+            || lower.contains("lc_messages")
+            || lower.contains("authentication"))
 }
 
 pub(crate) async fn pg_pool(c: &LiveConnection) -> Result<Pool<Postgres>, ConnectError> {
@@ -243,6 +319,12 @@ pub async fn test_connection(c: &LiveConnection) -> Result<(), ConnectError> {
             let mut client = mssql_client(c).await?;
             client.simple_query("SELECT 1").await?;
         }
+        "oracle" => {
+            oracle::with_conn(c, |conn| {
+                oracle::exec(conn, "SELECT 1 FROM DUAL")?;
+                Ok(())
+            })?;
+        }
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
     Ok(())
@@ -311,9 +393,58 @@ pub async fn list_tables(c: &LiveConnection) -> Result<Vec<String>, ConnectError
             let rows = stream.into_first_result().await?;
             Ok(rows
                 .iter()
-                .filter_map(|r| r.try_get::<&str, usize>(0).ok().flatten().map(str::to_string))
+                .filter_map(|r| {
+                    r.try_get::<&str, usize>(0)
+                        .ok()
+                        .flatten()
+                        .map(str::to_string)
+                })
                 .collect())
         }
+        "oracle" => oracle::with_conn(c, |conn| {
+            let mut names = Vec::new();
+            let mut last = None;
+            for sql in [
+                "SELECT OWNER || '.' || TABLE_NAME FROM SYS.DBA_TABLES WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || TABLE_NAME FROM SYS.ALL_TABLES WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || TABLE_NAME FROM DBA_TABLES WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || TABLE_NAME FROM ALL_TABLES WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT USER || '.' || TABLE_NAME FROM SYS.USER_TABLES",
+                "SELECT USER || '.' || TABLE_NAME FROM USER_TABLES",
+                "SELECT USER || '.' || OBJECT_NAME FROM USER_OBJECTS WHERE OBJECT_TYPE = 'TABLE'",
+                "SELECT TNAME FROM TAB WHERE TABTYPE = 'TABLE'",
+            ] {
+                match oracle::query_rows(conn, sql) {
+                    Ok((_, rows)) => {
+                        names.extend(rows.into_iter().filter_map(|row| row.into_iter().next()));
+                        break;
+                    }
+                    Err(error) => last = Some(error),
+                }
+            }
+            for sql in [
+                "SELECT OWNER || '.' || VIEW_NAME FROM SYS.DBA_VIEWS WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || VIEW_NAME FROM SYS.ALL_VIEWS WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || VIEW_NAME FROM DBA_VIEWS WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT OWNER || '.' || VIEW_NAME FROM ALL_VIEWS WHERE OWNER NOT IN ('SYS','SYSTEM')",
+                "SELECT USER || '.' || VIEW_NAME FROM USER_VIEWS",
+                "SELECT USER || '.' || OBJECT_NAME FROM USER_OBJECTS WHERE OBJECT_TYPE = 'VIEW'",
+            ] {
+                match oracle::query_rows(conn, sql) {
+                    Ok((_, rows)) => {
+                        names.extend(rows.into_iter().filter_map(|row| row.into_iter().next()));
+                        break;
+                    }
+                    Err(error) => last = Some(error),
+                }
+            }
+            if names.is_empty() {
+                if let Some(error) = last {
+                    return Err(error);
+                }
+            }
+            Ok(names)
+        }),
         other => Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
 }
@@ -402,37 +533,73 @@ pub(crate) fn stringify_ms(row: &tiberius::Row, i: usize) -> String {
     String::new()
 }
 
-fn read_csv(path: &Path) -> Result<(Vec<String>, Vec<Vec<String>>), ConnectError> {
+fn open_load_csv(path: &Path) -> Result<(csv::Reader<std::fs::File>, Vec<String>), ConnectError> {
     let mut rdr = csv::Reader::from_path(path)?;
-    let headers: Vec<String> = rdr
-        .headers()?
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let headers: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
+    let mut seen = std::collections::HashSet::new();
     for h in &headers {
-        if !h.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || h.is_empty() {
+        if h.trim().is_empty() || h.chars().any(char::is_control) || !seen.insert(h) {
             return Err(ConnectError::Invalid(format!("bad column name `{h}`")));
         }
     }
-    let mut rows = Vec::new();
-    for rec in rdr.records() {
-        let rec = rec?;
-        rows.push(rec.iter().map(|s| s.to_string()).collect());
-    }
-    Ok((headers, rows))
+    Ok((rdr, headers))
 }
 
-fn create_table_sql(family: &str, q: &str, raw_table: &str, cols: &[String]) -> String {
-    let defs = cols
+fn read_csv_batch(
+    rdr: &mut csv::Reader<std::fs::File>,
+    batch_size: usize,
+) -> Result<Vec<Vec<String>>, ConnectError> {
+    let mut rows = Vec::with_capacity(batch_size);
+    for record in rdr.records().take(batch_size) {
+        let record = record?;
+        rows.push(record.iter().map(str::to_string).collect());
+    }
+    Ok(rows)
+}
+
+fn create_table_sql(
+    family: &str,
+    q: &str,
+    raw_table: &str,
+    cols: &[String],
+    unique_keys: &[String],
+) -> String {
+    let mut defs = cols
         .iter()
         .map(|c| format!("{} TEXT", quote_ident(family, c)))
         .collect::<Vec<_>>()
         .join(", ");
+    if !unique_keys.is_empty() {
+        let keys = unique_keys
+            .iter()
+            .map(|key| quote_ident(family, key))
+            .collect::<Vec<_>>()
+            .join(", ");
+        defs.push_str(&format!(", UNIQUE ({keys})"));
+    }
     match family {
         "mssql" => format!(
             "IF OBJECT_ID(N'{}', N'U') IS NULL CREATE TABLE {q} ({defs})",
             raw_table.replace('\'', "")
         ),
+        "oracle" => {
+            let defs = cols
+                .iter()
+                .map(|c| format!("{} VARCHAR2(4000)", quote_ident(family, c)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let defs = if unique_keys.is_empty() {
+                defs
+            } else {
+                let keys = unique_keys
+                    .iter()
+                    .map(|key| quote_ident(family, key))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{defs}, UNIQUE ({keys})")
+            };
+            format!("CREATE TABLE {q} ({defs})")
+        }
         _ => format!("CREATE TABLE IF NOT EXISTS {q} ({defs})"),
     }
 }
@@ -444,80 +611,696 @@ fn clear_sql(family: &str, q: &str) -> String {
     }
 }
 
-/// ponytail: row batches via QueryBuilder; COPY/bulk insert when volume matters.
+fn staging_table(dest: &TableName) -> TableName {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    TableName {
+        schema: dest.schema.clone(),
+        table: format!("bintlld{}", &id[..12]),
+    }
+}
+
+fn col_sql(family: &str, cols: &[String]) -> String {
+    cols.iter()
+        .map(|col| quote_ident(family, col))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn drop_table_sql(family: &str, q: &str) -> String {
+    match family {
+        "oracle" | "mssql" => format!("DROP TABLE {q}"),
+        _ => format!("DROP TABLE IF EXISTS {q}"),
+    }
+}
+
+fn rename_stage_sql(family: &str, stage_q: &str, dest_q: &str, dest_table: &str) -> String {
+    let dest = quote_ident(family, dest_table);
+    match family {
+        "mysql" => format!("RENAME TABLE {stage_q} TO {dest_q}"),
+        "mssql" => format!("EXEC sp_rename '{stage_q}', '{dest_table}'"),
+        _ => format!("ALTER TABLE {stage_q} RENAME TO {dest}"),
+    }
+}
+
+fn swap_clear_sql(family: &str, q: &str) -> String {
+    match family {
+        "postgres" => format!("TRUNCATE TABLE {q}"),
+        _ => format!("DELETE FROM {q}"),
+    }
+}
+
+fn insert_select_sql(family: &str, dest_q: &str, stage_q: &str, cols: &[String]) -> String {
+    let cols = col_sql(family, cols);
+    format!("INSERT INTO {dest_q} ({cols}) SELECT {cols} FROM {stage_q}")
+}
+
+async fn swap_sqlx_table<DB>(
+    pool: &Pool<DB>,
+    family: &str,
+    dest_q: &str,
+    dest_table: &str,
+    stage_q: &str,
+    mode: &str,
+    cols: &[String],
+) -> Result<(), ConnectError>
+where
+    DB: sqlx::Database,
+    for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
+    for<'c> &'c mut <DB as sqlx::Database>::Connection: sqlx::Executor<'c, Database = DB>,
+{
+    let mut tx = pool.begin().await?;
+    if mode == "recreate" {
+        sqlx::query(&drop_table_sql(family, dest_q))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&rename_stage_sql(family, stage_q, dest_q, dest_table))
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        sqlx::query(&swap_clear_sql(family, dest_q))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&insert_select_sql(family, dest_q, stage_q, cols))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&drop_table_sql(family, stage_q))
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+fn oracle_swap_loaded(
+    conn: &oracle::OraConn<'_>,
+    family: &str,
+    dest_q: &str,
+    dest_table: &str,
+    stage_q: &str,
+    mode: &str,
+    cols: &[String],
+) -> Result<(), ConnectError> {
+    if mode == "recreate" {
+        oracle::exec_ignore(
+            conn,
+            &drop_table_sql(family, dest_q),
+            &["ORA-00942", "TBR-0008", "table or view does not exist"],
+        )?;
+        oracle::exec(conn, &rename_stage_sql(family, stage_q, dest_q, dest_table))?;
+        return Ok(());
+    }
+    let sql = format!(
+        "BEGIN\n{};\n{};\nEND;",
+        swap_clear_sql(family, dest_q),
+        insert_select_sql(family, dest_q, stage_q, cols)
+    );
+    oracle::exec(conn, &sql)?;
+    oracle::exec_ignore(
+        conn,
+        &drop_table_sql(family, stage_q),
+        &["ORA-00942", "TBR-0008", "table or view does not exist"],
+    )?;
+    Ok(())
+}
+
+/// Streams bounded row batches so input size does not determine memory use.
+/// Postgres append/truncate/replace/recreate uses COPY FROM STDIN. Other
+/// drivers and Postgres upsert still batch INSERT/MERGE.
 /// New tables are created as TEXT columns from the CSV header.
+/// Existing dest + truncate/replace/recreate loads a staging table first, then
+/// swaps so a failed run does not leave dest empty.
 pub async fn load_table(
     c: &LiveConnection,
     table: &str,
     csv_path: &Path,
     mode: &str,
+    conflict_keys: &[String],
+    null_marker: Option<&str>,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
-    if mode != "append" && mode != "replace" {
-        return Err(ConnectError::Invalid("mode must be append or replace".into()));
+    if !matches!(
+        mode,
+        "append" | "truncate" | "upsert" | "recreate" | "replace"
+    ) {
+        return Err(ConnectError::Invalid("unsupported load mode".into()));
     }
     let family = driver_family(&c.driver)?;
     let parsed = parse_table(table)?;
     let q = qualified(family, &parsed);
-    let (cols, rows) = read_csv(csv_path)?;
+    let (mut reader, cols) = open_load_csv(csv_path)?;
     if cols.is_empty() {
         return Err(ConnectError::Invalid("csv has no columns".into()));
     }
-    let create = create_table_sql(family, &q, table, &cols);
-    let n = rows.len() as u64;
+    // CSV cannot distinguish an empty field from a database NULL. Preserve empty
+    // strings for textual destination columns, but map them to NULL for known
+    // non-text destination types (integer/date/boolean/etc.). Recreated/new
+    // tables use TEXT columns, so their empty strings must be preserved.
+    let listed = match list_columns(c, table).await {
+        Ok(cols) => Some(cols),
+        Err(error) if missing_load_table(&error) => None,
+        Err(error) => return Err(error),
+    };
+    let dest_exists = listed.is_some();
+    let destination_columns = if mode == "recreate" {
+        Vec::new()
+    } else {
+        listed.unwrap_or_default()
+    };
+    let column_rules = load_column_rules(&cols, &destination_columns);
+    if mode == "upsert" {
+        if conflict_keys.is_empty() || conflict_keys.iter().any(|key| !cols.contains(key)) {
+            return Err(ConnectError::Invalid(
+                "upsert keys must exist in the input columns".into(),
+            ));
+        }
+        if c.driver == "redshift" || family == "mssql" {
+            return Err(ConnectError::Invalid(
+                "upsert is not yet supported for this driver".into(),
+            ));
+        }
+    }
+    let dest_q = q.clone();
+    let use_stage = dest_exists && matches!(mode, "truncate" | "replace" | "recreate");
+    let stage = use_stage.then(|| staging_table(&parsed));
+    let target = stage.as_ref().unwrap_or(&parsed);
+    let q = qualified(family, target);
+    let write_mode = if use_stage { "append" } else { mode };
+    let create = create_table_sql(
+        family,
+        &q,
+        if use_stage { &target.table } else { table },
+        &cols,
+        if write_mode == "upsert" {
+            conflict_keys
+        } else {
+            &[]
+        },
+    );
+    let mut n = 0u64;
     match family {
         "postgres" => {
             let pool = pg_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "replace" {
-                sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+            if !use_stage {
+                if mode == "recreate" {
+                    sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
+                        .execute(&pool)
+                        .await?;
+                    sqlx::query(&create).execute(&pool).await?;
+                }
+                if matches!(mode, "replace" | "truncate") {
+                    sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+                }
             }
-            insert_sqlx::<Postgres>(&pool, family, &q, &cols, &rows).await?;
+            if c.driver == "postgres" && write_mode != "upsert" {
+                n = copy_postgres_csv(
+                    &pool,
+                    &q,
+                    &cols,
+                    &mut reader,
+                    &column_rules,
+                    null_marker,
+                    on_progress,
+                )
+                .await?;
+            } else {
+                loop {
+                    let rows = read_csv_batch(&mut reader, 2_000)?;
+                    if rows.is_empty() {
+                        break;
+                    }
+                    let row_start = n + 1;
+                    let row_end = n + rows.len() as u64;
+                    validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                    insert_sqlx::<Postgres>(
+                        &pool,
+                        family,
+                        &q,
+                        &cols,
+                        &column_rules,
+                        &rows,
+                        write_mode,
+                        conflict_keys,
+                        null_marker,
+                    )
+                    .await
+                    .map_err(|error| load_batch_error(row_start, row_end, error))?;
+                    n = row_end;
+                    report_load_progress(on_progress, n);
+                }
+            }
+            if use_stage {
+                if let Err(error) =
+                    swap_sqlx_table(&pool, family, &dest_q, &parsed.table, &q, mode, &cols).await
+                {
+                    let _ = sqlx::query(&drop_table_sql(family, &q))
+                        .execute(&pool)
+                        .await;
+                    return Err(error);
+                }
+            }
             pool.close().await;
         }
         "mysql" => {
             let pool = my_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "replace" {
-                sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+            if !use_stage {
+                if mode == "recreate" {
+                    sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
+                        .execute(&pool)
+                        .await?;
+                    sqlx::query(&create).execute(&pool).await?;
+                }
+                if matches!(mode, "replace" | "truncate") {
+                    sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+                }
             }
-            insert_sqlx::<MySql>(&pool, family, &q, &cols, &rows).await?;
+            loop {
+                let rows = read_csv_batch(&mut reader, 2_000)?;
+                if rows.is_empty() {
+                    break;
+                }
+                let row_start = n + 1;
+                let row_end = n + rows.len() as u64;
+                validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                insert_sqlx::<MySql>(
+                    &pool,
+                    family,
+                    &q,
+                    &cols,
+                    &column_rules,
+                    &rows,
+                    write_mode,
+                    conflict_keys,
+                    null_marker,
+                )
+                .await
+                .map_err(|error| load_batch_error(row_start, row_end, error))?;
+                n = row_end;
+                report_load_progress(on_progress, n);
+            }
+            if use_stage {
+                if let Err(error) =
+                    swap_sqlx_table(&pool, family, &dest_q, &parsed.table, &q, mode, &cols).await
+                {
+                    let _ = sqlx::query(&drop_table_sql(family, &q))
+                        .execute(&pool)
+                        .await;
+                    return Err(error);
+                }
+            }
             pool.close().await;
         }
         "sqlite" => {
             let pool = sqlite_pool(c).await?;
             sqlx::query(&create).execute(&pool).await?;
-            if mode == "replace" {
-                sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+            if !use_stage {
+                if mode == "recreate" {
+                    sqlx::query(&format!("DROP TABLE IF EXISTS {q}"))
+                        .execute(&pool)
+                        .await?;
+                    sqlx::query(&create).execute(&pool).await?;
+                }
+                if matches!(mode, "replace" | "truncate") {
+                    sqlx::query(&clear_sql(family, &q)).execute(&pool).await?;
+                }
             }
-            insert_sqlx::<Sqlite>(&pool, family, &q, &cols, &rows).await?;
+            loop {
+                let rows = read_csv_batch(&mut reader, 2_000)?;
+                if rows.is_empty() {
+                    break;
+                }
+                let row_start = n + 1;
+                let row_end = n + rows.len() as u64;
+                validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                insert_sqlx::<Sqlite>(
+                    &pool,
+                    family,
+                    &q,
+                    &cols,
+                    &column_rules,
+                    &rows,
+                    write_mode,
+                    conflict_keys,
+                    null_marker,
+                )
+                .await
+                .map_err(|error| load_batch_error(row_start, row_end, error))?;
+                n = row_end;
+                report_load_progress(on_progress, n);
+            }
+            if use_stage {
+                if let Err(error) =
+                    swap_sqlx_table(&pool, family, &dest_q, &parsed.table, &q, mode, &cols).await
+                {
+                    let _ = sqlx::query(&drop_table_sql(family, &q))
+                        .execute(&pool)
+                        .await;
+                    return Err(error);
+                }
+            }
             pool.close().await;
         }
         "mssql" => {
             let mut client = mssql_client(c).await?;
-            client.simple_query(create).await?;
-            if mode == "replace" {
-                client.simple_query(clear_sql(family, &q)).await?;
+            client.simple_query(create.clone()).await?;
+            if !use_stage {
+                if mode == "recreate" {
+                    client.simple_query(format!("DROP TABLE {q}")).await.ok();
+                    client.simple_query(create.clone()).await?;
+                }
+                if matches!(mode, "replace" | "truncate") {
+                    client.simple_query(clear_sql(family, &q)).await?;
+                }
             }
             let col_sql = cols
                 .iter()
                 .map(|c| quote_ident(family, c))
                 .collect::<Vec<_>>()
                 .join(", ");
-            for row in &rows {
-                let placeholders = (1..=cols.len())
-                    .map(|i| format!("@P{i}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let sql = format!("INSERT INTO {q} ({col_sql}) VALUES ({placeholders})");
-                let binds: Vec<&str> = row.iter().map(String::as_str).collect();
-                let args: Vec<&dyn tiberius::ToSql> =
-                    binds.iter().map(|s| s as &dyn tiberius::ToSql).collect();
-                client.execute(sql, &args).await?;
+            loop {
+                let rows = read_csv_batch(&mut reader, 500)?;
+                if rows.is_empty() {
+                    break;
+                }
+                validate_empty_cells(&rows, &column_rules, n + 1, null_marker)?;
+                for row in &rows {
+                    let row_number = n + 1;
+                    let mut bind_index = 0usize;
+                    let placeholders = row
+                        .iter()
+                        .enumerate()
+                        .map(|(column_index, value)| {
+                            if cell_is_null(value, &column_rules[column_index], null_marker) {
+                                "NULL".to_string()
+                            } else {
+                                bind_index += 1;
+                                format!("@P{bind_index}")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let sql = format!("INSERT INTO {q} ({col_sql}) VALUES ({placeholders})");
+                    let binds: Vec<&str> = row
+                        .iter()
+                        .enumerate()
+                        .filter(|(column_index, value)| {
+                            !cell_is_null(value, &column_rules[*column_index], null_marker)
+                        })
+                        .map(|(_, value)| value.as_str())
+                        .collect();
+                    let args: Vec<&dyn tiberius::ToSql> =
+                        binds.iter().map(|s| s as &dyn tiberius::ToSql).collect();
+                    client.execute(sql, &args).await.map_err(|error| {
+                        ConnectError::Invalid(format!("load failed at row {row_number}: {error}"))
+                    })?;
+                    n = row_number;
+                }
+                report_load_progress(on_progress, n);
             }
+            if use_stage {
+                let swap = async {
+                    client.simple_query("BEGIN TRAN").await?;
+                    if mode == "recreate" {
+                        let _ = client.simple_query(drop_table_sql(family, &dest_q)).await;
+                        client
+                            .simple_query(rename_stage_sql(family, &q, &dest_q, &parsed.table))
+                            .await?;
+                    } else {
+                        client.simple_query(swap_clear_sql(family, &dest_q)).await?;
+                        client
+                            .simple_query(insert_select_sql(family, &dest_q, &q, &cols))
+                            .await?;
+                        let _ = client.simple_query(drop_table_sql(family, &q)).await;
+                    }
+                    client.simple_query("COMMIT").await?;
+                    Ok::<(), ConnectError>(())
+                }
+                .await;
+                if let Err(error) = swap {
+                    let _ = client.simple_query("ROLLBACK").await;
+                    let _ = client.simple_query(drop_table_sql(family, &q)).await;
+                    return Err(error);
+                }
+            }
+        }
+        "oracle" => {
+            oracle::with_conn(c, |conn| {
+                let drop = (!use_stage && mode == "recreate").then(|| format!("DROP TABLE {q}"));
+                let clear = (!use_stage && matches!(mode, "replace" | "truncate"))
+                    .then(|| clear_sql(family, &q));
+                oracle::prepare_table(conn, &create, drop.as_deref(), clear.as_deref())?;
+                let (mut reader, _) = open_load_csv(csv_path)?;
+                loop {
+                    let rows = read_csv_batch(&mut reader, 80)?;
+                    if rows.is_empty() {
+                        break;
+                    }
+                    let row_start = n + 1;
+                    let row_end = n + rows.len() as u64;
+                    validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                    oracle::insert_rows(
+                        conn,
+                        &q,
+                        &cols,
+                        &column_rules,
+                        &rows,
+                        write_mode,
+                        conflict_keys,
+                        null_marker,
+                    )
+                    .map_err(|error| load_batch_error(row_start, row_end, error))?;
+                    n = row_end;
+                    report_load_progress(on_progress, n);
+                }
+                if use_stage {
+                    if let Err(error) =
+                        oracle_swap_loaded(conn, family, &dest_q, &parsed.table, &q, mode, &cols)
+                    {
+                        let _ = oracle::exec_ignore(
+                            conn,
+                            &drop_table_sql(family, &q),
+                            &["ORA-00942", "TBR-0008", "table or view does not exist"],
+                        );
+                        return Err(error);
+                    }
+                }
+                Ok(())
+            })?;
         }
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
     }
     Ok(n)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LoadColumnRule {
+    name: String,
+    empty_as_null: bool,
+    nullable: bool,
+    data_type: String,
+}
+
+fn load_column_rules(input_columns: &[String], destination: &[ColumnInfo]) -> Vec<LoadColumnRule> {
+    input_columns
+        .iter()
+        .map(|name| {
+            let target = destination
+                .iter()
+                .find(|column| column.name.eq_ignore_ascii_case(name));
+            LoadColumnRule {
+                name: name.clone(),
+                empty_as_null: target
+                    .map(|column| empty_means_null(&column.data_type))
+                    .unwrap_or(false),
+                nullable: target.map(|column| column.nullable).unwrap_or(true),
+                data_type: target
+                    .map(|column| column.data_type.clone())
+                    .unwrap_or_else(|| "TEXT".to_string()),
+            }
+        })
+        .collect()
+}
+
+fn empty_means_null(data_type: &str) -> bool {
+    let normalized = data_type.trim().to_ascii_lowercase();
+    let base = normalized
+        .split(['(', ' ', '['])
+        .next()
+        .unwrap_or(normalized.as_str());
+    matches!(
+        base,
+        "smallint"
+            | "integer"
+            | "bigint"
+            | "int"
+            | "int2"
+            | "int4"
+            | "int8"
+            | "tinyint"
+            | "mediumint"
+            | "serial"
+            | "bigserial"
+            | "decimal"
+            | "numeric"
+            | "real"
+            | "float"
+            | "float4"
+            | "float8"
+            | "double"
+            | "money"
+            | "boolean"
+            | "bool"
+            | "bit"
+            | "date"
+            | "time"
+            | "timetz"
+            | "timestamp"
+            | "timestamptz"
+            | "datetime"
+            | "datetime2"
+            | "smalldatetime"
+            | "interval"
+            | "uuid"
+            | "number"
+            | "binary_float"
+            | "binary_double"
+    )
+}
+
+fn validate_empty_cells(
+    rows: &[Vec<String>],
+    rules: &[LoadColumnRule],
+    row_start: u64,
+    null_marker: Option<&str>,
+) -> Result<(), ConnectError> {
+    for (row_offset, row) in rows.iter().enumerate() {
+        if row.len() != rules.len() {
+            return Err(ConnectError::Invalid(format!(
+                "CSV row {} has {} fields but header has {} columns",
+                row_start + row_offset as u64,
+                row.len(),
+                rules.len()
+            )));
+        }
+        for (column_index, value) in row.iter().enumerate() {
+            let rule = &rules[column_index];
+            if cell_is_null(value, rule, null_marker) && !rule.nullable {
+                return Err(ConnectError::Invalid(format!(
+                    "load value invalid at row {}, column '{}' ({}): empty value cannot be loaded into a NOT NULL column",
+                    row_start + row_offset as u64,
+                    rule.name,
+                    rule.data_type
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn cell_is_null(value: &str, rule: &LoadColumnRule, null_marker: Option<&str>) -> bool {
+    null_marker.is_some_and(|marker| value == marker) || (value.is_empty() && rule.empty_as_null)
+}
+
+fn report_load_progress(on_progress: Option<&(dyn Fn(u64) + Send + Sync)>, n: u64) {
+    if let Some(cb) = on_progress {
+        cb(n);
+    }
+}
+
+fn missing_load_table(error: &ConnectError) -> bool {
+    let text = error.to_string().to_ascii_lowercase();
+    text.contains("does not exist")
+        || text.contains("doesn't exist")
+        || text.contains("no such table")
+        || text.contains("invalid object name")
+        || text.contains("ora-00942")
+        || text.contains("unknown table")
+}
+
+fn load_batch_error(row_start: u64, row_end: u64, error: ConnectError) -> ConnectError {
+    let batch = ((row_start - 1) / 2_000) + 1;
+    ConnectError::Invalid(format!(
+        "load batch {batch} failed (row_start={row_start}, row_end={row_end}): {error}"
+    ))
+}
+
+const POSTGRES_COPY_NULL: &str = "\\N";
+
+fn postgres_copy_sql(q: &str, cols: &[String], null_string: &str) -> String {
+    let col_sql = cols
+        .iter()
+        .map(|c| quote_ident("postgres", c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "COPY {q} ({col_sql}) FROM STDIN WITH (FORMAT csv, NULL {}, FORCE_NULL ({col_sql}))",
+        sql_lit(null_string)
+    )
+}
+
+fn encode_copy_csv(
+    rows: &[Vec<String>],
+    rules: &[LoadColumnRule],
+    null_marker: Option<&str>,
+    null_string: &str,
+) -> Result<Vec<u8>, ConnectError> {
+    let mut writer = csv::WriterBuilder::new()
+        .quote_style(csv::QuoteStyle::Always)
+        .from_writer(Vec::new());
+    for row in rows {
+        writer.write_record(row.iter().enumerate().map(|(index, value)| {
+            if cell_is_null(value, &rules[index], null_marker) {
+                null_string
+            } else {
+                value.as_str()
+            }
+        }))?;
+    }
+    writer.flush()?;
+    Ok(writer.into_inner().map_err(|error| error.into_error())?)
+}
+
+async fn copy_postgres_csv(
+    pool: &Pool<Postgres>,
+    q: &str,
+    cols: &[String],
+    reader: &mut csv::Reader<std::fs::File>,
+    column_rules: &[LoadColumnRule],
+    null_marker: Option<&str>,
+    on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
+) -> Result<u64, ConnectError> {
+    let null_string = null_marker.unwrap_or(POSTGRES_COPY_NULL);
+    let sql = postgres_copy_sql(q, cols, null_string);
+    let mut copy = pool.copy_in_raw(&sql).await?;
+    let mut n = 0u64;
+    let streamed = async {
+        loop {
+            let rows = read_csv_batch(reader, 2_000)?;
+            if rows.is_empty() {
+                break;
+            }
+            let row_start = n + 1;
+            let row_end = n + rows.len() as u64;
+            validate_empty_cells(&rows, column_rules, row_start, null_marker)?;
+            let buf = encode_copy_csv(&rows, column_rules, null_marker, null_string)
+                .map_err(|error| load_batch_error(row_start, row_end, error))?;
+            copy.send(buf)
+                .await
+                .map_err(|error| load_batch_error(row_start, row_end, error.into()))?;
+            n = row_end;
+            report_load_progress(on_progress, n);
+        }
+        Ok::<u64, ConnectError>(n)
+    }
+    .await;
+    match streamed {
+        Ok(n) => copy.finish().await.map_err(ConnectError::from).map(|_| n),
+        Err(error) => {
+            let _ = copy.abort("load failed").await;
+            Err(error)
+        }
+    }
 }
 
 async fn insert_sqlx<DB>(
@@ -525,7 +1308,11 @@ async fn insert_sqlx<DB>(
     family: &str,
     q: &str,
     cols: &[String],
+    column_rules: &[LoadColumnRule],
     rows: &[Vec<String>],
+    mode: &str,
+    conflict_keys: &[String],
+    null_marker: Option<&str>,
 ) -> Result<(), ConnectError>
 where
     DB: sqlx::Database,
@@ -554,16 +1341,66 @@ where
                 if j > 0 {
                     sql.push_str(", ");
                 }
-                sql.push_str(&sql_lit(cell));
+                if cell_is_null(cell, &column_rules[j], null_marker) {
+                    sql.push_str("NULL");
+                } else {
+                    sql.push_str(&sql_lit(cell));
+                }
             }
             sql.push(')');
+        }
+        if mode == "upsert" {
+            let update_cols = cols
+                .iter()
+                .filter(|col| !conflict_keys.contains(col))
+                .collect::<Vec<_>>();
+            if family == "mysql" {
+                let assignments = update_cols
+                    .iter()
+                    .map(|col| {
+                        let quoted = quote_ident(family, col);
+                        format!("{quoted} = VALUES({quoted})")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let fallback = quote_ident(family, &conflict_keys[0]);
+                sql.push_str(&format!(
+                    " ON DUPLICATE KEY UPDATE {}",
+                    if assignments.is_empty() {
+                        format!("{fallback} = {fallback}")
+                    } else {
+                        assignments
+                    }
+                ));
+            } else {
+                let keys = conflict_keys
+                    .iter()
+                    .map(|key| quote_ident(family, key))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if update_cols.is_empty() {
+                    sql.push_str(&format!(" ON CONFLICT ({keys}) DO NOTHING"));
+                } else {
+                    let assignments = update_cols
+                        .iter()
+                        .map(|col| {
+                            let quoted = quote_ident(family, col);
+                            format!("{quoted} = EXCLUDED.{quoted}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    sql.push_str(&format!(
+                        " ON CONFLICT ({keys}) DO UPDATE SET {assignments}"
+                    ));
+                }
+            }
         }
         sqlx::query(&sql).execute(pool).await?;
     }
     Ok(())
 }
 
-fn sql_lit(s: &str) -> String {
+pub(crate) fn sql_lit(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for c in s.chars() {
@@ -599,7 +1436,8 @@ mod tests {
         assert_eq!(driver_family("redshift").unwrap(), "postgres");
         assert_eq!(driver_family("cockroach").unwrap(), "postgres");
         assert_eq!(driver_family("mssql").unwrap(), "mssql");
-        assert!(driver_family("oracle").is_err());
+        assert_eq!(driver_family("oracle").unwrap(), "oracle");
+        assert_eq!(driver_family("tibero").unwrap(), "oracle");
     }
 
     #[test]
@@ -608,6 +1446,19 @@ mod tests {
         assert!(parse_table("public.users").is_ok());
         assert!(parse_table("public.users;drop").is_err());
         assert!(parse_table("a.b.c").is_err());
+        let outln = parse_table("OUTLN.OL$").unwrap();
+        assert_eq!(outln.schema.as_deref(), Some("OUTLN"));
+        assert_eq!(outln.table, "OL$");
+        assert_eq!(parse_table("SYS.USER$").unwrap().table, "USER$");
+        assert_eq!(parse_table("COL#").unwrap().table, "COL#");
+        assert_eq!(
+            table_select_sql("sqlite", "dest", &["id".into(), "name".into()]).unwrap(),
+            "SELECT \"id\", \"name\" FROM \"dest\""
+        );
+        assert_eq!(
+            table_select_sql("postgres", "public.t", &[]).unwrap(),
+            "SELECT * FROM \"public\".\"t\""
+        );
     }
 
     #[test]
@@ -628,13 +1479,164 @@ mod tests {
         assert_eq!(schema_or("mssql", &t), "dbo");
         let q = parse_table("sales.fact").unwrap();
         assert_eq!(schema_or("postgres", &q), "sales");
+        assert_eq!(schema_or_user("oracle", &t, "hr"), "HR");
+        assert_eq!(schema_or_user("oracle", &q, "hr"), "sales");
+    }
+
+    #[test]
+    fn missing_table_errors_are_detected() {
+        assert!(missing_load_table(&ConnectError::Invalid(
+            "relation \"sales.new_fact\" does not exist".into()
+        )));
+        assert!(missing_load_table(&ConnectError::Invalid(
+            "ORA-00942: table or view does not exist".into()
+        )));
+        assert!(!missing_load_table(&ConnectError::Invalid(
+            "permission denied".into()
+        )));
+    }
+
+    #[test]
+    fn postgres_non_utf8_protocol_is_login_failure() {
+        let message = "encountered unexpected or invalid data: Postgres protocol error (reading ErrorResponse): Postgres returned a non-UTF-8 string for its error message. This is most likely due to an error that occurred during authentication and the default lc_messages locale is not binary-compatible with UTF-8. See the server logs for the error details. (sqlx_postgres::message:138)";
+        assert!(postgres_non_utf8_protocol(message));
+        assert!(!postgres_non_utf8_protocol(
+            "password authentication failed for user \"app\""
+        ));
+        assert!(!postgres_non_utf8_protocol("connection refused"));
+    }
+
+    #[test]
+    fn oracle_quotes_upper() {
+        assert_eq!(quote_ident("oracle", "employees"), "\"EMPLOYEES\"");
+        assert_eq!(
+            create_table_sql("oracle", "\"HR\".\"T\"", "hr.t", &["id".into()], &[]),
+            "CREATE TABLE \"HR\".\"T\" (\"ID\" VARCHAR2(4000))"
+        );
     }
 
     #[test]
     fn ident_ok() {
         assert_eq!(parse_ident("analytics").unwrap(), "analytics");
         assert_eq!(parse_ident("dw-1").unwrap(), "dw-1");
+        assert_eq!(parse_ident("XS$NULL").unwrap(), "XS$NULL");
         assert!(parse_ident("").is_err());
         assert!(parse_ident("drop;").is_err());
+    }
+
+    #[test]
+    fn staging_table_stays_in_schema() {
+        let dest = parse_table("sales.fact").unwrap();
+        let stage = staging_table(&dest);
+        assert_eq!(stage.schema.as_deref(), Some("sales"));
+        assert!(stage.table.starts_with("bintlld"));
+        assert_ne!(stage.table, dest.table);
+        assert_eq!(
+            insert_select_sql(
+                "postgres",
+                "\"sales\".\"fact\"",
+                "\"sales\".\"bintlldabc\"",
+                &["id".into(), "name".into()],
+            ),
+            "INSERT INTO \"sales\".\"fact\" (\"id\", \"name\") SELECT \"id\", \"name\" FROM \"sales\".\"bintlldabc\""
+        );
+    }
+
+    #[test]
+    fn load_csv_reads_bounded_batches() {
+        let path = std::env::temp_dir().join(format!("bintl-load-{}.csv", std::process::id()));
+        std::fs::write(&path, "id,name\n1,a\n2,b\n3,c\n").unwrap();
+        let (mut reader, columns) = open_load_csv(&path).unwrap();
+        assert_eq!(columns, vec!["id", "name"]);
+        assert_eq!(read_csv_batch(&mut reader, 2).unwrap().len(), 2);
+        assert_eq!(read_csv_batch(&mut reader, 2).unwrap().len(), 1);
+        assert!(read_csv_batch(&mut reader, 2).unwrap().is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn postgres_copy_sql_uses_csv_stdin() {
+        let sql = postgres_copy_sql("\"public\".\"users\"", &["id".into(), "name".into()], "\\N");
+        assert_eq!(
+            sql,
+            "COPY \"public\".\"users\" (\"id\", \"name\") FROM STDIN WITH (FORMAT csv, NULL '\\N', FORCE_NULL (\"id\", \"name\"))"
+        );
+    }
+
+    #[test]
+    fn postgres_copy_keeps_empty_text_and_nulls_typed_empty() {
+        let rules = vec![
+            LoadColumnRule {
+                name: "id".into(),
+                empty_as_null: true,
+                nullable: true,
+                data_type: "int4".into(),
+            },
+            LoadColumnRule {
+                name: "name".into(),
+                empty_as_null: false,
+                nullable: true,
+                data_type: "text".into(),
+            },
+        ];
+        let bytes =
+            encode_copy_csv(&[vec![String::new(), String::new()]], &rules, None, "\\N").unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(), "\"\\N\",\"\"\n");
+        let marked = encode_copy_csv(
+            &[vec!["\u{1e}BINTL_NULL\u{1e}".into(), "x".into()]],
+            &rules,
+            Some("\u{1e}BINTL_NULL\u{1e}"),
+            "\u{1e}BINTL_NULL\u{1e}",
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(marked).unwrap(),
+            "\"\u{1e}BINTL_NULL\u{1e}\",\"x\"\n"
+        );
+    }
+
+    #[test]
+    fn empty_values_become_null_only_for_known_non_text_types() {
+        for data_type in [
+            "int4",
+            "integer",
+            "numeric(10,2)",
+            "boolean",
+            "timestamp without time zone",
+            "datetime2",
+            "uuid",
+        ] {
+            assert!(empty_means_null(data_type), "{data_type}");
+        }
+        for data_type in ["text", "varchar(100)", "nvarchar(50)", "char(1)", "jsonb"] {
+            assert!(!empty_means_null(data_type), "{data_type}");
+        }
+    }
+
+    #[test]
+    fn non_nullable_typed_empty_reports_row_and_column() {
+        let rules = vec![LoadColumnRule {
+            name: "count".into(),
+            empty_as_null: true,
+            nullable: false,
+            data_type: "int4".into(),
+        }];
+        let error = validate_empty_cells(&[vec![String::new()]], &rules, 7, None).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("row 7"));
+        assert!(message.contains("column 'count'"));
+        assert!(message.contains("int4"));
+    }
+
+    #[test]
+    fn explicit_null_marker_is_null_even_for_text_columns() {
+        let rule = LoadColumnRule {
+            name: "note".into(),
+            empty_as_null: false,
+            nullable: true,
+            data_type: "text".into(),
+        };
+        assert!(cell_is_null("__NULL__", &rule, Some("__NULL__")));
+        assert!(!cell_is_null("", &rule, Some("__NULL__")));
     }
 }

@@ -4,10 +4,11 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{AppendHeaders, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use engine::{FramePreview, PolarsEngine, PreviewColumn, TransformSpec};
 use connectors::sniff_delimiter;
+use engine::{FramePreview, PolarsEngine, PreviewColumn, TransformSpec};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use storage::{DatasetRow, Store, TransformRow};
 
 use crate::access::{self, CurrentUser};
@@ -24,6 +25,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/datasets/{id}/file", get(dataset_file))
         .route("/api/datasets/{id}/inspect", post(inspect_dataset))
         .route("/api/datasets/{id}/preview", post(preview_dataset))
+        .route(
+            "/api/datasets/{id}/script-preview",
+            post(preview_script_dataset),
+        )
         .route(
             "/api/transforms",
             get(list_transforms).post(create_transform),
@@ -50,6 +55,16 @@ struct PreviewBody {
 }
 
 #[derive(Deserialize)]
+struct ScriptPreviewBody {
+    #[serde(default)]
+    files: Value,
+    entry: Option<String>,
+    limit: Option<usize>,
+    #[serde(default)]
+    inputs: Vec<crate::script::ScriptInput>,
+}
+
+#[derive(Deserialize)]
 struct CreateTransformBody {
     name: String,
     dataset_id: String,
@@ -67,6 +82,12 @@ struct PatchTransformBody {
     input_chip_id: Option<String>,
 }
 
+#[derive(Default, Deserialize)]
+struct RunTransformBody {
+    #[serde(default)]
+    workspace_id: Option<String>,
+}
+
 fn clamp_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(200).clamp(1, 200)
 }
@@ -76,21 +97,19 @@ fn normalize_columns(raw: &str) -> Value {
         .ok()
         .and_then(|value| value.as_array().cloned())
         .map(|columns| {
-            json!(
-                columns
-                    .iter()
-                    .map(|column| {
-                        json!({
-                            "name": column.get("name").and_then(Value::as_str).unwrap_or(""),
-                            "dtype": column
-                                .get("dtype")
-                                .or_else(|| column.get("type"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("String"),
-                        })
+            json!(columns
+                .iter()
+                .map(|column| {
+                    json!({
+                        "name": column.get("name").and_then(Value::as_str).unwrap_or(""),
+                        "dtype": column
+                            .get("dtype")
+                            .or_else(|| column.get("type"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("String"),
                     })
-                    .collect::<Vec<_>>()
-            )
+                })
+                .collect::<Vec<_>>())
         })
         .unwrap_or_else(|| json!([]))
 }
@@ -201,13 +220,43 @@ async fn hydrate_v2_spec(
     row: &DatasetRow,
 ) -> Result<TransformSpec, AppError> {
     let mut spec = parse_v2_spec(value, row)?;
+    if spec.version == 3 {
+        let operations = value
+            .get("operations")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for operation in operations {
+            match operation.get("type").and_then(Value::as_str).unwrap_or("") {
+                "join" => {
+                    let id = operation
+                        .get("right_dataset_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| AppError::bad("join needs right_dataset_id"))?;
+                    hydrate_recipe_dataset(state, user, &mut spec, id).await?;
+                }
+                "union" => {
+                    let ids = operation
+                        .get("dataset_ids")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| AppError::bad("union needs dataset_ids"))?;
+                    for id in ids {
+                        let id = id
+                            .as_str()
+                            .ok_or_else(|| AppError::bad("union dataset id must be a string"))?;
+                        hydrate_recipe_dataset(state, user, &mut spec, id).await?;
+                    }
+                }
+                "clean" | "aggregate" => {}
+                other => return Err(AppError::bad(format!("unknown recipe operation `{other}`"))),
+            }
+        }
+        return Ok(spec);
+    }
     let Some(combine) = value.get("combine") else {
         return Ok(spec);
     };
-    let mode = combine
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let mode = combine.get("mode").and_then(|v| v.as_str()).unwrap_or("");
     match mode {
         "join" => {
             let right_id = combine
@@ -219,10 +268,8 @@ async fn hydrate_v2_spec(
             if !path.is_file() {
                 return Err(AppError::not_found("right dataset file missing"));
             }
-            spec.resolved_paths.insert(
-                right_id.to_string(),
-                path.to_string_lossy().into_owned(),
-            );
+            spec.resolved_paths
+                .insert(right_id.to_string(), path.to_string_lossy().into_owned());
         }
         "union" => {
             let ids = combine
@@ -240,10 +287,8 @@ async fn hydrate_v2_spec(
                         "union dataset `{id}` file missing"
                     )));
                 }
-                spec.resolved_paths.insert(
-                    id.to_string(),
-                    path.to_string_lossy().into_owned(),
-                );
+                spec.resolved_paths
+                    .insert(id.to_string(), path.to_string_lossy().into_owned());
             }
         }
         other => return Err(AppError::bad(format!("unknown combine mode `{other}`"))),
@@ -251,26 +296,48 @@ async fn hydrate_v2_spec(
     Ok(spec)
 }
 
+async fn hydrate_recipe_dataset(
+    state: &AppState,
+    user: &CurrentUser,
+    spec: &mut TransformSpec,
+    id: &str,
+) -> Result<(), AppError> {
+    let dataset = access::require_dataset(&state.store, user, id).await?;
+    let path = state.store.resolve(&dataset.stored_path);
+    if !path.is_file() {
+        return Err(AppError::not_found(format!(
+            "recipe dataset `{id}` file missing"
+        )));
+    }
+    spec.resolved_paths
+        .insert(id.to_string(), path.to_string_lossy().into_owned());
+    Ok(())
+}
+
 fn parse_v2_spec(value: &Value, row: &DatasetRow) -> Result<TransformSpec, AppError> {
     let mut obj = value
         .as_object()
         .cloned()
         .ok_or_else(|| AppError::bad("spec must be an object"))?;
-    obj.entry("version").or_insert(json!(2));
+    obj.entry("version").or_insert(json!(3));
     obj.entry("sink").or_insert(json!("parquet"));
-    if obj.get("steps").is_none() {
+    let version = obj.get("version").and_then(Value::as_u64).unwrap_or(3);
+    if version == 2 && obj.get("steps").is_none() {
         obj.insert("steps".into(), json!([]));
+    }
+    if version == 3 && obj.get("operations").is_none() {
+        obj.insert("operations".into(), json!([]));
     }
     let spec = TransformSpec::parse_json(&Value::Object(obj).to_string())
         .map_err(|e| AppError::bad(e.to_string()))?;
-    if spec.version != 2 {
-        return Err(AppError::bad("transform spec must be version 2"));
+    if spec.version != 2 && spec.version != 3 {
+        return Err(AppError::bad("transform spec must be version 2 or 3"));
     }
     Ok(merge_read(spec, row))
 }
 
 fn default_v2_spec(row: &DatasetRow) -> TransformSpec {
-    merge_read(TransformSpec::v2(), row)
+    merge_read(TransformSpec::v3(), row)
 }
 
 fn preview_json(preview: FramePreview) -> Value {
@@ -292,12 +359,12 @@ async fn list_datasets(
         .store
         .list_datasets(Some(&user.scope(q.workspace_id)))
         .await?;
-    let datasets: Vec<Value> = rows
+    let data_resources: Vec<Value> = rows
         .iter()
         .filter(|row| row.status != "planned")
         .map(|row| dataset_json(&state.store, row))
         .collect();
-    Ok(Json(json!({ "datasets": datasets })))
+    Ok(Json(json!({ "datasets": data_resources })))
 }
 
 async fn get_dataset(
@@ -326,24 +393,65 @@ async fn dataset_file(
 ) -> Result<impl IntoResponse, AppError> {
     let row = access::require_dataset(&state.store, &user, &id).await?;
     let path = state.store.resolve(&row.stored_path);
-    let bytes = tokio::fs::read(&path)
-        .await
-        .map_err(|_| AppError::not_found("dataset file missing"))?;
-    let disp = format!("attachment; filename=\"{}\"", row.filename);
-    let ctype = if row.filename.ends_with(".parquet") {
-        "application/vnd.apache.parquet"
-    } else if row.filename.ends_with(".tsv") {
-        "text/tab-separated-values; charset=utf-8"
+    stored_file_attachment(path, &row.filename).await
+}
+
+pub(crate) async fn stored_file_attachment(
+    path: PathBuf,
+    download_name: &str,
+) -> Result<impl IntoResponse, AppError> {
+    let download_name = download_name.to_string();
+    let wants_csv = download_name.to_ascii_lowercase().ends_with(".csv");
+    let stored_parquet = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("parquet"));
+    let (bytes, ctype) = if stored_parquet && wants_csv {
+        let parquet = path;
+        let bytes = tokio::task::spawn_blocking(move || PolarsEngine::export_csv_bytes(&parquet))
+            .await
+            .map_err(|error| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("csv export failed: {error}"),
+                )
+            })?
+            .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        (bytes, "text/csv; charset=utf-8")
     } else {
-        "text/csv; charset=utf-8"
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|_| AppError::not_found("output file missing"))?;
+        (bytes, content_type_for_filename(&download_name))
     };
+    let disp = format!("attachment; filename=\"{download_name}\"");
     Ok((
         AppendHeaders([
-            (CONTENT_TYPE, HeaderValue::from_str(ctype).unwrap()),
-            (CONTENT_DISPOSITION, HeaderValue::from_str(&disp).unwrap()),
+            (
+                CONTENT_TYPE,
+                HeaderValue::from_str(ctype)
+                    .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+            ),
+            (
+                CONTENT_DISPOSITION,
+                HeaderValue::from_str(&disp).unwrap_or_else(|_| {
+                    HeaderValue::from_static("attachment; filename=\"download.bin\"")
+                }),
+            ),
         ]),
         bytes,
     ))
+}
+
+fn content_type_for_filename(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".parquet") {
+        "application/vnd.apache.parquet"
+    } else if lower.ends_with(".tsv") {
+        "text/tab-separated-values; charset=utf-8"
+    } else {
+        "text/csv; charset=utf-8"
+    }
 }
 
 async fn inspect_dataset(
@@ -365,23 +473,27 @@ async fn inspect_dataset(
         return Err(AppError::not_found("dataset file missing"));
     }
     let limit = clamp_limit(q.limit);
-    let inferred_delim = row.delimiter.clone().or_else(|| {
-        std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| sniff_delimiter(&bytes))
-    }).or_else(|| {
-        match path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "tsv" => Some("tab".into()),
-            "csv" | "txt" => Some(",".into()),
-            _ => None,
-        }
-    });
+    let inferred_delim = row
+        .delimiter
+        .clone()
+        .or_else(|| {
+            std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| sniff_delimiter(&bytes))
+        })
+        .or_else(|| {
+            match path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "tsv" => Some("tab".into()),
+                "csv" | "txt" => Some(",".into()),
+                _ => None,
+            }
+        });
     let inferred_header = row.has_header.map(|h| h != 0).or(Some(true));
     let spec = read_spec_for(&row).with_read(inferred_delim.clone(), inferred_header);
     let preview = tokio::task::spawn_blocking(move || PolarsEngine.inspect(&path, &spec, limit))
@@ -441,6 +553,37 @@ async fn preview_dataset(
     Ok(Json(preview_json(preview)))
 }
 
+async fn preview_script_dataset(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<ScriptPreviewBody>,
+) -> Result<Json<Value>, AppError> {
+    let row = access::require_dataset(&state.store, &user, &id).await?;
+    let mut config_json = json!({
+        "entry": body.entry,
+        "files": body.files,
+        "input_dataset_id": id,
+    });
+    if !body.inputs.is_empty() {
+        config_json["inputs"] = json!(body.inputs);
+    }
+    let config = crate::script::parse_script_config(&config_json)?;
+    let mut tables = Vec::new();
+    if config.inputs.is_empty() {
+        tables.push((crate::script::input_name_from_label(&row.filename), row));
+    } else {
+        for input in &config.inputs {
+            let dataset = access::require_dataset(&state.store, &user, &input.dataset_id).await?;
+            tables.push((input.name.clone(), dataset));
+        }
+    }
+    Ok(Json(
+        crate::script::preview_script(&state.store, &tables, &config, body.limit.unwrap_or(200))
+            .await?,
+    ))
+}
+
 async fn list_transforms(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -450,8 +593,8 @@ async fn list_transforms(
         .store
         .list_transforms(Some(&user.scope(q.workspace_id)))
         .await?;
-    let transforms: Vec<Value> = rows.iter().map(transform_json).collect();
-    Ok(Json(json!({ "transforms": transforms })))
+    let transform_recipes: Vec<Value> = rows.iter().map(transform_json).collect();
+    Ok(Json(json!({ "transforms": transform_recipes })))
 }
 
 async fn get_transform(
@@ -472,7 +615,13 @@ async fn create_transform(
     user: CurrentUser,
     Json(body): Json<CreateTransformBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let dataset = access::require_dataset(&state.store, &user, &body.dataset_id).await?;
+    let dataset = require_transform_input(
+        &state.store,
+        &user,
+        &body.dataset_id,
+        body.input_chip_id.as_deref(),
+    )
+    .await?;
     let spec = if let Some(value) = &body.spec {
         parse_v2_spec(value, &dataset)?
     } else {
@@ -511,7 +660,16 @@ async fn update_transform(
         .dataset_id
         .as_deref()
         .unwrap_or(current.dataset_id.as_str());
-    let dataset = access::require_dataset(&state.store, &user, dataset_id).await?;
+    let dataset = require_transform_input(
+        &state.store,
+        &user,
+        dataset_id,
+        body.input_chip_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or(current.input_chip_id.as_deref()),
+    )
+    .await?;
     let spec_json = if let Some(value) = &body.spec {
         Some(spec_to_json(&parse_v2_spec(value, &dataset)?)?)
     } else {
@@ -538,11 +696,48 @@ async fn update_transform(
     Ok(Json(transform_json(&row)))
 }
 
+async fn require_transform_input(
+    store: &storage::Store,
+    user: &CurrentUser,
+    dataset_id: &str,
+    input_chip_id: Option<&str>,
+) -> Result<storage::DatasetRow, AppError> {
+    if let Some(dataset) = store.get_dataset(dataset_id).await? {
+        access::require_workspace(store, user, &dataset.workspace_id).await?;
+        return Ok(dataset);
+    }
+    let mut parts = dataset_id.splitn(3, ':');
+    if parts.next() != Some("contract") {
+        return Err(AppError::not_found("dataset not found"));
+    }
+    let workspace_id = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::bad("invalid input contract"))?;
+    let consumer_chip_id = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::bad("invalid input contract"))?;
+    if input_chip_id.map(str::trim) != Some(consumer_chip_id) {
+        return Err(AppError::bad(
+            "input contract does not match transform chip",
+        ));
+    }
+    access::require_workspace(store, user, workspace_id).await?;
+    store
+        .find_planned_input_dataset(workspace_id, consumer_chip_id)
+        .await?
+        .filter(|dataset| dataset.id == dataset_id)
+        .ok_or_else(|| AppError::not_found("input contract not found"))
+}
+
 async fn run_transform(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<String>,
+    Json(body): Json<RunTransformBody>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_transform_run(&user)?;
     let transform = access::require_transform(&state.store, &user, &id).await?;
     let dataset = access::require_dataset(&state.store, &user, &transform.dataset_id).await?;
     if dataset.status == "planned" {
@@ -553,9 +748,25 @@ async fn run_transform(
     if !state.store.resolve(&dataset.stored_path).is_file() {
         return Err(AppError::not_found("dataset file missing"));
     }
-    let spec_value: Value =
-        serde_json::from_str(&transform.spec_json).unwrap_or(json!({}));
+    let spec_value: Value = serde_json::from_str(&transform.spec_json).unwrap_or(json!({}));
     let spec = hydrate_v2_spec(&state, &user, &spec_value, &dataset).await?;
+    let workspace_id = match body
+        .workspace_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(workspace_id) => {
+            access::require_workspace(&state.store, &user, &workspace_id).await?;
+            workspace_id
+        }
+        None => {
+            if transform.workspace_id.trim().is_empty() {
+                return Err(AppError::bad("workspace_id required"));
+            }
+            access::require_workspace(&state.store, &user, &transform.workspace_id).await?;
+            transform.workspace_id.clone()
+        }
+    };
     let job = state
         .store
         .insert_transform_job(
@@ -563,13 +774,10 @@ async fn run_transform(
             &spec_to_json(&spec)?,
             &transform.id,
             &dataset.id,
-            &transform.workspace_id,
+            &workspace_id,
         )
         .await?;
-    state
-        .job_tx
-        .try_send(job.id.clone())
-        .map_err(|_| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "job queue full"))?;
+    state.wake();
     Ok(Json(json!({
         "ok": true,
         "id": job.id,

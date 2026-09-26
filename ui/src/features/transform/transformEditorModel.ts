@@ -1,4 +1,4 @@
-import { ArrowUpDown, Braces, Columns3, CopyMinus, Database, FileOutput, Filter, Replace, TextCursorInput, Type, Upload, type LucideIcon } from "lucide-react";
+import { ArrowUpDown, Braces, Calculator, Columns3, CopyMinus, Database, Eraser, FileCode2, FileOutput, Filter, Repeat, Replace, Scissors, TextCursorInput, Type, Upload, type LucideIcon } from "lucide-react";
 import type { Dataset, DatasetColumn } from "@/types/dataset";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type { StepOp, TransformStep } from "@/types/transform";
@@ -6,7 +6,11 @@ import type { StepOp, TransformStep } from "@/types/transform";
 export function defaultTransformName(sourceName: string): string {
   const trimmed = sourceName.trim();
   if (!trimmed) return trimmed;
-  if (trimmed.toLocaleLowerCase().startsWith("transform-")) return trimmed;
+  const chained = /^transform-(?:(\d+)-)?(.+)$/i.exec(trimmed);
+  if (chained) {
+    const sequence = chained[1] ? Number.parseInt(chained[1], 10) + 1 : 2;
+    return `transform-${String(sequence).padStart(2, "0")}-${chained[2]}`;
+  }
   return `transform-${trimmed}`;
 }
 
@@ -22,39 +26,36 @@ export function normalizeSlotColumns(
 
 export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
   if (slot.mode === "materialized" && slot.dataset) {
-    return slot.dataset as unknown as Dataset;
+    const dataset = slot.dataset as unknown as Dataset;
+    return {
+      ...dataset,
+      delimiter: dataset.delimiter || slot.delimiter || ",",
+    };
   }
-  if (slot.mode === "planned" && slot.planned) {
+  if (slot.mode === "connected" && slot.dataset_id) {
     const raw = slot.dataset as Dataset | undefined;
-    if (!raw) {
-      return {
-        id: slot.planned.dataset_id,
-        kind: "database",
-        filename: slot.source_chip_name || "planned input",
-        stored_path: "",
-        size_bytes: null,
-        delimiter: ",",
-        has_header: true,
-        columns: normalizeSlotColumns(slot.planned.columns),
-        row_count: null,
-        inspected_at: null,
-        created_at: "",
-        updated_at: "",
-        workspace_id: "",
-        producer_chip_run_id: null,
-        status: "planned",
-        source_chip_id: slot.planned.source_chip_id,
-        consumer_chip_id: slot.planned.consumer_chip_id,
-        available: false,
-        origin: null,
-      };
-    }
+    if (!raw) return {
+      id: slot.dataset_id,
+      kind: slot.source_chip_kind === "script"
+        ? "script"
+        : slot.source_chip_kind === "transform"
+          ? "transform"
+          : "database",
+      filename: slot.source_chip_name || "input",
+      stored_path: "", size_bytes: null, delimiter: slot.delimiter || ",", has_header: slot.has_header ?? true,
+      columns: normalizeSlotColumns(slot.columns), row_count: null, inspected_at: null,
+      created_at: "", updated_at: "", workspace_id: "", producer_chip_run_id: null,
+      status: "connected", source_chip_id: slot.source_chip_id, consumer_chip_id: undefined,
+      available: false, origin: null,
+    };
     return {
       ...raw,
-      status: raw.status ?? "planned",
+      filename: slot.source_chip_name || raw.filename,
+      delimiter: raw.delimiter || slot.delimiter || ",",
+      status: raw.status ?? "connected",
       columns: raw.columns?.length
         ? raw.columns
-        : normalizeSlotColumns(slot.planned.columns),
+        : normalizeSlotColumns(slot.columns),
       available: false,
     };
   }
@@ -64,6 +65,10 @@ export function datasetFromSlot(slot: ChipInputSlotResponse): Dataset | null {
 export const STEP_OPS: StepOp[] = [
   "select",
   "filter",
+  "derive",
+  "trim",
+  "replace",
+  "split",
   "cast",
   "fill_null",
   "sort",
@@ -76,6 +81,10 @@ export const STEP_OP_ICONS: Record<StepOp, LucideIcon> = {
   drop: Columns3,
   rename: TextCursorInput,
   filter: Filter,
+  derive: Calculator,
+  trim: Eraser,
+  replace: Repeat,
+  split: Scissors,
   cast: Type,
   fill_null: Replace,
   sort: ArrowUpDown,
@@ -83,9 +92,53 @@ export const STEP_OP_ICONS: Record<StepOp, LucideIcon> = {
 };
 
 export const CAST_TYPES = ["Int64", "Int32", "Float64", "Float32", "String", "Boolean"];
-export const FILTER_OPS = [">=", "<=", "!=", "=", ">", "<"] as const;
+export const FILTER_OPS = [
+  "contains",
+  "not contains",
+  "is null",
+  "is not null",
+  ">=",
+  "<=",
+  "!=",
+  "=",
+  ">",
+  "<",
+] as const;
 export type FilterOp = (typeof FILTER_OPS)[number];
-export const KIND_ORDER = ["upload", "database", "api", "transform"] as const;
+
+export function filterOpNeedsValue(op: FilterOp): boolean {
+  return op !== "is null" && op !== "is not null";
+}
+export const DERIVE_OPS = ["+", "-", "*", "/"] as const;
+export type DeriveOp = (typeof DERIVE_OPS)[number];
+
+export function parseDeriveExpr(expr: string): { left: string; op: DeriveOp; right: string } | null {
+  const raw = expr.trim();
+  if (!raw) return null;
+  for (const op of DERIVE_OPS) {
+    const padded = ` ${op} `;
+    const at = raw.indexOf(padded);
+    if (at === -1) continue;
+    const left = raw.slice(0, at).trim();
+    const right = raw.slice(at + padded.length).trim();
+    if (left && right) return { left, op, right };
+  }
+  for (const op of DERIVE_OPS) {
+    const at = raw.indexOf(op);
+    if (at <= 0) continue;
+    const left = raw.slice(0, at).trim();
+    const right = raw.slice(at + op.length).trim();
+    if (left && right) return { left, op, right };
+  }
+  return null;
+}
+
+export function buildDeriveExpr(left: string, op: DeriveOp, right: string): string {
+  if (!left.trim() || !right.trim()) return "";
+  return `${left.trim()} ${op} ${right.trim()}`;
+}
+export const KIND_ORDER = ["upload", "database", "api", "transform", "script"] as const;
+export type DatasetListKind = (typeof KIND_ORDER)[number];
 export const KIND_APPEARANCE = {
   upload: {
     icon: Upload,
@@ -107,7 +160,16 @@ export const KIND_APPEARANCE = {
     header: "border-warning/20 bg-warning-subtle text-warning",
     count: "bg-warning/10 text-warning",
   },
+  script: {
+    icon: FileCode2,
+    header: "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    count: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+  },
 } as const;
+
+export function emptyKindSearch(): Record<DatasetListKind, string> {
+  return { upload: "", database: "", api: "", transform: "", script: "" };
+}
 
 export function emptyStep(op: StepOp): TransformStep {
   switch (op) {
@@ -118,6 +180,14 @@ export function emptyStep(op: StepOp): TransformStep {
       return { op, map: {} };
     case "filter":
       return { op, expr: "" };
+    case "derive":
+      return { op, name: "", expr: "" };
+    case "trim":
+      return { op, columns: [] };
+    case "replace":
+      return { op, column: "", find: "", replacement: "" };
+    case "split":
+      return { op, column: "", delimiter: "", index: 0, name: "" };
     case "cast":
       return { op, columns: {} };
     case "fill_null":
@@ -150,9 +220,20 @@ export function resolveColumnsAtStep(
         ...column,
         name: step.map[column.name] ?? column.name,
       }));
+    } else if (step.op === "split" && step.name.trim()) {
+      if (!cols.some((column) => column.name === step.name)) {
+        cols = [...cols, { name: step.name, dtype: "String" }];
+      }
+    } else if (step.op === "derive" && step.name.trim()) {
+      const parsed = parseDeriveExpr(step.expr);
+      const left = parsed ? cols.find((column) => column.name === parsed.left) : undefined;
+      const dtype = parsed?.op === "/" ? "Float64" : left?.dtype ?? "Float64";
+      if (cols.some((column) => column.name === step.name)) {
+        cols = cols.map((column) => (column.name === step.name ? { ...column, dtype } : column));
+      } else {
+        cols = [...cols, { name: step.name, dtype }];
+      }
     }
   }
   return cols;
 }
-
-

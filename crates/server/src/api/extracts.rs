@@ -77,6 +77,7 @@ pub(super) async fn create_extract(
     user: CurrentUser,
     Json(body): Json<CreateExtractBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    access::require_extract_run(&user)?;
     let kind = body
         .kind
         .as_deref()
@@ -145,7 +146,8 @@ pub(super) async fn create_api_extract(
     };
     let delimiter = body.delimiter.unwrap_or_else(|| ",".into());
     parse_delimiter(&delimiter).map_err(|e| AppError::bad(e.to_string()))?;
-    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
+    let workspace_id =
+        access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
     let output_filename = body
         .filename
         .as_deref()
@@ -167,7 +169,7 @@ pub(super) async fn create_api_extract(
             output_filename,
         )
         .await?;
-    crate::extract::spawn(state.store.clone(), row.id.clone());
+    state.wake();
     Ok((
         StatusCode::CREATED,
         Json(serde_json::to_value(row).unwrap()),
@@ -218,7 +220,8 @@ pub(super) async fn create_database_extract(
         }
         None => None,
     };
-    let workspace_id = access::write_workspace(&state.store, &user, body.workspace_id).await?;
+    let workspace_id =
+        access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
     let output_filename = body
         .filename
         .as_deref()
@@ -240,7 +243,7 @@ pub(super) async fn create_database_extract(
             output_filename,
         )
         .await?;
-    crate::extract::spawn(state.store.clone(), row.id.clone());
+    state.wake();
     Ok((
         StatusCode::CREATED,
         Json(serde_json::to_value(row).unwrap()),
@@ -249,9 +252,10 @@ pub(super) async fn create_database_extract(
 
 pub(super) async fn http_preview(
     State(state): State<AppState>,
-    _user: CurrentUser,
+    user: CurrentUser,
     Json(body): Json<HttpPreviewBody>,
 ) -> Result<Json<Value>, AppError> {
+    access::require_connection_use(&user)?;
     let live = state.store.live_connection(&body.connection_id).await?;
     if live.driver != "http" {
         return Err(AppError::bad("http preview needs an http connection"));
@@ -290,10 +294,12 @@ pub(super) async fn http_preview(
         .collect::<Vec<_>>();
     Ok(Json(json!({
         "status": preview.status,
+        "response": preview.response,
         "columns": preview.columns,
         "rows": rows,
         "row_count": preview.row_count,
         "truncated": preview.row_count > rows.len(),
+        "conversion_error": preview.conversion_error,
         "limit": limit,
     })))
 }
@@ -304,11 +310,11 @@ pub(super) async fn list_extracts(
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let extracts = state
+    let extract_runs = state
         .store
         .list_extracts(limit, Some(&user.scope(q.workspace_id)))
         .await?;
-    Ok(Json(json!({ "extracts": extracts })))
+    Ok(Json(json!({ "extracts": extract_runs })))
 }
 
 pub(super) async fn get_extract(
@@ -385,8 +391,19 @@ pub(super) async fn extract_logs(
     access::require_extract(&state.store, &user, &id).await?;
     let text = state
         .store
-        .read_process_log(storage::LOG_EXTRACTS, &id)
-        .await?;
+        .list_logs(&id)
+        .await?
+        .into_iter()
+        .map(|log| {
+            format!(
+                "{}  {:<5}  {}",
+                crate::execution_error::display_timestamp(&log.ts),
+                log.level,
+                log.message
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     Ok(Json(json!({ "id": id, "text": text })))
 }
 

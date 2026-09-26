@@ -1,10 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  Copy,
+  FileText,
   Info,
   Pencil,
   Play,
   Settings2,
+  Square,
   Trash2,
   type LucideIcon,
 } from "lucide-react";
@@ -48,21 +51,29 @@ export function ChipContextMenu({
   menu,
   messages,
   busy,
+  running,
   onClose,
   onRun,
+  onStop,
+  onOpenLog,
   onInfo,
   onProperties,
   onEdit,
+  onCopy,
   onDelete,
 }: {
   menu: ChipContextMenuState | null;
   messages: Messages;
   busy?: boolean;
+  running?: boolean;
   onClose: () => void;
   onRun: (chip: Chip) => void;
+  onStop: (chip: Chip) => void;
+  onOpenLog: (chip: Chip) => void;
   onInfo: (chip: Chip) => void;
   onProperties: (chip: Chip) => void;
   onEdit: (chip: Chip) => void;
+  onCopy: (chip: Chip) => void;
   onDelete: (chip: Chip) => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -98,14 +109,25 @@ export function ChipContextMenu({
   if (!menu) return null;
 
   const chip = menu.chip;
-  const items: MenuItem[] = [
-    {
-      id: "run",
-      label: messages.workspace.chipMenuRun,
-      icon: Play,
-      disabled: busy || chip.kind === "load",
-      onSelect: () => onRun(chip),
-    },
+  const runnable = chip.kind !== "memo";
+  const items: MenuItem[] = [];
+  if (runnable) {
+    items.push({
+      id: running ? "stop" : "run",
+      label: running ? messages.workspace.chipMenuStop : messages.workspace.chipMenuRun,
+      icon: running ? Square : Play,
+      tone: running ? "danger" : undefined,
+      disabled: running ? false : busy,
+      onSelect: () => (running ? onStop(chip) : onRun(chip)),
+    });
+    items.push({
+      id: "logs",
+      label: messages.workspace.runLog,
+      icon: FileText,
+      onSelect: () => onOpenLog(chip),
+    });
+  }
+  items.push(
     {
       id: "info",
       label: messages.workspace.chipMenuInfo,
@@ -118,15 +140,38 @@ export function ChipContextMenu({
       icon: Settings2,
       onSelect: () => onProperties(chip),
     },
-  ];
-  if (chip.kind === "transform") {
+  );
+  const extractSource = chip.config.source as { type?: unknown } | undefined;
+  const editableExtract = chip.kind === "extract" && extractSource?.type !== "http";
+  if (editableExtract || chip.kind === "transform" || chip.kind === "load" || chip.kind === "validation" || chip.kind === "sql" || chip.kind === "serve" || chip.kind === "script" || chip.kind === "memo") {
     items.push({
       id: "edit",
-      label: messages.workspace.chipMenuEditSteps,
+      label: chip.kind === "extract"
+        ? messages.workspace.chipMenuEditExtract
+        : chip.kind === "load"
+        ? messages.workspace.chipMenuEditLoad
+        : chip.kind === "validation"
+          ? messages.workspace.chipMenuEditValidation
+        : chip.kind === "sql"
+          ? messages.workspace.chipMenuEditSql
+        : chip.kind === "serve"
+          ? messages.workspace.chipMenuEditServe
+        : chip.kind === "script"
+          ? messages.workspace.chipMenuEditScript
+        : chip.kind === "memo"
+          ? messages.workspace.chipMenuEditMemo
+        : messages.workspace.chipMenuEditSteps,
       icon: Pencil,
       onSelect: () => onEdit(chip),
     });
   }
+  items.push({
+    id: "copy",
+    label: messages.workspace.chipMenuCopy,
+    icon: Copy,
+    disabled: busy,
+    onSelect: () => onCopy(chip),
+  });
   items.push({
     id: "delete",
     label: messages.common.delete,

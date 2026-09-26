@@ -2,10 +2,11 @@ export type SearchEntityType =
   | "workspace_folder"
   | "workspace"
   | "chip"
-  | "dataset"
+  | "data_file"
   | "connection"
   | "extract"
-  | "transform";
+  | "transform"
+  | "load";
 
 export interface SearchHit {
   entity_type: SearchEntityType;

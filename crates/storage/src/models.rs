@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -10,8 +11,121 @@ pub struct Store {
     pub(crate) secret_key: [u8; 32],
 }
 
-pub(crate) const JOB_COLS: &str = "id, status, source_path, output_path, spec_json, error_message,
-        created_at, started_at, finished_at, kind, transform_id, dataset_id, workspace_id";
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ExecutionRow {
+    pub id: String,
+    pub workspace_id: String,
+    pub requested_by: Option<String>,
+    pub source: String,
+    pub trigger_id: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ExecutionStepRow {
+    pub id: String,
+    pub execution_id: String,
+    pub workspace_chip_id: Option<String>,
+    pub chip_id: Option<String>,
+    pub kind: String,
+    pub extract_id: Option<String>,
+    pub transform_id: Option<String>,
+    pub load_id: Option<String>,
+    pub definition_revision: i64,
+    pub definition_snapshot_json: String,
+    pub source_path: Option<String>,
+    pub output_path: Option<String>,
+    pub status: String,
+    pub input_rows: Option<i64>,
+    pub output_rows: Option<i64>,
+    pub rejected_rows: Option<i64>,
+    pub input_bytes: Option<i64>,
+    pub output_bytes: Option<i64>,
+    pub result_json: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub queued_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct WorkspaceScheduleRow {
+    pub id: String,
+    pub workspace_id: String,
+    pub owner_user_id: String,
+    pub name: String,
+    pub schedule_type: String,
+    pub interval_value: i64,
+    pub interval_unit: String,
+    pub second: Option<i64>,
+    pub hour: Option<i64>,
+    pub minute: Option<i64>,
+    pub day_of_month: Option<i64>,
+    pub month_of_year: Option<i64>,
+    pub timezone: String,
+    pub enabled: i64,
+    pub next_run_at: String,
+    pub last_run_at: Option<String>,
+    pub last_status: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct DataFileRow {
+    pub id: String,
+    pub workspace_id: String,
+    pub schema_id: Option<String>,
+    pub kind: String,
+    pub format: String,
+    pub filename: String,
+    pub stored_path: String,
+    pub size_bytes: Option<i64>,
+    pub row_count: Option<i64>,
+    pub delimiter: Option<String>,
+    pub has_header: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct DataSchemaRow {
+    pub id: String,
+    pub fingerprint: String,
+    pub columns_json: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewExecutionStep<'a> {
+    pub workspace_id: &'a str,
+    pub requested_by: Option<&'a str>,
+    pub source: &'a str,
+    pub trigger_id: Option<&'a str>,
+    pub workspace_chip_id: Option<&'a str>,
+    pub chip_id: Option<&'a str>,
+    pub kind: &'a str,
+    pub definition_id: &'a str,
+    pub definition_revision: i64,
+    pub definition_snapshot_json: &'a str,
+    pub source_path: Option<&'a str>,
+}
+
+pub(crate) const JOB_COLS: &str = "s.id, s.status, COALESCE(s.source_path, '') AS source_path,
+        s.output_path, s.definition_snapshot_json AS spec_json, s.error_message,
+        s.queued_at AS created_at, s.started_at, s.finished_at, s.kind, s.transform_id,
+        (SELECT i.data_file_id FROM execution_inputs i WHERE i.execution_step_id = s.id ORDER BY i.ordinal LIMIT 1) AS dataset_id,
+        e.workspace_id, s.output_rows AS row_count,
+        COALESCE(
+          (SELECT d.filename FROM data_files d WHERE d.id = s.id),
+          (SELECT t.output_filename_template FROM transforms t WHERE t.id = s.transform_id)
+        ) AS filename";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct JobRow {
@@ -28,6 +142,8 @@ pub struct JobRow {
     pub transform_id: Option<String>,
     pub dataset_id: Option<String>,
     pub workspace_id: String,
+    pub row_count: Option<i64>,
+    pub filename: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -55,13 +171,15 @@ pub struct DatasetRow {
     pub source_extract_definition_id: Option<String>,
 }
 
-pub(crate) const DATASET_COLS: &str =
-    "d.id, d.kind, d.extract_id, d.filename, d.stored_path, d.size_bytes,
-        d.delimiter, d.has_header, d.columns_json, d.row_count, d.inspected_at,
-        d.created_at, d.updated_at, d.workspace_id, d.producer_chip_run_id,
-        d.status, d.source_chip_id, d.consumer_chip_id, d.source_extract_definition_id,
-        COALESCE(e.table_name, '') AS table_name,
-        COALESCE(c.name, '') AS connection_name";
+pub(crate) const DATASET_COLS: &str = "d.id, d.kind,
+        NULL AS extract_id, d.filename, d.stored_path, d.size_bytes,
+        d.delimiter, d.has_header, s.columns_json, d.row_count, d.inspected_at,
+        d.created_at, d.updated_at, d.workspace_id,
+        (SELECT eo.execution_step_id FROM execution_outputs eo
+         WHERE eo.data_file_id = d.id LIMIT 1) AS producer_chip_run_id,
+        'materialized' AS status, NULL AS source_chip_id, NULL AS consumer_chip_id,
+        NULL AS source_extract_definition_id,
+        '' AS table_name, '' AS connection_name";
 
 #[derive(Debug, Clone)]
 pub struct DatasetUpsert {
@@ -87,6 +205,62 @@ pub struct TransformRow {
     pub updated_at: String,
     pub workspace_id: String,
     pub input_chip_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct LoadDefinitionRow {
+    pub id: String,
+    pub owner_user_id: String,
+    pub name: String,
+    pub destination_type: String,
+    pub spec_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct LoadResultRow {
+    pub chip_run_id: String,
+    pub destination: String,
+    pub write_mode: String,
+    pub input_rows: Option<i64>,
+    pub loaded_rows: i64,
+    pub rejected_rows: i64,
+    pub input_bytes: Option<i64>,
+    pub duration_ms: i64,
+    pub artifact_path: Option<String>,
+    pub validation_status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ValidationRuleRow {
+    pub id: String,
+    pub owner_user_id: String,
+    pub name: String,
+    pub description: String,
+    pub keys_json: String,
+    pub columns_json: String,
+    pub compare_row_count: i64,
+    pub compare_schema: i64,
+    pub active: i64,
+    pub revision: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ValidationResultRow {
+    pub id: String,
+    pub owner_user_id: String,
+    pub workspace_id: String,
+    pub validation_rule_id: Option<String>,
+    pub execution_step_id: Option<String>,
+    pub source_data_file_id: String,
+    pub target_data_file_id: String,
+    pub passed: i64,
+    pub report_json: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -132,6 +306,7 @@ pub struct ExtractDefinitionRow {
     pub kind: String,
     pub connection_id: String,
     pub source_json: String,
+    pub output_filename: String,
     pub delimiter: String,
     pub header: i64,
     pub add_sequence: i64,
@@ -149,6 +324,8 @@ pub struct ChipBindingRow {
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ChipRunRow {
+    pub execution_id: String,
+    pub execution_source: String,
     pub id: String,
     pub chip_id: String,
     pub workspace_id: String,
@@ -160,14 +337,18 @@ pub struct ChipRunRow {
     pub output_dataset_id: Option<String>,
     pub legacy_extract_id: Option<String>,
     pub legacy_job_id: Option<String>,
+    pub error_code: Option<String>,
     pub error_message: Option<String>,
+    pub input_rows: Option<i64>,
+    pub output_rows: Option<i64>,
+    pub result_json: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
 }
 
 pub(crate) const WORKSPACE_COLS: &str =
-    "id, name, description, layout_json, version, created_at, updated_at, owner_user_id, folder_id";
+    "id, name, description, viewport_json AS layout_json, version, created_at, updated_at, owner_user_id, folder_id";
 pub(crate) const FOLDER_COLS: &str = "id, owner_user_id, parent_id, name, created_at, updated_at";
 
 #[derive(Debug, Clone)]
@@ -181,6 +362,7 @@ pub struct RegisterExtractChip {
     pub delimiter: String,
     pub header: bool,
     pub add_sequence: bool,
+    pub output_filename: Option<String>,
     pub place_on_workspace: bool,
 }
 
@@ -190,6 +372,15 @@ pub struct RegisterTransformChip {
     pub owner_user_id: String,
     pub workspace_id: Option<String>,
     pub transform_id: String,
+    pub place_on_workspace: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegisterLoadChip {
+    pub name: String,
+    pub owner_user_id: String,
+    pub workspace_id: Option<String>,
+    pub load_definition_id: String,
     pub place_on_workspace: bool,
 }
 
@@ -210,6 +401,24 @@ pub struct WorkspaceSaveEdge {
     pub to_port: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChipPasteInput {
+    pub source_workspace_id: String,
+    pub chip_ids: Vec<String>,
+    pub origin_x: f64,
+    pub origin_y: f64,
+    pub expected_version: i64,
+    pub serve_configs: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChipPasteResult {
+    pub workspace: WorkspaceRow,
+    pub chips: Vec<ChipRow>,
+    pub edges: Vec<ChipEdgeRow>,
+    pub id_map: HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ChipEdgeRow {
     pub id: String,
@@ -222,21 +431,53 @@ pub struct ChipEdgeRow {
     pub created_at: String,
 }
 
-pub(crate) const CHIP_COLS: &str = "id, owner_user_id, name, kind, config_json, revision,
+pub(crate) const CHIP_COLS: &str = "id, owner_user_id, name, kind,
+        COALESCE(CASE kind
+          WHEN 'extract' THEN (SELECT json_object('connection_id', e.connection_id,
+            'source', json(e.source_json), 'delimiter', e.delimiter,
+            'header', e.has_header != 0) FROM extracts e WHERE e.id = chips.extract_id)
+          WHEN 'transform' THEN (SELECT json_object('input_dataset_id', t.default_input_file_id,
+            'spec', json(t.spec_json)) FROM transforms t WHERE t.id = chips.transform_id)
+          WHEN 'load' THEN (SELECT json_object('input_dataset_id', l.default_input_file_id,
+            'destination', json(l.destination_json), 'write_mode', l.write_mode,
+            'conflict_keys', json(l.conflict_keys_json)) FROM loads l WHERE l.id = chips.load_id)
+        END, config_json) AS config_json,
+        COALESCE((SELECT revision FROM extracts e WHERE e.id = chips.extract_id),
+                 (SELECT revision FROM transforms t WHERE t.id = chips.transform_id),
+                 (SELECT revision FROM loads l WHERE l.id = chips.load_id), revision, 1) AS revision,
         active, created_at, updated_at";
-pub(crate) const CHIP_JOIN_COLS: &str =
-    "c.id, c.owner_user_id, c.name, c.kind, c.config_json, c.revision,
+pub(crate) const CHIP_JOIN_COLS: &str = "c.id, c.owner_user_id, c.name, c.kind,
+        COALESCE(CASE c.kind
+          WHEN 'extract' THEN (SELECT json_object('connection_id', e.connection_id,
+            'source', json(e.source_json), 'delimiter', e.delimiter,
+            'header', e.has_header != 0) FROM extracts e WHERE e.id = c.extract_id)
+          WHEN 'transform' THEN (SELECT json_object('input_dataset_id', t.default_input_file_id,
+            'spec', json(t.spec_json)) FROM transforms t WHERE t.id = c.transform_id)
+          WHEN 'load' THEN (SELECT json_object('input_dataset_id', l.default_input_file_id,
+            'destination', json(l.destination_json), 'write_mode', l.write_mode,
+            'conflict_keys', json(l.conflict_keys_json)) FROM loads l WHERE l.id = c.load_id)
+        END, c.config_json) AS config_json,
+        COALESCE((SELECT revision FROM extracts e WHERE e.id = c.extract_id),
+                 (SELECT revision FROM transforms t WHERE t.id = c.transform_id),
+                 (SELECT revision FROM loads l WHERE l.id = c.load_id), c.revision, 1) AS revision,
         c.active, c.created_at, c.updated_at";
-pub(crate) const EXTRACT_DEFINITION_COLS: &str =
-    "id, name, kind, connection_id, source_json, delimiter,
-        header, add_sequence, workspace_id, created_at, updated_at";
 pub(crate) const CHIP_RUN_COLS: &str =
-    "id, chip_id, workspace_id, kind, status, config_snapshot_json,
-        revision_snapshot, input_dataset_id, output_dataset_id, legacy_extract_id,
-        legacy_job_id, error_message, created_at, started_at, finished_at";
-pub(crate) const CHIP_EDGE_COLS: &str =
-    "id, workspace_id, from_chip_id, to_chip_id, kind, from_port,
-        to_port, created_at";
+    "s.id, s.execution_id, e.source AS execution_source, s.chip_id, e.workspace_id, s.kind, s.status,
+        s.definition_snapshot_json AS config_snapshot_json,
+        s.definition_revision AS revision_snapshot,
+        (SELECT i.data_file_id FROM execution_inputs i WHERE i.execution_step_id = s.id ORDER BY i.ordinal LIMIT 1) AS input_dataset_id,
+        (SELECT o.data_file_id FROM execution_outputs o WHERE o.execution_step_id = s.id LIMIT 1) AS output_dataset_id,
+        CASE WHEN s.kind = 'extract' THEN s.id END AS legacy_extract_id,
+        CASE WHEN s.kind = 'transform' THEN s.id END AS legacy_job_id,
+        s.error_code, s.error_message, s.input_rows,
+        COALESCE(
+            s.output_rows,
+            (SELECT d.row_count FROM execution_outputs o INNER JOIN data_files d ON d.id = o.data_file_id
+             WHERE o.execution_step_id = s.id LIMIT 1),
+            (SELECT c.output_rows FROM execution_steps c
+             WHERE c.id = json_extract(s.result_json, '$.child_step_id'))
+        ) AS output_rows,
+        s.result_json, s.queued_at AS created_at, s.started_at, s.finished_at";
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct JobLogRow {
@@ -253,6 +494,7 @@ pub struct FileMeta {
     pub filename: String,
     pub size: u64,
     pub stored_path: String,
+    pub workspace_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -287,13 +529,41 @@ pub struct ExtractRow {
 }
 
 pub(crate) const EXTRACT_COLS: &str =
-    "e.id, e.kind, e.connection_id, e.table_name, e.delimiter, e.header,
-        e.add_sequence, e.status, e.stored_path, e.filename, e.output_filename, e.row_count,
-        e.error_message, e.created_at, e.started_at, e.finished_at, e.sql_text, e.catalog_database,
-        e.workspace_id, COALESCE(c.name, '') AS connection_name";
+    "s.id, json_extract(s.definition_snapshot_json, '$.kind') AS kind,
+        json_extract(s.definition_snapshot_json, '$.connection_id') AS connection_id,
+        json_extract(s.definition_snapshot_json, '$.table_name') AS table_name,
+        COALESCE(json_extract(s.definition_snapshot_json, '$.delimiter'), ',') AS delimiter,
+        COALESCE(json_extract(s.definition_snapshot_json, '$.header'), 1) AS header,
+        COALESCE(json_extract(s.definition_snapshot_json, '$.add_sequence'), 0) AS add_sequence,
+        s.status, s.output_path AS stored_path,
+        json_extract(s.result_json, '$.filename') AS filename,
+        json_extract(s.definition_snapshot_json, '$.output_filename') AS output_filename,
+        s.output_rows AS row_count, s.error_message, s.queued_at AS created_at,
+        s.started_at, s.finished_at, json_extract(s.definition_snapshot_json, '$.sql_text') AS sql_text,
+        json_extract(s.definition_snapshot_json, '$.catalog_database') AS catalog_database,
+        x.workspace_id, COALESCE(c.name, '') AS connection_name";
+
+fn serialize_http_auth<S: serde::Serializer>(
+    raw: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && *text != "null")
+    {
+        None => serializer.serialize_none(),
+        Some(text) => match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(value) if !value.is_null() => value.serialize(serializer),
+            _ => serializer.serialize_none(),
+        },
+    }
+}
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ConnectionRow {
+    #[serde(rename = "http_auth", serialize_with = "serialize_http_auth")]
+    pub http_auth_json: Option<String>,
     pub id: String,
     pub name: String,
     pub driver: String,
@@ -307,6 +577,7 @@ pub struct ConnectionRow {
 
 #[derive(Debug, Clone)]
 pub struct LiveConnection {
+    pub http_auth: Option<crate::HttpAuthConfig>,
     pub id: String,
     pub name: String,
     pub driver: String,
@@ -320,6 +591,7 @@ pub struct LiveConnection {
 
 #[derive(Debug, Clone)]
 pub struct NewConnection {
+    pub http_auth: Option<crate::HttpAuthConfig>,
     pub name: String,
     pub driver: String,
     pub host: String,
@@ -328,4 +600,15 @@ pub struct NewConnection {
     pub username: String,
     pub password: String,
     pub ssl: bool,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct WorkspaceExecutionRow {
+    pub id: String,
+    pub workspace_id: String,
+    pub status: String,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub error_message: Option<String>,
 }

@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:fe7f6fbcbf4de2685226f75f3558b9a8a16df1287dee7496799ee658054e1c3f",
+  "claims": [
+    {
+      "id": "claim_360243150399420aae195e944f479e54",
+      "statement": "적재는 독립 loads 정의이며 목적지는 database 또는 file이고, 파일 적재는 replace/recreate만 허용하며 HTTP 커넥션은 DB 타깃이 될 수 없다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/load.rs#L12-L40",
+          "version": "repo-lines-v1:sha256:6a436ee3b7ff6eeb29dea3b63767015346266f52a227be97de4a74b020ed01da:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhOWNmNTJiNmE1ZWVhZTNkMzE3N2UyODk3N2JjNzdhZmJjOGIwODRkNWNiMjBlMTU4MzFjY2VjNWY2MjgyNmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlN2JlMTY3OTk5ZDBlMDEyNDQ3ZGU5ZjNkNjE3OWMwMGNiMjc3MzczYjczNjE4OGFlZjZlYjcyMDBjNjEwODMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJkNTAyODRmMjUzNzg1ODc5MDE1OWNjMTYzYzQ0NmVkYThmODFiZTUwNjc4ZTg2ODliNjZjYmE4MzMzN2YyZDYifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/load.rs#L147-L211",
+          "version": "repo-lines-v1:sha256:4d95c2d62e351bd84a2b20c9e8f8c27f1a077617291443b6328a1d8e6b80930d:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiMTEwMWZhNzNmOTUzNTM1NzllMjQzYjhiY2U1Zjk3NGNhNGY2Y2NiNGIxOTdjZDlmYjJhZjUwM2I0MmZiMTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiYWUzN2Y5MzQzMmYxZjk5NWFhNDJkYTllMjA4MTA3ZDRiZDQ1M2M4MDFlYTM2MTAzNTE5OTlkNDM0OTNlOGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdhNmYwNTVlNTQxNTI3NDUwMDYwMTA0YzU1NGY5MTEzNmI4OThiNGIwZjNhYzExZDQwYmQ5OGRiZGRjNTg2OGUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3e7deecc1c8f490c969c2ff01a1929b2",
+      "statement": "칩 적재는 업스트림 실재 파일을 읽어 DB면 load_table, 파일이면 loads/{workspace}/{scope}/{filename}에 쓰며 planned contract id는 입력 FK로 묶지 않는다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip.rs#L1778-L1838",
+          "version": "repo-lines-v1:sha256:d8f2c63752b387af6b337f9490707b4b4659fce5b181a85973f147c828350b3b:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjNmY4MTljMDc0N2Y5YTZkNGUwNWRkNmE0Mjc5ODc2ZTJmMjNjM2FjZWNmOGYzMmU4ODg0OTJmMTExYzkzNTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2NzFjZGYwM2I1N2E2ODdjZGY1NmRiYmNkOWIzMjAxMTlmYTZiNzIzMWI0NDI5YzNkMzU3NmI4NGMwOTFlMzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM1ZjZmNDY2ZTU5Y2ZjMzA3MDNjNDVmNzJhZjY1ZGU1NGFjMzYzZDM1NGNjMWEzMzMwMzUwYWNkNDUyNDM0YzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwZmM2ZTJlNjU0OTBkMDYxYjdlYmU4NzBmZTJiYTEyZmQxNmViODRiNzM0MjVlOGEwMTQ5OWU4YWJlZTY0Y2EifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/chip.rs#L1999-L2035",
+          "version": "repo-lines-v1:sha256:37c13a3808b9d07b4bb7e83babf58671ee814817ae82a768a0b51aeb8b911df8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyNjcwMDQ5YTQ1ZDlhNWEyMjQ4YmMwZjc3ZjZjODIzNmZkMTFjZTU5NTUxMzExNjFiNTUyMTlkOTI1Nzc0YTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0ZjM4ZDYzMTMwNDMxNGVjMmMzZWU4ODVlNDM4OWEwOTQyYjE1ZWM0OWI5M2MxMWZlN2IyMjYxYjQyMGZmZDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzMzIwZjkyZjJlZjM0NzliNGYzNWY3ZjRlYjZhMTU2YzlkNzdmYjYyYTVkMDdjZmVjMWRmM2QxYzdmZDY0Y2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRmZmNjZDU0M2Q0YTFiYmYzOWFmMGQyMzQ3M2IxMGNlNjk1OWYwYjU1OGM5YTdhN2M1NDQ3ZjFjMDhkMTkxZjYifQ"
+        },
+        {
+          "resource": "repo://crates/storage/src/load_repo.rs#L16-L21",
+          "version": "repo-lines-v1:sha256:facce81ef5b8d6fd1ae08a3dd535e920f0035aa37eb6b21f6864f805cfc99127:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTcyNGFjZDBkYzcwM2NlYmZhNmViNWZiY2NmYjg0YzdiNGNjOGE3YWQzMjY5MmM2ODM2ODg0MzFkMDFjYjliMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTZiMDQ0OTE0Njk3MjJlODM2M2E5NGU0MDQ0NTM4ZTAxM2EyYTIxN2UzNmIxZTU2OGJhNjBhY2I3YjRjOGYyZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmUyYzE0NDUzNjY3ZmU0YTdlZDYzZjQ3MTlhY2NiYzQ2MDhhODczOTcwNDY3NWY1NmRmOWNlYjk5NWRmMWFiOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjM5NTA1MDQ2NzZiODM3OWFhNTM1OGIyMTRhYjY5NGRlNWRlMmE1ZjY0MjEzNzgwYjU1MTRkNWZhNWJmNjllZSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_c1bd1cc4275a48038b49e5f7cb4b6bf2",
+      "statement": "적재 결과는 load_results에 남기고, 구분자 입력은 적재 전 빈 셀을 검사하며 parquet 입력은 그 검사를 건너뛴다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip.rs#L1857-L1870",
+          "version": "repo-lines-v1:sha256:06e10a25cb251a0bd34e35bb23a5f55e652b12c90bd6f20a454610277a28c30d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTg2Y2FmNWZiYzUzZTIzNWZmZjlhMWQ5NjQxZTVkZDEzZjgyMDNmMWU3MDMxNmVkZWI4Yzg0ZDg2MjNiZDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0MDk3NGY2YjZiYmE0NDM3ZTk5NDIzYzc1MjMwMWE1ZDExMTZjOTViMWNmMzU5YzdjNDM1NGNmOTdkOGVmOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3MTRjOTczMDZiNzUwZmE0NTZjZmM1ZTJmZGQwMDFkMmVhNDRkYmY0NTAyMGVjMWM0Mjc0OTRhM2Y1ZjU3NWYifQ"
+        },
+        {
+          "resource": "repo://docs/workspace.md#L92-L97",
+          "version": "repo-lines-v1:sha256:eaf44fe7cb1855be292fe5ee2d488a26e6c4d2f28da2d2c0749866e3e3dd2a5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTJlYjQ1ZTNlYzdiZThjNDUyZGQ0YjIwNDkxYmNkNGRmYjcxZWFiNmYxZDgzN2JhMWVhYTc1ODgwOGI0ZmZlMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjFjYWU3YzMxYTY1OTdlZDkyODRjZGIxYWNjZGVhODNhY2JmMzczMTg2NWQ2YzA3NjllMGUyOTg0MzljZTVkMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWVhYmUwODBkODFhNWZhNWRhNTc2NDIxNjc3YWJmNGNmNmRiNjcwMDMwMWM0NjA2YWY2Yzc0Yzk2M2YxZTI3ZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWQxYmJlYjI4NzgyMTExNmJmNDI5YWRiODMyYzY0Yzc0MzBjY2YyZWQ3ZWUwYzJkODg1MzY1MjRiYTI2Yzg1NiJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

@@ -1,14 +1,15 @@
 import { useState, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AppWindow, ChevronDown, DatabaseZap, Folder, FolderOpen, Layers, Pencil, Settings2, Spline, Workflow, type LucideIcon } from "lucide-react";
+import { AppWindow, Braces, ChevronDown, DatabaseZap, FileOutput, Folder, FolderOpen, Globe, Layers, Pencil, Settings2, Spline, StickyNote, Terminal, Workflow, X, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Messages } from "@/i18n/ko";
 import { cn } from "@/lib/cn";
 import type { Chip, ChipEdge, ChipEdgeKind } from "@/types/chip";
+import { MemoFormatBar, memoStyle, memoTextCss, type MemoStyle } from "@/components/workspace/MemoChipEditorDialog";
 import {
-  CANVAS_H, CANVAS_W, MINIMAP_H, MINIMAP_W, NODE_H, NODE_W,
-  flowMarks, wireTone,
-  type EdgeGeometry, type Point, type PortSide,
+  CANVAS_H, CANVAS_W, MINIMAP_H, MINIMAP_W,
+  chipNodeSize, flowMarks, wireTone,
+  type CanvasNode, type EdgeGeometry, type Point, type PortSide,
 } from "@/features/workspace/workspaceCanvasModel";
 
 export function WorkspaceInfoRow({
@@ -142,7 +143,17 @@ export function ToolIconButton({
           setTipOpen(false);
           onDragStart?.(event);
         }}
-        onDragEnd={onDragEnd}
+        onDragEnd={(event) => {
+          setTipOpen(false);
+          const button = event.currentTarget;
+          button.blur();
+          // HTML5 drag leaves :hover on the source until the next real mouseenter.
+          button.style.pointerEvents = "none";
+          requestAnimationFrame(() => {
+            button.style.pointerEvents = "";
+          });
+          onDragEnd?.();
+        }}
         onClick={(event) => {
           setTipOpen(false);
           event.currentTarget.blur();
@@ -159,6 +170,150 @@ export function ToolIconButton({
   );
 }
 
+export function MemoStickyNote({
+  chip,
+  point,
+  selected,
+  messages,
+  busy,
+  onNodePointerDown,
+  onNodePointerMove,
+  onNodePointerUp,
+  onNodePointerCancel,
+  onLostPointerCapture,
+  onContextMenu,
+  onToggleCollapse,
+  onResizePointerDown,
+  onResizePointerMove,
+  onResizePointerUp,
+  onResizePointerCancel,
+  onResizeLostCapture,
+  onTextChange,
+  onTextBlur,
+  onStyleChange,
+  onDelete,
+}: {
+  chip: Chip;
+  point: CanvasNode;
+  selected: boolean;
+  messages: Messages;
+  busy?: boolean;
+  onNodePointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onNodePointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onNodePointerUp: () => void;
+  onNodePointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onLostPointerCapture: () => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void;
+  onToggleCollapse: () => void;
+  onResizePointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onResizePointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onResizePointerUp: () => void;
+  onResizePointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onResizeLostCapture: () => void;
+  onTextChange: (text: string) => void;
+  onTextBlur: (text: string) => void;
+  onStyleChange: (patch: Partial<MemoStyle>) => void;
+  onDelete: () => void;
+}) {
+  const size = chipNodeSize("memo", point);
+  const collapsed = Boolean(point.collapsed);
+  const style = memoStyle(chip);
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      data-chip-id={chip.id}
+      aria-current={selected ? "true" : undefined}
+      aria-label={chip.name}
+      aria-expanded={!collapsed}
+      className={cn("workspace-memo absolute select-none", selected && "is-selected")}
+      style={{ left: point.x, top: point.y, width: size.w, height: size.h }}
+      onPointerDown={onNodePointerDown}
+      onPointerMove={onNodePointerMove}
+      onPointerUp={onNodePointerUp}
+      onPointerCancel={onNodePointerCancel}
+      onLostPointerCapture={onLostPointerCapture}
+      onContextMenu={onContextMenu}
+    >
+      <div className="workspace-memo-bar">
+        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-tight">{chip.name}</span>
+        <button
+          type="button"
+          className="grid size-5 shrink-0 place-items-center rounded text-current/70 outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          aria-label={collapsed ? messages.workspace.expandPanel : messages.workspace.collapsePanel}
+          title={collapsed ? messages.workspace.expandPanel : messages.workspace.collapsePanel}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            event.preventDefault();
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleCollapse();
+          }}
+        >
+          <ChevronDown
+            className={cn("size-3.5 transition-transform", collapsed && "-rotate-90")}
+            aria-hidden="true"
+          />
+        </button>
+        <button
+          type="button"
+          className="grid size-5 shrink-0 place-items-center rounded text-current/70 outline-none hover:text-danger focus-visible:ring-2 focus-visible:ring-accent/40"
+          aria-label={messages.common.delete}
+          title={messages.common.delete}
+          disabled={busy}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            event.preventDefault();
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          <X className="size-3" aria-hidden="true" />
+        </button>
+      </div>
+      {collapsed ? null : (
+        <>
+          <MemoFormatBar
+            style={style}
+            disabled={busy}
+            messages={messages}
+            onChange={onStyleChange}
+          />
+          <textarea
+            className="workspace-memo-body"
+            style={memoTextCss(style)}
+            value={style.text}
+            placeholder={messages.workspace.memoPlaceholder}
+            spellCheck={false}
+            disabled={busy}
+            onChange={(event) => onTextChange(event.target.value)}
+            onBlur={(event) => {
+              const root = event.currentTarget.closest("[data-chip-id]");
+              const next = event.relatedTarget;
+              if (next instanceof Node && root?.contains(next)) return;
+              onTextBlur(event.currentTarget.value);
+            }}
+          />
+          <button
+            type="button"
+            className="workspace-memo-resize"
+            aria-label={messages.workspace.memoResize}
+            title={messages.workspace.memoResize}
+            onPointerDown={onResizePointerDown}
+            onPointerMove={onResizePointerMove}
+            onPointerUp={onResizePointerUp}
+            onPointerCancel={onResizePointerCancel}
+            onLostPointerCapture={onResizeLostCapture}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
 export function ChipLinkHandle({
   side,
   label,
@@ -167,6 +322,7 @@ export function ChipLinkHandle({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onLostPointerCapture,
 }: {
   side: PortSide;
   label: string;
@@ -175,6 +331,7 @@ export function ChipLinkHandle({
   onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onPointerCancel?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onLostPointerCapture?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
@@ -185,6 +342,7 @@ export function ChipLinkHandle({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onLostPointerCapture}
     >
       <svg viewBox="0 0 18 14" aria-hidden="true">
         <path
@@ -424,6 +582,11 @@ export function WorkspaceLayers({
 }) {
   const extracts = chips.filter((chip) => chip.kind === "extract");
   const transforms = chips.filter((chip) => chip.kind === "transform");
+  const loads = chips.filter((chip) => chip.kind === "load");
+  const sqls = chips.filter((chip) => chip.kind === "sql");
+  const scripts = chips.filter((chip) => chip.kind === "script");
+  const serves = chips.filter((chip) => chip.kind === "serve");
+  const memos = chips.filter((chip) => chip.kind === "memo");
   const allChipIds = chips.map((chip) => chip.id);
   const allEdgeIds = edges.map((edge) => edge.id);
   const allLayersSelected = (allChipIds.length + allEdgeIds.length) > 0
@@ -504,6 +667,51 @@ export function WorkspaceLayers({
           ))
         )}
       </LayerGroup>
+      <LayerGroup title={messages.workspace.layerLoads(loads.length)}>
+        {loads.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : loads.map((chip) => (
+          <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={FileOutput}
+            iconClassName="text-warning" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
+            editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
+        ))}
+      </LayerGroup>
+      <LayerGroup title={messages.workspace.layerSql(sqls.length)}>
+        {sqls.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : sqls.map((chip) => (
+          <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={Terminal}
+            iconClassName="text-sky-600 dark:text-sky-400" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
+            editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
+        ))}
+      </LayerGroup>
+      <LayerGroup title={messages.workspace.layerScript(scripts.length)}>
+        {scripts.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : scripts.map((chip) => (
+          <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={Braces}
+            iconClassName="text-amber-600 dark:text-amber-400" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
+            editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
+        ))}
+      </LayerGroup>
+      <LayerGroup title={messages.workspace.layerServe(serves.length)}>
+        {serves.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : serves.map((chip) => (
+          <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={Globe}
+            iconClassName="text-teal-600 dark:text-teal-400" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
+            editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
+        ))}
+      </LayerGroup>
+      <LayerGroup title={messages.workspace.layerMemo(memos.length)}>
+        {memos.length === 0 ? (
+          <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
+        ) : memos.map((chip) => (
+          <LayerRow key={chip.id} selected={selectedChipIds.includes(chip.id)} icon={StickyNote}
+            iconClassName="text-rose-600 dark:text-rose-400" label={chip.name} onClick={(event) => onSelectChip(chip.id, event)}
+            editTitle={messages.workspace.chipMenuProperties} onEdit={() => onEditChip(chip)} />
+        ))}
+      </LayerGroup>
       <LayerGroup title={messages.workspace.layerEdges(edges.length)}>
         {edges.length === 0 ? (
           <li className="px-2 py-1 text-[12px] text-text-tertiary">{messages.workspace.emptyLayerGroup}</li>
@@ -517,7 +725,7 @@ export function WorkspaceLayers({
                 edge.kind === "on_error"
                   ? "text-danger"
                   : edge.kind === "on_success"
-                    ? "text-success"
+                    ? "text-accent"
                     : edge.kind === "always"
                       ? "text-text-secondary"
                       : "text-accent"
@@ -555,7 +763,7 @@ export function WorkspaceMinimap({
   onJump,
 }: {
   chips: Chip[];
-  positions: Record<string, Point>;
+  positions: Record<string, CanvasNode>;
   scroll: Point;
   view: { width: number; height: number };
   label: string;
@@ -599,18 +807,24 @@ export function WorkspaceMinimap({
         {chips.map((chip) => {
           const point = positions[chip.id];
           if (!point) return null;
+          const size = chipNodeSize(chip.kind, point);
           return (
             <span
               key={chip.id}
               className={cn(
                 "workspace-minimap-chip",
-                chip.kind === "extract" ? "is-extract" : "is-transform",
+                chip.kind === "extract" ? "is-extract"
+                  : chip.kind === "load" ? "is-load"
+                    : chip.kind === "sql" ? "is-sql"
+                      : chip.kind === "script" ? "is-script"
+                      : chip.kind === "serve" ? "is-serve"
+                        : chip.kind === "memo" ? "is-memo" : "is-transform",
               )}
               style={{
                 left: point.x * scale,
                 top: point.y * scale,
-                width: Math.max(3, NODE_W * scale),
-                height: Math.max(3, NODE_H * scale),
+                width: Math.max(3, size.w * scale),
+                height: Math.max(3, size.h * scale),
               }}
             />
           );
@@ -623,4 +837,3 @@ export function WorkspaceMinimap({
     </div>
   );
 }
-

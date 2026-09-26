@@ -4,11 +4,12 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 
 use crate::access::{self, CurrentUser};
 use crate::error::AppError;
 use crate::state::AppState;
-use storage::{ChipEdgeRow, WorkspaceFolderRow, WorkspaceRow, WorkspaceSaveEdge};
+use storage::{ChipEdgeRow, ChipPasteInput, WorkspaceFolderRow, WorkspaceRow, WorkspaceSaveEdge};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -18,9 +19,18 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/api/workspaces/{id}",
-            get(get_workspace).patch(update_workspace).delete(delete_workspace),
+            get(get_workspace)
+                .patch(update_workspace)
+                .delete(delete_workspace),
         )
-        .route("/api/workspaces/{id}/save", axum::routing::put(save_workspace))
+        .route(
+            "/api/workspaces/{id}/save",
+            axum::routing::put(save_workspace),
+        )
+        .route(
+            "/api/workspaces/{id}/paste-chips",
+            axum::routing::post(paste_chips),
+        )
         .route(
             "/api/workspace-folders",
             get(list_folders).post(create_folder),
@@ -43,6 +53,7 @@ struct CreateWorkspaceBody {
 #[derive(Deserialize)]
 struct SaveWorkspaceBody {
     layout: Value,
+    version: i64,
     #[serde(default)]
     chips: Vec<String>,
     #[serde(default)]
@@ -60,6 +71,20 @@ struct SaveWorkspaceEdgeBody {
     from_port: String,
     #[serde(default)]
     to_port: String,
+}
+
+#[derive(Deserialize)]
+struct PasteChipsBody {
+    source_workspace_id: String,
+    chip_ids: Vec<String>,
+    origin: PasteOrigin,
+    version: i64,
+}
+
+#[derive(Deserialize)]
+struct PasteOrigin {
+    x: f64,
+    y: f64,
 }
 
 #[derive(Deserialize)]
@@ -156,9 +181,7 @@ async fn update_workspace(
             body.name.as_deref(),
             body.description.as_deref(),
             layout_json.as_deref(),
-            body.folder_id
-                .as_ref()
-                .map(|value| value.as_deref()),
+            body.folder_id.as_ref().map(|value| value.as_deref()),
         )
         .await?;
     Ok(Json(workspace_json(&workspace, None)?))
@@ -211,12 +234,12 @@ async fn save_workspace(
     }
     let (workspace, saved, saved_edges) = state
         .store
-        .save_workspace(&id, &layout_json, &chip_ids, &edges)
+        .save_workspace(&id, &layout_json, &chip_ids, &edges, Some(body.version))
         .await?;
     crate::planned_input::sync_workspace_planned_inputs(&state, &id).await?;
     let mut chips = Vec::with_capacity(saved.len());
     for chip in &saved {
-        chips.push(crate::chip::chip_json(&state.store, chip).await?);
+        chips.push(crate::chip::chip_json_for_workspace(&state.store, chip, &id).await?);
     }
     let edges = saved_edges.iter().map(edge_json).collect::<Vec<_>>();
     Ok(Json(json!({
@@ -224,6 +247,128 @@ async fn save_workspace(
         "chips": chips,
         "edges": edges,
     })))
+}
+
+async fn paste_chips(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Json(body): Json<PasteChipsBody>,
+) -> Result<Json<Value>, AppError> {
+    access::require_workspace(&state.store, &user, &id).await?;
+    access::require_workspace(&state.store, &user, &body.source_workspace_id).await?;
+    let mut chip_ids = Vec::with_capacity(body.chip_ids.len());
+    for chip_id in &body.chip_ids {
+        let chip_id = chip_id.trim();
+        if chip_id.is_empty() {
+            continue;
+        }
+        let _chip = access::require_chip(&state.store, &user, chip_id).await?;
+        chip_ids.push(chip_id.to_string());
+    }
+    if chip_ids.is_empty() {
+        return Err(AppError::bad("chip ids required"));
+    }
+    let mut serve_configs = HashMap::new();
+    let mut revealed_keys = HashMap::new();
+    let mut reserved_slugs = reserved_serve_slugs(&state).await?;
+    for chip_id in &chip_ids {
+        let chip = state
+            .store
+            .get_chip(chip_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("chip not found"))?;
+        if chip.kind != "serve" {
+            continue;
+        }
+        let raw = state.store.resolve_chip_config_json(&chip).await?;
+        let existing: Value =
+            serde_json::from_str(&raw).map_err(|error| AppError::bad(error.to_string()))?;
+        let base = existing
+            .get("slug")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let slug = storage::next_copy_slug(base, &reserved_slugs);
+        reserved_slugs.insert(slug.clone());
+        let key = crate::serve::generate_api_key();
+        let (config, revealed) = crate::serve::validate_serve_config(
+            &state.store,
+            None,
+            json!({
+                "slug": slug,
+                "api_key": key,
+                "freshness": existing.get("freshness").cloned().unwrap_or(json!("slot")),
+            }),
+            None,
+            false,
+        )
+        .await?;
+        serve_configs.insert(
+            chip_id.clone(),
+            serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?,
+        );
+        if let Some(key) = revealed {
+            revealed_keys.insert(chip_id.clone(), key);
+        }
+    }
+    let pasted = state
+        .store
+        .paste_chips(
+            &id,
+            ChipPasteInput {
+                source_workspace_id: body.source_workspace_id,
+                chip_ids,
+                origin_x: body.origin.x,
+                origin_y: body.origin.y,
+                expected_version: body.version,
+                serve_configs,
+            },
+        )
+        .await?;
+    crate::planned_input::sync_workspace_planned_inputs(&state, &id).await?;
+    let mut chips = Vec::with_capacity(pasted.chips.len());
+    for chip in &pasted.chips {
+        let mut payload = crate::chip::chip_json_for_workspace(&state.store, chip, &id).await?;
+        if let Some(source_id) = pasted
+            .id_map
+            .iter()
+            .find_map(|(source, copied)| (copied == &chip.id).then_some(source.as_str()))
+        {
+            if let Some(key) = revealed_keys.get(source_id) {
+                payload["api_key"] = json!(key);
+            }
+        }
+        chips.push(payload);
+    }
+    let edges = pasted.edges.iter().map(edge_json).collect::<Vec<_>>();
+    Ok(Json(json!({
+        "workspace": workspace_json(&pasted.workspace, Some(pasted.edges.as_slice()))?,
+        "chips": chips,
+        "edges": edges,
+        "id_map": pasted.id_map,
+    })))
+}
+
+async fn reserved_serve_slugs(state: &AppState) -> Result<HashSet<String>, AppError> {
+    let mut taken = HashSet::new();
+    for (_, raw) in state.store.list_serve_chip_configs().await? {
+        let Some(raw) = raw else {
+            continue;
+        };
+        let Ok(config) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        let slug = config
+            .get("slug")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if !slug.is_empty() {
+            taken.insert(slug.to_string());
+        }
+    }
+    Ok(taken)
 }
 
 async fn list_folders(

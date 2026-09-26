@@ -3,6 +3,7 @@ export interface StoredFile {
   filename: string;
   size: number;
   stored_path: string;
+  workspace_id: string;
 }
 
 export interface WorkbookSheet {
@@ -21,6 +22,12 @@ export interface WorkbookSheetSelection {
   name: string;
   filename: string;
   delimiter?: string;
+}
+
+export interface WorkbookCommitProgress {
+  current: number;
+  total: number;
+  name: string;
 }
 
 export interface CommitWorkbookResponse {

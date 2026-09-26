@@ -1,45 +1,92 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pencil, Puzzle, RefreshCw, Trash2 } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
-import { DataGrid, EmptyGridRow, GridCell, GridRow } from "@/components/DataGrid";
+import { ListFilter, Pencil, Puzzle, RefreshCw, Search, Trash2 } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { DataGrid, EmptyState, GridCell, GridRow } from "@/components/DataGrid";
+import { NavIcon } from "@/components/ui/nav-icons";
+import { PaginationBar } from "@/components/PaginationBar";
 import { AppDialog } from "@/components/AppDialog";
 import { ChipDetailView } from "@/components/chips/ChipDetailView";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/panel";
+import { Select } from "@/components/ui/select";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
 import { fmtWhen } from "@/lib/format";
-import { showConfirm, toastError } from "@/lib/notifications";
+import { usePagination } from "@/lib/pagination";
+import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { chipApi } from "@/services/chips/chipApi";
-import type { Chip, ChipKind } from "@/types/chip";
+import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
+import { ServeChipEditorDialog } from "@/components/workspace/ServeChipEditorDialog";
+import { MemoChipEditorDialog } from "@/components/workspace/MemoChipEditorDialog";
+import { nextSequencedChipName } from "@/lib/chipSequence";
+import { chipEditorPath, type Chip, type ChipKind } from "@/types/chip";
+
+const KIND_ORDER: Record<ChipKind, number> = {
+  extract: 0,
+  transform: 1,
+  load: 2,
+  validation: 3,
+  sql: 4,
+  script: 5,
+  serve: 6,
+  memo: 7,
+};
 
 function kindLabel(kind: ChipKind, messages: ReturnType<typeof useLanguage>["messages"]) {
   if (kind === "extract") return messages.workspace.extract;
   if (kind === "transform") return messages.workspace.transform;
-  return messages.workspace.load;
+  if (kind === "load") return messages.workspace.load;
+  if (kind === "sql") return messages.workspace.sql;
+  if (kind === "script") return messages.workspace.script;
+  if (kind === "serve") return messages.workspace.serve;
+  if (kind === "memo") return messages.workspace.memo;
+  return messages.workspace.validation;
+}
+
+function compareChips(a: Chip, b: Chip) {
+  const kind = (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99);
+  if (kind !== 0) return kind;
+  return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
 export function ChipsPage() {
   const { messages } = useLanguage();
+  const navigate = useNavigate();
   const [params] = useSearchParams();
   const [chips, setChips] = useState<Chip[]>([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
   const [detail, setDetail] = useState<Chip | null>(null);
+  const [sqlEditorChip, setSqlEditorChip] = useState<Chip | null>(null);
+  const [serveEditorChip, setServeEditorChip] = useState<Chip | null>(null);
+  const [memoEditorChip, setMemoEditorChip] = useState<Chip | null>(null);
+  const [nameQuery, setNameQuery] = useState("");
+  const [kindFilter, setKindFilter] = useState<"all" | ChipKind>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const allSelected = chips.length > 0 && selected.length === chips.length;
+  const visibleChips = useMemo(() => {
+    const query = nameQuery.trim().toLocaleLowerCase();
+    return chips
+      .filter((chip) =>
+        (kindFilter === "all" || chip.kind === kindFilter)
+        && (statusFilter === "all" || (statusFilter === "active" ? chip.active : !chip.active))
+        && (!query || chip.name.toLocaleLowerCase().includes(query)),
+      )
+      .sort(compareChips);
+  }, [chips, kindFilter, nameQuery, statusFilter]);
+  const paging = usePagination(visibleChips, `${kindFilter}|${statusFilter}|${nameQuery}`);
+  const pageChips = paging.items;
+  const allSelected = pageChips.length > 0 && pageChips.every((chip) => selectedSet.has(chip.id));
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const response = await chipApi.listCatalog();
-      setChips(
-        [...response.chips].sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
-      );
+      setChips(response.chips);
     } catch (error) {
       toastError(messages.workspace.loadError, error);
     } finally {
@@ -60,14 +107,13 @@ export function ChipsPage() {
 
   const activeCount = useMemo(() => chips.filter((chip) => chip.active).length, [chips]);
 
-  function toggleOne(id: string) {
-    setSelected((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
-  }
-
   function toggleAll() {
-    setSelected(allSelected ? [] : chips.map((chip) => chip.id));
+    setSelected((current) => {
+      const pageIds = new Set(pageChips.map((chip) => chip.id));
+      return allSelected
+        ? current.filter((id) => !pageIds.has(id))
+        : [...new Set([...current, ...pageIds])];
+    });
   }
 
   async function toggleActive(chip: Chip) {
@@ -99,6 +145,7 @@ export function ChipsPage() {
       if (detail && selectedSet.has(detail.id)) setDetail(null);
       setSelected([]);
       setChips((current) => current.filter((item) => !selectedSet.has(item.id)));
+      toastSuccess(messages.chips.deleteDone);
     } catch (error) {
       toastError(messages.workspace.deleteChipError, error);
       await refresh();
@@ -110,7 +157,7 @@ export function ChipsPage() {
   return (
     <PageShell>
       <PageHeader
-        iconName="jobs"
+        iconName="chips"
         eyebrow={messages.chips.eyebrow}
         title={messages.chips.title}
         description={messages.chips.description}
@@ -122,7 +169,7 @@ export function ChipsPage() {
         }
       />
 
-      <Panel tall>
+      <Panel>
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -130,14 +177,14 @@ export function ChipsPage() {
                 className="field-control"
                 type="checkbox"
                 checked={allSelected}
-                disabled={chips.length === 0 || loading || busy}
+                disabled={pageChips.length === 0 || loading || busy}
                 onChange={toggleAll}
                 aria-label={messages.chips.selectAll}
               />
               <span>{messages.workspace.chipCatalog}</span>
             </label>
             <span className="text-xs text-text-tertiary">
-              {messages.common.cases(chips.length)} · {messages.chips.active} {activeCount}
+              {messages.chips.showing(visibleChips.length, chips.length)} · {messages.chips.active} {activeCount}
             </span>
           </ToolbarGroup>
           <ToolbarGroup>
@@ -152,26 +199,77 @@ export function ChipsPage() {
             </Button>
           </ToolbarGroup>
         </Toolbar>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-raised/45 px-3 py-2.5">
+          <div className="group flex h-8 w-[min(17rem,100%)] min-w-[11rem] items-center overflow-hidden rounded-lg border border-border bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+            <span className="grid h-full w-8 shrink-0 place-items-center border-r border-border bg-subtle text-text-tertiary group-focus-within:text-accent">
+              <Search className="size-3.5" aria-hidden="true" />
+            </span>
+            <input
+              type="search"
+              className="min-w-0 flex-1 bg-transparent px-2.5 text-[13px] text-text outline-none placeholder:text-text-tertiary"
+              value={nameQuery}
+              placeholder={messages.chips.searchPlaceholder}
+              aria-label={messages.chips.searchByName}
+              onChange={(event) => setNameQuery(event.target.value)}
+            />
+          </div>
+          <div className="ml-3 flex items-center gap-1.5 text-xs text-text-secondary">
+            <ListFilter className="size-3.5 text-text-tertiary" aria-hidden="true" />
+            <span className="sr-only">{messages.chips.kindFilter}</span>
+            <Select
+              className="h-8 min-w-[7.5rem]"
+              value={kindFilter}
+              onChange={(value) => setKindFilter(value as "all" | ChipKind)}
+              options={[
+                { value: "all", label: messages.chips.allKinds },
+                { value: "extract", label: kindLabel("extract", messages) },
+                { value: "transform", label: kindLabel("transform", messages) },
+                { value: "load", label: kindLabel("load", messages) },
+                { value: "validation", label: kindLabel("validation", messages) },
+                { value: "sql", label: kindLabel("sql", messages) },
+                { value: "script", label: kindLabel("script", messages) },
+                { value: "serve", label: kindLabel("serve", messages) },
+                { value: "memo", label: kindLabel("memo", messages) },
+              ]}
+            />
+          </div>
+          <div className="flex items-center text-xs text-text-secondary">
+            <span className="sr-only">{messages.chips.statusFilter}</span>
+            <Select
+              className="h-8 min-w-[6.5rem]"
+              value={statusFilter}
+              onChange={(value) => setStatusFilter(value as "all" | "active" | "inactive")}
+              options={[
+                { value: "all", label: messages.chips.allStatuses },
+                { value: "active", label: messages.chips.active },
+                { value: "inactive", label: messages.chips.inactive },
+              ]}
+            />
+          </div>
+        </div>
         <DataGrid
-          className="min-h-0 flex-1"
           headers={[...messages.chips.headers]}
           columnWidths={[56, 200, 88, 72, 88, 140]}
+          selectedIds={selected}
+          onSelectedIdsChange={setSelected}
+          empty={
+            loading ? <EmptyState title={messages.common.loading} />
+            : chips.length === 0 ? <EmptyState icon={<NavIcon name="chips" />} title={messages.chips.empty} hint={messages.chips.emptyHint} />
+            : visibleChips.length === 0 ? <EmptyState icon={<NavIcon name="chips" />} title={messages.chips.filterEmpty} hint={messages.chips.filterEmptyHint} />
+            : undefined
+          }
         >
-          {loading ? (
-            <EmptyGridRow cols={6} text={messages.common.loading} />
-          ) : chips.length === 0 ? (
-            <EmptyGridRow cols={6} text={messages.workspace.noWorkspaces} />
-          ) : (
-            chips.map((chip) => (
-              <GridRow key={chip.id} selected={selectedSet.has(chip.id)}>
-                <GridCell>
+          {loading || chips.length === 0 || visibleChips.length === 0 ? null : pageChips.map((chip) => (
+              <GridRow key={chip.id} rowId={chip.id} selected={selectedSet.has(chip.id)}>
+                <GridCell select>
                   <input
-                    className="field-control"
+                    className="field-control pointer-events-none"
                     type="checkbox"
                     checked={selectedSet.has(chip.id)}
                     disabled={busy}
-                    aria-label={chip.name}
-                    onChange={() => toggleOne(chip.id)}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onChange={() => {}}
                   />
                 </GridCell>
                 <GridCell>
@@ -202,9 +300,19 @@ export function ChipsPage() {
                 </GridCell>
                 <GridCell mono muted>{fmtWhen(chip.updated_at)}</GridCell>
               </GridRow>
-            ))
-          )}
+            ))}
         </DataGrid>
+        <PaginationBar
+          page={paging.page}
+          pageCount={paging.pageCount}
+          pageSize={paging.pageSize}
+          total={paging.total}
+          start={paging.start}
+          end={paging.end}
+          disabled={loading}
+          onPageChange={paging.setPage}
+          onPageSizeChange={paging.setPageSize}
+        />
       </Panel>
 
       <AppDialog
@@ -212,7 +320,10 @@ export function ChipsPage() {
         title={detail?.name ?? ""}
         icon={
           <Puzzle
-            className={cn("size-4", detail?.kind === "transform" ? "text-success" : "text-accent")}
+            className={cn(
+              "size-4",
+              detail?.kind === "transform" ? "text-success" : detail?.kind === "load" ? "text-warning" : detail?.kind === "sql" ? "text-sky-600 dark:text-sky-400" : detail?.kind === "script" ? "text-amber-600 dark:text-amber-400" : detail?.kind === "serve" ? "text-teal-600 dark:text-teal-400" : detail?.kind === "memo" ? "text-rose-600 dark:text-rose-400" : "text-accent",
+            )}
             aria-hidden="true"
           />
         }
@@ -224,10 +335,25 @@ export function ChipsPage() {
           <div className="flex flex-1 justify-end">
             <button
               type="button"
-              className="grid size-8 shrink-0 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+              className="grid size-8 shrink-0 place-items-center rounded-lg text-text-secondary outline-none transition-colors hover:bg-subtle hover:text-text focus-visible:ring-2 focus-visible:ring-accent/40"
               aria-label={messages.common.edit}
-              title={`${messages.common.edit} (${messages.common.comingSoon})`}
-              disabled
+              title={messages.common.edit}
+              onClick={() => {
+                if (!detail) return;
+                if (detail.kind === "sql") {
+                  setSqlEditorChip(detail);
+                  return;
+                }
+                if (detail.kind === "serve") {
+                  setServeEditorChip(detail);
+                  return;
+                }
+                if (detail.kind === "memo") {
+                  setMemoEditorChip(detail);
+                  return;
+                }
+                navigate(chipEditorPath(detail));
+              }}
             >
               <Pencil className="size-4" aria-hidden="true" />
             </button>
@@ -250,6 +376,40 @@ export function ChipsPage() {
           </div>
         ) : null}
       </AppDialog>
+
+      <SqlChipEditorDialog
+        open={Boolean(sqlEditorChip)}
+        workspaceId={sqlEditorChip?.workspace_id ?? undefined}
+        chip={sqlEditorChip}
+        defaultName={nextSequencedChipName(chips, messages.workspace.defaultSqlChipName, (chip) => chip.kind === "sql")}
+        occupiedNames={chips.map((chip) => chip.name)}
+        onClose={() => setSqlEditorChip(null)}
+        onSaved={(saved) => {
+          setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+          setDetail((current) => (current?.id === saved.id ? saved : current));
+          setSqlEditorChip(null);
+        }}
+      />
+      <ServeChipEditorDialog
+        open={Boolean(serveEditorChip)}
+        chip={serveEditorChip}
+        onClose={() => setServeEditorChip(null)}
+        onSaved={(saved) => {
+          setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+          setDetail((current) => (current?.id === saved.id ? saved : current));
+          setServeEditorChip(null);
+        }}
+      />
+      <MemoChipEditorDialog
+        open={Boolean(memoEditorChip)}
+        chip={memoEditorChip}
+        onClose={() => setMemoEditorChip(null)}
+        onSaved={(saved) => {
+          setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+          setDetail((current) => (current?.id === saved.id ? saved : current));
+          setMemoEditorChip(null);
+        }}
+      />
     </PageShell>
   );
 }

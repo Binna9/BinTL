@@ -4,26 +4,39 @@ import {
   columnWidthsForContent,
   DataGrid,
   EmptyGridRow,
+  EmptyState,
   GridCell,
   GridRow,
 } from "@/components/DataGrid";
+import { NavIcon } from "@/components/ui/nav-icons";
 import { ExcelSheetDialog } from "@/components/files/ExcelSheetDialog";
 import { FileDropzone } from "@/components/files/FileDropzone";
 import { AppDialog } from "@/components/AppDialog";
+import { PaginationBar } from "@/components/PaginationBar";
 import { PageHeader, PageShell } from "@/layouts/PageShell";
+import { SplitLayout } from "@/layouts/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { MetaField } from "@/components/ui/meta-field";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
+import { WorkspaceFileCatalog } from "@/components/workspace/WorkspaceFileCatalog";
+import { WorkspacePickDialog } from "@/components/workspace/WorkspacePickDialog";
+import { filterItemsByFileTree, type FileTreeSelection } from "@/features/workspace/fileWorkspaceTree";
 import { useFiles } from "@/hooks/files/useFiles";
+import { useWorkspacePick } from "@/hooks/workspace/useWorkspacePick";
+import { useWorkspaceTree } from "@/hooks/workspace/useWorkspaceTree";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { fmtBytes, fmtDelimiterGlyph } from "@/lib/format";
-import { showConfirm, toastDeleteError, toastError } from "@/lib/notifications";
+import { setGlobalLoadingStatus } from "@/lib/globalLoading";
+import { layout } from "@/lib/layout";
+import { usePagination } from "@/lib/pagination";
+import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { fileApi } from "@/services/files/fileApi";
 import type {
   FilePreview,
   StagedWorkbook,
   StoredFile,
+  WorkbookCommitProgress,
   WorkbookSheetSelection,
 } from "@/types/file";
 
@@ -55,6 +68,9 @@ function saveAsName(original: string, requested: string): string {
 export function FilesPage() {
   const { messages } = useLanguage();
   const { files, refreshFiles } = useFiles();
+  const { folders, workspaces } = useWorkspaceTree();
+  const workspacePick = useWorkspacePick();
+  const [treeSelection, setTreeSelection] = useState<FileTreeSelection>({ type: "all" });
   const [busy, setBusy] = useState(false);
   const [readingWorkbook, setReadingWorkbook] = useState(false);
   const [savingWorkbook, setSavingWorkbook] = useState(false);
@@ -66,10 +82,23 @@ export function FilesPage() {
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  const visibleFiles = useMemo(
+    () => filterItemsByFileTree(files, treeSelection, folders, workspaces),
+    [files, folders, treeSelection, workspaces],
+  );
+  const catalogFiles = useMemo(
+    () => files.map((file) => ({ id: file.id, name: file.filename, workspace_id: file.workspace_id })),
+    [files],
+  );
   const allSelected = queue.length > 0 && selected.length === queue.length;
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const storedSelectedSet = useMemo(() => new Set(storedSelected), [storedSelected]);
-  const allStoredSelected = files.length > 0 && storedSelected.length === files.length;
+  const paging = usePagination(
+    visibleFiles,
+    treeSelection.type === "all" ? "all" : `${treeSelection.type}:${treeSelection.id}`,
+  );
+  const pageFiles = paging.items;
+  const allStoredSelected = pageFiles.length > 0 && pageFiles.every((file) => storedSelectedSet.has(file.id));
   const previewWidths = useMemo(
     () => (preview ? columnWidthsForContent(preview.columns, preview.rows) : undefined),
     [preview],
@@ -125,15 +154,42 @@ export function FilesPage() {
     } catch {}
   }
 
+  function sheetProgressDetail(progress: WorkbookCommitProgress): string {
+    return progress.name
+      ? messages.files.savingSheetProgress(progress.current, progress.total, progress.name)
+      : messages.files.savingSheetCount(progress.current, progress.total);
+  }
+
   async function saveWorkbookSheets(
     sheets: WorkbookSheetSelection[],
     options: { delimiter: string; header: boolean; addSequence: boolean },
   ) {
     const workbook = workbooks[0];
     if (!workbook) return;
+    const workspaceId = await workspacePick.pick(
+      treeSelection.type === "workspace" ? treeSelection.id : undefined,
+    );
+    if (!workspaceId) return;
     setSavingWorkbook(true);
+    setGlobalLoadingStatus({
+      label: messages.files.savingSheets,
+      progress: { current: 0, total: sheets.length, detail: "" },
+    });
     try {
-      await fileApi.commitWorkbook(workbook.staging_id, sheets, options);
+      await fileApi.commitWorkbook(workbook.staging_id, sheets, {
+        ...options,
+        workspaceId,
+        onProgress: (progress) => {
+          setGlobalLoadingStatus({
+            label: messages.files.savingSheets,
+            progress: {
+              current: progress.current,
+              total: progress.total,
+              detail: sheetProgressDetail(progress),
+            },
+          });
+        },
+      });
       setWorkbooks((current) => current.slice(1));
       await refreshFiles();
     } catch (err) {
@@ -159,14 +215,13 @@ export function FilesPage() {
     setSelected([]);
   }
 
-  function toggleStoredOne(id: string) {
-    setStoredSelected((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    );
-  }
-
   function toggleStoredAll() {
-    setStoredSelected(allStoredSelected ? [] : files.map((file) => file.id));
+    setStoredSelected((current) => {
+      const pageIds = new Set(pageFiles.map((file) => file.id));
+      return allStoredSelected
+        ? current.filter((id) => !pageIds.has(id))
+        : [...new Set([...current, ...pageIds])];
+    });
   }
 
   async function deleteStored() {
@@ -188,6 +243,7 @@ export function FilesPage() {
       }
       setStoredSelected([]);
       await refreshFiles();
+      toastSuccess(messages.files.deleteDone);
     } catch (err) {
       toastDeleteError(messages.errors.deleteFile, messages.errors.deleteBlocked, err);
       await refreshFiles();
@@ -220,11 +276,15 @@ export function FilesPage() {
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (queue.length === 0) return;
+    const workspaceId = await workspacePick.pick(
+      treeSelection.type === "workspace" ? treeSelection.id : undefined,
+    );
+    if (!workspaceId) return;
 
     setBusy(true);
     try {
       for (const item of queue) {
-        await fileApi.uploadFile(item.file, saveAsName(item.file.name, item.name));
+        await fileApi.uploadFile(item.file, saveAsName(item.file.name, item.name), workspaceId);
         setQueue((current) => current.filter((queued) => queued.id !== item.id));
         setSelected((current) => current.filter((id) => id !== item.id));
       }
@@ -245,7 +305,7 @@ export function FilesPage() {
         description={messages.files.description}
       />
 
-      <Panel>
+      <Panel className="shrink-0">
         <PanelHeader title={messages.files.uploadTitle} description={messages.files.uploadDescription} />
         <PanelBody>
           <form className="flex flex-col gap-3" onSubmit={(event) => void onSubmit(event)}>
@@ -333,7 +393,23 @@ export function FilesPage() {
         </PanelBody>
       </Panel>
 
-      <Panel tall>
+      <Panel tall className="overflow-hidden">
+        <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.sidebar]}>
+          <WorkspaceFileCatalog
+            folders={folders}
+            workspaces={workspaces}
+            files={catalogFiles}
+            selection={treeSelection}
+            activeFileId={previewing?.id}
+            onSelect={setTreeSelection}
+            onFileClick={(id) => {
+              const file = files.find((item) => item.id === id);
+              if (!file) return;
+              setTreeSelection({ type: "workspace", id: file.workspace_id });
+              void openPreview(file);
+            }}
+          />
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
         <Toolbar>
           <ToolbarGroup>
             <label className="flex items-center gap-2 text-[13px] font-semibold text-text">
@@ -341,14 +417,14 @@ export function FilesPage() {
                 className="field-control"
                 type="checkbox"
                 checked={allStoredSelected}
-                disabled={files.length === 0 || busy}
+                disabled={pageFiles.length === 0 || busy}
                 onChange={toggleStoredAll}
                 aria-label={messages.files.selectAll}
               />
               <span>{messages.files.stored}</span>
             </label>
             <span className="rounded-full bg-subtle px-2 py-0.5 text-[10px] font-semibold tabular-nums text-text-secondary">
-              {messages.common.count(files.length)}
+              {messages.common.count(visibleFiles.length)}
             </span>
             <span className="ml-1 border-l border-border pl-3 text-xs font-normal text-text-tertiary">
               {messages.files.storedHint}
@@ -370,25 +446,26 @@ export function FilesPage() {
           className="min-h-0 flex-1"
           headers={[...messages.files.headers]}
           columnWidths={[80, 220, 120, 140, 280]}
+          selectedIds={storedSelected}
+          onSelectedIdsChange={setStoredSelected}
+          empty={visibleFiles.length === 0 ? <EmptyState icon={<NavIcon name="files" />} title={files.length === 0 ? messages.empty.uploads : messages.workspace.fileCatalogEmpty} hint={files.length === 0 ? messages.empty.uploadsHint : undefined} /> : undefined}
         >
-          {files.length === 0 ? (
-            <EmptyGridRow cols={5} text={messages.empty.uploads} />
-          ) : (
-            files.map((file) => (
+          {visibleFiles.length === 0 ? null : pageFiles.map((file) => (
               <GridRow
                 key={`${file.id}-${file.filename}`}
+                rowId={file.id}
                 selected={storedSelectedSet.has(file.id)}
                 onClick={() => void openPreview(file)}
               >
-                <GridCell>
+                <GridCell select>
                   <input
-                    className="field-control"
+                    className="field-control pointer-events-none"
                     type="checkbox"
                     checked={storedSelectedSet.has(file.id)}
                     disabled={busy}
-                    aria-label={file.filename}
-                    onChange={() => toggleStoredOne(file.id)}
-                    onClick={(event) => event.stopPropagation()}
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onChange={() => {}}
                   />
                 </GridCell>
                 <GridCell>{file.filename}</GridCell>
@@ -396,9 +473,20 @@ export function FilesPage() {
                 <GridCell mono muted>{file.id.slice(0, 8)}</GridCell>
                 <GridCell mono muted>{file.stored_path}</GridCell>
               </GridRow>
-            ))
-          )}
+            ))}
         </DataGrid>
+        <PaginationBar
+          page={paging.page}
+          pageCount={paging.pageCount}
+          pageSize={paging.pageSize}
+          total={paging.total}
+          start={paging.start}
+          end={paging.end}
+          onPageChange={paging.setPage}
+          onPageSizeChange={paging.setPageSize}
+        />
+          </div>
+        </SplitLayout>
       </Panel>
 
       <ExcelSheetDialog
@@ -407,6 +495,7 @@ export function FilesPage() {
         onClose={() => void closeWorkbook()}
         onSave={(sheets, options) => void saveWorkbookSheets(sheets, options)}
       />
+      <WorkspacePickDialog {...workspacePick.dialogProps} />
 
       <AppDialog
         open={Boolean(previewing)}

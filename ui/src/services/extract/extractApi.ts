@@ -12,7 +12,7 @@ interface ExtractListResponse {
 }
 
 export const extractApi = {
-  getExtracts: (limit = 50, init?: HttpRequestInit) =>
+  getExtracts: (limit = 200, init?: HttpRequestInit) =>
     httpRequest<ExtractListResponse>(`/api/extracts?limit=${limit}`, init),
   getExtract: (extractId: string) =>
     httpRequest<ExtractRecord>(`/api/extracts/${extractId}`),
@@ -33,6 +33,6 @@ export const extractApi = {
   previewExtract: (extractId: string, limit = 200) =>
     httpRequest<FilePreview>(`/api/extracts/${extractId}/preview?limit=${limit}`),
   getDownloadUrl: (extractId: string) => `/api/extracts/${extractId}/file`,
-  getLogs: (extractId: string) =>
-    httpRequest<{ id: string; text: string }>(`/api/extracts/${extractId}/logs`),
+  getLogs: (extractId: string, init?: HttpRequestInit) =>
+    httpRequest<{ id: string; text: string }>(`/api/extracts/${extractId}/logs`, init),
 };

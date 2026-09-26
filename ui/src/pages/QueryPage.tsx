@@ -6,8 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { BookmarkPlus, FileDown, ScrollText, Play, RefreshCw, Table2 } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
+import { ArrowLeft, BookmarkPlus, FileDown, ScrollText, Play, RefreshCw, Table2 } from "lucide-react";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { CatalogTree } from "@/components/connections/CatalogTree";
 import { ConnectionInfoPanel } from "@/components/query/ConnectionInfoPanel";
 import {
@@ -34,6 +34,7 @@ import { useConnections } from "@/hooks/connections/useConnections";
 import { isExtractActive } from "@/hooks/extract/useExtracts";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { extractSourceType, nextSequencedChipName } from "@/lib/chipSequence";
 import { DELIMITER_VALUES } from "@/lib/delimiter";
 import { layout } from "@/lib/layout";
 import { toastError, toastSuccess } from "@/lib/notifications";
@@ -41,6 +42,9 @@ import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extract/extractApi";
 import { queryApi } from "@/services/query/queryApi";
 import { chipApi } from "@/services/chips/chipApi";
+import { isChipNameConflict } from "@/services/httpClient";
+import { WorkspacePickDialog } from "@/components/workspace/WorkspacePickDialog";
+import { useWorkspacePick } from "@/hooks/workspace/useWorkspacePick";
 import type { CatalogSelection } from "@/types/connection";
 import type { ExtractRecord } from "@/types/extract";
 import type { QueryResult } from "@/types/query";
@@ -104,6 +108,20 @@ function highlightMatch(text: string, query: string): ReactNode {
 
 export function QueryPage() {
   const { messages } = useLanguage();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { workspaceId, editorChipId } = useParams<{ workspaceId: string; editorChipId: string }>();
+  const editingChip = Boolean(editorChipId);
+  const returnWorkspaceId = workspaceId ?? (location.state as { returnWorkspaceId?: string } | null)?.returnWorkspaceId;
+  const workspacePick = useWorkspacePick();
+
+  function leaveEditor() {
+    if (returnWorkspaceId) {
+      navigate(`/workspace/${returnWorkspaceId}`, { state: location.state });
+      return;
+    }
+    navigate("/chips");
+  }
   const [params] = useSearchParams();
   const editorRef = useRef<SqlEditorHandle>(null);
   const sqlRef = useRef("");
@@ -115,6 +133,7 @@ export function QueryPage() {
   const { connectionColumns, columnsLoading, refreshColumns } =
     useConnectionColumns(browseId, selected);
   const [picked, setPicked] = useState<string[]>([]);
+  const [editingDatabase, setEditingDatabase] = useState<string>();
   const [sql, setSql] = useState("");
   sqlRef.current = sql;
   const [delimiter, setDelimiter] = useState(",");
@@ -138,6 +157,7 @@ export function QueryPage() {
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [registerName, setRegisterName] = useState("");
+  const [registerOutputName, setRegisterOutputName] = useState("");
   const [registerBusy, setRegisterBusy] = useState(false);
   const [exportName, setExportName] = useState("");
   const [extractId, setExtractId] = useState("");
@@ -154,6 +174,54 @@ export function QueryPage() {
     h: number;
   } | null>(null);
   const [editorSize, setEditorSize] = useState<{ w: number; h: number } | null>(null);
+
+  useEffect(() => {
+    if (!editorChipId) return;
+    let cancelled = false;
+    void chipApi.get(editorChipId).then((chip) => {
+      if (cancelled) return;
+      const config = chip.config as {
+        connection_id?: unknown;
+        source?: { type?: unknown; sql?: unknown; table?: unknown; database?: unknown };
+        delimiter?: unknown;
+        header?: unknown;
+        add_sequence?: unknown;
+        output_filename?: unknown;
+      };
+      if (chip.kind !== "extract") {
+        toastError(messages.workspace.loadError);
+        leaveEditor();
+        return;
+      }
+      if (config.source?.type === "http") {
+        navigate(
+          workspaceId
+            ? `/workspace/${workspaceId}/chips/${editorChipId}/extract-api`
+            : `/chips/${editorChipId}/extract-api`,
+          { replace: true, state: location.state },
+        );
+        return;
+      }
+      const connectionId = typeof config.connection_id === "string" ? config.connection_id : "";
+      const database = typeof config.source?.database === "string" ? config.source.database : undefined;
+      const nextSql = config.source?.type === "query" && typeof config.source.sql === "string"
+        ? config.source.sql
+        : typeof config.source?.table === "string"
+          ? draftSelect(config.source.table, [])
+          : "";
+      setBrowseId(connectionId);
+      setEditingDatabase(database);
+      persistSql(nextSql);
+      setDelimiter(typeof config.delimiter === "string" ? config.delimiter : ",");
+      setHeader(config.header !== false);
+      setAddSequence(config.add_sequence === true);
+      setRegisterName(chip.name);
+      const output = typeof config.output_filename === "string" ? config.output_filename : "query.csv";
+      setRegisterOutputName(output);
+      setExportName(output.replace(/\.csv$/i, ""));
+    }).catch((reason) => toastError(messages.workspace.loadError, reason));
+    return () => { cancelled = true; };
+  }, [editorChipId, location.state, messages, navigate, workspaceId]);
   const runSeq = useRef(0);
   const toastedExtractFail = useRef("");
   const toastedExtractSuccess = useRef("");
@@ -332,6 +400,7 @@ export function QueryPage() {
       setBrowseId("");
       setSelected(null);
       setPicked([]);
+      setEditingDatabase(undefined);
       setResult(null);
       setSql("");
       sqlRef.current = "";
@@ -341,6 +410,7 @@ export function QueryPage() {
     setBrowseId(id);
     setSelected(null);
     setPicked([]);
+    setEditingDatabase(undefined);
     setResult(null);
     const saved = sqlByConnection.current[id] ?? "";
     setSql(saved);
@@ -349,6 +419,7 @@ export function QueryPage() {
 
   function onPickTable(next: CatalogSelection | null) {
     setSelected(next);
+    setEditingDatabase(next?.database);
     setPicked([]);
   }
 
@@ -376,6 +447,14 @@ export function QueryPage() {
     );
   }
 
+  const allColumnsPicked =
+    connectionColumns.length > 0 &&
+    connectionColumns.every((column) => picked.includes(column.name));
+
+  function toggleAllColumns() {
+    setPicked(allColumnsPicked ? [] : connectionColumns.map((column) => column.name));
+  }
+
   async function runQuery(previewLimit: number, openFresh: boolean) {
     if (!browseId || !sqlRef.current.trim()) return;
     const seq = ++runSeq.current;
@@ -396,7 +475,7 @@ export function QueryPage() {
         browseId,
         sqlRef.current,
         previewLimit,
-        selected?.database,
+        selected?.database ?? editingDatabase,
         logId,
       );
       if (seq !== runSeq.current) return;
@@ -421,16 +500,21 @@ export function QueryPage() {
 
   async function onExtract() {
     if (!browseId) return;
+    const dest = editingChip && workspaceId
+      ? workspaceId
+      : await workspacePick.pick(returnWorkspaceId);
+    if (!dest) return;
     setExtracting(true);
     try {
       const created = await extractApi.createExtract({
         connection_id: browseId,
         table: selected?.qualified || "query",
-        database: selected?.database,
+        database: selected?.database ?? editingDatabase,
         sql: sqlRef.current,
         delimiter,
         header,
         add_sequence: addSequence,
+        workspace_id: dest,
         ...(exportName.trim() ? { filename: exportName.trim() } : {}),
       });
       setExtractId(created.id);
@@ -443,8 +527,21 @@ export function QueryPage() {
     }
   }
 
-  function openRegister() {
-    setRegisterName(selected?.qualified || messages.workspace.untitledExtract(1));
+  async function openRegister() {
+    try {
+      const response = await chipApi.listCatalog();
+      const nextName = nextSequencedChipName(
+        response.chips,
+        messages.query.defaultChipName,
+        (chip) => chip.kind === "extract" && extractSourceType(chip) !== "http",
+      );
+      setRegisterName(nextName);
+      setRegisterOutputName(selected?.qualified?.trim() || "query");
+    } catch (err) {
+      setRegisterName(messages.query.defaultChipName(1));
+      setRegisterOutputName(selected?.qualified?.trim() || "query");
+      toastError(messages.workspace.loadError, err);
+    }
     setIsRegisterOpen(true);
   }
 
@@ -460,21 +557,56 @@ export function QueryPage() {
       await chipApi.register({
         name: registerName.trim(),
         kind: "extract",
+        output_filename: registerOutputName.trim() || selected?.qualified?.trim() || "query",
         extract: {
           connection_id: browseId,
           source: {
             type: "query",
             sql,
-            ...(selected?.database ? { database: selected.database } : {}),
+            ...((selected?.database ?? editingDatabase) ? { database: selected?.database ?? editingDatabase } : {}),
           },
           delimiter,
           header,
+          add_sequence: addSequence,
         },
       });
       setIsRegisterOpen(false);
       toastSuccess(messages.query.taskRegisteredNamed(registerName.trim()));
+      if (returnWorkspaceId) {
+        navigate(`/workspace/${returnWorkspaceId}`, { state: location.state });
+      }
     } catch (err) {
-      toastError(messages.workspace.saveChipError, err);
+      if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
+      else toastError(messages.workspace.saveChipError, err);
+    } finally {
+      setRegisterBusy(false);
+    }
+  }
+
+  async function onApplyChip() {
+    if (!editorChipId || !browseId || !sql.trim()) return;
+    setRegisterBusy(true);
+    try {
+      await chipApi.update(editorChipId, {
+        name: registerName.trim(),
+        output_filename: registerOutputName.trim() || "query",
+        extract: {
+          connection_id: browseId,
+          source: {
+            type: "query",
+            sql,
+            ...((selected?.database ?? editingDatabase) ? { database: selected?.database ?? editingDatabase } : {}),
+          },
+          delimiter,
+          header,
+          add_sequence: addSequence,
+        },
+      });
+      toastSuccess(messages.query.chipApplied);
+      leaveEditor();
+    } catch (err) {
+      if (isChipNameConflict(err)) toastError(messages.workspace.duplicateChipName);
+      else toastError(messages.workspace.saveChipError, err);
     } finally {
       setRegisterBusy(false);
     }
@@ -550,6 +682,17 @@ export function QueryPage() {
         eyebrow={messages.query.eyebrow}
         title={messages.query.title}
         description={messages.query.description}
+        actions={editingChip || returnWorkspaceId ? (
+          <Button
+            type="button"
+            variant="quiet"
+            className="gap-2"
+            onClick={leaveEditor}
+          >
+            <ArrowLeft className="size-3.5" aria-hidden="true" />
+            {returnWorkspaceId ? messages.load.returnToWorkspace : messages.chips.backToChips}
+          </Button>
+        ) : undefined}
       />
 
       <Panel tall className="overflow-hidden">
@@ -617,7 +760,32 @@ export function QueryPage() {
 
             <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.columns]}>
               <section className="flex h-full min-h-0 flex-col overflow-hidden">
-                <PaneHeader title={messages.common.columns} meta={`${connectionColumns.length}`} />
+                <PaneHeader
+                  title={messages.common.columns}
+                  meta={`${connectionColumns.length}`}
+                  actions={
+                    connectionColumns.length > 0 ? (
+                      <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-text-secondary select-none">
+                        <input
+                          className="field-control"
+                          type="checkbox"
+                          checked={allColumnsPicked}
+                          onChange={toggleAllColumns}
+                          aria-label={
+                            allColumnsPicked
+                              ? messages.query.deselectAllColumns
+                              : messages.query.selectAllColumns
+                          }
+                        />
+                        <span>
+                          {allColumnsPicked
+                            ? messages.query.deselectAllColumns
+                            : messages.query.selectAllColumns}
+                        </span>
+                      </label>
+                    ) : null
+                  }
+                />
                 <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">
                   {connectionColumns.length === 0 ? (
                     <p className="p-3 text-xs text-text-tertiary">{messages.query.columnsHint}</p>
@@ -764,7 +932,7 @@ export function QueryPage() {
         }
         footer={
           <>
-            {extractRow?.status === "succeeded" ? (
+            {!editingChip && extractRow?.status === "succeeded" ? (
               <ActionAnchor
                 variant="secondary"
                 href={extractApi.getDownloadUrl(extractRow.id)}
@@ -772,24 +940,27 @@ export function QueryPage() {
                 {messages.common.download}
               </ActionAnchor>
             ) : null}
+            {!editingChip ? (
+              <Button
+                type="button"
+                variant="primary"
+                className="gap-2"
+                disabled={!canExtract}
+                onClick={() => void onExtract()}
+              >
+                <FileDown className="size-3.5" aria-hidden="true" />
+                {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
+              </Button>
+            ) : null}
             <Button
               type="button"
-              variant="primary"
-              className="gap-2"
-              disabled={!canExtract}
-              onClick={() => void onExtract()}
-            >
-              <FileDown className="size-3.5" aria-hidden="true" />
-              {extractBusy ? messages.connectionsPage.extracting : messages.query.resultFile}
-            </Button>
-            <Button
-              type="button"
+              variant={editingChip ? "primary" : undefined}
               className="gap-2"
               disabled={!canRun || result?.kind === "exec"}
-              onClick={openRegister}
+              onClick={() => editingChip ? void onApplyChip() : void openRegister()}
             >
               <BookmarkPlus className="size-3.5" aria-hidden="true" />
-              {messages.query.registerTask}
+              {editingChip ? messages.query.applyChip : messages.query.registerTask}
             </Button>
           </>
         }
@@ -845,13 +1016,17 @@ export function QueryPage() {
                 {messages.common.addSequence}
               </label>
               <div className="flex min-w-[10rem] flex-1 items-center gap-2 text-xs text-text-secondary">
-                <span className="shrink-0">{messages.query.exportFileName}</span>
-                <input
-                  className="field-control min-w-0 flex-1 technical"
-                  value={exportName}
-                  placeholder={messages.query.exportFileNamePlaceholder}
-                  onChange={(event) => setExportName(event.target.value)}
-                />
+                {!editingChip ? (
+                  <>
+                    <span className="shrink-0">{messages.query.exportFileName}</span>
+                    <input
+                      className="field-control min-w-0 flex-1 technical"
+                      value={exportName}
+                      placeholder={messages.query.exportFileNamePlaceholder}
+                      onChange={(event) => setExportName(event.target.value)}
+                    />
+                  </>
+                ) : null}
               </div>
               <label className="ml-auto flex min-w-48 flex-1 items-center gap-2 whitespace-nowrap text-xs text-text-secondary sm:max-w-xs">
                 <span>{messages.query.search}</span>
@@ -979,6 +1154,14 @@ export function QueryPage() {
               onChange={(event) => setRegisterName(event.target.value)}
             />
           </FormField>
+          <FormField label={messages.workspace.dataFileName}>
+            <input
+              className="field-control"
+              value={registerOutputName}
+              placeholder={selected?.qualified?.trim() || "query"}
+              onChange={(event) => setRegisterOutputName(event.target.value)}
+            />
+          </FormField>
           <dl className="space-y-2 border-t border-border/60 pt-3 text-[11px] text-text-tertiary">
             <div className="flex gap-2">
               <dt className="w-14 shrink-0">{messages.workspace.connection}</dt>
@@ -1000,6 +1183,7 @@ export function QueryPage() {
         text={[queryLog, extractLog].filter(Boolean).join("\n\n")}
         onClose={() => setIsLogOpen(false)}
       />
+      <WorkspacePickDialog {...workspacePick.dialogProps} />
     </PageShell>
   );
 }

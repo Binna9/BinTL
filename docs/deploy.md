@@ -10,6 +10,7 @@ BinTL은 **설치형 단일 바이너리**다. 운영 환경에서는 `bintl` �
 - API와 정적 UI를 Axum이 함께 서빙한다.
 - SQLite(`data/etl.db`)와 파일 산출물은 `data_dir` 아래에 저장된다.
 - Rust, Python, JVM, 외부 DB 패키지를 서버에 설치하지 않는다. (SQLite는 bundled, TLS는 rustls)
+- 예외: Oracle/Tibero 커넥션은 호스트에 unixODBC(또는 Windows ODBC)와 벤더 ODBC 드라이버가 있어야 한다. 드라이버를 자동으로 못 찾으면 `config.toml`의 `[odbc]`에서 등록 이름 또는 `.so`/`.dll` 경로를 지정한다. 환경변수 `BINTL_ORACLE_ODBC_DRIVER` / `BINTL_TIBERO_ODBC_DRIVER`가 있으면 그 값이 우선한다.
 
 ```
 브라우저 ──► (선택) Nginx/Caddy ──► bintl:8080
@@ -17,7 +18,8 @@ BinTL은 **설치형 단일 바이너리**다. 운영 환경에서는 `bintl` �
                                       └─ /*      (embed UI)
                                       └─ data/
                                            ├─ etl.db
-                                           ├─ extracts/
+                                           ├─ extract_runs/
+                                           ├─ chip_outputs/
                                            ├─ outputs/
                                            └─ logs/
 ```
@@ -46,6 +48,7 @@ BinTL은 **설치형 단일 바이너리**다. 운영 환경에서는 `bintl` �
 - Node.js + npm (UI 빌드용, **서버에는 불필요**)
 - `just` (`cargo install just` 또는 패키지 매니저)
 - 크로스 컴파일 시 [cross](https://github.com/cross-rs/cross) 권장
+- Oracle/Tibero를 빌드·실행하려면 unixODBC. macOS는 `brew install unixodbc`, 리눅스는 `unixodbc-dev`. 벤더 ODBC 드라이버는 런타임에 추가로 설치한다.
 
 ```bash
 # cross 설치 (리눅스 musl 타깃 권장)
@@ -91,19 +94,17 @@ just build
 /opt/bintl/
 ├── bintl              # 실행 파일
 ├── config.toml        # 운영 설정 (저장소에 커밋하지 않음)
+├── vendor/            # 바이너리에 안 들어가는 런타임 파일. just dist가 같이 복사
+│   └── tibero/tbjdbc17-7.2.6.jar
 └── data/              # 기동 시 없으면 자동 생성
-    ├── etl.db         # SQLite (메타데이터·작업 이력)
-    ├── extracts/
-    │   ├── uploads/   # 업로드 파일
-    │   ├── databases/ # DB 추출 결과
-    │   └── api/       # API 추출 (예약)
-    ├── outputs/       # 변환(parquet 등) 결과
-    └── logs/          # 작업 진행 로그
-        ├── extracts/
-        ├── jobs/
-        ├── query/
-        ├── files/
-        └── connections/
+    ├── etl.db
+    ├── extract_runs/{uploads,databases,api}/
+    ├── chip_outputs/{workspace_id}/{chip_id}/
+    ├── outputs/       # 레거시 단독 변환
+    ├── loads/
+    ├── staging/
+    ├── user_images/   # default-image + {user_id}/ 프로필
+    └── logs/query/    # SQL 미리보기 진단. 칩 로그는 DB
 ```
 
 `data/`는 **백업 대상**이다. 바이너리 업그레이드 시 그대로 둔다.
@@ -112,7 +113,7 @@ just build
 
 ## 3. 설정 (`config.toml`)
 
-저장소의 `config.example.toml`을 복사해 운영 값으로 바꾼다.
+저장소의 `config.example.toml`을 복사해 `config.toml`로 둔다. 개발·운영 모두 이 파일을 읽고, `config.toml`은 커밋하지 않는다.
 
 ```toml
 bind = "127.0.0.1:8080"      # 역프록시 뒤면 localhost만 열기
@@ -120,11 +121,13 @@ data_dir = "/opt/bintl/data"
 max_upload_mb = 512
 max_concurrent_jobs = 2
 session_secret = "랜덤-긴-문자열"   # 반드시 변경
+# encryption_secret = "다른-랜덤-문자열"  # 선택. 없으면 session_secret과 같다
 skip_auth = false
 
-[auth]
-username = "admin"
-password = "초기-비밀번호-변경"     # 최초 기동 후 UI에서 변경 권장
+# [odbc]
+# oracle_driver = "서버 odbcinst.ini에 나온 Oracle 드라이버 이름"
+# tibero_driver = "서버 odbcinst.ini에 나온 Tibero 드라이버 이름"
+# sys_ini = "/etc"                                  # odbcinst.ini 디렉터리
 ```
 
 ### 환경 변수 (설정 파일보다 우선)
@@ -134,24 +137,26 @@ password = "초기-비밀번호-변경"     # 최초 기동 후 UI에서 변경 
 | `ETL_BIND` | bind 주소 (`0.0.0.0:8080`) |
 | `ETL_DATA_DIR` | 데이터 디렉터리 |
 | `ETL_SESSION_SECRET` | 세션 HMAC 비밀 |
-| `ETL_AUTH_USERNAME` | 부트스트랩 로그인 ID |
-| `ETL_AUTH_PASSWORD` | 부트스트랩 비밀번호 (평문) |
+| `ETL_ENCRYPTION_SECRET` | 커넥션 암호 키. 없으면 `session_secret` |
 | `ETL_SKIP_AUTH` | `true`면 API 인증 생략 (**운영 금지**) |
 | `ETL_UI_DIR` | embed 대신 이 폴더의 정적 UI 서빙 |
+| `BINTL_ORACLE_ODBC_DRIVER` | Oracle ODBC 등록 이름 또는 `.so`/`.dll` 경로. `odbc.oracle_driver`보다 우선 |
+| `BINTL_TIBERO_ODBC_DRIVER` | Tibero ODBC 등록 이름 또는 `.so`/`.dll` 경로. `odbc.tibero_driver`보다 우선 |
+| `ODBCSYSINI` | unixODBC `odbcinst.ini` 디렉터리. `odbc.sys_ini`보다 우선 |
 
 비밀 값은 systemd `EnvironmentFile`이나 시크릿 매니저로 주입하는 편이 안전하다.
 
 ```ini
 # /etc/bintl/env (권한 600)
 ETL_SESSION_SECRET=...
-ETL_AUTH_PASSWORD=...
+ETL_ENCRYPTION_SECRET=...
 ```
 
 ### 최초 기동 (부트스트랩)
 
-- `data/etl.db`에 사용자가 없으면 `[auth]` 계정으로 admin 사용자를 만들고 admin 역할을 붙인다.
-- 기본 작업 공간이 없으면 함께 생성한다.
-- 이후 사용자·역할·권한은 UI `/settings` 또는 API로 관리한다.
+- `data/etl.db`에 사용자가 없으면 `admin` / `admin` 계정을 만들고 admin 역할을 붙인다. 비밀번호는 Argon2로 저장한다.
+- 기본 작업 공간이 없으면 함께 만들고, 있으면 그 계정 소유로 붙인다.
+- 기동 후 UI에서 비밀번호를 바꾼다. 이후 사용자·역할·권한은 `/settings` 또는 API로 관리한다.
 
 ---
 
@@ -298,8 +303,8 @@ DB 스키마는 기동 시 `crates/storage/migrations/`가 자동 적용된다. 
 | 대상 | 내용 | 주기 |
 | --- | --- | --- |
 | `data/etl.db` | 사용자, 작업 공간, 커넥션 메타, 실행 이력 | 매일 이상 |
-| `data/extracts/` | 업로드·추출 파일 | 용량에 따라 |
-| `data/outputs/` | 변환 결과 | 용량에 따라 |
+| `data/extract_runs/`, `data/chip_outputs/` | 업로드·추출·칩 최신 출력 | 용량에 따라 |
+| `data/outputs/`, `data/loads/` | 레거시 변환·파일 적재 | 용량에 따라 |
 | `config.toml` / `/etc/bintl/env` | bind, 비밀 (별도 안전 저장) | 변경 시 |
 
 SQLite 일관 백업 (서비스 중):
@@ -310,7 +315,7 @@ sqlite3 /opt/bintl/data/etl.db ".backup '/backup/etl-$(date +%F).db'"
 
 또는 서비스 중지 후 `etl.db` 파일 복사.
 
-복구: 백업 `data/`를 `/opt/bintl/data`에 복원 후 동일 `session_secret`을 유지한다. `session_secret`을 바꾸면 기존 세션 쿠키가 무효화된다.
+복구: 백업 `data/`를 `/opt/bintl/data`에 복원 후 동일 `encryption_secret`(또는 예전에 쓰던 `session_secret`)을 유지한다. `session_secret`만 바꾸면 세션 쿠키가 무효화되고, 암호 키를 바꾸면 저장된 커넥션 비밀번호를 복호화하지 못한다.
 
 ---
 
@@ -319,7 +324,7 @@ sqlite3 /opt/bintl/data/etl.db ".backup '/backup/etl-$(date +%F).db'"
 | 설정 | 영향 |
 | --- | --- |
 | `max_upload_mb` | 단일 업로드 상한. Nginx `client_max_body_size`와 맞출 것 |
-| `max_concurrent_jobs` | 동시 변환·추출 워커 수. CPU·메모리에 맞게 조정 |
+| `max_concurrent_jobs` | 동시에 도는 추출·변환·적재·칩 워커 수. CPU·메모리에 맞게 조정 |
 | `data_dir` 디스크 | 추출·변환 산출물이 누적됨. 모니터링 필요 |
 
 변환·추출은 내부 워커(`spawn_blocking`)에서 실행된다. 대용량 작업 시 서버 RAM과 디스크 I/O를 고려한다.
@@ -349,6 +354,7 @@ sqlite3 /opt/bintl/data/etl.db ".backup '/backup/etl-$(date +%F).db'"
 | `session_secret is empty` | 설정 또는 `ETL_SESSION_SECRET` 누락 |
 | 업로드 413 | `max_upload_mb`, Nginx `client_max_body_size` |
 | 로그인 안 됨 | `skip_auth`, 쿠키(도메인·HTTPS), `session_secret` 변경 여부 |
+| Oracle/Tibero `no … ODBC driver found` | `[odbc]`의 `oracle_driver` / `tibero_driver`에 등록 이름 또는 `.so` 경로. `odbcinst.ini`가 `/etc`가 아니면 `sys_ini` |
 | 마이그레이션 오류 | `journalctl -u bintl`, `data/etl.db` 권한·손상 여부 |
 
 로그 레벨: `RUST_LOG=info` (기본). 상세 디버그는 `RUST_LOG=debug,bintl=trace`.

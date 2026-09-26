@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -5,14 +6,63 @@ use connectors::{
     extract_http, extract_query, extract_table, parse_delimiter, parse_http_spec, with_database,
     ExtractOptions,
 };
-use storage::{chip_slot, ProcessLog, Store, LOG_EXTRACTS};
+use storage::{chip_slot, Store};
 
-pub fn spawn(store: Store, id: String) {
-    tokio::spawn(async move {
-        if let Err(err) = run(&store, &id).await {
-            tracing::error!(id, %err, "extract failed");
+struct ExtractDest {
+    filename: String,
+    final_rel: String,
+    write_path: PathBuf,
+    staging: Option<chip_slot::StagingFile>,
+}
+
+impl ExtractDest {
+    async fn prepare(store: &Store, row: &storage::ExtractRow) -> Result<Self, String> {
+        let (filename, final_rel) = resolve_extract_dest(store, row).await?;
+        let write_rel = chip_slot::write_rel(&final_rel, &row.id).map_err(|e| e.to_string())?;
+        let write_path = store.resolve(&write_rel);
+        if let Some(parent) = write_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| e.to_string())?;
         }
-    });
+        let staging =
+            (write_rel != final_rel).then(|| chip_slot::StagingFile::new(write_path.clone()));
+        Ok(Self {
+            filename,
+            final_rel,
+            write_path,
+            staging,
+        })
+    }
+
+    fn commit(mut self, store: &Store) -> Result<(String, String), String> {
+        if let Some(staging) = self.staging.as_mut() {
+            chip_slot::publish(staging.path(), &store.resolve(&self.final_rel))
+                .map_err(|e| e.to_string())?;
+            staging.keep();
+        }
+        Ok((self.filename, self.final_rel))
+    }
+}
+
+async fn append_extract_log(
+    store: &Store,
+    id: &str,
+    level: &str,
+    event_type: &str,
+    message: &str,
+    context: Option<&str>,
+) {
+    let _ = store
+        .append_execution_log(id, level, event_type, message, context)
+        .await;
+    if let Ok(Some(link)) = store.linked_chip_run_for_extract(id).await {
+        if link.run_id != id {
+            let _ = store
+                .append_execution_log(&link.run_id, level, event_type, message, context)
+                .await;
+        }
+    }
 }
 
 pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
@@ -28,50 +78,91 @@ pub(crate) async fn run(store: &Store, id: &str) -> Result<(), String> {
         .set_extract_running(id)
         .await
         .map_err(|e| e.to_string())?;
-    let log = ProcessLog::create(&store.data_dir, LOG_EXTRACTS, id).ok();
-    if let Some(log) = &log {
-        let source = if row.kind == "api" {
-            row.sql_text
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .map(|sql| format!("http={}", truncate(sql, 240)))
-                .unwrap_or_else(|| format!("http={}", row.table_name))
-        } else {
-            row.sql_text
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .map(|sql| format!("sql={}", truncate(sql, 240)))
-                .unwrap_or_else(|| format!("table={}", row.table_name))
-        };
-        log.write(
-            "info",
-            "started",
-            &format!(
-                "{source} delimiter={} header={} sequence={}",
-                row.delimiter,
-                row.header != 0,
-                row.add_sequence != 0
-            ),
-        );
+    if store.step_is_canceled(id).await.unwrap_or(false) {
+        return Err("canceled".into());
     }
-    if let Err(err) = extract_now(store, &row, log.as_ref()).await {
-        if let Some(log) = &log {
-            log.write("error", "failed", &err);
-        }
-        let _ = store.set_extract_failed(id, &err).await;
+    let started_context = serde_json::json!({
+        "process": "extract",
+        "stage": "read_source",
+        "extract_kind": row.kind,
+        "connection_id": row.connection_id,
+        "table": row.table_name,
+        "delimiter": row.delimiter,
+        "has_header": row.header != 0,
+        "add_sequence": row.add_sequence != 0,
+    })
+    .to_string();
+    append_extract_log(
+        store,
+        id,
+        "info",
+        "extract_started",
+        "추출을 시작했습니다.",
+        Some(&started_context),
+    )
+    .await;
+    let result = tokio::select! {
+        _ = store.wait_until_step_canceled(id) => Err("canceled".into()),
+        result = extract_now(store, &row) => result,
+    };
+    if store.step_is_canceled(id).await.unwrap_or(false) {
+        append_extract_log(
+            store,
+            id,
+            "info",
+            "extract_canceled",
+            storage::EXECUTION_CANCELED_MESSAGE,
+            None,
+        )
+        .await;
+        return Err("canceled".into());
+    }
+    if let Err(err) = result {
+        let failure = crate::execution_error::classify("extract", &err);
+        let context = crate::execution_error::failure_context("extract", &err).to_string();
+        let diagnostic = context
+            .parse::<serde_json::Value>()
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("diagnostic")
+                    .and_then(|item| item.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| err.chars().take(8 * 1_024).collect());
+        let message = if diagnostic.is_empty() || diagnostic == failure.message {
+            failure.message.to_string()
+        } else {
+            format!("{} 원인: {}", failure.message, diagnostic)
+        };
+        let _ = store.set_extract_failed(id, failure.message).await;
+        append_extract_log(
+            store,
+            id,
+            "error",
+            "extract_failed",
+            &message,
+            Some(&context),
+        )
+        .await;
         return Err(err);
     }
+    append_extract_log(
+        store,
+        id,
+        "info",
+        "extract_succeeded",
+        "추출이 완료되었습니다.",
+        None,
+    )
+    .await;
     Ok(())
 }
 
-async fn extract_now(
-    store: &Store,
-    row: &storage::ExtractRow,
-    log: Option<&ProcessLog>,
-) -> Result<(), String> {
+async fn extract_now(store: &Store, row: &storage::ExtractRow) -> Result<(), String> {
     match row.kind.as_str() {
-        "api" => extract_api_now(store, row, log).await,
-        "database" => extract_database_now(store, row, log).await,
+        "api" => extract_api_now(store, row).await,
+        "database" => extract_database_now(store, row).await,
         other => Err(format!("unsupported extract kind: {other}")),
     }
 }
@@ -93,7 +184,11 @@ async fn resolve_extract_dest(
         let slot_file = chip_slot::slot_file_name("extract", &row.delimiter);
         let rel = chip_slot::stored_rel(&link.workspace_id, &link.chip_id, &slot_file)
             .map_err(|e| e.to_string())?;
-        let filename = chip_slot::display_filename(&chip.name, "extract", &row.delimiter);
+        let filename = store
+            .output_contract_filename(&link.workspace_id, &link.chip_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| chip_slot::display_filename(&chip.name, "extract", &row.delimiter));
         return Ok((filename, rel));
     }
     if let Some(requested) = row
@@ -104,19 +199,15 @@ async fn resolve_extract_dest(
     {
         let filename =
             chip_slot::standalone_export_filename(Some(requested), &row.table_name, &row.delimiter);
-        let rel = Store::extract_named_rel(&row.kind, &row.id, &filename)
-            .map_err(|e| e.to_string())?;
+        let rel =
+            Store::extract_named_rel(&row.kind, &row.id, &filename).map_err(|e| e.to_string())?;
         return Ok((filename, rel));
     }
     Store::extract_file_rel(&row.kind, &row.id, &row.table_name, &row.delimiter)
         .map_err(|e| e.to_string())
 }
 
-async fn extract_api_now(
-    store: &Store,
-    row: &storage::ExtractRow,
-    log: Option<&ProcessLog>,
-) -> Result<(), String> {
+async fn extract_api_now(store: &Store, row: &storage::ExtractRow) -> Result<(), String> {
     let live = store
         .live_connection(&row.connection_id)
         .await
@@ -134,16 +225,6 @@ async fn extract_api_now(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "api extract needs http source json".to_string())?;
     let spec = parse_http_spec(raw).map_err(|e| e.to_string())?;
-    if let Some(log) = log {
-        log.write(
-            "info",
-            "connected",
-            &format!(
-                "driver={} base={} name={} method={} path={}",
-                live.driver, live.host, live.name, spec.method, spec.path
-            ),
-        );
-    }
     let delimiter = parse_delimiter(&row.delimiter).map_err(|e| e.to_string())?;
     let opts = ExtractOptions {
         delimiter,
@@ -151,21 +232,13 @@ async fn extract_api_now(
         quote: b'"',
         add_sequence: row.add_sequence != 0,
     };
-    let (filename, rel) = resolve_extract_dest(store, row).await?;
-    let dest = store.resolve(&rel);
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    let progress = ExtractProgress::new(store.clone(), row.id.clone(), log.cloned());
+    let dest = ExtractDest::prepare(store, row).await?;
+    let progress = ExtractProgress::new(store.clone(), row.id.clone());
     let on_progress = |n: u64| progress.report(n);
-    let n = extract_http(&live, &spec, &dest, &opts, Some(&on_progress))
+    let n = extract_http(&live, &spec, &dest.write_path, &opts, Some(&on_progress))
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(log) = log {
-        log.write("info", "succeeded", &format!("rows={n} file={rel}"));
-    }
+    let (filename, rel) = dest.commit(store)?;
     store
         .set_extract_succeeded(&row.id, &rel, &filename, n as i64)
         .await
@@ -173,26 +246,12 @@ async fn extract_api_now(
     Ok(())
 }
 
-async fn extract_database_now(
-    store: &Store,
-    row: &storage::ExtractRow,
-    log: Option<&ProcessLog>,
-) -> Result<(), String> {
+async fn extract_database_now(store: &Store, row: &storage::ExtractRow) -> Result<(), String> {
     let live = store
         .live_connection(&row.connection_id)
         .await
         .map_err(|e| e.to_string())?;
     let live = with_database(&live, row.catalog_database.as_deref());
-    if let Some(log) = log {
-        log.write(
-            "info",
-            "connected",
-            &format!(
-                "driver={} database={} name={}",
-                live.driver, live.database, live.name
-            ),
-        );
-    }
     let delimiter = parse_delimiter(&row.delimiter).map_err(|e| e.to_string())?;
     let opts = ExtractOptions {
         delimiter,
@@ -200,27 +259,25 @@ async fn extract_database_now(
         quote: b'"',
         add_sequence: row.add_sequence != 0,
     };
-    let (filename, rel) = resolve_extract_dest(store, row).await?;
-    let dest = store.resolve(&rel);
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    let progress = ExtractProgress::new(store.clone(), row.id.clone(), log.cloned());
+    let dest = ExtractDest::prepare(store, row).await?;
+    let progress = ExtractProgress::new(store.clone(), row.id.clone());
     let on_progress = |n: u64| progress.report(n);
     let n = if let Some(sql) = row.sql_text.as_deref().filter(|s| !s.trim().is_empty()) {
-        extract_query(&live, sql, &dest, &opts, Some(&on_progress))
+        extract_query(&live, sql, &dest.write_path, &opts, Some(&on_progress))
             .await
             .map_err(|e| e.to_string())?
     } else {
-        extract_table(&live, &row.table_name, &dest, &opts, Some(&on_progress))
-            .await
-            .map_err(|e| e.to_string())?
+        extract_table(
+            &live,
+            &row.table_name,
+            &dest.write_path,
+            &opts,
+            Some(&on_progress),
+        )
+        .await
+        .map_err(|e| e.to_string())?
     };
-    if let Some(log) = log {
-        log.write("info", "succeeded", &format!("rows={n} file={rel}"));
-    }
+    let (filename, rel) = dest.commit(store)?;
     store
         .set_extract_succeeded(&row.id, &rel, &filename, n as i64)
         .await
@@ -231,24 +288,19 @@ async fn extract_database_now(
 struct ExtractProgress {
     store: Store,
     id: String,
-    log: Option<ProcessLog>,
     last_db: Mutex<Instant>,
 }
 
 impl ExtractProgress {
-    fn new(store: Store, id: String, log: Option<ProcessLog>) -> Self {
+    fn new(store: Store, id: String) -> Self {
         Self {
             store,
             id,
-            log,
             last_db: Mutex::new(Instant::now() - Duration::from_secs(10)),
         }
     }
 
     fn report(&self, n: u64) {
-        if let Some(log) = &self.log {
-            log.write("info", "writing", &format!("rows={n}"));
-        }
         let mut last = match self.last_db.lock() {
             Ok(guard) => guard,
             Err(_) => return,
@@ -262,15 +314,21 @@ impl ExtractProgress {
         let id = self.id.clone();
         tokio::spawn(async move {
             let _ = store.set_extract_progress(&id, n as i64).await;
+            let context = serde_json::json!({
+                "process": "extract",
+                "stage": "write_output",
+                "rows_written": n,
+            })
+            .to_string();
+            append_extract_log(
+                &store,
+                &id,
+                "info",
+                "extract_progress",
+                &format!("{n}개 행을 추출했습니다."),
+                Some(&context),
+            )
+            .await;
         });
     }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    let compact = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() <= max {
-        return compact;
-    }
-    let cut: String = compact.chars().take(max).collect();
-    format!("{cut}…")
 }

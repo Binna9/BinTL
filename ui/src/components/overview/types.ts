@@ -1,7 +1,5 @@
-import type { ExtractRecord } from "@/types/extract";
-import type { EtlJob } from "@/types/job";
+import type { ChipKind } from "@/types/chip";
 import type { SystemHealth } from "@/types/system";
-import type { DayPoint } from "@/lib/overview";
 
 export const WIDGET_IDS = [
   "summary",
@@ -24,9 +22,19 @@ export type WidgetLayout = {
   visible: boolean;
 };
 
+export type SummaryScope = "chip" | "workspace";
+export type AssetScope = "mine" | "shared";
+
+export type AssetCounts = {
+  workspaces: number;
+  chips: number;
+  datasets: number;
+  connections: number;
+};
+
 export type FeedItem = {
   id: string;
-  kind: "extract" | "transform";
+  kind: ChipKind;
   title: string;
   status: string;
   at: string;
@@ -34,24 +42,36 @@ export type FeedItem = {
   error: string | null;
 };
 
-export type DashboardModel = {
-  systemHealth: SystemHealth | null;
-  recentJobs: EtlJob[];
-  recentExtracts: ExtractRecord[];
-  workspaceCount: number;
-  activeChipCount: number;
-  datasetCount: number;
-  connectionCount: number;
+export type OpsStats = {
   running: number;
   queued: number;
   succeeded: number;
   failed: number;
   active: number;
   bar: number;
-  days: DayPoint[];
+};
+
+export type DashboardModel = {
+  systemHealth: SystemHealth | null;
+  mineAssets: AssetCounts;
+  sharedAssets: AssetCounts;
+  chipOps: OpsStats;
+  workspaceOps: OpsStats;
+  trendRuns: { kind: ChipKind; created_at: string }[];
   feed: FeedItem[];
   attention: FeedItem[];
+  extractCount: number;
+  transformCount: number;
+  loadCount: number;
+  sqlCount: number;
+  validationCount: number;
+  serveCount: number;
+  scriptCount: number;
   extractRate: number | null;
   transformRate: number | null;
-  funnelMax: number;
+  loadRate: number | null;
+  sqlRate: number | null;
+  validationRate: number | null;
+  serveRate: number | null;
+  scriptRate: number | null;
 };

@@ -1,0 +1,22 @@
+---
+description: UI 변경 시 라이트 모드와 다크 모드를 함께 지원
+globs: ui/src/**/*.{ts,tsx,css}
+alwaysApply: false
+---
+
+# UI 색상 테마
+
+- UI를 추가하거나 수정할 때 라이트 모드와 다크 모드 모두에서 읽기 쉽고 구분되도록 구현한다.
+- 색상은 `styles.css`의 의미 기반 토큰을 사용한다: `surface`, `workspace`, `raised`, `subtle`, `text`, `text-secondary`, `text-tertiary`, `border`, `accent`, `success`, `warning`, `danger`.
+- `bg-white`, `text-black`, `border-gray-*` 또는 임의의 HEX 색상을 일반 UI에 직접 사용하지 않는다.
+- 기존 의미 기반 토큰으로 표현할 수 없을 때는 컴포넌트에 모드별 색상을 반복하지 말고 `styles.css`에 라이트/다크 토큰을 먼저 추가한다.
+- 코드 편집기, 로그 패널, 브랜드 그래픽처럼 의도적으로 고정된 색상은 두 모드에서 대비가 충분한 경우에만 예외로 허용한다.
+- hover, focus, active, disabled, selected, success, warning, error 상태도 두 테마에서 식별 가능해야 한다.
+
+```tsx
+// 권장
+<section className="border-border bg-surface text-text" />
+
+// 금지
+<section className="border-gray-200 bg-white text-black" />
+```

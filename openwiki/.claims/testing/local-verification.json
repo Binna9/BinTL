@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:10ecb4ecd15565ccd8789015a91f5a82d539b32f3e6692cab5e9f017c0d01f88",
+  "claims": [
+    {
+      "id": "claim_9297bafb94994dada0a5ee22c8ecebb5",
+      "statement": "코드 변경 검증은 cargo test --workspace와 UI npm run build(tsc --noEmit + vite build)이며, DB 변경은 새 마이그레이션으로만 한다.",
+      "evidence": [
+        {
+          "resource": "repo://docs/architecture.md#L89-L95",
+          "version": "repo-lines-v1:sha256:516bb73cca1f6f27f65fbabd0666ae3a4d65961aab9bbcaa8d6cdd13ebc9eb8a:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzMxM2I5ZjcxY2NiNDY5NzQwNDIzOWFkMzM1YzU3MWNjNmJlM2Q4ZWFkNWEzZDk3YTY4ODg0M2EwNGExZDIyYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmI2NjQ1MGY2ZTY2YmVhM2E2NDMyYTZiZDY5YTcxY2FiYTA0ZmIyMTBkZjg0MDM4YjcyM2I0ZDM3MzM0NjhjYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        },
+        {
+          "resource": "repo://justfile#L17-L21",
+          "version": "repo-lines-v1:sha256:1e889456ff0bb237e695edb2c3ee5b518e965c9254e0d9ff24f9daa17ccde0e3:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmQzYWI0MTRlYTNlOWFjOWRiYjAzNTY3NTJiOTczYWI1Y2Y1YTM4NDJiNjZhODc5MTgzNTEwOWE5NThiYTYzZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWJiMmY4MTMzNmYwNTE4NmYxZWI5YmQwYTUyOTE3ODM1ZWMwMmZlMGQ0ZmEzMDk1ZWMxMmVlNmY5NjU2MDdmZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjhlOTEwYTBlZjRiZTAxYmNiYzdiYmQ1YWJiODhjMjkxMDU4ZWY1NzRkMDg4OWQzODAwMGUzNGIzMGRmMDkxYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        },
+        {
+          "resource": "repo://ui/package.json#L6-L9",
+          "version": "repo-lines-v1:sha256:137750de05e69e21d53843edd287c80f0f32a5730b561895a4cf855d09868160:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzQ4MzNkNTk0OWMwM2E0MGNhOTUyNDkxNjEwYTY2NTk2NDRiM2FhNDY2MzYyZjc5OTAyMGRiZjE5ODE1NDdkYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2FkYjc5Zjk3ZTU2Y2M3MTA4MDg2ZWYwY2Y1Y2MzOTNmNWRkNzBmYWI4Njg5ODE5ZDc1ZDNlMjE4ZWI1ODhmYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDFmYTFmYjNiZmI4MmQ0MGM4ODI3MmI2NjIwNTdlNmEzZDUzODlmMDQ1ZjIyMGY1OTRhNDIyZTdlZGJhNDI0ZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGRhOTFlYjY4ZWRjNWE5MmNiNzU5NjI4OTNjYmI4MGUyMWM2ODJiNjNkYjg0ZDhkOTZkMDFlZDA0YzM4N2FkZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_0de7cc218e0e4d85ab374d132a2f0388",
+      "statement": "workspace_execution 테스트는 사전 검증이 큐에 아무것도 넣지 않는 것, 최신 출력 슬롯 사용, 레시피 고정, 조건 건너뜀이 on_error를 켜지 않는 것을 잠근다.",
+      "evidence": [
+        {
+          "resource": "repo://crates/server/src/chip/workspace_execution/tests.rs#L206-L266",
+          "version": "repo-lines-v1:sha256:85b952fba124764b7fa2805d764eab054b94d3ba3416b98fd62d891514654240:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5OTkyYzkwNzg4MTQyNTZmZjE5NWM2MDgzOTAxMGVhM2M0NzViYjM4ZWJhYjE0Y2JkZDc4N2JjZmY3MjRiYTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxNGI2OTI5MTEzNzc4NzVjNGZjMTBmYTExODZlZjdkZDMxZWE3Y2MxYmYzMDc0NDEwNWQyNTY0YTBjNDNmZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3NzJlOTI3NWNiNmEyNGZmYTg5NTJjY2E3N2U2YTRhNWEyYWRlNjNjZWQ0MzUxYzZiYzU4NjBhYWZlNTIyZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNiNTkyOWM5NTI1MmNjYjczMjdmMDg4ZDM2YzFmNDk3Yzc3YzMxMmViN2Q4NTJiNmY4ZTk5NjFjY2E5YTM0ZDkifQ"
+        },
+        {
+          "resource": "repo://crates/server/src/chip/workspace_execution/tests.rs#L354-L457",
+          "version": "repo-lines-v1:sha256:e1bad68cf64967c66d9f9d36ebcfe08fefdd57af730b039818f3fa0ba0528fa9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNTFhZmRiZmQ5NGM1ZWE5MTNkYjM0MDNjOWUxMGQwMmRhNjk2YTNiYjI0NTI4MjViYThjYWFlM2Y4M2QzMGY4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMTFhYjAyYWVlM2M4NGM2YTc4MTU4ZTVhMmFhMzkwMTE2NzIxOTE0YmIzNmJlYzYyMGE5NmRhNDcwYzhkYTIwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NzcyZTkyNzVjYjZhMjRmZmE4OTUyY2NhNzdlNmE0YTVhMmFkZTYzY2VkNDM1MWM2YmM1ODYwYWFmZTUyMmQxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3NTFlMjFjODdjNzhmYzBhNmEwZWZjMDI5NWRkZDFjYWY2YWQyNTVjNTM2OWZjNGNjNTRlMmI5Mjc3MDk2ZjVjIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_8902a16ebbf24fe58db4b3cb9a368946",
+      "statement": "로컬 수락은 health 기동과 /workspace에서 extract를 두 번 실행해 정의는 하나·이력은 매번 새로 남는지 확인하는 흐름이다.",
+      "evidence": [
+        {
+          "resource": "repo://README.md#L13-L28",
+          "version": "repo-lines-v1:sha256:168966caeb62dbf8e5069a07bfaf58333c220e8ec824d699399a0e4abd118711:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhNDYzYmQyMTRhN2M4ODlmN2RhZDczNzY1YThlYTg4OWQ2ZGJkZTEyNjE4NGZhNjBkZDg5YjkzYjFhNGMyMTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMTE2YmRhNGM1YTE4MDE5ZWU0MDcxZDdiMzRmY2Q1ZmNkMTIxYTUxYjgyZDI2Yzg3MmNiZWRkMmI4NzJhNDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlZDUwZmM0YWZiYWM0ZDA3MjJkNjBiOTJkOTA3OGY5NDQ4ZWY1YWRhMWUxNWNjNTFmMTZjMmUzMTU0YThhZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3MzRiZDUxMGU1ODExZjY3ODJiMGM2MjVhZWM2ZjY2ZGFmNDVkYzhlNDYxOTk3ODJmNTliZTZhZmY1ZjcxODYifQ"
+        },
+        {
+          "resource": "repo://README.md#L76-L82",
+          "version": "repo-lines-v1:sha256:a7ebc9d023f4f661a33bda3834ef788ad28b75395e4419f6dd65ff13f99a8046:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWM4MGZhMzdhNjFkNTIyNDhjMGUyMmU3ZTI1MGJhZDU0OGRjOTVkOTFkNDU5MWMxZWRiNmMxYTE5NTE2ZmQwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjVmNzhlYzJmMjYzOWJjZWI4NzA3ZmE4YTE3NTUzYTE1NzE2YjZhMTQxODYzNGQ1NDBhMjJiZDBlMDQ4NGEzOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzc4Nzg3MWI5YmIzZTAyM2Q2ZmY0MWRhZjcxM2EyZWVhMTE1ZGRmY2Q5NzI4NTU0Yzk1YzIyMGIyNGY1YmFhZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTZmMzQwNjQ2NGIyY2JjY2M3OTI0ZTgzZjNjMjkxYjZkZWFjOGM2YTVjNDdkMTcxY2Q1NGM3ZDlkYzJkNjFhOCJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-13T03:59:15.080Z"
+  }
+}

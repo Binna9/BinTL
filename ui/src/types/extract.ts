@@ -18,6 +18,7 @@ export interface ExtractRecord {
   started_at: string | null;
   finished_at: string | null;
   sql_text?: string | null;
+  workspace_id: string;
 }
 
 export interface HttpKv {
@@ -53,6 +54,7 @@ export interface CreateExtractRequest {
   add_sequence?: boolean;
   database?: string;
   filename?: string;
+  workspace_id?: string;
 }
 
 export interface HttpPreviewRequest {
@@ -75,9 +77,11 @@ export interface HttpPreviewRequest {
 
 export interface HttpPreviewResponse {
   status: number;
+  response: unknown;
   columns: string[];
   rows: string[][];
   row_count: number;
   truncated: boolean;
+  conversion_error?: string | null;
   limit: number;
 }

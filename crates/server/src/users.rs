@@ -1,5 +1,7 @@
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -13,7 +15,10 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/me", get(me))
+        .route("/api/me/profile", axum::routing::patch(update_profile))
+        .route("/api/me/password", axum::routing::patch(change_password))
         .route("/api/users", get(list_users).post(create_user))
+        .route("/api/users/{id}/avatar", get(user_avatar))
         .route("/api/users/{id}", axum::routing::patch(update_user))
         .route("/api/roles", get(list_roles))
         .route("/api/permissions", get(list_permissions))
@@ -36,11 +41,24 @@ struct PatchUserBody {
     active: Option<bool>,
 }
 
+#[derive(Deserialize)]
+struct ChangePasswordBody {
+    current_password: String,
+    new_password: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateProfileBody {
+    username: String,
+    avatar_data_url: Option<String>,
+}
+
 pub fn user_json(row: &UserRow) -> Value {
     json!({
         "id": row.id,
         "userid": row.userid,
         "username": row.username,
+        "avatar_data_url": storage::Store::user_avatar_url(&row.id, &row.updated_at),
         "active": row.active != 0,
         "roles": row.roles,
         "permissions": row.permissions,
@@ -51,6 +69,80 @@ pub fn user_json(row: &UserRow) -> Value {
 
 async fn me(user: CurrentUser) -> Json<Value> {
     Json(user_json(&user.0))
+}
+
+async fn update_profile(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<UpdateProfileBody>,
+) -> Result<Json<Value>, AppError> {
+    let avatar_path = match body
+        .avatar_data_url
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        Some(avatar) if avatar.starts_with("data:image/") => Some(
+            state
+                .store
+                .save_user_avatar_data_url(&user.0.id, avatar)
+                .await?,
+        ),
+        _ => None,
+    };
+    let updated = state
+        .store
+        .update_user_profile(&user.0.id, &body.username, avatar_path.as_deref())
+        .await?;
+    Ok(Json(user_json(&updated)))
+}
+
+async fn user_avatar(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let row = state
+        .store
+        .get_user(&id)
+        .await?
+        .ok_or_else(|| AppError::not_found("user not found"))?;
+    let (bytes, content_type) = state
+        .store
+        .read_avatar_bytes(row.avatar_data_url.as_deref())
+        .await?;
+    Ok((
+        [
+            (CONTENT_TYPE, HeaderValue::from_static(content_type)),
+            (
+                CACHE_CONTROL,
+                HeaderValue::from_static("private, max-age=0, must-revalidate"),
+            ),
+        ],
+        bytes,
+    ))
+}
+
+async fn change_password(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<ChangePasswordBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.new_password.trim().len() < 8 {
+        return Err(AppError::bad("new password must be at least 8 characters"));
+    }
+    if state
+        .store
+        .authenticate(&user.0.userid, &body.current_password)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::bad("current password is incorrect"));
+    }
+    state
+        .store
+        .update_user(&user.0.id, None, Some(&body.new_password), None, None)
+        .await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn list_users(

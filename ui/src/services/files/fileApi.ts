@@ -1,9 +1,10 @@
-import { httpRequest } from "@/services/httpClient";
+import { HttpError, httpNdjson, httpRequest } from "@/services/httpClient";
 import type {
   CommitWorkbookResponse,
   FilePreview,
   StagedWorkbook,
   StoredFile,
+  WorkbookCommitProgress,
   WorkbookSheetSelection,
 } from "@/types/file";
 
@@ -11,12 +12,17 @@ interface FileListResponse {
   files: StoredFile[];
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
 export const fileApi = {
   getFiles: () => httpRequest<FileListResponse>("/api/files"),
-  uploadFile: (file: File, filename?: string) => {
+  uploadFile: (file: File, filename?: string, workspaceId?: string) => {
     const body = new FormData();
     const name = filename?.trim();
     if (name) body.append("filename", name);
+    if (workspaceId?.trim()) body.append("workspace_id", workspaceId.trim());
     body.append("file", file);
     return httpRequest<StoredFile>("/api/files", { method: "POST", body });
   },
@@ -28,21 +34,62 @@ export const fileApi = {
       body,
     });
   },
-  commitWorkbook: (
+  commitWorkbook: async (
     stagingId: string,
     sheets: WorkbookSheetSelection[],
-    options?: { delimiter?: string; header?: boolean; addSequence?: boolean },
-  ) =>
-    httpRequest<CommitWorkbookResponse>("/api/files/commit", {
-      method: "POST",
-      body: JSON.stringify({
-        staging_id: stagingId,
-        sheets,
-        delimiter: options?.delimiter?.trim() || ",",
-        header: options?.header ?? true,
-        add_sequence: options?.addSequence ?? false,
-      }),
-    }),
+    options?: {
+      delimiter?: string;
+      header?: boolean;
+      addSequence?: boolean;
+      workspaceId?: string;
+      onProgress?: (progress: WorkbookCommitProgress) => void;
+    },
+  ) => {
+    let result: CommitWorkbookResponse | undefined;
+    await httpNdjson(
+      "/api/files/commit",
+      {
+        method: "POST",
+        immediate: true,
+        body: JSON.stringify({
+          staging_id: stagingId,
+          sheets,
+          delimiter: options?.delimiter?.trim() || ",",
+          header: options?.header ?? true,
+          add_sequence: options?.addSequence ?? false,
+          ...(options?.workspaceId?.trim() ? { workspace_id: options.workspaceId.trim() } : {}),
+        }),
+      },
+      (event) => {
+        const data = asRecord(event);
+        if (!data) return;
+        const type = data.type;
+        if (type === "progress") {
+          options?.onProgress?.({
+            current: typeof data.current === "number" ? data.current : 0,
+            total: typeof data.total === "number" ? data.total : sheets.length,
+            name: typeof data.name === "string" ? data.name : "",
+          });
+          return;
+        }
+        if (type === "error") {
+          throw new HttpError(
+            400,
+            typeof data.error === "string" ? data.error : "workbook commit failed",
+          );
+        }
+        if (type === "done" || Array.isArray(data.files)) {
+          result = {
+            files: Array.isArray(data.files) ? (data.files as StoredFile[]) : [],
+          };
+        }
+      },
+    );
+    if (!result) {
+      throw new HttpError(500, "workbook commit produced no result");
+    }
+    return result;
+  },
   cancelWorkbook: (stagingId: string) =>
     httpRequest<void>(`/api/files/stage/${stagingId}`, { method: "DELETE" }),
   deleteFile: (id: string) =>

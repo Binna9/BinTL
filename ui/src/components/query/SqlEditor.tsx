@@ -37,6 +37,9 @@ function sqlDialect(driver?: string) {
     case "redshift":
     case "cockroach":
       return PostgreSQL;
+    case "oracle":
+    case "tibero":
+      return StandardSQL;
     default:
       return StandardSQL;
   }
