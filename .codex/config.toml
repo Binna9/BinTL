@@ -1,7 +1,0 @@
-[mcp_servers.openwiki]
-command = "openwiki"
-args = [
-    "mcp",
-    "--host",
-    "cursor",
-]
