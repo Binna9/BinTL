@@ -84,6 +84,8 @@ identity에 해당하는 빈 스텝 spec: `{ "version": 2, "steps": [], "sink": 
 ```
 bintl
 config.toml
+vendor/        # 바이너리에 안 들어가는 런타임. just dist가 같이 복사
+  tibero/tbjdbc17-7.2.6.jar
 data/          # 없으면 기동 시 생성
   etl.db
   extract_runs/{uploads,databases,api}/

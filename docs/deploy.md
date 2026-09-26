@@ -94,6 +94,8 @@ just build
 /opt/bintl/
 ├── bintl              # 실행 파일
 ├── config.toml        # 운영 설정 (저장소에 커밋하지 않음)
+├── vendor/            # 바이너리에 안 들어가는 런타임 파일. just dist가 같이 복사
+│   └── tibero/tbjdbc17-7.2.6.jar
 └── data/              # 기동 시 없으면 자동 생성
     ├── etl.db
     ├── extract_runs/{uploads,databases,api}/

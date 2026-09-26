@@ -21,4 +21,8 @@ fi
 
 mkdir -p "$ROOT/dist/$TARGET"
 cp "$ROOT/target/$TARGET/release/$BIN" "$ROOT/dist/$TARGET/$BIN"
+if [[ -d "$ROOT/vendor" ]]; then
+  mkdir -p "$ROOT/dist/$TARGET/vendor"
+  cp -R "$ROOT/vendor/." "$ROOT/dist/$TARGET/vendor/"
+fi
 echo "wrote dist/$TARGET/$BIN"

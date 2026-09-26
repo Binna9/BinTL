@@ -711,18 +711,35 @@ fn ensure_jar() -> Result<PathBuf, ConnectError> {
 }
 
 fn jar_dir() -> PathBuf {
-    workspace_dir().join("crates/connectors/vendor/tibero")
+    vendor_dirs().into_iter().next().unwrap_or_else(|| PathBuf::from("vendor/tibero"))
+}
+
+fn vendor_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            dirs.push(parent.join("vendor/tibero"));
+        }
+    }
+    let root = workspace_dir();
+    dirs.push(root.join("vendor/tibero"));
+    dirs.push(root.join("crates/connectors/vendor/tibero"));
+    dirs
 }
 
 fn jar_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let dir = jar_dir();
-    out.push(dir.join(JAR_NAME));
-    out.push(dir.join("tibero6-jdbc.jar"));
-    out.push(dir.join("tibero7-jdbc.jar"));
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            out.push(parent.join("vendor/tibero").join(JAR_NAME));
+    for dir in vendor_dirs() {
+        out.push(dir.join(JAR_NAME));
+        out.push(dir.join("tibero6-jdbc.jar"));
+        out.push(dir.join("tibero7-jdbc.jar"));
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("jar") {
+                    out.push(path);
+                }
+            }
         }
     }
     if let Ok(home) = std::env::var("TB_HOME") {
@@ -730,14 +747,6 @@ fn jar_candidates() -> Vec<PathBuf> {
         out.push(home.join("client/lib/jar").join(JAR_NAME));
         out.push(home.join("client/lib/jar/tibero6-jdbc.jar"));
         out.push(home.join("client/lib/jar/tibero7-jdbc.jar"));
-    }
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jar") {
-                out.push(path);
-            }
-        }
     }
     out
 }
@@ -769,7 +778,7 @@ fn workspace_dir() -> PathBuf {
     let mut dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let start = dir.clone();
     for _ in 0..6 {
-        if dir.join("crates/connectors").is_dir() {
+        if dir.join("vendor/tibero").is_dir() || dir.join("crates/connectors").is_dir() {
             return dir;
         }
         if !dir.pop() {
@@ -832,6 +841,15 @@ mod tests {
         assert_eq!(
             jvm_classpath(&jar),
             "C:/Users/dndql/Desktop/Business/BinTL/crates/connectors/vendor/tibero/tbjdbc17-7.2.6.jar"
+        );
+    }
+
+    #[test]
+    fn looks_for_jar_under_top_level_vendor() {
+        let dirs = vendor_dirs();
+        assert!(
+            dirs.iter().any(|dir| dir.ends_with("vendor/tibero")),
+            "deploy copies vendor/ next to the binary"
         );
     }
 

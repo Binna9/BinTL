@@ -15,5 +15,5 @@ skip_auth = false
 # [odbc]
 # oracle_driver = "Oracle 21c ODBC driver"
 # tibero_driver = "Tibero 6 ODBC DRIVER"
-# tibero_jdbc = "crates/connectors/vendor/tibero/tbjdbc17-7.2.6.jar"
+# tibero_jdbc = "vendor/tibero/tbjdbc17-7.2.6.jar"
 # sys_ini = "/etc"
