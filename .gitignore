@@ -9,14 +9,12 @@
 /ui/dist/
 /data/
 /dist/
+/vendor/
 .DS_Store
 
 # OpenWiki in-progress checkpoint. Durable wiki + Claims stay tracked.
 openwiki/.run.json
 
-/vendor/tibero/*.jar
-/vendor/odbc/*
-!/vendor/odbc/.gitkeep
 /crates/connectors/vendor/tibero/*.jar
 /config.toml
 
