@@ -10,7 +10,8 @@ BinTL은 **설치형 단일 바이너리**다. 운영 환경에서는 `bintl` �
 - API와 정적 UI를 Axum이 함께 서빙한다.
 - SQLite(`data/etl.db`)와 파일 산출물은 `data_dir` 아래에 저장된다.
 - Rust, Python, JVM, 외부 DB 패키지를 서버에 설치하지 않는다. (SQLite는 bundled, TLS는 rustls)
-- 예외: Oracle/Tibero 커넥션은 호스트에 unixODBC(또는 Windows ODBC)와 벤더 ODBC 드라이버가 있어야 한다. 드라이버를 자동으로 못 찾으면 `config.toml`의 `[odbc]`에서 등록 이름 또는 `.so`/`.dll` 경로를 지정한다. 환경변수 `BINTL_ORACLE_ODBC_DRIVER` / `BINTL_TIBERO_ODBC_DRIVER`가 있으면 그 값이 우선한다.
+- unixODBC 드라이버 매니저(`libodbc.so.2`, `libodbcinst.so.2`, `libltdl.so.7`)는 `just dist`가 `vendor/odbc/`에 넣어 바이너리와 같이 올라간다. 서버에 `unixodbc` 패키지를 설치하지 않는다.
+- Oracle/Tibero 벤더 드라이버는 그 DB에 접속할 때만 호스트에 둔다. 자동으로 못 찾으면 `config.toml`의 `[odbc]`에서 등록 이름 또는 `.so`/`.dll` 경로를 지정한다. 환경변수 `BINTL_ORACLE_ODBC_DRIVER` / `BINTL_TIBERO_ODBC_DRIVER`가 있으면 그 값이 우선한다.
 
 ```
 브라우저 ──► (선택) Nginx/Caddy ──► bintl:8080
@@ -48,7 +49,7 @@ BinTL은 **설치형 단일 바이너리**다. 운영 환경에서는 `bintl` �
 - Node.js + npm (UI 빌드용, **서버에는 불필요**)
 - `just` (`cargo install just` 또는 패키지 매니저)
 - 크로스 컴파일 시 [cross](https://github.com/cross-rs/cross) 권장
-- Oracle/Tibero를 빌드·실행하려면 unixODBC. macOS는 `brew install unixodbc`, 리눅스는 `unixodbc-dev`. 벤더 ODBC 드라이버는 런타임에 추가로 설치한다.
+- 빌드 머신만 unixODBC가 필요하다. macOS는 `brew install unixodbc`, 리눅스 크로스 이미지는 `unixodbc-dev`. 최상위 `vendor/odbc/`를 설치 루트의 `vendor/odbc/`로 올린다. 벤더 ODBC 드라이버는 접속할 서버에 둔다.
 
 ```bash
 # cross 설치 (리눅스 musl 타깃 권장)
@@ -95,6 +96,7 @@ just build
 ├── bintl              # 실행 파일
 ├── config.toml        # 운영 설정 (저장소에 커밋하지 않음)
 ├── vendor/            # 바이너리에 안 들어가는 런타임 파일. just dist가 같이 복사
+│   ├── odbc/          # libodbc.so.2, libodbcinst.so.2, libltdl.so.7
 │   └── tibero/tbjdbc17-7.2.6.jar
 └── data/              # 기동 시 없으면 자동 생성
     ├── etl.db
@@ -354,6 +356,7 @@ sqlite3 /opt/bintl/data/etl.db ".backup '/backup/etl-$(date +%F).db'"
 | `session_secret is empty` | 설정 또는 `ETL_SESSION_SECRET` 누락 |
 | 업로드 413 | `max_upload_mb`, Nginx `client_max_body_size` |
 | 로그인 안 됨 | `skip_auth`, 쿠키(도메인·HTTPS), `session_secret` 변경 여부 |
+| `libodbc.so.2: cannot open shared object file` | 설치 루트의 `vendor/odbc/`가 없다. 저장소 최상위 `vendor/odbc`를 그대로 올린다 |
 | Oracle/Tibero `no … ODBC driver found` | `[odbc]`의 `oracle_driver` / `tibero_driver`에 등록 이름 또는 `.so` 경로. `odbcinst.ini`가 `/etc`가 아니면 `sys_ini` |
 | 마이그레이션 오류 | `journalctl -u bintl`, `data/etl.db` 권한·손상 여부 |
 

@@ -15,6 +15,8 @@
 openwiki/.run.json
 
 /vendor/tibero/*.jar
+/vendor/odbc/*
+!/vendor/odbc/.gitkeep
 /crates/connectors/vendor/tibero/*.jar
 /config.toml
 

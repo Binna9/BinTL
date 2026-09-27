@@ -9,6 +9,10 @@ BINTL_CONFIG="${BINTL_CONFIG:-$BINTL_ROOT/config.toml}"
 BINTL_PIDFILE="${BINTL_PIDFILE:-$BINTL_ROOT/data/bintl.pid}"
 BINTL_LOGFILE="${BINTL_LOGFILE:-$BINTL_ROOT/data/logs/bintl.log}"
 BINTL_RUST_LOG="${RUST_LOG:-info}"
+# libltdl이 libodbcinst를 dlopen할 때 이 경로를 본다. DT_RPATH와 같이 둔다.
+if [[ -d "$BINTL_ROOT/vendor/odbc" ]]; then
+  export LD_LIBRARY_PATH="$BINTL_ROOT/vendor/odbc${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 
 bintl_ensure_layout() {
   mkdir -p "$BINTL_ROOT/data/logs"

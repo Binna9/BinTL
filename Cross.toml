@@ -3,3 +3,10 @@
 # path that does not exist in the image. Pin the image compilers instead.
 [build.env]
 passthrough = ["CC=gcc", "CXX=g++", "AR=ar"]
+
+# musl 이미지는 libodbc가 없어서 링크가 죽는다. Ubuntu 배포는 glibc면 된다.
+# 런타임 .so는 서버에 설치하지 않고 최상위 vendor/odbc에 둔다.
+[target.x86_64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update && apt-get install -y --no-install-recommends unixodbc-dev patchelf",
+]

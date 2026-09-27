@@ -45,8 +45,30 @@ struct Cli {
     config: std::path::PathBuf,
 }
 
+fn expose_bundled_odbc() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else {
+        return;
+    };
+    let odbc = dir.join("vendor").join("odbc");
+    if !odbc.is_dir() {
+        return;
+    }
+    let odbc = odbc.to_string_lossy();
+    let merged = match std::env::var("LD_LIBRARY_PATH") {
+        Ok(old) if !old.is_empty() => format!("{odbc}:{old}"),
+        _ => odbc.into_owned(),
+    };
+    // libltdl reads this when it dlopens libodbcinst. The loader already
+    // resolved libodbc.so.2 via DT_RPATH before main.
+    std::env::set_var("LD_LIBRARY_PATH", merged);
+}
+
 #[tokio::main]
 async fn main() {
+    expose_bundled_odbc();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
