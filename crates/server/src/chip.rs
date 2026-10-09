@@ -2925,6 +2925,7 @@ pub(crate) async fn execute_load_config(
                 &config.write_mode,
                 &config.conflict_keys,
                 Some(LOAD_NULL_MARKER),
+                config.column_align == "position",
                 Some(&on_progress),
             )
             .await

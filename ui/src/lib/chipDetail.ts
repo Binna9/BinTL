@@ -28,6 +28,7 @@ export type LoadConfigView = {
   format: string;
   filename: string;
   writeMode: string;
+  columnAlign: "name" | "position";
 };
 
 function textValue(config: ChipConfig, key: string, fallback = ""): string {
@@ -107,6 +108,7 @@ export function parseLoadConfig(config: ChipConfig): LoadConfigView | null {
     format: textValue(destination, "format"),
     filename: textValue(destination, "filename"),
     writeMode: textValue(config, "write_mode", "append"),
+    columnAlign: textValue(config, "column_align") === "position" ? "position" : "name",
   };
 }
 

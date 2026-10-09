@@ -1,0 +1,1 @@
+ALTER TABLE loads ADD COLUMN column_align TEXT NOT NULL DEFAULT 'name';

@@ -7,6 +7,7 @@ export interface LoadSpec {
   destination: LoadDestination;
   write_mode: "append" | "truncate" | "upsert" | "recreate" | "replace";
   conflict_keys?: string[];
+  column_align?: "name" | "position";
 }
 
 export type LoadRunSummary = {

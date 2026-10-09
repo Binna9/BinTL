@@ -23,6 +23,12 @@ export function alignLoadSchema(input: string[], dest: string[]): LoadSchemaAlig
   return { matched, extra, missing, novel: dest.length === 0 };
 }
 
+export function positionalLoadBlock(inputCount: number, destCount: number, destIsNew: boolean): "new" | "count" | null {
+  if (destIsNew || destCount === 0) return "new";
+  if (inputCount !== destCount) return "count";
+  return null;
+}
+
 if (import.meta.env.DEV) {
   const aligned = alignLoadSchema(["id", "Name"], ["ID", "email"]);
   if (aligned.matched.join() !== "id" || aligned.extra.join() !== "Name" || aligned.missing.join() !== "email") {
@@ -30,5 +36,8 @@ if (import.meta.env.DEV) {
   }
   if (!alignLoadSchema(["a"], []).novel || !validLoadTable("sales.fact") || validLoadTable("a.b.c")) {
     throw new Error("load schema: new table and ident rules");
+  }
+  if (positionalLoadBlock(5, 5, false) !== null || positionalLoadBlock(4, 5, false) !== "count" || positionalLoadBlock(5, 0, true) !== "new") {
+    throw new Error("load schema: positional count");
   }
 }

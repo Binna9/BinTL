@@ -24,7 +24,7 @@ import { isChipNameConflict } from "@/services/httpClient";
 import { loadApi } from "@/services/load/loadApi";
 import { datasetApi } from "@/services/transform/datasetApi";
 import { datasetFromSlot, KIND_APPEARANCE, KIND_ORDER, emptyKindSearch } from "@/features/transform/transformEditorModel";
-import { alignLoadSchema, validLoadTable } from "@/lib/loadSchema";
+import { alignLoadSchema, positionalLoadBlock, validLoadTable } from "@/lib/loadSchema";
 import type { CatalogSelection, DataConnection, DatabaseColumn } from "@/types/connection";
 import type { ChipInputSlotResponse } from "@/types/chip";
 import type { Dataset, FramePreview } from "@/types/dataset";
@@ -59,6 +59,7 @@ export function LoadPage() {
   const [format, setFormat] = useState<"csv" | "parquet">("parquet");
   const [filename, setFilename] = useState("result.parquet");
   const [writeMode, setWriteMode] = useState<"append" | "truncate" | "upsert" | "recreate">("append");
+  const [columnAlign, setColumnAlign] = useState<"name" | "position">("name");
   const [conflictKeys, setConflictKeys] = useState<string[]>([]);
   const [destColumns, setDestColumns] = useState<DatabaseColumn[]>([]);
   const [destStatus, setDestStatus] = useState<"idle" | "loading" | "existing" | "new">("idle");
@@ -87,14 +88,19 @@ export function LoadPage() {
   }, [canvasMode, datasets, inputExtractId, userSelectedInput]);
 
 
+  const byPosition = destinationType === "database" && writeMode !== "recreate" && columnAlign === "position";
+  const keyNames = byPosition
+    ? destColumns.map((column) => column.name)
+    : (preview?.columns ?? []).map((column) => column.name);
+  const savedConflictKeys = conflictKeys.filter((key) => keyNames.includes(key));
   const spec = useMemo<LoadSpec>(() => destinationType === "database"
-    ? { input_dataset_id: inputDatasetId || undefined, destination: { type: "database", connection_id: connectionId, database, table }, write_mode: writeMode, conflict_keys: writeMode === "upsert" ? conflictKeys : undefined }
+    ? { input_dataset_id: inputDatasetId || undefined, destination: { type: "database", connection_id: connectionId, database, table }, write_mode: writeMode, conflict_keys: writeMode === "upsert" ? savedConflictKeys : undefined, column_align: byPosition ? "position" : "name" }
     : { input_dataset_id: inputDatasetId || undefined, destination: { type: "file", format, filename }, write_mode: "replace" },
-  [conflictKeys, connectionId, database, destinationType, filename, format, inputDatasetId, table, writeMode]);
+  [byPosition, connectionId, database, destinationType, filename, format, inputDatasetId, savedConflictKeys, table, writeMode]);
 
   function reset() {
     setEditingId(undefined); setName(""); setDestinationType("database"); setConnectionId(""); setDatabase("");
-    setTable(""); setSelectedTable(null); setFormat("parquet"); setFilename("result.parquet"); setWriteMode("append"); setConflictKeys([]);
+    setTable(""); setSelectedTable(null); setFormat("parquet"); setFilename("result.parquet"); setWriteMode("append"); setColumnAlign("name"); setConflictKeys([]);
     setDestColumns([]); setDestStatus("idle"); setLastRun(null);
     if (!canvasMode) setInputDatasetId("");
   }
@@ -114,7 +120,7 @@ export function LoadPage() {
   }
 
   function edit(load: LoadDefinition) {
-    setEditingId(load.id); setName(load.name); setDestinationType(load.destination_type); setWriteMode(load.spec.write_mode === "replace" ? "truncate" : load.spec.write_mode); setConflictKeys(load.spec.conflict_keys ?? []);
+    setEditingId(load.id); setName(load.name); setDestinationType(load.destination_type); setWriteMode(load.spec.write_mode === "replace" ? "truncate" : load.spec.write_mode); setColumnAlign(load.spec.column_align === "position" ? "position" : "name"); setConflictKeys(load.spec.conflict_keys ?? []);
     if (!canvasMode) setInputDatasetId(load.spec.input_dataset_id ?? "");
     if (load.spec.destination.type === "database") {
       setConnectionId(load.spec.destination.connection_id);
@@ -180,11 +186,16 @@ export function LoadPage() {
     (preview?.columns ?? []).map((column) => column.name),
     destColumns.map((column) => column.name),
   );
-  const schemaBlocksRun = destinationType === "database"
+  const positionBlock = byPosition && (destStatus === "existing" || destStatus === "new")
+    ? positionalLoadBlock(preview?.columns.length ?? 0, destColumns.length, destStatus === "new")
+    : null;
+  const schemaBlocksRun = byPosition
+    ? positionBlock !== null
+    : destinationType === "database"
     && destStatus === "existing"
     && writeMode !== "recreate"
     && schema.extra.length > 0;
-  const canSave = Boolean(inputDatasetId && (destinationType === "database" ? connectionId && validLoadTable(table) && (writeMode !== "upsert" || conflictKeys.length > 0) : filename.trim()));
+  const canSave = Boolean(inputDatasetId && (destinationType === "database" ? connectionId && validLoadTable(table) && (writeMode !== "upsert" || savedConflictKeys.length > 0) : filename.trim()));
   const selectedInput = datasets.find((item) => item.id === inputDatasetId);
   const canRun = canSave && Boolean(selectedInput?.available) && !schemaBlocksRun;
 
@@ -563,14 +574,28 @@ export function LoadPage() {
                       </FormField>
                       {table.trim() && !validLoadTable(table) ? <p className="text-xs text-danger">{t.tableInvalid}</p> : null}
                       <FormField label={t.writeMode} hint={t.writeModeHint}><Select value={writeMode} onChange={(v) => setWriteMode(v as typeof writeMode)} options={[{ value: "append", label: t.append }, { value: "truncate", label: t.truncate }, { value: "upsert", label: t.upsert }, { value: "recreate", label: t.recreate }]} disabled={!connectionId} /></FormField>
+                      {writeMode !== "recreate" ? (
+                        <label className="flex items-start gap-2 rounded-lg border border-border bg-subtle/30 p-3 text-sm text-text">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={columnAlign === "position"}
+                            onChange={(event) => setColumnAlign(event.target.checked ? "position" : "name")}
+                          />
+                          <span>
+                            <span className="font-medium">{t.columnAlign}</span>
+                            <span className="mt-1 block text-xs leading-5 text-text-secondary">{t.columnAlignHint}</span>
+                          </span>
+                        </label>
+                      ) : null}
                       {writeMode === "upsert" ? (
                         <FormField label={t.conflictKeys} hint={t.conflictKeysHint}>
                           <div className="flex min-h-10 flex-wrap gap-2 rounded-lg border border-border bg-surface p-2">
-                            {(preview?.columns ?? []).map((column) => {
-                              const selected = conflictKeys.includes(column.name);
-                              return <button key={column.name} type="button" className={cn("rounded-md border px-2 py-1 text-xs transition-colors", selected ? "border-accent bg-accent-subtle font-semibold text-accent" : "border-border text-text-secondary hover:border-accent/50 hover:bg-subtle")} onClick={() => setConflictKeys((current) => selected ? current.filter((key) => key !== column.name) : [...current, column.name])}>{column.name}</button>;
+                            {keyNames.map((name) => {
+                              const selected = conflictKeys.includes(name);
+                              return <button key={name} type="button" className={cn("rounded-md border px-2 py-1 text-xs transition-colors", selected ? "border-accent bg-accent-subtle font-semibold text-accent" : "border-border text-text-secondary hover:border-accent/50 hover:bg-subtle")} onClick={() => setConflictKeys((current) => selected ? current.filter((key) => key !== name) : [...current, name])}>{name}</button>;
                             })}
-                            {!preview?.columns.length ? <span className="px-1 py-1 text-xs text-text-tertiary">{t.noConflictColumns}</span> : null}
+                            {!keyNames.length ? <span className="px-1 py-1 text-xs text-text-tertiary">{t.noConflictColumns}</span> : null}
                           </div>
                         </FormField>
                       ) : null}
@@ -587,9 +612,19 @@ export function LoadPage() {
                           <div className="mt-2 space-y-1">
                             <p className="text-[11px] font-semibold text-accent">{t.newTable}</p>
                             <p className="text-xs text-text-secondary">{t.newTableHint}</p>
+                            {byPosition ? <p className="text-xs text-danger">{t.positionNeedsTable}</p> : null}
                           </div>
                         ) : null}
-                        {destStatus === "existing" ? (
+                        {destStatus === "existing" && byPosition ? (
+                          <div className="mt-2 space-y-1.5 text-xs">
+                            {positionBlock === "count" ? (
+                              <p className="text-danger">{t.positionBlocksRun(preview?.columns.length ?? 0, destColumns.length)}</p>
+                            ) : (
+                              <p className="text-text-secondary">{t.positionReady(destColumns.length)}</p>
+                            )}
+                          </div>
+                        ) : null}
+                        {destStatus === "existing" && !byPosition ? (
                           <div className="mt-2 space-y-1.5 text-xs">
                             <p className="text-text-secondary">{t.schemaOk(schema.matched.length)}</p>
                             {schema.extra.length ? (

@@ -18,6 +18,8 @@ pub(crate) struct LoadConfig {
     pub write_mode: String,
     #[serde(default)]
     pub conflict_keys: Vec<String>,
+    #[serde(default = "default_column_align")]
+    pub column_align: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -37,6 +39,10 @@ pub(crate) enum LoadDestination {
 
 fn default_write_mode() -> String {
     "append".into()
+}
+
+fn default_column_align() -> String {
+    "name".into()
 }
 
 #[derive(Deserialize)]
@@ -260,6 +266,17 @@ pub(crate) async fn validate_load_config(
     }
     if config.write_mode == "upsert" && config.conflict_keys.is_empty() {
         return Err(AppError::bad("upsert requires at least one conflict key"));
+    }
+    if !matches!(config.column_align.as_str(), "name" | "position") {
+        return Err(AppError::bad("unsupported column_align"));
+    }
+    if config.column_align == "position" {
+        if !matches!(config.destination, LoadDestination::Database { .. }) {
+            return Err(AppError::bad("positional load requires a database table"));
+        }
+        if config.write_mode == "recreate" {
+            return Err(AppError::bad("positional load cannot recreate the table"));
+        }
     }
     for key in &config.conflict_keys {
         connectors::parse_ident(key).map_err(|e| AppError::bad(e.to_string()))?;

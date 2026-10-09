@@ -736,6 +736,7 @@ pub async fn load_table(
     mode: &str,
     conflict_keys: &[String],
     null_marker: Option<&str>,
+    by_position: bool,
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     if !matches!(
@@ -747,7 +748,7 @@ pub async fn load_table(
     let family = driver_family(&c.driver)?;
     let parsed = parse_table(table)?;
     let q = qualified(family, &parsed);
-    let (mut reader, cols) = open_load_csv(csv_path)?;
+    let (mut reader, mut cols) = open_load_csv(csv_path)?;
     if cols.is_empty() {
         return Err(ConnectError::Invalid("csv has no columns".into()));
     }
@@ -766,6 +767,13 @@ pub async fn load_table(
     } else {
         listed.unwrap_or_default()
     };
+    if by_position {
+        let dest_names: Vec<String> = destination_columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect();
+        cols = positional_column_names(cols.len(), &dest_names)?;
+    }
     let column_rules = load_column_rules(&cols, &destination_columns);
     if mode == "upsert" {
         if conflict_keys.is_empty() || conflict_keys.iter().any(|key| !cols.contains(key)) {
@@ -1099,6 +1107,24 @@ pub(crate) struct LoadColumnRule {
     empty_as_null: bool,
     nullable: bool,
     data_type: String,
+}
+
+fn positional_column_names(
+    input_len: usize,
+    destination: &[String],
+) -> Result<Vec<String>, ConnectError> {
+    if destination.is_empty() {
+        return Err(ConnectError::Invalid(
+            "positional load requires an existing table".into(),
+        ));
+    }
+    if input_len != destination.len() {
+        return Err(ConnectError::Invalid(format!(
+            "positional load has {input_len} fields but the table has {} columns",
+            destination.len()
+        )));
+    }
+    Ok(destination.to_vec())
 }
 
 fn load_column_rules(input_columns: &[String], destination: &[ColumnInfo]) -> Vec<LoadColumnRule> {
@@ -1481,6 +1507,14 @@ mod tests {
         assert_eq!(schema_or("postgres", &q), "sales");
         assert_eq!(schema_or_user("oracle", &t, "hr"), "HR");
         assert_eq!(schema_or_user("oracle", &q, "hr"), "sales");
+    }
+
+    #[test]
+    fn positional_load_uses_destination_order_when_counts_match() {
+        let names = positional_column_names(3, &["id".into(), "name".into(), "qty".into()]).unwrap();
+        assert_eq!(names, ["id", "name", "qty"]);
+        assert!(positional_column_names(2, &["id".into(), "name".into(), "qty".into()]).is_err());
+        assert!(positional_column_names(1, &[]).is_err());
     }
 
     #[test]

@@ -1,5 +1,17 @@
 use crate::*;
 
+fn column_align_from_spec(spec: &serde_json::Value) -> Result<String, StorageError> {
+    match spec
+        .get("column_align")
+        .and_then(|value| value.as_str())
+        .unwrap_or("name")
+    {
+        "name" => Ok("name".into()),
+        "position" => Ok("position".into()),
+        _ => Err(StorageError::Invalid("invalid column_align".into())),
+    }
+}
+
 impl Store {
     async fn materialized_load_default_input(
         &self,
@@ -90,6 +102,7 @@ impl Store {
             .cloned()
             .unwrap_or_else(|| serde_json::json!([]))
             .to_string();
+        let column_align = column_align_from_spec(&spec)?;
         let destination = spec
             .get("destination")
             .ok_or_else(|| StorageError::Invalid("load destination required".into()))?
@@ -97,8 +110,8 @@ impl Store {
         sqlx::query(
             "INSERT INTO loads
              (id, owner_user_id, name, default_input_file_id, destination_type, connection_id,
-              destination_json, write_mode, batch_size, conflict_keys_json, revision, active,
-              created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)",
+              destination_json, write_mode, batch_size, conflict_keys_json, column_align, revision, active,
+              created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)",
         )
         .bind(&id)
         .bind(owner_user_id)
@@ -110,6 +123,7 @@ impl Store {
         .bind(write_mode)
         .bind(batch_size)
         .bind(conflict_keys)
+        .bind(column_align)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -143,7 +157,7 @@ impl Store {
         let result = sqlx::query(
             "UPDATE loads SET name = ?, default_input_file_id = ?, destination_type = ?,
              connection_id = ?, destination_json = ?, write_mode = ?, batch_size = ?,
-             conflict_keys_json = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
+             conflict_keys_json = ?, column_align = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
         )
         .bind(name.trim())
         .bind(input_id)
@@ -169,6 +183,7 @@ impl Store {
                 .unwrap_or_else(|| serde_json::json!([]))
                 .to_string(),
         )
+        .bind(column_align_from_spec(&spec)?)
         .bind(now_rfc3339())
         .bind(id)
         .execute(&self.pool)
@@ -193,6 +208,7 @@ impl Store {
                       'destination', json(destination_json),
                       'write_mode', write_mode,
                       'conflict_keys', json(conflict_keys_json),
+                      'column_align', column_align,
                       'batch_size', batch_size
                     ) AS spec_json,
                     created_at, updated_at FROM loads WHERE id = ?",
@@ -210,12 +226,12 @@ impl Store {
         let sql = if admin {
             "SELECT id, owner_user_id, name, destination_type,
                     json_object('input_dataset_id', default_input_file_id, 'destination', json(destination_json),
-                    'write_mode', write_mode, 'conflict_keys', json(conflict_keys_json), 'batch_size', batch_size) AS spec_json,
+                    'write_mode', write_mode, 'conflict_keys', json(conflict_keys_json), 'column_align', column_align, 'batch_size', batch_size) AS spec_json,
                     created_at, updated_at FROM loads ORDER BY updated_at DESC"
         } else {
             "SELECT id, owner_user_id, name, destination_type,
                     json_object('input_dataset_id', default_input_file_id, 'destination', json(destination_json),
-                    'write_mode', write_mode, 'conflict_keys', json(conflict_keys_json), 'batch_size', batch_size) AS spec_json,
+                    'write_mode', write_mode, 'conflict_keys', json(conflict_keys_json), 'column_align', column_align, 'batch_size', batch_size) AS spec_json,
                     created_at, updated_at FROM loads WHERE owner_user_id = ? ORDER BY updated_at DESC"
         };
         let mut query = sqlx::query_as::<_, LoadDefinitionRow>(sql);

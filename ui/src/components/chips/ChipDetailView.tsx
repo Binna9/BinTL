@@ -154,6 +154,9 @@ export function ChipDetailView({ chip, inputFileName }: { chip: Chip; inputFileN
           <DetailRow label={messages.load.table}>{unset}</DetailRow>
         </>}
         <DetailRow label={messages.load.writeMode}>{load?.writeMode === "append" ? messages.load.append : load ? messages.load.replace : unset}</DetailRow>
+        {load?.destinationType === "database" ? (
+          <DetailRow label={messages.load.columnAlign}>{load.columnAlign === "position" ? messages.common.yes : messages.common.no}</DetailRow>
+        ) : null}
       </DetailSection>
     </DetailStack>;
   }

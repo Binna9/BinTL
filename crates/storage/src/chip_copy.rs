@@ -487,7 +487,7 @@ async fn clone_load(
     if let Some(load_id) = src.load_id.as_deref() {
         let row = sqlx::query(
             "SELECT default_input_file_id, destination_type, connection_id, destination_json,
-                    write_mode, batch_size, conflict_keys_json
+                    write_mode, batch_size, conflict_keys_json, column_align
              FROM loads WHERE id = ?",
         )
         .bind(load_id)
@@ -506,9 +506,9 @@ async fn clone_load(
         sqlx::query(
             "INSERT INTO loads
              (id, owner_user_id, name, default_input_file_id, destination_type, connection_id,
-              destination_json, write_mode, batch_size, conflict_keys_json, revision, active,
+              destination_json, write_mode, batch_size, conflict_keys_json, column_align, revision, active,
               created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)",
         )
         .bind(&new_load_id)
         .bind(&src.owner_user_id)
@@ -520,6 +520,7 @@ async fn clone_load(
         .bind(row.get::<String, _>("write_mode"))
         .bind(row.get::<i64, _>("batch_size"))
         .bind(row.get::<String, _>("conflict_keys_json"))
+        .bind(row.get::<String, _>("column_align"))
         .bind(now)
         .bind(now)
         .execute(&mut **tx)

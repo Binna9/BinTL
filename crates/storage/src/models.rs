@@ -440,7 +440,7 @@ pub(crate) const CHIP_COLS: &str = "id, owner_user_id, name, kind,
             'spec', json(t.spec_json)) FROM transforms t WHERE t.id = chips.transform_id)
           WHEN 'load' THEN (SELECT json_object('input_dataset_id', l.default_input_file_id,
             'destination', json(l.destination_json), 'write_mode', l.write_mode,
-            'conflict_keys', json(l.conflict_keys_json)) FROM loads l WHERE l.id = chips.load_id)
+            'conflict_keys', json(l.conflict_keys_json), 'column_align', l.column_align) FROM loads l WHERE l.id = chips.load_id)
         END, config_json) AS config_json,
         COALESCE((SELECT revision FROM extracts e WHERE e.id = chips.extract_id),
                  (SELECT revision FROM transforms t WHERE t.id = chips.transform_id),
@@ -455,7 +455,7 @@ pub(crate) const CHIP_JOIN_COLS: &str = "c.id, c.owner_user_id, c.name, c.kind,
             'spec', json(t.spec_json)) FROM transforms t WHERE t.id = c.transform_id)
           WHEN 'load' THEN (SELECT json_object('input_dataset_id', l.default_input_file_id,
             'destination', json(l.destination_json), 'write_mode', l.write_mode,
-            'conflict_keys', json(l.conflict_keys_json)) FROM loads l WHERE l.id = c.load_id)
+            'conflict_keys', json(l.conflict_keys_json), 'column_align', l.column_align) FROM loads l WHERE l.id = c.load_id)
         END, c.config_json) AS config_json,
         COALESCE((SELECT revision FROM extracts e WHERE e.id = c.extract_id),
                  (SELECT revision FROM transforms t WHERE t.id = c.transform_id),
