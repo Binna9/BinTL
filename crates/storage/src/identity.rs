@@ -117,6 +117,7 @@ pub struct DataScope {
     pub user_id: String,
     pub admin: bool,
     pub workspace_id: Option<String>,
+    pub folder_id: Option<String>,
 }
 
 impl DataScope {
@@ -125,11 +126,17 @@ impl DataScope {
             user_id: user.id.clone(),
             admin: user.can_see_all_workspaces(),
             workspace_id: None,
+            folder_id: None,
         }
     }
 
     pub fn workspace(mut self, workspace_id: Option<String>) -> Self {
         self.workspace_id = workspace_id.filter(|value| !value.trim().is_empty());
+        self
+    }
+
+    pub fn folder(mut self, folder_id: Option<String>) -> Self {
+        self.folder_id = folder_id.filter(|value| !value.trim().is_empty());
         self
     }
 }
@@ -404,6 +411,29 @@ impl Store {
             (
                 format!("AND {column} IN (SELECT id FROM workspaces WHERE owner_user_id = ?)"),
                 vec![scope.user_id.clone()],
+            )
+        }
+    }
+
+    /// Files and page runs are visible through the work category, or through the
+    /// canvas when a chip output has not been filed into one.
+    pub fn catalog_scope_sql(
+        scope: &DataScope,
+        folder_col: &str,
+        workspace_col: &str,
+    ) -> (String, Vec<String>) {
+        if let Some(folder_id) = &scope.folder_id {
+            (format!("AND {folder_col} = ?"), vec![folder_id.clone()])
+        } else if let Some(workspace_id) = &scope.workspace_id {
+            (format!("AND {workspace_col} = ?"), vec![workspace_id.clone()])
+        } else if scope.admin {
+            (String::new(), Vec::new())
+        } else {
+            (
+                format!(
+                    "AND ({folder_col} IN (SELECT id FROM workspace_folders WHERE owner_user_id = ?) OR {workspace_col} IN (SELECT id FROM workspaces WHERE owner_user_id = ?))"
+                ),
+                vec![scope.user_id.clone(), scope.user_id.clone()],
             )
         }
     }

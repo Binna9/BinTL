@@ -4,6 +4,7 @@ export const layout = {
     minNav: 200,
     maxNav: 360,
     connections: 176,
+    connectionStack: 320,
     sidebar: 272,
     catalog: 256,
     inspect: 420,

@@ -309,15 +309,29 @@ pub fn failure_context(process: &str, raw: &str) -> serde_json::Value {
 }
 
 fn sanitize_diagnostic(raw: &str) -> String {
-    let first = raw.lines().next().unwrap_or(raw).trim();
-    let lower = first.to_ascii_lowercase();
+    let kept = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !is_stack_frame(line))
+        .collect::<Vec<_>>();
+    let text = if kept.is_empty() {
+        raw.trim().to_string()
+    } else {
+        kept.join("\n")
+    };
+    let lower = text.to_ascii_lowercase();
     if ["password", "authorization", "bearer ", "cookie", "token="]
         .iter()
         .any(|needle| lower.contains(needle))
     {
         return "민감정보가 포함될 수 있어 원본 진단 메시지를 숨겼습니다.".into();
     }
-    first.chars().take(MAX_DIAGNOSTIC_CHARS).collect()
+    text.chars().take(MAX_DIAGNOSTIC_CHARS).collect()
+}
+
+fn is_stack_frame(line: &str) -> bool {
+    let rest = line.strip_prefix("at ").unwrap_or(line);
+    rest.contains(".java:") || rest.contains("(Native Method)") || rest == "..."
 }
 
 fn failure_log_message(process: &str, raw: &str) -> String {
@@ -486,6 +500,21 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("secret-token"));
+    }
+
+    #[test]
+    fn keeps_jdbc_type_detail_after_the_first_line() {
+        let raw = "java.sql.SQLException: JDBC-8160:The type of value does not match the type of column.\n\
+at line 1, column 2 of null:\n\
+INSERT INTO \"FSC\".\"T\" (\"QUES_NO\")\n\
+^\n\
+\tat com.tmax.tibero.jdbc.TbPreparedStatement.execute(TbPreparedStatement.java:10)\n\
+임시 적재 컬럼 타입은 CLOB입니다. 대상 컬럼: QUES_NO=VARCHAR, LOAD_DTM=DATE";
+        let message = failure_log_message("load", raw);
+        assert!(message.contains("JDBC-8160"));
+        assert!(message.contains("임시 적재 컬럼 타입은 CLOB입니다."));
+        assert!(message.contains("LOAD_DTM=DATE"));
+        assert!(!message.contains("TbPreparedStatement.java"));
     }
 
     #[test]

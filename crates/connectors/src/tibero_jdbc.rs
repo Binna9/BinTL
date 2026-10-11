@@ -105,33 +105,61 @@ pub(crate) fn query_rows(
 pub(crate) fn exec(conn: &JdbcConn, sql: &str) -> Result<u64, ConnectError> {
     let mut env = attach()?;
     let sql_j = env.new_string(sql)?;
-    let stmt = env
-        .call_method(
-            handle(conn)?,
-            "createStatement",
-            "()Ljava/sql/Statement;",
-            &[],
-        )?
-        .l()?;
-    check_ex(&mut env)?;
-    let has_rs = env
-        .call_method(
-            &stmt,
-            "execute",
-            "(Ljava/lang/String;)Z",
-            &[JValue::Object(&sql_j)],
-        )?
-        .z()?;
-    check_ex(&mut env)?;
+    let created = env.call_method(
+        handle(conn)?,
+        "createStatement",
+        "()Ljava/sql/Statement;",
+        &[],
+    );
+    let stmt = step(&mut env, created)?.l()?;
+    let executed = env.call_method(
+        &stmt,
+        "execute",
+        "(Ljava/lang/String;)Z",
+        &[JValue::Object(&sql_j)],
+    );
+    let has_rs = step(&mut env, executed)?.z()?;
     let n = if has_rs {
         0
     } else {
-        env.call_method(&stmt, "getUpdateCount", "()I", &[])?
-            .i()?
-            .max(0) as u64
+        let count = env.call_method(&stmt, "getUpdateCount", "()I", &[]);
+        step(&mut env, count)?.i()?.max(0) as u64
     };
     close_stmt(&mut env, &stmt);
     Ok(n)
+}
+
+pub(crate) fn in_transaction(
+    conn: &JdbcConn,
+    body: impl FnOnce() -> Result<(), ConnectError>,
+) -> Result<(), ConnectError> {
+    set_auto_commit(conn, false)?;
+    let result = body();
+    let ended = call_void(conn, if result.is_ok() { "commit" } else { "rollback" });
+    let _ = set_auto_commit(conn, true);
+    match result {
+        Err(error) => Err(error),
+        Ok(()) => ended,
+    }
+}
+
+fn set_auto_commit(conn: &JdbcConn, on: bool) -> Result<(), ConnectError> {
+    let mut env = attach()?;
+    let call = env.call_method(
+        handle(conn)?,
+        "setAutoCommit",
+        "(Z)V",
+        &[JValue::Bool(u8::from(on))],
+    );
+    step(&mut env, call)?;
+    Ok(())
+}
+
+fn call_void(conn: &JdbcConn, name: &str) -> Result<(), ConnectError> {
+    let mut env = attach()?;
+    let call = env.call_method(handle(conn)?, name, "()V", &[]);
+    step(&mut env, call)?;
+    Ok(())
 }
 
 pub(crate) fn stream_query(
@@ -142,53 +170,52 @@ pub(crate) fn stream_query(
 ) -> Result<u64, ConnectError> {
     let mut env = attach()?;
     let sql_j = env.new_string(sql)?;
-    let stmt = env
-        .call_method(
-            handle(conn)?,
-            "createStatement",
-            "()Ljava/sql/Statement;",
-            &[],
-        )?
-        .l()?;
-    check_ex(&mut env)?;
-    let rs = env.call_method(
+    let created = env.call_method(
+        handle(conn)?,
+        "createStatement",
+        "()Ljava/sql/Statement;",
+        &[],
+    );
+    let stmt = step(&mut env, created)?.l()?;
+    let queried = env.call_method(
         &stmt,
         "executeQuery",
         "(Ljava/lang/String;)Ljava/sql/ResultSet;",
         &[JValue::Object(&sql_j)],
     );
-    let rs = step(&mut env, rs)?.l()?;
-    check_ex(&mut env)?;
-    let meta = env
-        .call_method(&rs, "getMetaData", "()Ljava/sql/ResultSetMetaData;", &[])?
-        .l()?;
-    check_ex(&mut env)?;
-    let ncols = env.call_method(&meta, "getColumnCount", "()I", &[])?.i()?;
+    let rs = step(&mut env, queried)?.l()?;
+    let meta_call = env.call_method(&rs, "getMetaData", "()Ljava/sql/ResultSetMetaData;", &[]);
+    let meta = step(&mut env, meta_call)?.l()?;
+    let count_call = env.call_method(&meta, "getColumnCount", "()I", &[]);
+    let ncols = step(&mut env, count_call)?.i()?;
     let mut columns = Vec::with_capacity(ncols.max(0) as usize);
     for i in 1..=ncols {
-        let label = env
-            .call_method(
-                &meta,
-                "getColumnLabel",
-                "(I)Ljava/lang/String;",
-                &[JValue::Int(i)],
-            )?
-            .l()?;
+        let label_call = env.call_method(
+            &meta,
+            "getColumnLabel",
+            "(I)Ljava/lang/String;",
+            &[JValue::Int(i)],
+        );
+        let label = step(&mut env, label_call)?.l()?;
         columns.push(java_string(&mut env, label));
     }
     on_columns(&columns)?;
     let mut n = 0u64;
     loop {
-        let next = env.call_method(&rs, "next", "()Z", &[])?.z()?;
-        check_ex(&mut env)?;
+        let next_call = env.call_method(&rs, "next", "()Z", &[]);
+        let next = step(&mut env, next_call)?.z()?;
         if !next {
             break;
         }
         let mut row = Vec::with_capacity(columns.len());
         for i in 1..=ncols {
-            let value = env
-                .call_method(&rs, "getString", "(I)Ljava/lang/String;", &[JValue::Int(i)])?
-                .l()?;
+            let value_call = env.call_method(
+                &rs,
+                "getString",
+                "(I)Ljava/lang/String;",
+                &[JValue::Int(i)],
+            );
+            let value = step(&mut env, value_call)?.l()?;
             row.push(java_string(&mut env, value));
         }
         on_row(&row)?;
@@ -372,8 +399,8 @@ fn jdbc_get_columns(
     let rs = rs.l()?;
     let mut out = Vec::new();
     loop {
-        let next = env.call_method(&rs, "next", "()Z", &[])?.z()?;
-        check_ex(&mut env)?;
+        let next_call = env.call_method(&rs, "next", "()Z", &[]);
+        let next = step(&mut env, next_call)?.z()?;
         if !next {
             break;
         }
@@ -446,8 +473,8 @@ fn get_tables(
     let rs = rs.l()?;
     let mut rows = Vec::new();
     loop {
-        let next = env.call_method(&rs, "next", "()Z", &[])?.z()?;
-        check_ex(env)?;
+        let next_call = env.call_method(&rs, "next", "()Z", &[]);
+        let next = step(env, next_call)?.z()?;
         if !next {
             break;
         }
@@ -464,8 +491,8 @@ fn get_tables(
 fn read_strings(env: &mut JNIEnv, rs: &JObject, col: i32) -> Result<Vec<String>, ConnectError> {
     let mut names = Vec::new();
     loop {
-        let next = env.call_method(rs, "next", "()Z", &[])?.z()?;
-        check_ex(env)?;
+        let next_call = env.call_method(rs, "next", "()Z", &[]);
+        let next = step(env, next_call)?.z()?;
         if !next {
             break;
         }
@@ -483,9 +510,9 @@ fn rs_string(env: &mut JNIEnv, rs: &JObject, col: i32) -> Result<String, Connect
         "getString",
         "(I)Ljava/lang/String;",
         &[JValue::Int(col)],
-    )?;
-    check_ex(env)?;
-    Ok(java_string(env, value.l()?))
+    );
+    let value = step(env, value)?.l()?;
+    Ok(java_string(env, value))
 }
 
 fn rs_i64(env: &mut JNIEnv, rs: &JObject, col: i32) -> Option<i64> {
@@ -611,14 +638,34 @@ fn check_ex(env: &mut JNIEnv) -> Result<(), ConnectError> {
     }
     let thrown = env.exception_occurred()?;
     env.exception_clear()?;
-    let message = env
-        .call_method(&thrown, "toString", "()Ljava/lang/String;", &[])
+    let summary = java_call_string(env, &thrown, "toString", "()Ljava/lang/String;", &[]);
+    let detail = java_call_string(env, &thrown, "getMessage", "()Ljava/lang/String;", &[]);
+    let message = match (summary.trim(), detail.trim()) {
+        ("", "") => "jdbc exception".to_string(),
+        (summary, "") => summary.to_string(),
+        ("", detail) => detail.to_string(),
+        (summary, detail) if summary.contains(detail) => summary.to_string(),
+        (summary, detail) => format!("{summary}: {detail}"),
+    };
+    Err(ConnectError::Invalid(message))
+}
+
+fn java_call_string(
+    env: &mut JNIEnv,
+    target: &JObject,
+    name: &str,
+    sig: &str,
+    args: &[JValue],
+) -> String {
+    let value = env.call_method(target, name, sig, args);
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    value
         .ok()
         .and_then(|value| value.l().ok())
         .map(|obj| java_string(env, obj))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "jdbc exception".into());
-    Err(ConnectError::Invalid(message))
+        .unwrap_or_default()
 }
 
 fn java_string(env: &mut JNIEnv, obj: JObject) -> String {
@@ -711,7 +758,10 @@ fn ensure_jar() -> Result<PathBuf, ConnectError> {
 }
 
 fn jar_dir() -> PathBuf {
-    vendor_dirs().into_iter().next().unwrap_or_else(|| PathBuf::from("vendor/tibero"))
+    vendor_dirs()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| PathBuf::from("vendor/tibero"))
 }
 
 fn vendor_dirs() -> Vec<PathBuf> {

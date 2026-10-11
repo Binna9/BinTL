@@ -126,15 +126,17 @@ pub async fn run_sql_script(
     let statements = split_sql_statements(&sql);
     let mut last = None;
     for (index, statement) in statements.iter().enumerate() {
-        last = Some(run_sql(c, statement, limit, on_progress, schema).await.map_err(
-            |error| {
-                if statements.len() == 1 {
-                    error
-                } else {
-                    ConnectError::Invalid(format!("statement {}: {error}", index + 1))
-                }
-            },
-        )?);
+        last = Some(
+            run_sql(c, statement, limit, on_progress, schema)
+                .await
+                .map_err(|error| {
+                    if statements.len() == 1 {
+                        error
+                    } else {
+                        ConnectError::Invalid(format!("statement {}: {error}", index + 1))
+                    }
+                })?,
+        );
     }
     last.ok_or_else(|| ConnectError::Invalid("sql is empty".into()))
 }

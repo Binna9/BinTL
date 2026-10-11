@@ -8,15 +8,24 @@ impl Store {
         spec_json: &str,
         transform_id: &str,
         dataset_id: &str,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
+        folder_id: Option<&str>,
     ) -> Result<JobRow, StorageError> {
-        self.require_workspace(workspace_id).await?;
+        if let Some(workspace_id) = workspace_id {
+            self.require_workspace(workspace_id).await?;
+        } else if let Some(folder_id) = folder_id {
+            if self.get_folder(folder_id).await?.is_none() {
+                return Err(StorageError::NotFound("folder not found".into()));
+            }
+        } else {
+            return Err(StorageError::Invalid("folder_id required".into()));
+        }
         let execution_id = Uuid::new_v4().to_string();
         let id = Uuid::new_v4().to_string();
         let created_at = now_rfc3339();
         let mut tx = self.pool.begin().await?;
-        sqlx::query("INSERT INTO executions (id, workspace_id, source, trigger_id, status, created_at) VALUES (?, ?, 'transform_page', ?, 'queued', ?)")
-            .bind(&execution_id).bind(workspace_id).bind(transform_id).bind(&created_at).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO executions (id, workspace_id, folder_id, source, trigger_id, status, created_at) VALUES (?, ?, ?, 'transform_page', ?, 'queued', ?)")
+            .bind(&execution_id).bind(workspace_id).bind(folder_id).bind(transform_id).bind(&created_at).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO execution_steps (id, execution_id, kind, transform_id, definition_revision,
                      definition_snapshot_json, source_path, status, queued_at)
                      VALUES (?, ?, 'transform', ?, 1, ?, ?, 'queued', ?)")
@@ -44,7 +53,7 @@ impl Store {
         scope: Option<&DataScope>,
     ) -> Result<Vec<JobRow>, StorageError> {
         let (extra, binds) = match scope {
-            Some(scope) => Self::workspace_scope_sql(scope, "e.workspace_id"),
+            Some(scope) => Self::catalog_scope_sql(scope, "e.folder_id", "e.workspace_id"),
             None => (String::new(), Vec::new()),
         };
         let sql = format!(
@@ -160,6 +169,14 @@ impl Store {
                     .await
                     .ok()
                     .map(|meta| meta.len() as i64);
+                let folder_id = if job.workspace_id.is_empty() {
+                    job.folder_id.clone()
+                } else {
+                    self.get_workspace(&job.workspace_id)
+                        .await?
+                        .and_then(|workspace| workspace.folder_id)
+                        .or(job.folder_id.clone())
+                };
                 self.upsert_dataset(&DatasetUpsert {
                     id: job.id.clone(),
                     kind: "transform".into(),
@@ -170,7 +187,12 @@ impl Store {
                     delimiter: None,
                     has_header: None,
                     row_count,
-                    workspace_id: Some(job.workspace_id),
+                    workspace_id: if job.workspace_id.is_empty() {
+                        None
+                    } else {
+                        Some(job.workspace_id.clone())
+                    },
+                    folder_id,
                 })
                 .await?;
             }

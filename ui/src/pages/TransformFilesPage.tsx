@@ -48,7 +48,7 @@ export function TransformFilesPage() {
     [files, folders, treeSelection, workspaces],
   );
   const catalogFiles = useMemo(
-    () => files.map((item) => ({ id: item.id, name: item.filename, workspace_id: item.workspace_id })),
+    () => files.map((item) => ({ id: item.id, name: item.filename, folder_id: item.folder_id })),
     [files],
   );
   const selectedSet = useMemo(() => new Set(selected), [selected]);
@@ -155,7 +155,7 @@ export function TransformFilesPage() {
             onFileClick={(id) => {
               const item = files.find((file) => file.id === id);
               if (!item) return;
-              setTreeSelection({ type: "workspace", id: item.workspace_id });
+              setTreeSelection(item.folder_id ? { type: "folder", id: item.folder_id } : { type: "all" });
               void openPreview(item);
             }}
           />

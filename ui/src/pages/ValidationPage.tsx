@@ -91,7 +91,16 @@ export function ValidationPage() {
       try {
         const result = await datasetApi.list();
         if (cancelled) return;
-        setDatasets(result.datasets.filter((item) => item.available && (!workspaceId || item.workspace_id === workspaceId)));
+        const folderId = workspaceId
+          ? (await workspaceApi.get(workspaceId)).folder_id ?? null
+          : null;
+        if (cancelled) return;
+        setDatasets(result.datasets.filter((item) => {
+          if (!item.available) return false;
+          if (!workspaceId) return true;
+          if (item.workspace_id === workspaceId) return true;
+          return folderId ? item.folder_id === folderId : !item.folder_id;
+        }));
         if (!editorChipId) return;
         if (!workspaceId) {
           const chip = await chipApi.get(editorChipId);

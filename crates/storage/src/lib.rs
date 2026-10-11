@@ -621,7 +621,7 @@ fn control_kinds_allowed(from_kind: &str, to_kind: &str) -> bool {
         return false;
     }
     match from_kind {
-        "load" => matches!(to_kind, "load" | "validation" | "sql"),
+        "load" => matches!(to_kind, "load" | "validation" | "sql" | "extract"),
         "validation" | "serve" => to_kind == "sql",
         _ if to_kind == "extract" => matches!(from_kind, "extract" | "sql"),
         _ => true,
@@ -1067,6 +1067,7 @@ mod tests {
                 has_header: None,
                 row_count: Some(1),
                 workspace_id: Some(home.clone()),
+                folder_id: None,
             })
             .await
             .unwrap();
@@ -1082,6 +1083,7 @@ mod tests {
                 has_header: Some(true),
                 row_count: Some(1),
                 workspace_id: None,
+                folder_id: None,
             })
             .await
             .unwrap();
@@ -1098,6 +1100,108 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 1);
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn catalog_file_stays_in_folder_when_canvas_moves() {
+        let (root, store, admin) = test_store().await;
+        let folder = store.insert_folder("법령해석", &admin.id, None).await.unwrap();
+        let other = store.insert_folder("주금공", &admin.id, None).await.unwrap();
+        let canvas = store
+            .insert_workspace("수집", None, &admin.id, Some(&folder.id))
+            .await
+            .unwrap();
+        let kept = store
+            .upsert_dataset(&DatasetUpsert {
+                id: "upload".into(),
+                kind: "upload".into(),
+                extract_id: None,
+                filename: "in.csv".into(),
+                stored_path: "uploads/in.csv".into(),
+                size_bytes: Some(1),
+                delimiter: Some(",".into()),
+                has_header: Some(true),
+                row_count: Some(1),
+                workspace_id: None,
+                folder_id: Some(folder.id.clone()),
+            })
+            .await
+            .unwrap();
+        let chip_file = store
+            .upsert_dataset(&DatasetUpsert {
+                id: "chip-out".into(),
+                kind: "script".into(),
+                extract_id: None,
+                filename: "out.parquet".into(),
+                stored_path: "chip_outputs/ws/chip/current.parquet".into(),
+                size_bytes: Some(1),
+                delimiter: None,
+                has_header: None,
+                row_count: Some(1),
+                workspace_id: Some(canvas.id.clone()),
+                folder_id: Some(folder.id.clone()),
+            })
+            .await
+            .unwrap();
+        assert!(store
+            .dataset_serves_workspace(&kept.id, &canvas.id)
+            .await
+            .unwrap());
+        store
+            .update_workspace(&canvas.id, None, None, None, Some(Some(&other.id)))
+            .await
+            .unwrap();
+        let kept = store.get_dataset(&kept.id).await.unwrap().unwrap();
+        let moved = store.get_dataset(&chip_file.id).await.unwrap().unwrap();
+        assert_eq!(kept.folder_id.as_deref(), Some(folder.id.as_str()));
+        assert_eq!(moved.folder_id.as_deref(), Some(other.id.as_str()));
+        assert!(!store
+            .dataset_serves_workspace(&kept.id, &canvas.id)
+            .await
+            .unwrap());
+        assert!(store
+            .dataset_serves_workspace(&moved.id, &canvas.id)
+            .await
+            .unwrap());
+        store.pool.close().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn canvas_reads_same_owner_file_from_another_workspace() {
+        let (root, store, admin) = test_store().await;
+        let here = store.insert_folder("here", &admin.id, None).await.unwrap();
+        let there = store.insert_folder("there", &admin.id, None).await.unwrap();
+        let canvas = store
+            .insert_workspace("canvas", None, &admin.id, Some(&here.id))
+            .await
+            .unwrap();
+        let elsewhere = store
+            .insert_workspace("elsewhere", None, &admin.id, Some(&there.id))
+            .await
+            .unwrap();
+        let file = store
+            .upsert_dataset(&DatasetUpsert {
+                id: "other-ws".into(),
+                kind: "upload".into(),
+                extract_id: None,
+                filename: "in.csv".into(),
+                stored_path: "uploads/other.csv".into(),
+                size_bytes: Some(1),
+                delimiter: Some(",".into()),
+                has_header: Some(true),
+                row_count: Some(1),
+                workspace_id: Some(elsewhere.id),
+                folder_id: Some(there.id),
+            })
+            .await
+            .unwrap();
+        assert!(store
+            .dataset_serves_workspace(&file.id, &canvas.id)
+            .await
+            .unwrap());
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1130,13 +1234,56 @@ mod tests {
                 delimiter: None,
                 has_header: None,
                 row_count: Some(1),
-                workspace_id: Some(home),
+                workspace_id: Some(home.clone()),
+                folder_id: None,
             })
             .await
             .unwrap();
         store.delete_transform_dataset(&row.id).await.unwrap();
         assert!(!path.exists());
         assert!(sibling.exists());
+
+        let script = store
+            .upsert_dataset(&DatasetUpsert {
+                id: "script-file".into(),
+                kind: "script".into(),
+                extract_id: None,
+                filename: "out.parquet".into(),
+                stored_path: "chip_outputs/ws/script/out.parquet".into(),
+                size_bytes: Some(4),
+                delimiter: None,
+                has_header: None,
+                row_count: Some(1),
+                workspace_id: Some(home.clone()),
+                folder_id: None,
+            })
+            .await
+            .unwrap();
+        let script_path = store.resolve(&script.stored_path);
+        std::fs::create_dir_all(script_path.parent().unwrap()).unwrap();
+        std::fs::write(&script_path, b"script").unwrap();
+        store.delete_transform_dataset(&script.id).await.unwrap();
+        assert!(!script_path.exists());
+
+        let upload = store
+            .upsert_dataset(&DatasetUpsert {
+                id: "upload-file".into(),
+                kind: "upload".into(),
+                extract_id: None,
+                filename: "in.csv".into(),
+                stored_path: "uploads/in.csv".into(),
+                size_bytes: Some(2),
+                delimiter: Some(",".into()),
+                has_header: Some(true),
+                row_count: Some(1),
+                workspace_id: Some(home),
+                folder_id: None,
+            })
+            .await
+            .unwrap();
+        let rejected = store.delete_transform_dataset(&upload.id).await.unwrap_err();
+        assert!(matches!(rejected, StorageError::Invalid(_)));
+
         store.pool.close().await;
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1164,6 +1311,7 @@ mod tests {
                 has_header: Some(true),
                 row_count: Some(1),
                 workspace_id: Some(home.clone()),
+                folder_id: None,
             })
             .await
             .unwrap();
@@ -1177,7 +1325,7 @@ mod tests {
             .await
             .unwrap();
         let job = store
-            .insert_transform_job(&input.stored_path, "{}", &transform.id, &input.id, &home)
+            .insert_transform_job(&input.stored_path, "{}", &transform.id, &input.id, Some(&home), None)
             .await
             .unwrap();
         let rel = format!("outputs/{}/result.parquet", job.id);
@@ -1315,6 +1463,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owned_chip_placements_list_every_workspace_and_skip_unplaced() {
+        let (root, store, admin) = test_store().await;
+        let alpha = store
+            .insert_workspace("Alpha", None, &admin.id, None)
+            .await
+            .unwrap();
+        let zebra = store
+            .insert_workspace("Zebra", None, &admin.id, None)
+            .await
+            .unwrap();
+        let shared = store
+            .insert_chip(&admin.id, &alpha.id, "Shared", "extract", "{}")
+            .await
+            .unwrap();
+        let loose = store
+            .insert_chip(&admin.id, &alpha.id, "Loose", "extract", "{}")
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&zebra.id, &shared.id)
+            .await
+            .unwrap();
+        store
+            .attach_chip_to_workspace(&alpha.id, &shared.id)
+            .await
+            .unwrap();
+
+        let placed = store
+            .list_owned_chip_workspace_ids(&admin.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            placed.get(&shared.id).map(Vec::as_slice),
+            Some([alpha.id, zebra.id].as_slice()),
+        );
+        assert!(!placed.contains_key(&loose.id));
+
+        store.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn unlinking_memo_from_canvas_deletes_the_chip() {
         let (root, store, admin) = test_store().await;
         let workspace = store
@@ -1322,7 +1512,13 @@ mod tests {
             .await
             .unwrap();
         let chip = store
-            .insert_chip(&admin.id, &workspace.id, "메모-01", "memo", r#"{"text":"hi"}"#)
+            .insert_chip(
+                &admin.id,
+                &workspace.id,
+                "메모-01",
+                "memo",
+                r#"{"text":"hi"}"#,
+            )
             .await
             .unwrap();
         store
@@ -1405,7 +1601,13 @@ mod tests {
             .await
             .unwrap();
         store
-            .insert_chip(&admin.id, &workspace.id, "메모-01", "memo", r#"{"text":"old"}"#)
+            .insert_chip(
+                &admin.id,
+                &workspace.id,
+                "메모-01",
+                "memo",
+                r#"{"text":"old"}"#,
+            )
             .await
             .unwrap();
 
@@ -1418,7 +1620,13 @@ mod tests {
         assert_eq!(leftover.0, 0);
 
         let created = store
-            .insert_chip(&admin.id, &workspace.id, "메모-01", "memo", r#"{"text":"new"}"#)
+            .insert_chip(
+                &admin.id,
+                &workspace.id,
+                "메모-01",
+                "memo",
+                r#"{"text":"new"}"#,
+            )
             .await
             .unwrap();
         assert_eq!(created.name, "메모-01");
@@ -1941,7 +2149,7 @@ mod tests {
                 None,
             )
             .await;
-        assert!(reverse.is_err(), "load cannot sequence extract");
+        assert!(reverse.is_ok(), "load may sequence extract");
 
         let error_into_consumer = store
             .save_workspace(

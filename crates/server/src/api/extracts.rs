@@ -30,6 +30,8 @@ pub(super) struct CreateExtractBody {
     #[serde(default)]
     workspace_id: Option<String>,
     #[serde(default)]
+    folder_id: Option<String>,
+    #[serde(default)]
     filename: Option<String>,
     #[serde(default)]
     name: Option<String>,
@@ -146,8 +148,7 @@ pub(super) async fn create_api_extract(
     };
     let delimiter = body.delimiter.unwrap_or_else(|| ",".into());
     parse_delimiter(&delimiter).map_err(|e| AppError::bad(e.to_string()))?;
-    let workspace_id =
-        access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
+    let (workspace_id, folder_id) = extract_destination(&state, &user, body.workspace_id, body.folder_id).await?;
     let output_filename = body
         .filename
         .as_deref()
@@ -165,7 +166,8 @@ pub(super) async fn create_api_extract(
             body.add_sequence.unwrap_or(false),
             Some(&sql),
             None,
-            &workspace_id,
+            workspace_id.as_deref(),
+            folder_id.as_deref(),
             output_filename,
         )
         .await?;
@@ -174,6 +176,27 @@ pub(super) async fn create_api_extract(
         StatusCode::CREATED,
         Json(serde_json::to_value(row).unwrap()),
     ))
+}
+
+async fn extract_destination(
+    state: &AppState,
+    user: &CurrentUser,
+    workspace_id: Option<String>,
+    folder_id: Option<String>,
+) -> Result<(Option<String>, Option<String>), AppError> {
+    let workspace_id = workspace_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let folder_id = folder_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(workspace_id) = workspace_id {
+        access::require_workspace(&state.store, user, &workspace_id).await?;
+        return Ok((Some(workspace_id), None));
+    }
+    let folder_id = folder_id.ok_or_else(|| AppError::bad("folder_id required"))?;
+    access::require_folder(&state.store, user, &folder_id).await?;
+    Ok((None, Some(folder_id)))
 }
 
 pub(super) async fn create_database_extract(
@@ -220,8 +243,7 @@ pub(super) async fn create_database_extract(
         }
         None => None,
     };
-    let workspace_id =
-        access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
+    let (workspace_id, folder_id) = extract_destination(&state, &user, body.workspace_id, body.folder_id).await?;
     let output_filename = body
         .filename
         .as_deref()
@@ -239,7 +261,8 @@ pub(super) async fn create_database_extract(
             body.add_sequence.unwrap_or(false),
             sql.as_deref(),
             catalog_database.as_deref(),
-            &workspace_id,
+            workspace_id.as_deref(),
+            folder_id.as_deref(),
             output_filename,
         )
         .await?;
@@ -356,11 +379,11 @@ pub(super) async fn preview_extract(
     } else {
         row.delimiter.clone()
     };
-    let delimiter = parse_delimiter(&delimiter_raw)?;
     let has_header = row.header != 0;
     let limit = query.limit.unwrap_or(200).clamp(1, 1000) as usize;
+    let preview_delimiter = delimiter_raw.clone();
     let preview = tokio::task::spawn_blocking(move || {
-        read_upload_preview(&path, delimiter, has_header, limit)
+        read_upload_preview(&path, &preview_delimiter, has_header, limit)
     })
     .await
     .map_err(|error| {

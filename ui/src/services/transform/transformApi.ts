@@ -37,9 +37,12 @@ export const transformApi = {
     }),
   delete: (id: string) =>
     httpRequest<{ ok: boolean }>(`/api/transforms/${id}`, { method: "DELETE" }),
-  run: (id: string, workspaceId?: string) =>
+  run: (id: string, destination?: { workspaceId?: string; folderId?: string }) =>
     httpRequest<TransformRunResponse>(`/api/transforms/${id}/run`, {
       method: "POST",
-      body: JSON.stringify(workspaceId?.trim() ? { workspace_id: workspaceId.trim() } : {}),
+      body: JSON.stringify({
+        ...(destination?.workspaceId?.trim() ? { workspace_id: destination.workspaceId.trim() } : {}),
+        ...(destination?.folderId?.trim() ? { folder_id: destination.folderId.trim() } : {}),
+      }),
     }),
 };

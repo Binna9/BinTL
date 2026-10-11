@@ -396,7 +396,7 @@ export function LoadPage() {
       <Panel tall className="overflow-hidden">
         <SplitLayout className="min-h-0 flex-1" defaultSizes={[layout.split.sidebar]}>
           <aside className="flex h-full min-h-0 flex-col overflow-hidden">
-            <SplitLayout direction="vertical" className="h-full" defaultSizes={[layout.split.connections]} minSize={layout.split.minStack}>
+            <SplitLayout direction="vertical" className="h-full" defaultSizes={[layout.split.connectionStack]} minSize={layout.split.minStack}>
               <div className="flex h-full min-h-0 flex-col overflow-hidden">
                 <PaneHeader title={messages.common.connections} meta={messages.common.count(connections.length)} />
                 <div className="scroll-pane min-h-0 flex-1 overflow-y-auto bg-surface">

@@ -3,7 +3,7 @@ use std::path::Path;
 use calamine::{open_workbook_auto, Reader};
 use serde::Serialize;
 
-use crate::extract::{with_sequence, with_sequence_header};
+use crate::extract::{with_sequence, with_sequence_header, COLON_PIPE};
 use crate::ConnectError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -49,6 +49,34 @@ pub fn export_sheet_to_csv(
     header: bool,
     add_sequence: bool,
 ) -> Result<Vec<u8>, ConnectError> {
+    let range_rows = sheet_rows(path, sheet_name)?;
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(delimiter)
+        .from_writer(Vec::new());
+    for (index, cells) in range_rows.into_iter().enumerate() {
+        write_csv_record(&mut writer, index, cells, header, add_sequence)?;
+    }
+    writer
+        .into_inner()
+        .map_err(|error| ConnectError::Io(error.into_error()))
+}
+
+pub fn export_sheet_colon_pipe(
+    path: &Path,
+    sheet_name: &str,
+    header: bool,
+    add_sequence: bool,
+) -> Result<Vec<u8>, ConnectError> {
+    let rows = sheet_rows(path, sheet_name)?;
+    let mut out = Vec::new();
+    for (index, cells) in rows.into_iter().enumerate() {
+        let cells = sequenced_cells(index, cells, header, add_sequence);
+        push_colon_pipe_record(&mut out, &cells)?;
+    }
+    Ok(out)
+}
+
+fn sheet_rows(path: &Path, sheet_name: &str) -> Result<Vec<Vec<String>>, ConnectError> {
     spreadsheet_format(path)?;
     let mut workbook =
         open_workbook_auto(path).map_err(|error| ConnectError::Spreadsheet(error.to_string()))?;
@@ -57,29 +85,58 @@ pub fn export_sheet_to_csv(
             "sheet `{sheet_name}` not found"
         )));
     }
-
     let range = workbook
         .worksheet_range(sheet_name)
         .map_err(|error| ConnectError::Spreadsheet(error.to_string()))?;
-    let mut writer = csv::WriterBuilder::new()
-        .delimiter(delimiter)
-        .from_writer(Vec::new());
-    for (index, row) in range.rows().enumerate() {
-        let cells: Vec<String> = row.iter().map(ToString::to_string).collect();
-        if header && index == 0 {
-            writer.write_record(&with_sequence_header(add_sequence, cells))?;
+    Ok(range
+        .rows()
+        .map(|row| row.iter().map(ToString::to_string).collect())
+        .collect())
+}
+
+fn sequenced_cells(
+    index: usize,
+    cells: Vec<String>,
+    header: bool,
+    add_sequence: bool,
+) -> Vec<String> {
+    if header && index == 0 {
+        with_sequence_header(add_sequence, cells)
+    } else {
+        let seq = if header {
+            index as u64
         } else {
-            let seq = if header {
-                index as u64
-            } else {
-                index as u64 + 1
-            };
-            writer.write_record(&with_sequence(add_sequence, seq, cells))?;
-        }
+            index as u64 + 1
+        };
+        with_sequence(add_sequence, seq, cells)
     }
-    writer
-        .into_inner()
-        .map_err(|error| ConnectError::Io(error.into_error()))
+}
+
+fn write_csv_record(
+    writer: &mut csv::Writer<Vec<u8>>,
+    index: usize,
+    cells: Vec<String>,
+    header: bool,
+    add_sequence: bool,
+) -> Result<(), ConnectError> {
+    writer.write_record(&sequenced_cells(index, cells, header, add_sequence))?;
+    Ok(())
+}
+
+fn push_colon_pipe_record(out: &mut Vec<u8>, cells: &[String]) -> Result<(), ConnectError> {
+    for (index, cell) in cells.iter().enumerate() {
+        if cell.contains(COLON_PIPE) || cell.contains('\n') || cell.contains('\r') {
+            return Err(ConnectError::Invalid(
+                "`:||` cannot be used when a cell contains that delimiter or a line break".into(),
+            ));
+        }
+        if index > 0 {
+            out.extend_from_slice(COLON_PIPE.as_bytes());
+        }
+        out.extend_from_slice(cell.as_bytes());
+    }
+    out.push(b'\n');
+    Ok(())
 }
 
 #[cfg(test)]
@@ -182,6 +239,11 @@ mod tests {
         );
         let piped = export_sheet_to_csv(&path, "Sales", b'|', true, false).unwrap();
         assert_eq!(String::from_utf8(piped).unwrap(), "name|value\nalpha|1\n");
+        let colon_pipe = export_sheet_colon_pipe(&path, "Sales", true, false).unwrap();
+        assert_eq!(
+            String::from_utf8(colon_pipe).unwrap(),
+            "name:||value\nalpha:||1\n"
+        );
         std::fs::remove_file(path).unwrap();
     }
 }

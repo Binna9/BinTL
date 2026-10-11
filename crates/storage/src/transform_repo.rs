@@ -14,28 +14,31 @@ impl Store {
             return Err(StorageError::Invalid("name required".into()));
         }
         let dataset = self.get_dataset(dataset_id).await?;
-        let workspace_id = match dataset.as_ref() {
-            Some(dataset) => dataset.workspace_id.clone(),
+        let owner_user_id = match dataset.as_ref() {
+            Some(dataset) if !dataset.workspace_id.is_empty() => {
+                self.workspace_owner(&dataset.workspace_id).await?
+            }
+            Some(dataset) => {
+                let folder_id = dataset
+                    .folder_id
+                    .as_deref()
+                    .ok_or_else(|| StorageError::Invalid("transform owner is unavailable".into()))?;
+                self.folder_owner(folder_id).await?
+            }
             None => {
                 let chip_id = input_chip_id
                     .filter(|value| !value.trim().is_empty())
                     .ok_or_else(|| StorageError::NotFound("dataset not found".into()))?;
-                self.chip_workspace_hint(chip_id)
+                let workspace_id = self
+                    .chip_workspace_hint(chip_id)
                     .await?
-                    .ok_or_else(|| StorageError::NotFound("chip workspace not found".into()))?
+                    .ok_or_else(|| StorageError::NotFound("chip workspace not found".into()))?;
+                self.workspace_owner(&workspace_id).await?
             }
         };
         let default_input_file_id = dataset.as_ref().map(|dataset| dataset.id.as_str());
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
-        let owner_user_id: String = sqlx::query_scalar(
-            "SELECT COALESCE(w.owner_user_id, (SELECT id FROM users WHERE active = 1 ORDER BY created_at LIMIT 1))
-             FROM workspaces w WHERE w.id = ?",
-        )
-        .bind(&workspace_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| StorageError::Invalid("transform owner is unavailable".into()))?;
         let output_filename = chip_slot::display_filename(name, "transform", ",");
         sqlx::query(
             "INSERT INTO transforms
@@ -214,14 +217,44 @@ impl Store {
         Ok(())
     }
 
+    pub async fn transform_owner(&self, id: &str) -> Result<Option<String>, StorageError> {
+        sqlx::query_scalar("SELECT owner_user_id FROM transforms WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(StorageError::from)
+    }
+
+    async fn workspace_owner(&self, workspace_id: &str) -> Result<String, StorageError> {
+        sqlx::query_scalar(
+            "SELECT COALESCE(w.owner_user_id, (SELECT id FROM users WHERE active = 1 ORDER BY created_at LIMIT 1))
+             FROM workspaces w WHERE w.id = ?",
+        )
+        .bind(workspace_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| StorageError::Invalid("transform owner is unavailable".into()))
+    }
+
+    async fn folder_owner(&self, folder_id: &str) -> Result<String, StorageError> {
+        sqlx::query_scalar("SELECT owner_user_id FROM workspace_folders WHERE id = ?")
+            .bind(folder_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| StorageError::Invalid("transform owner is unavailable".into()))
+    }
+
     pub async fn list_transforms(
         &self,
         scope: Option<&DataScope>,
     ) -> Result<Vec<TransformRow>, StorageError> {
+        let workspace_expr = "COALESCE(d.workspace_id, (SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id=wc.chip_id WHERE c.transform_id=t.id LIMIT 1))";
         let (extra, binds) = match scope {
-            Some(scope) => {
-                Self::workspace_scope_sql(scope, "COALESCE(d.workspace_id, (SELECT wc.workspace_id FROM workspace_chips wc INNER JOIN chips c ON c.id=wc.chip_id WHERE c.transform_id=t.id LIMIT 1))")
-            }
+            Some(scope) if scope.workspace_id.is_none() && scope.folder_id.is_none() && !scope.admin => (
+                format!("AND (t.owner_user_id = ? OR {workspace_expr} IN (SELECT id FROM workspaces WHERE owner_user_id = ?))"),
+                vec![scope.user_id.clone(), scope.user_id.clone()],
+            ),
+            Some(scope) => Self::workspace_scope_sql(scope, workspace_expr),
             None => (String::new(), Vec::new()),
         };
         let sql = format!(

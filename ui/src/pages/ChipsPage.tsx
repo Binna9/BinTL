@@ -17,6 +17,8 @@ import { fmtWhen } from "@/lib/format";
 import { usePagination } from "@/lib/pagination";
 import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { chipApi } from "@/services/chips/chipApi";
+import { workspaceApi } from "@/services/workspace/workspaceApi";
+import type { Workspace } from "@/types/workspace";
 import { SqlChipEditorDialog } from "@/components/workspace/SqlChipEditorDialog";
 import { ServeChipEditorDialog } from "@/components/workspace/ServeChipEditorDialog";
 import { MemoChipEditorDialog } from "@/components/workspace/MemoChipEditorDialog";
@@ -51,11 +53,27 @@ function compareChips(a: Chip, b: Chip) {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
+function placedWorkspaceIds(chip: Chip): string[] {
+  if (chip.workspace_ids) return chip.workspace_ids;
+  return chip.workspace_id ? [chip.workspace_id] : [];
+}
+
+function keepPlacements(updated: Chip, previous: Chip | undefined): Chip {
+  if (updated.workspace_ids || !previous?.workspace_ids) return updated;
+  return { ...updated, workspace_ids: previous.workspace_ids };
+}
+
+function workspaceNamesLabel(ids: string[], names: Map<string, string>, unplaced: string) {
+  if (ids.length === 0) return unplaced;
+  return ids.map((id) => names.get(id) ?? id).join(", ");
+}
+
 export function ChipsPage() {
   const { messages } = useLanguage();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [chips, setChips] = useState<Chip[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
@@ -66,27 +84,45 @@ export function ChipsPage() {
   const [nameQuery, setNameQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<"all" | ChipKind>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
+  const [scope, setScope] = useState("all");
 
+  const workspaceNames = useMemo(
+    () => new Map(workspaces.map((workspace) => [workspace.id, workspace.name])),
+    [workspaces],
+  );
+  const workspaceOptions = useMemo(
+    () => [...workspaces].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
+    [workspaces],
+  );
+  const scopeValue = scope !== "all" && scope !== "unplaced" && !workspaceNames.has(scope) ? "all" : scope;
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const visibleChips = useMemo(() => {
     const query = nameQuery.trim().toLocaleLowerCase();
     return chips
-      .filter((chip) =>
-        (kindFilter === "all" || chip.kind === kindFilter)
-        && (statusFilter === "all" || (statusFilter === "active" ? chip.active : !chip.active))
-        && (!query || chip.name.toLocaleLowerCase().includes(query)),
-      )
+      .filter((chip) => {
+        const placed = placedWorkspaceIds(chip);
+        const inScope = scopeValue === "all"
+          || (scopeValue === "unplaced" ? placed.length === 0 : placed.includes(scopeValue));
+        return inScope
+          && (kindFilter === "all" || chip.kind === kindFilter)
+          && (statusFilter === "all" || (statusFilter === "active" ? chip.active : !chip.active))
+          && (!query || chip.name.toLocaleLowerCase().includes(query));
+      })
       .sort(compareChips);
-  }, [chips, kindFilter, nameQuery, statusFilter]);
-  const paging = usePagination(visibleChips, `${kindFilter}|${statusFilter}|${nameQuery}`);
+  }, [chips, kindFilter, nameQuery, scopeValue, statusFilter]);
+  const paging = usePagination(visibleChips, `${kindFilter}|${statusFilter}|${nameQuery}|${scopeValue}`);
   const pageChips = paging.items;
   const allSelected = pageChips.length > 0 && pageChips.every((chip) => selectedSet.has(chip.id));
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await chipApi.listCatalog();
+      const [response, workspaceResponse] = await Promise.all([
+        chipApi.listCatalog(),
+        workspaceApi.list(),
+      ]);
       setChips(response.chips);
+      setWorkspaces(workspaceResponse.workspaces);
     } catch (error) {
       toastError(messages.workspace.loadError, error);
     } finally {
@@ -119,7 +155,7 @@ export function ChipsPage() {
   async function toggleActive(chip: Chip) {
     setBusy(true);
     try {
-      const updated = await chipApi.update(chip.id, { active: !chip.active });
+      const updated = keepPlacements(await chipApi.update(chip.id, { active: !chip.active }), chip);
       setChips((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       if (detail?.id === updated.id) setDetail(updated);
     } catch (error) {
@@ -246,10 +282,23 @@ export function ChipsPage() {
               ]}
             />
           </div>
+          <div className="flex items-center text-xs text-text-secondary">
+            <span className="sr-only">{messages.chips.workspaceFilter}</span>
+            <Select
+              className="h-8 min-w-[10rem]"
+              value={scopeValue}
+              onChange={setScope}
+              options={[
+                { value: "all", label: messages.chips.allWorkspaces },
+                { value: "unplaced", label: messages.chips.unplaced },
+                ...workspaceOptions.map((workspace) => ({ value: workspace.id, label: workspace.name })),
+              ]}
+            />
+          </div>
         </div>
         <DataGrid
           headers={[...messages.chips.headers]}
-          columnWidths={[56, 200, 88, 72, 88, 140]}
+          columnWidths={[56, 200, 88, 200, 72, 88, 140]}
           selectedIds={selected}
           onSelectedIdsChange={setSelected}
           empty={
@@ -259,7 +308,10 @@ export function ChipsPage() {
             : undefined
           }
         >
-          {loading || chips.length === 0 || visibleChips.length === 0 ? null : pageChips.map((chip) => (
+          {loading || chips.length === 0 || visibleChips.length === 0 ? null : pageChips.map((chip) => {
+            const placed = placedWorkspaceIds(chip);
+            const placeLabel = workspaceNamesLabel(placed, workspaceNames, messages.chips.unplaced);
+            return (
               <GridRow key={chip.id} rowId={chip.id} selected={selectedSet.has(chip.id)}>
                 <GridCell select>
                   <input
@@ -282,6 +334,9 @@ export function ChipsPage() {
                   </button>
                 </GridCell>
                 <GridCell>{kindLabel(chip.kind, messages)}</GridCell>
+                <GridCell muted={placed.length === 0} title={placeLabel}>
+                  <span className="block truncate">{placeLabel}</span>
+                </GridCell>
                 <GridCell mono muted>
                   v{chip.revision}
                 </GridCell>
@@ -300,7 +355,8 @@ export function ChipsPage() {
                 </GridCell>
                 <GridCell mono muted>{fmtWhen(chip.updated_at)}</GridCell>
               </GridRow>
-            ))}
+            );
+          })}
         </DataGrid>
         <PaginationBar
           page={paging.page}
@@ -371,6 +427,12 @@ export function ChipsPage() {
                 <dt className="text-text-tertiary">{messages.chips.headers[2]}</dt>
                 <dd className="mt-1 font-medium text-text">{kindLabel(detail.kind, messages)}</dd>
               </div>
+              <div className="col-span-2">
+                <dt className="text-text-tertiary">{messages.chips.workspaces}</dt>
+                <dd className="mt-1 font-medium text-text">
+                  {workspaceNamesLabel(placedWorkspaceIds(detail), workspaceNames, messages.chips.unplaced)}
+                </dd>
+              </div>
             </dl>
             <ChipDetailView chip={detail} />
           </div>
@@ -385,8 +447,9 @@ export function ChipsPage() {
         occupiedNames={chips.map((chip) => chip.name)}
         onClose={() => setSqlEditorChip(null)}
         onSaved={(saved) => {
-          setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
-          setDetail((current) => (current?.id === saved.id ? saved : current));
+          const next = keepPlacements(saved, sqlEditorChip ?? undefined);
+          setChips((current) => current.map((item) => (item.id === next.id ? next : item)));
+          setDetail((current) => (current?.id === next.id ? next : current));
           setSqlEditorChip(null);
         }}
       />
@@ -395,8 +458,9 @@ export function ChipsPage() {
         chip={serveEditorChip}
         onClose={() => setServeEditorChip(null)}
         onSaved={(saved) => {
-          setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
-          setDetail((current) => (current?.id === saved.id ? saved : current));
+          const next = keepPlacements(saved, serveEditorChip ?? undefined);
+          setChips((current) => current.map((item) => (item.id === next.id ? next : item)));
+          setDetail((current) => (current?.id === next.id ? next : current));
           setServeEditorChip(null);
         }}
       />
@@ -405,8 +469,9 @@ export function ChipsPage() {
         chip={memoEditorChip}
         onClose={() => setMemoEditorChip(null)}
         onSaved={(saved) => {
-          setChips((current) => current.map((item) => (item.id === saved.id ? saved : item)));
-          setDetail((current) => (current?.id === saved.id ? saved : current));
+          const next = keepPlacements(saved, memoEditorChip ?? undefined);
+          setChips((current) => current.map((item) => (item.id === next.id ? next : item)));
+          setDetail((current) => (current?.id === next.id ? next : current));
           setMemoEditorChip(null);
         }}
       />

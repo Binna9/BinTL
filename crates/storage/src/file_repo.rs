@@ -8,9 +8,11 @@ impl Store {
         bytes: &[u8],
         delimiter: Option<&str>,
         has_header: Option<bool>,
-        workspace_id: &str,
+        folder_id: &str,
     ) -> Result<FileMeta, StorageError> {
-        self.require_workspace(workspace_id).await?;
+        if self.get_folder(folder_id).await?.is_none() {
+            return Err(StorageError::NotFound("folder not found".into()));
+        }
         let id = Uuid::new_v4().to_string();
         let filename = safe_filename(filename);
         let rel = upload_rel(&id, &filename);
@@ -30,7 +32,8 @@ impl Store {
                 delimiter: delimiter.map(str::to_string),
                 has_header,
                 row_count: None,
-                workspace_id: Some(workspace_id.to_string()),
+                workspace_id: None,
+                folder_id: Some(folder_id.to_string()),
             })
             .await
         {
@@ -43,7 +46,8 @@ impl Store {
             filename,
             size: bytes.len() as u64,
             stored_path: rel,
-            workspace_id: workspace_id.to_string(),
+            workspace_id: String::new(),
+            folder_id: Some(folder_id.to_string()),
         })
     }
 
@@ -120,6 +124,7 @@ impl Store {
                 size: row.size_bytes.unwrap_or(0) as u64,
                 stored_path: row.stored_path,
                 workspace_id: row.workspace_id,
+                folder_id: row.folder_id,
             })
             .collect())
     }
@@ -150,17 +155,14 @@ impl Store {
 
     pub async fn get_upload(&self, id: &str) -> Result<FileMeta, StorageError> {
         let (filename, _, size) = self.first_upload_file(id).await?;
-        let workspace_id = self
-            .get_dataset(id)
-            .await?
-            .map(|row| row.workspace_id)
-            .unwrap_or_default();
+        let row = self.get_dataset(id).await?;
         Ok(FileMeta {
             id: id.to_string(),
             filename: filename.clone(),
             size,
             stored_path: upload_rel(id, &filename),
-            workspace_id,
+            workspace_id: row.as_ref().map(|row| row.workspace_id.clone()).unwrap_or_default(),
+            folder_id: row.and_then(|row| row.folder_id),
         })
     }
 

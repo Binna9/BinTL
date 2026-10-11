@@ -30,7 +30,7 @@ import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
-import { DELIMITER_VALUES, displayDelimiter } from "@/lib/delimiter";
+import { COLON_PIPE_DELIMITER, DELIMITER_VALUES, displayDelimiter } from "@/lib/delimiter";
 import { MetaField } from "@/components/ui/meta-field";
 import { PaneHeader } from "@/components/ui/pane-header";
 import { Panel } from "@/components/ui/panel";
@@ -805,9 +805,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
   }
 
   async function exportResult() {
-    const dest = editingChip && workspaceId
-      ? workspaceId
-      : await workspacePick.pick(workspaceId ?? selected?.workspace_id);
+    const dest = await workspacePick.pickFolder();
     if (!dest) return;
     const exportTransformId = await saveTransformDefinition({
       returnToWorkspace: false,
@@ -816,7 +814,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
     if (!exportTransformId) return;
     setBusy(true);
     try {
-      const run = await transformApi.run(exportTransformId, dest);
+      const run = await transformApi.run(exportTransformId, { folderId: dest });
       let job = await jobApi.getJobRun(run.id);
       while (job.status === "queued" || job.status === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
@@ -1210,7 +1208,7 @@ export function TransformPage({ section: fixedSection }: { section?: TransformEd
                     className="technical h-7 !w-20 shrink-0 [&_.field-control]:h-7"
                     value={readDelimiter}
                     disabled={!selected}
-                    options={DELIMITER_VALUES.map((value) => ({
+                    options={[...DELIMITER_VALUES, COLON_PIPE_DELIMITER].map((value) => ({
                       value,
                       label: value === "tab" ? "tab" : value,
                     }))}

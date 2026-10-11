@@ -350,6 +350,8 @@ fn already_exists_needles() -> &'static [&'static str] {
     &[
         "ORA-00955",
         "TBR-12011",
+        "JDBC-7102",
+        "duplicate schema object",
         "already used by an existing object",
         "already exists",
     ]

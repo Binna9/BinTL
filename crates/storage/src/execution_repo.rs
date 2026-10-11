@@ -29,24 +29,30 @@ impl Store {
 
     pub async fn create_standalone_load_step(
         &self,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
+        folder_id: Option<&str>,
         requested_by: Option<&str>,
         snapshot_json: &str,
         input_file_id: &str,
         load_id: Option<&str>,
     ) -> Result<ExecutionStepRow, StorageError> {
-        self.require_workspace(workspace_id).await?;
+        if let Some(workspace_id) = workspace_id {
+            self.require_workspace(workspace_id).await?;
+        } else if folder_id.is_none() {
+            return Err(StorageError::Invalid("folder_id required".into()));
+        }
         require_config_json(snapshot_json)?;
         let execution_id = Uuid::new_v4().to_string();
         let step_id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO executions (id, workspace_id, requested_by, source, status, created_at)
-                     VALUES (?, ?, ?, 'load_page', 'queued', ?)",
+            "INSERT INTO executions (id, workspace_id, folder_id, requested_by, source, status, created_at)
+                     VALUES (?, ?, ?, ?, 'load_page', 'queued', ?)",
         )
         .bind(&execution_id)
         .bind(workspace_id)
+        .bind(folder_id)
         .bind(requested_by)
         .bind(&now)
         .execute(&mut *tx)

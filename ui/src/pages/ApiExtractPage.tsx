@@ -390,9 +390,7 @@ export function ApiExtractPage() {
 
   async function onExtract() {
     if (!browseId) return;
-    const dest = editingChip && workspaceId
-      ? workspaceId
-      : await workspacePick.pick(returnWorkspaceId);
+    const dest = await workspacePick.pickFolder();
     if (!dest) return;
     setExtracting(true);
     try {
@@ -405,7 +403,7 @@ export function ApiExtractPage() {
         header,
         add_sequence: addSequence,
         filename: effectiveOutputName,
-        workspace_id: dest,
+        folder_id: dest,
       });
       setExtractId(created.id);
       setExtractRow(created);

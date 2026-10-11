@@ -17,6 +17,7 @@ import { PageHeader, PageShell } from "@/layouts/PageShell";
 import { SplitLayout } from "@/layouts/SplitLayout";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
+import { Select } from "@/components/ui/select";
 import { MetaField } from "@/components/ui/meta-field";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { WorkspaceFileCatalog } from "@/components/workspace/WorkspaceFileCatalog";
@@ -26,6 +27,7 @@ import { useFiles } from "@/hooks/files/useFiles";
 import { useWorkspacePick } from "@/hooks/workspace/useWorkspacePick";
 import { useWorkspaceTree } from "@/hooks/workspace/useWorkspaceTree";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { COLON_PIPE_DELIMITER, DELIMITER_VALUES } from "@/lib/delimiter";
 import { fmtBytes, fmtDelimiterGlyph } from "@/lib/format";
 import { setGlobalLoadingStatus } from "@/lib/globalLoading";
 import { layout } from "@/lib/layout";
@@ -81,13 +83,25 @@ export function FilesPage() {
   const [previewing, setPreviewing] = useState<StoredFile | null>(null);
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [delimiter, setDelimiter] = useState("auto");
+  const [header, setHeader] = useState(true);
+  const delimiterOptions = useMemo(
+    () => [
+      { value: "auto", label: messages.files.delimiterAuto },
+      ...[...DELIMITER_VALUES, COLON_PIPE_DELIMITER].map((value) => ({
+        value,
+        label: value === " " ? messages.format.space : value === "tab" ? "tab" : value,
+      })),
+    ],
+    [messages],
+  );
 
   const visibleFiles = useMemo(
     () => filterItemsByFileTree(files, treeSelection, folders, workspaces),
     [files, folders, treeSelection, workspaces],
   );
   const catalogFiles = useMemo(
-    () => files.map((file) => ({ id: file.id, name: file.filename, workspace_id: file.workspace_id })),
+    () => files.map((file) => ({ id: file.id, name: file.filename, folder_id: file.folder_id })),
     [files],
   );
   const allSelected = queue.length > 0 && selected.length === queue.length;
@@ -166,10 +180,10 @@ export function FilesPage() {
   ) {
     const workbook = workbooks[0];
     if (!workbook) return;
-    const workspaceId = await workspacePick.pick(
-      treeSelection.type === "workspace" ? treeSelection.id : undefined,
+    const folderId = await workspacePick.pickFolder(
+      treeSelection.type === "folder" ? treeSelection.id : undefined,
     );
-    if (!workspaceId) return;
+    if (!folderId) return;
     setSavingWorkbook(true);
     setGlobalLoadingStatus({
       label: messages.files.savingSheets,
@@ -178,7 +192,7 @@ export function FilesPage() {
     try {
       await fileApi.commitWorkbook(workbook.staging_id, sheets, {
         ...options,
-        workspaceId,
+        folderId,
         onProgress: (progress) => {
           setGlobalLoadingStatus({
             label: messages.files.savingSheets,
@@ -276,15 +290,21 @@ export function FilesPage() {
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (queue.length === 0) return;
-    const workspaceId = await workspacePick.pick(
-      treeSelection.type === "workspace" ? treeSelection.id : undefined,
+    const folderId = await workspacePick.pickFolder(
+      treeSelection.type === "folder" ? treeSelection.id : undefined,
     );
-    if (!workspaceId) return;
+    if (!folderId) return;
 
     setBusy(true);
     try {
       for (const item of queue) {
-        await fileApi.uploadFile(item.file, saveAsName(item.file.name, item.name), workspaceId);
+        await fileApi.uploadFile(
+          item.file,
+          saveAsName(item.file.name, item.name),
+          folderId,
+          delimiter,
+          header,
+        );
         setQueue((current) => current.filter((queued) => queued.id !== item.id));
         setSelected((current) => current.filter((id) => id !== item.id));
       }
@@ -314,12 +334,6 @@ export function FilesPage() {
               disabled={busy || readingWorkbook}
               onFiles={(files) => void addFiles(files)}
             />
-            <p className="text-center text-[11px] text-text-tertiary">
-              {readingWorkbook
-                ? messages.files.readingWorkbook
-                : messages.files.acceptedFormats}
-            </p>
-
             {queue.length > 0 ? (
               <div className="overflow-hidden rounded-lg border border-border">
                 <div className="flex items-center justify-between gap-3 border-b border-border bg-subtle px-3 py-1.5">
@@ -383,11 +397,48 @@ export function FilesPage() {
               </div>
             ) : null}
 
-            <div className="flex justify-center">
-              <Button variant="primary" type="submit" disabled={busy || queue.length === 0}>
-                <Upload className="size-3.5" aria-hidden="true" />
-                {busy ? messages.files.uploading : messages.files.upload}
-              </Button>
+            <div className="overflow-hidden rounded-lg border border-border bg-subtle">
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 px-3 py-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+                  <label className="flex min-w-0 items-center gap-2" title={messages.files.sheetDelimiterHint}>
+                    <span className="shrink-0 text-xs font-medium text-text-secondary">
+                      {messages.common.delimiter}
+                    </span>
+                    <div className="w-36">
+                      <Select
+                        className="technical"
+                        value={delimiter}
+                        disabled={busy}
+                        options={delimiterOptions}
+                        onChange={setDelimiter}
+                      />
+                    </div>
+                  </label>
+                  <span className="hidden h-4 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
+                  <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs font-medium text-text">
+                    <input
+                      className="field-control"
+                      type="checkbox"
+                      checked={header}
+                      disabled={busy}
+                      onChange={(event) => setHeader(event.target.checked)}
+                    />
+                    {messages.workspace.hasHeader}
+                  </label>
+                </div>
+                <Button
+                  variant="primary"
+                  type="submit"
+                  disabled={busy || queue.length === 0}
+                >
+                  <Upload className="size-3.5" aria-hidden="true" />
+                  {busy ? messages.files.uploading : messages.files.upload}
+                </Button>
+                <span />
+              </div>
+              <p className="border-t border-border px-3 py-1.5 text-[11px] text-text-tertiary">
+                {readingWorkbook ? messages.files.readingWorkbook : messages.files.acceptedFormats}
+              </p>
             </div>
           </form>
         </PanelBody>
@@ -405,7 +456,7 @@ export function FilesPage() {
             onFileClick={(id) => {
               const file = files.find((item) => item.id === id);
               if (!file) return;
-              setTreeSelection({ type: "workspace", id: file.workspace_id });
+              setTreeSelection(file.folder_id ? { type: "folder", id: file.folder_id } : { type: "all" });
               void openPreview(file);
             }}
           />

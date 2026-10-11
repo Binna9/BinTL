@@ -35,5 +35,25 @@ export const datasetApi = {
     }),
   delete: (id: string) =>
     httpRequest<{ ok: boolean }>(`/api/datasets/${id}`, { method: "DELETE" }),
+  exportScript: (body: {
+    folderId: string;
+    files: Record<string, string>;
+    entry?: string;
+    inputs?: { name: string; dataset_id: string }[];
+    outputFilename?: string;
+  }) =>
+    httpRequest<{ id: string; filename: string; folder_id: string | null; row_count: number | null }>(
+      "/api/scripts/export",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          folder_id: body.folderId,
+          files: body.files,
+          entry: body.entry,
+          inputs: body.inputs,
+          output_filename: body.outputFilename,
+        }),
+      },
+    ),
   getDownloadUrl: (id: string) => `/api/datasets/${id}/file`,
 };

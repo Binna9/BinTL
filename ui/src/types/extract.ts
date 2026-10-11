@@ -19,6 +19,7 @@ export interface ExtractRecord {
   finished_at: string | null;
   sql_text?: string | null;
   workspace_id: string;
+  folder_id?: string | null;
 }
 
 export interface HttpKv {
@@ -55,6 +56,7 @@ export interface CreateExtractRequest {
   database?: string;
   filename?: string;
   workspace_id?: string;
+  folder_id?: string;
 }
 
 export interface HttpPreviewRequest {

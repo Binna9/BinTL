@@ -40,6 +40,7 @@ pub fn routes() -> Router<AppState> {
                 .delete(delete_transform),
         )
         .route("/api/transforms/{id}/run", post(run_transform))
+        .route("/api/scripts/export", post(export_script))
 }
 
 #[derive(Deserialize)]
@@ -86,6 +87,8 @@ struct PatchTransformBody {
 struct RunTransformBody {
     #[serde(default)]
     workspace_id: Option<String>,
+    #[serde(default)]
+    folder_id: Option<String>,
 }
 
 fn clamp_limit(limit: Option<usize>) -> usize {
@@ -139,6 +142,7 @@ fn dataset_json(store: &Store, row: &DatasetRow) -> Value {
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "workspace_id": row.workspace_id,
+        "folder_id": row.folder_id,
         "producer_chip_run_id": row.producer_chip_run_id,
         "status": row.status,
         "source_chip_id": row.source_chip_id,
@@ -584,6 +588,69 @@ async fn preview_script_dataset(
     ))
 }
 
+#[derive(Deserialize)]
+struct ExportScriptBody {
+    folder_id: String,
+    #[serde(default)]
+    files: Value,
+    entry: Option<String>,
+    #[serde(default)]
+    inputs: Vec<crate::script::ScriptInput>,
+    output_filename: Option<String>,
+}
+
+async fn export_script(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<ExportScriptBody>,
+) -> Result<Json<Value>, AppError> {
+    access::require_etl_run(&user)?;
+    let folder_id = body.folder_id.trim();
+    if folder_id.is_empty() {
+        return Err(AppError::bad("folder_id required"));
+    }
+    access::require_folder(&state.store, &user, folder_id).await?;
+    let mut config_json = json!({
+        "entry": body.entry,
+        "files": body.files,
+        "output_filename": body.output_filename,
+    });
+    if !body.inputs.is_empty() {
+        config_json["inputs"] = json!(body.inputs);
+    }
+    let config = crate::script::parse_script_config(&config_json)?;
+    let mut tables = Vec::new();
+    for input in &config.inputs {
+        let dataset = access::require_dataset(&state.store, &user, &input.dataset_id).await?;
+        tables.push((input.name.clone(), dataset));
+    }
+    let filename = body
+        .output_filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("result");
+    let id = crate::script::export_script_file(
+        &state.store,
+        &tables,
+        &config,
+        folder_id,
+        filename,
+    )
+    .await?;
+    let dataset = state
+        .store
+        .get_dataset(&id)
+        .await?
+        .ok_or_else(|| AppError::not_found("dataset not found"))?;
+    Ok(Json(json!({
+        "id": dataset.id,
+        "filename": dataset.filename,
+        "folder_id": dataset.folder_id,
+        "row_count": dataset.row_count,
+    })))
+}
+
 async fn list_transforms(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -702,9 +769,8 @@ async fn require_transform_input(
     dataset_id: &str,
     input_chip_id: Option<&str>,
 ) -> Result<storage::DatasetRow, AppError> {
-    if let Some(dataset) = store.get_dataset(dataset_id).await? {
-        access::require_workspace(store, user, &dataset.workspace_id).await?;
-        return Ok(dataset);
+    if store.get_dataset(dataset_id).await?.is_some() {
+        return access::require_dataset(store, user, dataset_id).await;
     }
     let mut parts = dataset_id.splitn(3, ':');
     if parts.next() != Some("contract") {
@@ -750,22 +816,25 @@ async fn run_transform(
     }
     let spec_value: Value = serde_json::from_str(&transform.spec_json).unwrap_or(json!({}));
     let spec = hydrate_v2_spec(&state, &user, &spec_value, &dataset).await?;
-    let workspace_id = match body
+    let requested_workspace = body
         .workspace_id
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        Some(workspace_id) => {
-            access::require_workspace(&state.store, &user, &workspace_id).await?;
-            workspace_id
-        }
-        None => {
-            if transform.workspace_id.trim().is_empty() {
-                return Err(AppError::bad("workspace_id required"));
-            }
-            access::require_workspace(&state.store, &user, &transform.workspace_id).await?;
-            transform.workspace_id.clone()
-        }
+        .filter(|value| !value.is_empty());
+    let requested_folder = body
+        .folder_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let (workspace_id, folder_id) = if let Some(workspace_id) = requested_workspace {
+        access::require_workspace(&state.store, &user, &workspace_id).await?;
+        (Some(workspace_id), None)
+    } else if let Some(folder_id) = requested_folder {
+        access::require_folder(&state.store, &user, &folder_id).await?;
+        (None, Some(folder_id))
+    } else if !transform.workspace_id.trim().is_empty() {
+        access::require_workspace(&state.store, &user, &transform.workspace_id).await?;
+        (Some(transform.workspace_id.clone()), None)
+    } else {
+        return Err(AppError::bad("folder_id required"));
     };
     let job = state
         .store
@@ -774,7 +843,8 @@ async fn run_transform(
             &spec_to_json(&spec)?,
             &transform.id,
             &dataset.id,
-            &workspace_id,
+            workspace_id.as_deref(),
+            folder_id.as_deref(),
         )
         .await?;
     state.wake();

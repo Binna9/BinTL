@@ -1,7 +1,17 @@
 # cross does not pass host CC into the container. A Windows ~/.cargo/config.toml
 # [env] CC (w64devkit) is mounted via CARGO_HOME and would compile ring with a
-# path that does not exist in the image. Pin the image compilers instead.
-[build.env]
+# path that does not exist in the image. Pin the image compilers for Linux only.
+# windows-gnu 이미지의 gcc는 리눅스용이라, 여기 두면 mingw 대신 그 gcc로 컴파일된다.
+[target.x86_64-unknown-linux-gnu.env]
+passthrough = ["CC=gcc", "CXX=g++", "AR=ar"]
+
+[target.x86_64-unknown-linux-musl.env]
+passthrough = ["CC=gcc", "CXX=g++", "AR=ar"]
+
+[target.aarch64-unknown-linux-gnu.env]
+passthrough = ["CC=gcc", "CXX=g++", "AR=ar"]
+
+[target.aarch64-unknown-linux-musl.env]
 passthrough = ["CC=gcc", "CXX=g++", "AR=ar"]
 
 # musl 이미지는 libodbc가 없어서 링크가 죽는다. Ubuntu 배포는 glibc면 된다.

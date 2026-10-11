@@ -368,6 +368,7 @@ mod tests {
                 has_header: Some(true),
                 row_count: Some(1),
                 workspace_id: Some(workspace),
+                folder_id: None,
             })
             .await
             .unwrap();

@@ -727,3 +727,91 @@ async fn validation_against_load_table_fails_on_value_mismatch() {
     assert_eq!(runs[&v.id].status, "failed");
     f.close(Some(worker)).await;
 }
+
+#[tokio::test]
+async fn load_without_data_edge_keeps_recipe_file() {
+    let f = Fixture::new().await;
+    let rel = "uploads/recipe.csv";
+    let path = f.state.config.data_dir.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "id\n1\n").unwrap();
+    let file_id = uuid::Uuid::new_v4().to_string();
+    f.state
+        .store
+        .upsert_dataset(&storage::DatasetUpsert {
+            id: file_id.clone(),
+            kind: "upload".into(),
+            extract_id: None,
+            filename: "recipe.csv".into(),
+            stored_path: rel.into(),
+            size_bytes: Some(5),
+            delimiter: Some(",".into()),
+            has_header: Some(true),
+            row_count: Some(1),
+            workspace_id: Some(f.workspace.clone()),
+            folder_id: None,
+        })
+        .await
+        .unwrap();
+    let chip = f.chip("Load", "load", json!({})).await;
+    let spec = json!({
+        "input_dataset_id": file_id,
+        "destination": {
+            "type": "database",
+            "connection_id": f.connection,
+            "table": "dest"
+        },
+        "write_mode": "append"
+    });
+    let load = f
+        .state
+        .store
+        .insert_load_definition(f.user.id(), "Load", "database", &spec.to_string())
+        .await
+        .unwrap();
+    f.state
+        .store
+        .bind_chip_to_load(&chip.id, &load.id)
+        .await
+        .unwrap();
+    let chip = f.state.store.get_chip(&chip.id).await.unwrap().unwrap();
+    let raw = f.state.store.resolve_chip_config_json(&chip).await.unwrap();
+    let kept = prepare_config(
+        &f.state,
+        &f.user,
+        &f.workspace,
+        &chip,
+        &[chip.clone()],
+        &[],
+        &raw,
+    )
+    .await
+    .unwrap();
+    assert_eq!(kept["input_dataset_id"], file_id);
+
+    let extract = f.extract("Src", "SELECT 1 AS id").await;
+    let edge = storage::ChipEdgeRow {
+        id: "e".into(),
+        workspace_id: f.workspace.clone(),
+        from_chip_id: extract.id.clone(),
+        to_chip_id: chip.id.clone(),
+        kind: "data".into(),
+        from_port: "out".into(),
+        to_port: "in".into(),
+        created_at: String::new(),
+    };
+    let chips = [extract, chip.clone()];
+    let wired = prepare_config(
+        &f.state,
+        &f.user,
+        &f.workspace,
+        &chip,
+        &chips,
+        &[edge],
+        &raw,
+    )
+    .await
+    .unwrap();
+    assert!(wired["input_dataset_id"].is_null());
+    f.close(None).await;
+}

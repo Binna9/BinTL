@@ -5,8 +5,7 @@ use axum::{Json, Router};
 use connectors::{
     extract_query, extract_table, load_table, normalize_sql, normalize_sql_script, parse_delimiter,
     parse_http_spec, parse_ident, parse_table, run_sql_script, sniff_delimiter, sql_kind,
-    table_select_sql, with_database,
-    ExtractOptions, HttpKv, HttpRequestSpec, SqlKind,
+    table_select_sql, with_database, ExtractOptions, HttpKv, HttpRequestSpec, SqlKind,
 };
 use engine::{Engine, PolarsEngine, TransformSpec, ValidationSpec};
 use serde::{Deserialize, Serialize};
@@ -212,9 +211,13 @@ async fn list_catalog(
     user: CurrentUser,
 ) -> Result<Json<Value>, AppError> {
     let chips = state.store.list_owned_chips(user.id()).await?;
+    let placements = state.store.list_owned_chip_workspace_ids(user.id()).await?;
     let mut out = Vec::with_capacity(chips.len());
     for chip in &chips {
-        out.push(chip_json(&state.store, chip).await?);
+        let mut value = chip_json(&state.store, chip).await?;
+        let workspace_ids = placements.get(&chip.id).cloned().unwrap_or_default();
+        value["workspace_ids"] = json!(workspace_ids);
+        out.push(value);
     }
     Ok(Json(json!({ "chips": out })))
 }
@@ -342,9 +345,19 @@ async fn register_chip(
                 .register_validation_chip(user.id(), name, &config_json)
                 .await?
         }
+        "script" => {
+            let raw = body.config.unwrap_or_else(|| json!({}));
+            let config = crate::script::validate_script_config(&state.store, raw).await?;
+            let config_json =
+                serde_json::to_string(&config).map_err(|error| AppError::bad(error.to_string()))?;
+            state
+                .store
+                .register_script_chip(user.id(), name, &config_json)
+                .await?
+        }
         _ => {
             return Err(AppError::bad(
-                "chip kind must be extract, transform, load, or validation",
+                "chip kind must be extract, transform, load, validation, or script",
             ))
         }
     };
@@ -848,6 +861,12 @@ async fn queue_load_chip_run(
     let value: Value =
         serde_json::from_str(&config_raw).map_err(|e| AppError::bad(e.to_string()))?;
     reject_forbidden_config(&value)?;
+    let saved_input = value
+        .get("input_dataset_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     crate::load::validate_load_config(&state.store, value).await?;
     let dataset_id = crate::planned_input::resolve_materialized_transform_input(
         state,
@@ -855,7 +874,7 @@ async fn queue_load_chip_run(
         workspace_id,
         &chip.id,
         requested_input,
-        None,
+        saved_input,
     )
     .await?;
     let dataset = state
@@ -1085,7 +1104,11 @@ async fn queue_transform_chip_run(
         .get_dataset(&dataset_id)
         .await?
         .ok_or_else(|| AppError::not_found("input dataset not found"))?;
-    if dataset.workspace_id != workspace_id {
+    if !state
+        .store
+        .dataset_serves_workspace(&dataset_id, workspace_id)
+        .await?
+    {
         return Err(AppError::bad("input dataset belongs to another workspace"));
     }
     if !state.store.resolve(&dataset.stored_path).is_file() {
@@ -2085,11 +2108,10 @@ async fn validate_transform_config(
         .map(str::to_string);
     if let Some(dataset_id) = input_dataset_id.as_deref() {
         if !dataset_id.starts_with("contract:") {
-            let dataset = store
-                .get_dataset(dataset_id)
-                .await?
-                .ok_or_else(|| AppError::not_found("input dataset not found"))?;
-            if dataset.workspace_id != workspace_id {
+            if store.get_dataset(dataset_id).await?.is_none() {
+                return Err(AppError::not_found("input dataset not found"));
+            }
+            if !store.dataset_serves_workspace(dataset_id, workspace_id).await? {
                 return Err(AppError::bad("input dataset belongs to another workspace"));
             }
         }
@@ -2525,6 +2547,7 @@ async fn materialize_load_target(
             has_header: Some(true),
             row_count: None,
             workspace_id: Some(run.workspace_id.clone()),
+            folder_id: None,
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -2674,11 +2697,10 @@ async fn log_load_input_quality(
     {
         return Ok(());
     }
-    let delimiter = dataset.delimiter.as_deref().unwrap_or(",");
-    let delimiter = connectors::parse_delimiter(delimiter).map_err(|e| e.to_string())?;
+    let delimiter = dataset.delimiter.clone().unwrap_or_else(|| ",".into());
     let has_header = dataset.has_header.unwrap_or(1) != 0;
     let quality =
-        tokio::task::spawn_blocking(move || inspect_delimited_input(&path, delimiter, has_header))
+        tokio::task::spawn_blocking(move || inspect_delimited_input(&path, &delimiter, has_header))
             .await
             .map_err(|e| e.to_string())??;
     for issue in &quality.issues {
@@ -2737,14 +2759,32 @@ async fn log_load_input_quality(
 
 fn inspect_delimited_input(
     path: &std::path::Path,
-    delimiter: u8,
+    delimiter_raw: &str,
     has_header: bool,
 ) -> Result<InputQuality, String> {
-    let mut reader = csv::ReaderBuilder::new()
+    if connectors::is_colon_pipe(delimiter_raw) {
+        let bytes = std::fs::read(path).map_err(|e| format!("load input csv open failed: {e}"))?;
+        let rewritten = connectors::rewrite_colon_pipe(&bytes).map_err(|e| e.to_string())?;
+        let reader = csv::ReaderBuilder::new()
+            .delimiter(0x1f)
+            .quoting(false)
+            .has_headers(has_header)
+            .from_reader(rewritten.as_slice());
+        return scan_delimited_input(reader, has_header);
+    }
+    let delimiter = connectors::parse_delimiter(delimiter_raw).map_err(|e| e.to_string())?;
+    let reader = csv::ReaderBuilder::new()
         .delimiter(delimiter)
         .has_headers(has_header)
         .from_path(path)
         .map_err(|e| format!("load input csv open failed: {e}"))?;
+    scan_delimited_input(reader, has_header)
+}
+
+fn scan_delimited_input<R: std::io::Read>(
+    mut reader: csv::Reader<R>,
+    has_header: bool,
+) -> Result<InputQuality, String> {
     let headers = if has_header {
         reader
             .headers()
@@ -3199,7 +3239,8 @@ async fn run_transform(store: &Store, dispatch: &Notify, run: &ChipRunRow) -> Re
             &spec_json,
             &transform_id,
             &dataset.id,
-            &run.workspace_id,
+            Some(&run.workspace_id),
+            None,
         )
         .await
         .map_err(|error| error.to_string())?;

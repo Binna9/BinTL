@@ -78,6 +78,31 @@ impl Store {
         .await?)
     }
 
+    /// Every canvas a catalog chip is placed on, ordered by workspace name.
+    /// A chip absent from the map is not placed anywhere.
+    pub async fn list_owned_chip_workspace_ids(
+        &self,
+        owner_user_id: &str,
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, StorageError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT wc.chip_id, wc.workspace_id
+             FROM workspace_chips wc
+             INNER JOIN chips c ON c.id = wc.chip_id
+             INNER JOIN workspaces w ON w.id = wc.workspace_id
+             WHERE c.owner_user_id = ? AND c.kind != 'memo'
+             ORDER BY lower(w.name), w.id",
+        )
+        .bind(owner_user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut placed: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for (chip_id, workspace_id) in rows {
+            placed.entry(chip_id).or_default().push(workspace_id);
+        }
+        Ok(placed)
+    }
+
     pub async fn purge_unplaced_memo_chips(&self) -> Result<Vec<String>, StorageError> {
         let mut tx = self.pool.begin().await?;
         let dropped = crate::workspace_repo::delete_unplaced_memo_chips(&mut tx).await?;
@@ -563,7 +588,29 @@ impl Store {
         name: &str,
         config_json: &str,
     ) -> Result<ChipRow, StorageError> {
+        self.insert_catalog_chip(owner_user_id, name, "validation", config_json)
+            .await
+    }
+
+    pub async fn register_script_chip(
+        &self,
+        owner_user_id: &str,
+        name: &str,
+        config_json: &str,
+    ) -> Result<ChipRow, StorageError> {
+        self.insert_catalog_chip(owner_user_id, name, "script", config_json)
+            .await
+    }
+
+    async fn insert_catalog_chip(
+        &self,
+        owner_user_id: &str,
+        name: &str,
+        kind: &str,
+        config_json: &str,
+    ) -> Result<ChipRow, StorageError> {
         let name = required_text(name, "chip name")?;
+        validate_chip_kind(kind)?;
         self.ensure_chip_name_available(owner_user_id, name, None)
             .await?;
         require_config_json(config_json)?;
@@ -572,11 +619,12 @@ impl Store {
         sqlx::query(
             "INSERT INTO chips
              (id, owner_user_id, name, kind, config_json, revision, active, created_at, updated_at)
-             VALUES (?, ?, ?, 'validation', ?, 1, 1, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)",
         )
         .bind(&id)
         .bind(owner_user_id)
         .bind(name)
+        .bind(kind)
         .bind(config_json)
         .bind(&now)
         .bind(&now)

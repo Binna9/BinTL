@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
 use boa_engine::{Context, Source};
-use engine::{PolarsEngine, RecordWriter};
+use engine::{PolarsEngine, RecordWriter, TransformSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use storage::{chip_slot, ChipRunRow, DatasetRow, Store};
@@ -226,16 +226,18 @@ pub async fn preview_script(
         if !path.is_file() {
             return Err(AppError::not_found("dataset file missing"));
         }
-        let rows =
-            tokio::task::spawn_blocking(move || PolarsEngine::records_from_file(&path, MAX_ROWS))
-                .await
-                .map_err(|error| {
-                    AppError::new(
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        error.to_string(),
-                    )
-                })?
-                .map_err(|error| AppError::bad(error.to_string()))?;
+        let spec = read_spec(dataset);
+        let rows = tokio::task::spawn_blocking(move || {
+            PolarsEngine::records_from_file_spec(&path, MAX_ROWS, &spec)
+        })
+        .await
+        .map_err(|error| {
+            AppError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                error.to_string(),
+            )
+        })?
+        .map_err(|error| AppError::bad(error.to_string()))?;
         loaded.push((name.clone(), rows));
     }
     let files = config.files.clone();
@@ -252,6 +254,69 @@ pub async fn preview_script(
         })?
         .map_err(AppError::bad)?;
     Ok(records_to_preview(&outcome.rows, limit))
+}
+
+pub async fn export_script_file(
+    store: &Store,
+    tables: &[(String, DatasetRow)],
+    config: &ScriptConfig,
+    folder_id: &str,
+    filename: &str,
+) -> Result<String, AppError> {
+    if store.get_folder(folder_id).await?.is_none() {
+        return Err(AppError::not_found("folder not found"));
+    }
+    let id = Uuid::new_v4().to_string();
+    let filename = chip_slot::display_filename(filename, "script", ",");
+    let rel = format!("script_outputs/{id}/result.parquet");
+    let dest = store.resolve(&rel);
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| AppError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    }
+    let mut sources = Vec::new();
+    for (name, dataset) in tables {
+        sources.push((
+            name.clone(),
+            dataset_source(store, &dataset.id)
+                .await
+                .map_err(AppError::bad)?,
+        ));
+    }
+    let files = config.files.clone();
+    let entry = config.entry.clone();
+    let output = dest.clone();
+    let js = tokio::task::spawn_blocking(move || run_script_tables(&entry, &files, &sources, &output));
+    let (count, _) = tokio::time::timeout(RUN_TIMEOUT_MAX, js)
+        .await
+        .map_err(|_| AppError::bad("script timed out"))?
+        .map_err(|error| AppError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .map_err(AppError::bad)?;
+    let size = tokio::fs::metadata(&dest)
+        .await
+        .ok()
+        .map(|meta| meta.len() as i64);
+    if let Err(error) = store
+        .upsert_dataset(&storage::DatasetUpsert {
+            id: id.clone(),
+            kind: "script".into(),
+            extract_id: None,
+            filename,
+            stored_path: rel,
+            size_bytes: size,
+            delimiter: None,
+            has_header: None,
+            row_count: Some(count as i64),
+            workspace_id: None,
+            folder_id: Some(folder_id.to_string()),
+        })
+        .await
+    {
+        let _ = tokio::fs::remove_dir_all(dest.parent().unwrap_or(&dest)).await;
+        return Err(error.into());
+    }
+    Ok(id)
 }
 
 fn json_preview_dtype(name: &str, rows: &[Value]) -> &'static str {
@@ -345,14 +410,12 @@ pub async fn run_script_chip(store: &Store, run: &ChipRunRow) -> Result<(), Stri
     let config = parse_script_config(&raw).map_err(|error| error.message().to_string())?;
     let mut tables = Vec::new();
     for input in &config.inputs {
-        tables.push((
-            input.name.clone(),
-            dataset_path(store, &input.dataset_id).await?,
-        ));
+        let source = dataset_source(store, &input.dataset_id).await?;
+        tables.push((input.name.clone(), source));
     }
     if tables.is_empty() {
         if let Some(dataset_id) = run.input_dataset_id.as_deref() {
-            tables.push(("input".into(), dataset_path(store, dataset_id).await?));
+            tables.push(("input".into(), dataset_source(store, dataset_id).await?));
         }
     }
     let files = config.files.clone();
@@ -404,7 +467,19 @@ pub async fn run_script_chip(store: &Store, run: &ChipRunRow) -> Result<(), Stri
     Ok(())
 }
 
-async fn dataset_path(store: &Store, dataset_id: &str) -> Result<std::path::PathBuf, String> {
+struct ScriptSource {
+    path: std::path::PathBuf,
+    spec: TransformSpec,
+}
+
+fn read_spec(dataset: &DatasetRow) -> TransformSpec {
+    TransformSpec::identity().with_read(
+        dataset.delimiter.clone(),
+        Some(dataset.has_header.unwrap_or(1) != 0),
+    )
+}
+
+async fn dataset_source(store: &Store, dataset_id: &str) -> Result<ScriptSource, String> {
     let dataset = store
         .get_dataset(dataset_id)
         .await
@@ -414,13 +489,16 @@ async fn dataset_path(store: &Store, dataset_id: &str) -> Result<std::path::Path
     if !path.is_file() {
         return Err("input dataset file missing".into());
     }
-    Ok(path)
+    Ok(ScriptSource {
+        spec: read_spec(&dataset),
+        path,
+    })
 }
 
 fn run_script_tables(
     entry: &str,
     files: &BTreeMap<String, String>,
-    tables: &[(String, std::path::PathBuf)],
+    tables: &[(String, ScriptSource)],
     output: &std::path::Path,
 ) -> Result<(u64, Vec<String>), String> {
     if tables.is_empty() {
@@ -431,12 +509,14 @@ fn run_script_tables(
     }
     // ponytail: only the first table is chunked. Other tables stay in memory up to MAX_ROWS
     // (code lookups). Whole-table aggregates are per-batch; use transform for a global group-by.
-    let primary = PolarsEngine::open_records(&tables[0].1).map_err(|error| error.to_string())?;
+    let primary = PolarsEngine::open_records_spec(&tables[0].1.path, &tables[0].1.spec)
+        .map_err(|error| error.to_string())?;
     let mut lookups = Vec::new();
-    for (name, path) in &tables[1..] {
+    for (name, source) in &tables[1..] {
         lookups.push((
             name.clone(),
-            PolarsEngine::records_from_file(path, MAX_ROWS).map_err(|error| error.to_string())?,
+            PolarsEngine::records_from_file_spec(&source.path, MAX_ROWS, &source.spec)
+                .map_err(|error| error.to_string())?,
         ));
     }
     let height = primary.height();
@@ -699,5 +779,39 @@ mod tests {
         assert_eq!(preview["columns"][1]["dtype"], "String");
         assert_eq!(preview["rows"][0][0], "1");
         assert_eq!(preview["rows"][1][1], "b");
+    }
+
+    #[test]
+    fn appended_load_columns_stay_at_the_end() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "main.js".into(),
+            r#"function main(ctx) {
+  var rows = ctx.input() || [];
+  ctx.write(rows.map(function (row) {
+    row.LOAD_SN = 1;
+    row.LOAD_DTM = "2026-10-11 12:00:00";
+    return row;
+  }));
+}"#
+            .into(),
+        );
+        let outcome = run_js(
+            "main.js",
+            &files,
+            &[(
+                "input".into(),
+                vec![json!({"QUES_NO": "260151", "AUIN": "x"})],
+            )],
+        )
+        .unwrap();
+        let preview = records_to_preview(&outcome.rows, 200);
+        let names: Vec<_> = preview["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|column| column["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["QUES_NO", "AUIN", "LOAD_SN", "LOAD_DTM"]);
     }
 }

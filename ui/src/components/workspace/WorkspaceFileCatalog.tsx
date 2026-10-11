@@ -1,11 +1,11 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AppWindow, Check, ChevronRight, FileSpreadsheet, Folder, FolderOpen, FolderTree, Search } from "lucide-react";
+import { ChevronRight, FileSpreadsheet, Folder, FolderOpen, FolderTree, Search } from "lucide-react";
 import { PaneHeader } from "@/components/ui/pane-header";
 import {
   type CatalogFile,
   fileCountForFolder,
-  filesForWorkspace,
+  filesForFolder,
   filterCatalogTree,
   type FileTreeSelection,
 } from "@/features/workspace/fileWorkspaceTree";
@@ -71,25 +71,9 @@ export function WorkspaceFileCatalog({
         .sort((a, b) => a.name.localeCompare(b.name)),
     [tree.folders],
   );
-  const rootWorkspaces = useMemo(
-    () =>
-      tree.workspaces
-        .filter((workspace) => !workspace.folder_id)
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [tree.workspaces],
-  );
-
   function childFolders(parent: string) {
     return tree.folders
       .filter((folder) => folder.parent_id === parent)
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  function childWorkspaces(folderId: string | null) {
-    return tree.workspaces
-      .filter((workspace) =>
-        folderId ? workspace.folder_id === folderId : !workspace.folder_id,
-      )
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -111,80 +95,11 @@ export function WorkspaceFileCatalog({
     );
   }
 
-  function renderWorkspaceNode(workspace: Workspace): ReactNode {
-    const active = selection.type === "workspace" && selection.id === workspace.id;
-    const nestedFiles = filesForWorkspace(files, workspace.id);
-    const openKey = `ws:${workspace.id}`;
-    const openNode = Boolean(treeOpen[openKey]);
-    return (
-      <div key={workspace.id} className="min-w-0">
-        <div className="flex min-w-0 items-center">
-          <button
-            type="button"
-            className="grid size-7 shrink-0 place-items-center rounded-md text-text-tertiary outline-none hover:bg-subtle"
-            aria-expanded={openNode}
-            aria-label={openNode ? messages.workspace.collapseFolder : messages.workspace.expandFolder}
-            onClick={() =>
-              setTreeOpen((current) => ({ ...current, [openKey]: !current[openKey] }))
-            }
-          >
-            <motion.span
-              className={cn("grid place-items-center", nestedFiles.length === 0 && "opacity-0")}
-              animate={{ rotate: openNode ? 90 : 0 }}
-              transition={{ duration: 0.18 }}
-              aria-hidden="true"
-            >
-              <ChevronRight className="size-3.5" />
-            </motion.span>
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "flex h-9 min-w-0 flex-1 items-center gap-2 rounded-xl px-1.5 text-left outline-none transition-colors",
-              active ? "bg-accent-subtle text-accent" : "text-text hover:bg-subtle",
-            )}
-            aria-current={active ? "true" : undefined}
-            onClick={() => onSelect({ type: "workspace", id: workspace.id })}
-          >
-            <span
-              className={cn(
-                "grid size-7 shrink-0 place-items-center rounded-lg border",
-                active ? "border-accent/25 bg-surface text-accent" : "border-border bg-subtle text-text-secondary",
-              )}
-            >
-              <AppWindow className="size-3.5" aria-hidden="true" />
-            </span>
-            <span className="min-w-0 flex-1 truncate text-[13px]">{workspace.name}</span>
-            <span className="rounded-full bg-subtle px-2 py-0.5 text-[10px] tabular-nums text-text-tertiary">
-              {nestedFiles.length}
-            </span>
-            {active ? <Check className="size-3.5 shrink-0 text-accent" aria-hidden="true" /> : null}
-          </button>
-        </div>
-        <AnimatePresence initial={false}>
-          {openNode && nestedFiles.length > 0 ? (
-            <motion.div
-              className="overflow-hidden"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.18, ease: "easeInOut" }}
-            >
-              <div className="ml-[18px] space-y-0.5 border-l border-border/80 py-1 pl-[18px]">
-                {nestedFiles.map((file) => renderFileNode(file))}
-              </div>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-      </div>
-    );
-  }
-
   function renderFolderNode(folder: WorkspaceFolder): ReactNode {
     const openNode = Boolean(treeOpen[folder.id]);
     const nestedFolders = childFolders(folder.id);
-    const nestedWorkspaces = childWorkspaces(folder.id);
-    const hasChildren = nestedFolders.length > 0 || nestedWorkspaces.length > 0;
+    const nestedFiles = filesForFolder(files, folder.id);
+    const hasChildren = nestedFolders.length > 0 || nestedFiles.length > 0;
     const active = selection.type === "folder" && selection.id === folder.id;
     const count = fileCountForFolder(files, folders, workspaces, folder.id);
 
@@ -238,7 +153,7 @@ export function WorkspaceFileCatalog({
             >
               <div className="ml-[18px] space-y-0.5 border-l border-border/80 py-1 pl-[18px]">
                 {nestedFolders.map((child) => renderFolderNode(child))}
-                {nestedWorkspaces.map((workspace) => renderWorkspaceNode(workspace))}
+                {nestedFiles.map((file) => renderFileNode(file))}
               </div>
             </motion.div>
           ) : null}
@@ -288,14 +203,14 @@ export function WorkspaceFileCatalog({
             {files.length}
           </span>
         </button>
-        {rootFolders.length === 0 && rootWorkspaces.length === 0 ? (
+        {rootFolders.length === 0 && filesForFolder(files, null).length === 0 ? (
           <p className="px-3 py-8 text-center text-[12px] text-text-tertiary">
             {query.trim() ? messages.workspace.noWorkspaceResults : messages.workspace.noWorkspaces}
           </p>
         ) : (
           <div className="space-y-0.5">
             {rootFolders.map((folder) => renderFolderNode(folder))}
-            {rootWorkspaces.map((workspace) => renderWorkspaceNode(workspace))}
+            {filesForFolder(files, null).map((file) => renderFileNode(file))}
           </div>
         )}
       </div>

@@ -6,7 +6,9 @@ pub(super) async fn upload_file(
     mut multipart: Multipart,
 ) -> Result<Json<Value>, AppError> {
     let mut requested_name: Option<String> = None;
-    let mut workspace_id: Option<String> = None;
+    let mut requested_delimiter: Option<String> = None;
+    let mut folder_id: Option<String> = None;
+    let mut requested_header: Option<bool> = None;
     let mut payload: Option<(String, Vec<u8>)> = None;
     while let Some(field) = multipart
         .next_field()
@@ -22,13 +24,28 @@ pub(super) async fn upload_file(
                         .map_err(|e| AppError::bad(e.to_string()))?,
                 );
             }
-            Some("workspace_id") => {
-                workspace_id = Some(
+            Some("delimiter") => {
+                requested_delimiter = Some(
                     field
                         .text()
                         .await
                         .map_err(|e| AppError::bad(e.to_string()))?,
                 );
+            }
+            Some("folder_id") => {
+                folder_id = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| AppError::bad(e.to_string()))?,
+                );
+            }
+            Some("header") => {
+                let raw = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::bad(e.to_string()))?;
+                requested_header = Some(parse_header_flag(&raw));
             }
             Some("file") => {
                 let original = field.file_name().unwrap_or("upload.bin").to_string();
@@ -46,18 +63,40 @@ pub(super) async fn upload_file(
     require_csv_filename(&original)?;
     let filename = storage::resolve_upload_filename(&original, requested_name.as_deref());
     require_csv_filename(&filename)?;
-    let delimiter_raw = sniff_delimiter(&data).unwrap_or_else(|| ",".into());
-    let delimiter = parse_delimiter(&delimiter_raw)?;
-    validate_csv(&data, delimiter)?;
-    let workspace_id = access::require_write_workspace(&state.store, &user, workspace_id).await?;
+    let delimiter_raw = match requested_delimiter
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "auto")
+    {
+        Some(raw) => {
+            if !is_colon_pipe(raw) {
+                parse_delimiter(raw)?;
+            }
+            raw.to_string()
+        }
+        None => sniff_delimiter(&data).unwrap_or_else(|| ",".into()),
+    };
+    validate_upload_csv(&data, &delimiter_raw)?;
+    let has_header = requested_header.unwrap_or_else(|| {
+        if is_colon_pipe(&delimiter_raw) {
+            colon_pipe_has_header(&data)
+        } else {
+            true
+        }
+    });
+    let folder_id = folder_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::bad("folder_id required"))?;
+    access::require_folder(&state.store, &user, &folder_id).await?;
     let meta = state
         .store
         .save_upload(
             &filename,
             &data,
             Some(&delimiter_raw),
-            Some(true),
-            &workspace_id,
+            Some(has_header),
+            &folder_id,
         )
         .await?;
     Ok(Json(json!({
@@ -66,6 +105,7 @@ pub(super) async fn upload_file(
         "size": meta.size,
         "stored_path": meta.stored_path,
         "workspace_id": meta.workspace_id,
+        "folder_id": meta.folder_id,
     })))
 }
 
@@ -145,7 +185,7 @@ pub(super) struct CommitSpreadsheetBody {
     #[serde(default)]
     add_sequence: Option<bool>,
     #[serde(default)]
-    workspace_id: Option<String>,
+    folder_id: Option<String>,
 }
 
 pub(super) fn ndjson_line(value: Value) -> Bytes {
@@ -170,11 +210,20 @@ pub(super) async fn commit_spreadsheet(
     let staged = state.store.staged_file(&body.staging_id).await?;
     let selected = normalize_commit_sheets(body.sheets)?;
     let delimiter_raw = body.delimiter.unwrap_or_else(|| ",".into());
-    let delimiter = parse_delimiter(&delimiter_raw)?;
+    let colon_pipe = is_colon_pipe(&delimiter_raw);
+    let delimiter = if colon_pipe {
+        0
+    } else {
+        parse_delimiter(&delimiter_raw)?
+    };
     let header = body.header.unwrap_or(true);
     let add_sequence = body.add_sequence.unwrap_or(false);
-    let workspace_id =
-        access::require_write_workspace(&state.store, &user, body.workspace_id).await?;
+    let folder_id = body
+        .folder_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::bad("folder_id required"))?;
+    access::require_folder(&state.store, &user, &folder_id).await?;
     let path = staged.path.clone();
     let available = tokio::task::spawn_blocking({
         let path = path.clone();
@@ -217,7 +266,11 @@ pub(super) async fn commit_spreadsheet(
             let path = path.clone();
             let name = sheet.name.clone();
             let csv = match tokio::task::spawn_blocking(move || {
-                export_sheet_to_csv(&path, &name, delimiter, header, add_sequence)
+                if colon_pipe {
+                    export_sheet_colon_pipe(&path, &name, header, add_sequence)
+                } else {
+                    export_sheet_to_csv(&path, &name, delimiter, header, add_sequence)
+                }
             })
             .await
             {
@@ -242,7 +295,7 @@ pub(super) async fn commit_spreadsheet(
                     return;
                 }
             };
-            if let Err(error) = validate_csv(&csv, delimiter) {
+            if let Err(error) = validate_upload_csv(&csv, &delimiter_raw) {
                 let _ = send_commit_line(&tx, json!({ "type": "error", "error": error.message() }))
                     .await;
                 return;
@@ -262,7 +315,7 @@ pub(super) async fn commit_spreadsheet(
                     &bytes,
                     Some(delimiter_raw.as_str()),
                     Some(header),
-                    &workspace_id,
+                    &folder_id,
                 )
                 .await
             {
@@ -342,12 +395,35 @@ pub(super) fn require_csv_filename(filename: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn validate_csv(bytes: &[u8], delimiter: u8) -> Result<(), AppError> {
+    validate_delimited(bytes, delimiter, true)
+}
+
+fn parse_header_flag(raw: &str) -> bool {
+    !matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+pub(super) fn validate_upload_csv(bytes: &[u8], delimiter_raw: &str) -> Result<(), AppError> {
+    if is_colon_pipe(delimiter_raw) {
+        let rewritten =
+            rewrite_colon_pipe(bytes).map_err(|error| AppError::bad(error.to_string()))?;
+        return validate_delimited(&rewritten, 0x1f, false);
+    }
+    let delimiter = parse_delimiter(delimiter_raw)?;
+    validate_delimited(bytes, delimiter, true)
+}
+
+fn validate_delimited(bytes: &[u8], delimiter: u8, quoting: bool) -> Result<(), AppError> {
     if bytes.is_empty() {
         return Err(AppError::bad("csv must not be empty"));
     }
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(delimiter)
+        .quoting(quoting)
         .has_headers(false)
         .flexible(false)
         .from_reader(bytes);
@@ -421,10 +497,10 @@ pub(super) async fn preview_file(
         .clone()
         .or_else(|| sniff_delimiter(&sample))
         .unwrap_or_else(|| ",".into());
-    let delimiter = parse_delimiter(&delimiter_raw)?;
     let limit = query.limit.unwrap_or(200).clamp(1, 1000) as usize;
+    let preview_delimiter = delimiter_raw.clone();
     let preview = tokio::task::spawn_blocking(move || {
-        read_upload_preview(&path, delimiter, has_header, limit)
+        read_upload_preview(&path, &preview_delimiter, has_header, limit)
     })
     .await
     .map_err(|error| {
@@ -470,16 +546,38 @@ pub(super) struct UploadPreview {
 
 pub(super) fn read_upload_preview(
     path: &FsPath,
-    delimiter: u8,
+    delimiter_raw: &str,
     has_header: bool,
     limit: usize,
 ) -> Result<UploadPreview, AppError> {
-    let mut reader = csv::ReaderBuilder::new()
+    if is_colon_pipe(delimiter_raw) {
+        let bytes = std::fs::read(path)
+            .map_err(|error| AppError::bad(format!("file read failed: {error}")))?;
+        let rewritten =
+            rewrite_colon_pipe(&bytes).map_err(|error| AppError::bad(error.to_string()))?;
+        let reader = csv::ReaderBuilder::new()
+            .delimiter(0x1f)
+            .quoting(false)
+            .has_headers(has_header)
+            .flexible(true)
+            .from_reader(rewritten.as_slice());
+        return preview_records(reader, has_header, limit);
+    }
+    let delimiter = parse_delimiter(delimiter_raw)?;
+    let reader = csv::ReaderBuilder::new()
         .delimiter(delimiter)
         .has_headers(has_header)
         .flexible(true)
         .from_path(path)
         .map_err(|error| AppError::bad(format!("invalid csv: {error}")))?;
+    preview_records(reader, has_header, limit)
+}
+
+fn preview_records<R: std::io::Read>(
+    mut reader: csv::Reader<R>,
+    has_header: bool,
+    limit: usize,
+) -> Result<UploadPreview, AppError> {
     let mut columns: Vec<String> = if has_header {
         reader
             .headers()

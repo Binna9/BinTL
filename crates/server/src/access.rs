@@ -122,19 +122,6 @@ pub async fn require_workspace(
         .await?)
 }
 
-pub async fn require_write_workspace(
-    store: &storage::Store,
-    user: &CurrentUser,
-    requested: Option<String>,
-) -> Result<String, AppError> {
-    let workspace_id = requested
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| AppError::bad("workspace_id required"))?;
-    require_workspace(store, user, &workspace_id).await?;
-    Ok(workspace_id)
-}
-
 pub async fn require_folder(
     store: &storage::Store,
     user: &CurrentUser,
@@ -154,6 +141,17 @@ pub async fn require_dataset(
         .get_dataset(id)
         .await?
         .ok_or_else(|| AppError::not_found("dataset not found"))?;
+    if !row.workspace_id.is_empty() && require_workspace(store, user, &row.workspace_id).await.is_ok()
+    {
+        return Ok(row);
+    }
+    if let Some(folder_id) = row.folder_id.as_deref() {
+        require_folder(store, user, folder_id).await?;
+        return Ok(row);
+    }
+    if row.workspace_id.is_empty() {
+        return Err(AppError::not_found("dataset not found"));
+    }
     require_workspace(store, user, &row.workspace_id).await?;
     Ok(row)
 }
@@ -167,7 +165,13 @@ pub async fn require_extract(
         .get_extract(id)
         .await?
         .ok_or_else(|| AppError::not_found("extract not found"))?;
-    require_workspace(store, user, &row.workspace_id).await?;
+    if !row.workspace_id.is_empty() {
+        require_workspace(store, user, &row.workspace_id).await?;
+    } else if let Some(folder_id) = row.folder_id.as_deref() {
+        require_folder(store, user, folder_id).await?;
+    } else {
+        return Err(AppError::not_found("extract not found"));
+    }
     Ok(row)
 }
 
@@ -180,7 +184,13 @@ pub async fn require_job(
         .get_job(id)
         .await?
         .ok_or_else(|| AppError::not_found("job not found"))?;
-    require_workspace(store, user, &row.workspace_id).await?;
+    if !row.workspace_id.is_empty() {
+        require_workspace(store, user, &row.workspace_id).await?;
+    } else if let Some(folder_id) = row.folder_id.as_deref() {
+        require_folder(store, user, folder_id).await?;
+    } else {
+        return Err(AppError::not_found("job not found"));
+    }
     Ok(row)
 }
 
@@ -193,8 +203,15 @@ pub async fn require_transform(
         .get_transform(id)
         .await?
         .ok_or_else(|| AppError::not_found("transform not found"))?;
-    require_workspace(store, user, &row.workspace_id).await?;
-    Ok(row)
+    if !row.workspace_id.is_empty() {
+        require_workspace(store, user, &row.workspace_id).await?;
+        return Ok(row);
+    }
+    let owner = store.transform_owner(id).await?;
+    if user.can_see_all_workspaces() || owner.as_deref() == Some(user.id()) {
+        return Ok(row);
+    }
+    Err(AppError::not_found("transform not found"))
 }
 
 pub async fn require_chip(

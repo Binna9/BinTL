@@ -500,9 +500,7 @@ export function QueryPage() {
 
   async function onExtract() {
     if (!browseId) return;
-    const dest = editingChip && workspaceId
-      ? workspaceId
-      : await workspacePick.pick(returnWorkspaceId);
+    const dest = await workspacePick.pickFolder();
     if (!dest) return;
     setExtracting(true);
     try {
@@ -514,7 +512,7 @@ export function QueryPage() {
         delimiter,
         header,
         add_sequence: addSequence,
-        workspace_id: dest,
+        folder_id: dest,
         ...(exportName.trim() ? { filename: exportName.trim() } : {}),
       });
       setExtractId(created.id);
@@ -704,7 +702,7 @@ export function QueryPage() {
             <SplitLayout
               className="h-full"
               direction="vertical"
-              defaultSizes={[layout.split.connections]}
+              defaultSizes={[layout.split.connectionStack]}
               minSize={layout.split.minStack}
             >
               <div className="flex h-full min-h-0 flex-col overflow-hidden">

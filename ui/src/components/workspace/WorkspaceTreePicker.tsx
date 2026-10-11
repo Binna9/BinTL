@@ -40,25 +40,34 @@ export function WorkspaceTreePicker({
   onChange,
   className,
   showSelectionPath = true,
+  selection = "workspace",
 }: {
   folders: WorkspaceFolder[];
   workspaces: Workspace[];
   value: string;
-  onChange: (workspaceId: string) => void;
+  onChange: (id: string) => void;
   className?: string;
   showSelectionPath?: boolean;
+  selection?: "workspace" | "folder";
 }) {
   const { messages } = useLanguage();
-  const selected = workspaces.find((workspace) => workspace.id === value) ?? null;
+  const selectedWorkspace = selection === "workspace"
+    ? workspaces.find((workspace) => workspace.id === value) ?? null
+    : null;
+  const selectedFolder = selection === "folder"
+    ? folders.find((folder) => folder.id === value) ?? null
+    : null;
+  const selected = selectedWorkspace;
   const [treeOpen, setTreeOpen] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    if (!selected) return;
+    const folderId = selectedWorkspace?.folder_id ?? selectedFolder?.parent_id ?? null;
+    if (!folderId && !selectedFolder) return;
     setTreeOpen((current) => ({
       ...current,
-      ...ancestorOpenMap(folders, selected.folder_id ?? null),
+      ...ancestorOpenMap(folders, selectedFolder ? selectedFolder.id : folderId),
     }));
-  }, [folders, selected]);
+  }, [folders, selectedFolder, selectedWorkspace]);
 
   const rootFolders = useMemo(
     () =>
@@ -127,17 +136,31 @@ export function WorkspaceTreePicker({
     );
   }
 
+  function folderPathLabel(folder: WorkspaceFolder) {
+    const parts: string[] = [folder.name];
+    let cursor = folder.parent_id;
+    while (cursor) {
+      const parent = folders.find((item) => item.id === cursor);
+      if (!parent) break;
+      parts.unshift(parent.name);
+      cursor = parent.parent_id;
+    }
+    return parts.join(" / ");
+  }
+
   function renderFolderNode(folder: WorkspaceFolder, depth = 0): ReactNode {
     const openNode = Boolean(treeOpen[folder.id]);
     const nestedFolders = childFolders(folder.id);
-    const nestedWorkspaces = childWorkspaces(folder.id);
+    const nestedWorkspaces = selection === "folder" ? [] : childWorkspaces(folder.id);
     const hasChildren = nestedFolders.length > 0 || nestedWorkspaces.length > 0;
+    const active = selection === "folder" && folder.id === value;
 
     return (
       <div key={folder.id} className="min-w-0">
+        <div className="flex min-w-0 items-center">
         <button
           type="button"
-          className="group flex h-9 w-full min-w-0 items-center gap-2 rounded-xl px-2 text-left text-[12px] font-medium text-text outline-none transition-colors hover:bg-subtle"
+          className="group flex h-9 w-7 shrink-0 items-center justify-center rounded-xl text-text outline-none hover:bg-subtle"
           aria-expanded={openNode}
           onClick={() =>
             setTreeOpen((current) => ({ ...current, [folder.id]: !current[folder.id] }))
@@ -151,14 +174,30 @@ export function WorkspaceTreePicker({
           >
             <ChevronRight className="size-3.5" />
           </motion.span>
+        </button>
+        <button
+          type="button"
+          className={cn(
+            "flex h-9 min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-[12px] font-medium outline-none transition-colors",
+            active ? "bg-accent-subtle text-accent" : "text-text hover:bg-subtle",
+          )}
+          aria-current={active ? "true" : undefined}
+          onClick={() => {
+            if (selection === "folder") onChange(folder.id);
+            else setTreeOpen((current) => ({ ...current, [folder.id]: !current[folder.id] }));
+          }}
+        >
           <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-warning-subtle text-warning" aria-hidden="true">
             {openNode ? <FolderOpen className="size-4" /> : <Folder className="size-4" />}
           </span>
           <span className="min-w-0 flex-1 truncate font-medium">{folder.name}</span>
-          <span className="rounded-full bg-subtle px-2 py-0.5 text-[10px] font-normal tabular-nums text-text-tertiary">
-            {nestedFolders.length + nestedWorkspaces.length}
-          </span>
+          {active ? <Check className="size-3.5 shrink-0 text-accent" aria-hidden="true" /> : (
+            <span className="rounded-full bg-subtle px-2 py-0.5 text-[10px] font-normal tabular-nums text-text-tertiary">
+              {nestedFolders.length + nestedWorkspaces.length}
+            </span>
+          )}
         </button>
+        </div>
         <AnimatePresence initial={false}>
           {openNode && hasChildren ? (
             <motion.div
@@ -181,13 +220,20 @@ export function WorkspaceTreePicker({
 
   return (
     <div className={cn("flex min-h-0 flex-col gap-3", className)}>
-      {showSelectionPath && selected ? (
+      {showSelectionPath && selectedFolder ? (
+        <p className="rounded-lg bg-subtle px-2.5 py-1.5 text-[11px] text-text-secondary">
+          <span className="font-medium text-text">{messages.workspace.createLocation}: </span>
+          {folderPathLabel(selectedFolder)}
+        </p>
+      ) : showSelectionPath && selected ? (
         <p className="rounded-lg bg-subtle px-2.5 py-1.5 text-[11px] text-text-secondary">
           <span className="font-medium text-text">{messages.workspace.createLocation}: </span>
           {workspacePathLabel(folders, selected, messages.workspace.topLevel)}
         </p>
       ) : showSelectionPath ? (
-        <p className="text-[11px] text-text-tertiary">{messages.workspace.selectWorkspace}</p>
+        <p className="text-[11px] text-text-tertiary">
+          {selection === "folder" ? messages.workspace.selectFolder : messages.workspace.selectWorkspace}
+        </p>
       ) : null}
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-sm">
         <div className="flex items-center justify-between border-b border-border bg-subtle/55 px-4 py-3">
@@ -196,25 +242,31 @@ export function WorkspaceTreePicker({
               <FolderTree className="size-4" aria-hidden="true" />
             </span>
             <div>
-              <p className="text-[12px] font-semibold text-text">{messages.workspace.workspaceTreeTitle}</p>
-              <p className="text-[10px] text-text-tertiary">{messages.workspace.workspaceTreeHint}</p>
+              <p className="text-[12px] font-semibold text-text">
+                {selection === "folder" ? messages.workspace.folderTreeTitle : messages.workspace.workspaceTreeTitle}
+              </p>
+              <p className="text-[10px] text-text-tertiary">
+                {selection === "folder" ? messages.workspace.folderTreeHint : messages.workspace.workspaceTreeHint}
+              </p>
             </div>
           </div>
           <span className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] font-medium tabular-nums text-text-secondary">
-            {workspaces.length}
+            {selection === "folder" ? folders.length : workspaces.length}
           </span>
         </div>
         <div className="scroll-pane max-h-[360px] min-h-56 overflow-y-auto bg-gradient-to-b from-surface to-subtle/20 p-3">
-        {rootFolders.length === 0 && rootWorkspaces.length === 0 ? (
-          <p className="px-3 py-8 text-center text-[12px] text-text-tertiary">{messages.workspace.noWorkspaces}</p>
+        {(selection === "folder" ? rootFolders.length === 0 : rootFolders.length === 0 && rootWorkspaces.length === 0) ? (
+          <p className="px-3 py-8 text-center text-[12px] text-text-tertiary">
+            {selection === "folder" ? messages.workspace.noFolders : messages.workspace.noWorkspaces}
+          </p>
         ) : (
           <div className="space-y-1">
             {rootFolders.map((folder) => renderFolderNode(folder))}
-            {rootWorkspaces.map((workspace) => (
+            {selection === "workspace" ? rootWorkspaces.map((workspace) => (
               <div key={workspace.id}>
                 {renderWorkspaceNode(workspace)}
               </div>
-            ))}
+            )) : null}
           </div>
         )}
         </div>

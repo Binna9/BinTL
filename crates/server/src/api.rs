@@ -16,10 +16,11 @@ use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use connectors::{
-    catalog_layout, export_sheet_to_csv, list_columns, list_databases, list_relations,
-    list_schemas, list_sheets, list_tables, normalize_sql, parse_delimiter, parse_http_spec,
-    parse_ident, parse_table, preview_http, preview_table, run_sql, sniff_delimiter,
-    spreadsheet_format, sql_kind, test_connection, with_database, HttpKv, HttpRequestSpec, SqlKind,
+    catalog_layout, colon_pipe_has_header, export_sheet_colon_pipe, export_sheet_to_csv,
+    is_colon_pipe, list_columns, list_databases, list_relations, list_schemas, list_sheets,
+    list_tables, normalize_sql, parse_delimiter, parse_http_spec, parse_ident, parse_table,
+    preview_http, preview_table, rewrite_colon_pipe, run_sql, sniff_delimiter, spreadsheet_format,
+    sql_kind, test_connection, with_database, HttpKv, HttpRequestSpec, SqlKind,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -149,6 +150,12 @@ mod tests {
         assert!(validate_csv(b"\n\n", b',').is_err());
         assert!(validate_csv(b"a,b\n1\n", b',').is_err());
         assert!(validate_csv(b"a,b\n\"unterminated\n", b',').is_err());
+        assert!(validate_upload_csv(
+            "260151:||법률 | 시행령, 제2조\n260150:||여신, 제3조\n".as_bytes(),
+            ":||",
+        )
+        .is_ok());
+        assert!(validate_upload_csv(b"a:||b\n1\n", ":||").is_err());
     }
 
     #[test]

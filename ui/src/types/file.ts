@@ -4,6 +4,7 @@ export interface StoredFile {
   size: number;
   stored_path: string;
   workspace_id: string;
+  folder_id?: string | null;
 }
 
 export interface WorkbookSheet {

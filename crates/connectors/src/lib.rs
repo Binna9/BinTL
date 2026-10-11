@@ -17,7 +17,10 @@ mod spreadsheet;
 mod tibero_jdbc;
 
 pub use catalog::{catalog_layout, list_databases, list_relations, list_schemas, CatalogItem};
-pub use extract::{extract_table, parse_delimiter, sniff_delimiter, ExtractOptions};
+pub use extract::{
+    colon_pipe_has_header, extract_table, is_colon_pipe, parse_delimiter, rewrite_colon_pipe,
+    sniff_delimiter, ExtractOptions,
+};
 pub use http_extract::{
     extract_http, parse_http_spec, ping_http, preview_http, HttpKv, HttpPreview, HttpRequestSpec,
 };
@@ -27,7 +30,9 @@ pub use query::{
     extract_query, normalize_sql, normalize_sql_script, run_sql, run_sql_script, sql_kind,
     QueryOutcome, SqlKind,
 };
-pub use spreadsheet::{export_sheet_to_csv, list_sheets, spreadsheet_format, SheetInfo};
+pub use spreadsheet::{
+    export_sheet_colon_pipe, export_sheet_to_csv, list_sheets, spreadsheet_format, SheetInfo,
+};
 use tiberius::{AuthMethod, Client, Config, EncryptionLevel};
 use tokio::net::TcpStream;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
@@ -583,9 +588,18 @@ fn create_table_sql(
             raw_table.replace('\'', "")
         ),
         "oracle" => {
+            // VARCHAR2 stops at 4000. Script text is often longer, so new and
+            // staging columns are CLOB. Upsert keys stay VARCHAR2; CLOB cannot be unique.
             let defs = cols
                 .iter()
-                .map(|c| format!("{} VARCHAR2(4000)", quote_ident(family, c)))
+                .map(|c| {
+                    let ty = if unique_keys.iter().any(|key| key == c) {
+                        "VARCHAR2(4000)"
+                    } else {
+                        "CLOB"
+                    };
+                    format!("{} {ty}", quote_ident(family, c))
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             let defs = if unique_keys.is_empty() {
@@ -654,6 +668,56 @@ fn insert_select_sql(family: &str, dest_q: &str, stage_q: &str, cols: &[String])
     format!("INSERT INTO {dest_q} ({cols}) SELECT {cols} FROM {stage_q}")
 }
 
+fn oracle_insert_select_sql(
+    dest_q: &str,
+    stage_q: &str,
+    cols: &[String],
+    rules: &[LoadColumnRule],
+) -> String {
+    let listed = col_sql("oracle", cols);
+    let exprs = cols
+        .iter()
+        .map(|name| {
+            let data_type = rules
+                .iter()
+                .find(|rule| rule.name.eq_ignore_ascii_case(name))
+                .map(|rule| rule.data_type.as_str())
+                .unwrap_or("");
+            oracle_stage_expr(name, data_type)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("INSERT INTO {dest_q} ({listed}) SELECT {exprs} FROM {stage_q}")
+}
+
+fn oracle_stage_expr(name: &str, data_type: &str) -> String {
+    let quoted = quote_ident("oracle", name);
+    let base = data_type
+        .trim()
+        .split(['(', ' '])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match base.as_str() {
+        "clob" | "nclob" | "blob" => quoted,
+        "number" | "float" | "binary_float" | "binary_double" | "integer" | "int"
+        | "smallint" | "bigint" | "decimal" | "numeric" => format!("TO_NUMBER({quoted})"),
+        "date" | "timestamp" => oracle_date_expr(&quoted),
+        _ => format!("TO_CHAR({quoted})"),
+    }
+}
+
+fn oracle_date_expr(quoted: &str) -> String {
+    let text = format!("TRIM(TO_CHAR({quoted}))");
+    format!(
+        "CASE WHEN {quoted} IS NULL OR {text} IS NULL THEN NULL \
+WHEN REGEXP_LIKE({text}, '^\\d{{8}}$') THEN TO_DATE({text}, 'YYYYMMDD') \
+WHEN REGEXP_LIKE({text}, '^\\d{{14}}$') THEN TO_DATE({text}, 'YYYYMMDDHH24MISS') \
+WHEN REGEXP_LIKE({text}, '^\\d{{4}}-\\d{{2}}-\\d{{2}}$') THEN TO_DATE({text}, 'YYYY-MM-DD') \
+ELSE TO_DATE({text}, 'YYYY-MM-DD HH24:MI:SS') END"
+    )
+}
+
 async fn swap_sqlx_table<DB>(
     pool: &Pool<DB>,
     family: &str,
@@ -699,6 +763,7 @@ fn oracle_swap_loaded(
     stage_q: &str,
     mode: &str,
     cols: &[String],
+    rules: &[LoadColumnRule],
 ) -> Result<(), ConnectError> {
     if mode == "recreate" {
         oracle::exec_ignore(
@@ -709,15 +774,26 @@ fn oracle_swap_loaded(
         oracle::exec(conn, &rename_stage_sql(family, stage_q, dest_q, dest_table))?;
         return Ok(());
     }
-    let sql = format!(
-        "BEGIN\n{};\n{};\nEND;",
-        swap_clear_sql(family, dest_q),
-        insert_select_sql(family, dest_q, stage_q, cols)
-    );
+    let clear = swap_clear_sql(family, dest_q);
+    // Staging columns are CLOB. Tibero will not assign a CLOB to VARCHAR,
+    // NUMBER, or DATE, so the copy converts each column to the destination type.
+    let copy = oracle_insert_select_sql(dest_q, stage_q, cols, rules);
+    let drop = drop_table_sql(family, stage_q);
+    // Tibero rejects this swap as one PSM block (JDBC-15146). A transaction
+    // keeps the destination intact when the copy fails.
+    if let oracle::OraConn::Jdbc(jdbc) = conn {
+        return tibero_jdbc::in_transaction(jdbc, || {
+            tibero_jdbc::exec(jdbc, &clear)?;
+            tibero_jdbc::exec(jdbc, &copy)?;
+            tibero_jdbc::exec(jdbc, &drop)?;
+            Ok(())
+        });
+    }
+    let sql = format!("BEGIN\n{clear};\n{copy};\nEND;");
     oracle::exec(conn, &sql)?;
     oracle::exec_ignore(
         conn,
-        &drop_table_sql(family, stage_q),
+        &drop,
         &["ORA-00942", "TBR-0008", "table or view does not exist"],
     )?;
     Ok(())
@@ -1054,46 +1130,82 @@ pub async fn load_table(
         }
         "oracle" => {
             oracle::with_conn(c, |conn| {
-                let drop = (!use_stage && mode == "recreate").then(|| format!("DROP TABLE {q}"));
-                let clear = (!use_stage && matches!(mode, "replace" | "truncate"))
-                    .then(|| clear_sql(family, &q));
-                oracle::prepare_table(conn, &create, drop.as_deref(), clear.as_deref())?;
-                let (mut reader, _) = open_load_csv(csv_path)?;
-                loop {
-                    let rows = read_csv_batch(&mut reader, 80)?;
-                    if rows.is_empty() {
-                        break;
+                let loaded = (|| {
+                    // truncate/append only change rows. CREATE TABLE runs for a
+                    // staging table, or when recreate is actually replacing the object.
+                    if use_stage || mode == "recreate" {
+                        let drop = (!use_stage && mode == "recreate")
+                            .then(|| format!("DROP TABLE {q}"));
+                        oracle::prepare_table(conn, &create, drop.as_deref(), None)?;
+                    } else if matches!(mode, "replace" | "truncate") {
+                        oracle::exec(conn, &clear_sql(family, &q))?;
                     }
-                    let row_start = n + 1;
-                    let row_end = n + rows.len() as u64;
-                    validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
-                    oracle::insert_rows(
-                        conn,
-                        &q,
-                        &cols,
-                        &column_rules,
-                        &rows,
-                        write_mode,
-                        conflict_keys,
-                        null_marker,
-                    )
-                    .map_err(|error| load_batch_error(row_start, row_end, error))?;
-                    n = row_end;
-                    report_load_progress(on_progress, n);
-                }
-                if use_stage {
-                    if let Err(error) =
-                        oracle_swap_loaded(conn, family, &dest_q, &parsed.table, &q, mode, &cols)
-                    {
-                        let _ = oracle::exec_ignore(
+                    let (mut reader, _) = open_load_csv(csv_path)?;
+                    loop {
+                        let rows = read_csv_batch(&mut reader, 80)?;
+                        if rows.is_empty() {
+                            break;
+                        }
+                        let row_start = n + 1;
+                        let row_end = n + rows.len() as u64;
+                        validate_empty_cells(&rows, &column_rules, row_start, null_marker)?;
+                        oracle::insert_rows(
                             conn,
-                            &drop_table_sql(family, &q),
-                            &["ORA-00942", "TBR-0008", "table or view does not exist"],
-                        );
-                        return Err(error);
+                            &q,
+                            &cols,
+                            &column_rules,
+                            &rows,
+                            write_mode,
+                            conflict_keys,
+                            null_marker,
+                        )
+                        .map_err(|error| {
+                            load_batch_error(
+                                row_start,
+                                row_end,
+                                explain_if_type_mismatch(
+                                    error,
+                                    csv_path,
+                                    &column_rules,
+                                    null_marker,
+                                    use_stage,
+                                ),
+                            )
+                        })?;
+                        n = row_end;
+                        report_load_progress(on_progress, n);
                     }
+                    if use_stage {
+                        oracle_swap_loaded(
+                            conn,
+                            family,
+                            &dest_q,
+                            &parsed.table,
+                            &q,
+                            mode,
+                            &cols,
+                            &column_rules,
+                        )
+                            .map_err(|error| {
+                                explain_if_type_mismatch(
+                                    error,
+                                    csv_path,
+                                    &column_rules,
+                                    null_marker,
+                                    true,
+                                )
+                            })?;
+                    }
+                    Ok(())
+                })();
+                if loaded.is_err() && use_stage {
+                    let _ = oracle::exec_ignore(
+                        conn,
+                        &drop_table_sql(family, &q),
+                        &["ORA-00942", "TBR-0008", "table or view does not exist"],
+                    );
                 }
-                Ok(())
+                loaded
             })?;
         }
         other => return Err(ConnectError::Invalid(format!("unsupported family {other}"))),
@@ -1249,6 +1361,143 @@ fn load_batch_error(row_start: u64, row_end: u64, error: ConnectError) -> Connec
     ConnectError::Invalid(format!(
         "load batch {batch} failed (row_start={row_start}, row_end={row_end}): {error}"
     ))
+}
+
+fn explain_if_type_mismatch(
+    error: ConnectError,
+    csv_path: &Path,
+    rules: &[LoadColumnRule],
+    null_marker: Option<&str>,
+    staging_clob: bool,
+) -> ConnectError {
+    let text = error.to_string();
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("8160") && !lower.contains("type of value") && !lower.contains("type mismatch")
+    {
+        return error;
+    }
+    ConnectError::Invalid(format!(
+        "{text} {}",
+        type_mismatch_detail(csv_path, rules, null_marker, staging_clob)
+    ))
+}
+
+fn type_mismatch_detail(
+    csv_path: &Path,
+    rules: &[LoadColumnRule],
+    null_marker: Option<&str>,
+    staging_clob: bool,
+) -> String {
+    let mut parts = Vec::new();
+    if staging_clob {
+        parts.push("임시 적재 컬럼 타입은 CLOB입니다.".into());
+    }
+    if let Some(conflicts) = type_conflicts(csv_path, rules, null_marker) {
+        if conflicts.is_empty() {
+            parts.push("입력 값 형식에서 어긋난 칸은 찾지 못했습니다.".into());
+        } else {
+            parts.push(conflicts.join(" "));
+        }
+    }
+    let types = rules
+        .iter()
+        .take(40)
+        .map(|rule| format!("{}={}", rule.name, rule.data_type))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !types.is_empty() {
+        let more = if rules.len() > 40 {
+            format!(" 외 {}개", rules.len() - 40)
+        } else {
+            String::new()
+        };
+        parts.push(format!("대상 컬럼: {types}{more}"));
+    }
+    parts.join(" ")
+}
+
+fn type_conflicts(
+    csv_path: &Path,
+    rules: &[LoadColumnRule],
+    null_marker: Option<&str>,
+) -> Option<Vec<String>> {
+    let mut reader = csv::Reader::from_path(csv_path).ok()?;
+    let _ = reader.headers().ok()?;
+    let mut found = Vec::new();
+    let mut extra = 0u64;
+    for (offset, record) in reader.records().enumerate() {
+        let record = record.ok()?;
+        let row_number = offset as u64 + 1;
+        for (index, rule) in rules.iter().enumerate() {
+            let Some(value) = record.get(index) else {
+                continue;
+            };
+            if cell_is_null(value, rule, null_marker) || value_fits(value, &rule.data_type) {
+                continue;
+            }
+            if found.len() < 5 {
+                found.push(format!(
+                    "{row_number}행 컬럼 '{}' 값 '{}'은 대상 타입 {}과 맞지 않습니다.",
+                    rule.name,
+                    log_cell(value),
+                    rule.data_type
+                ));
+            } else {
+                extra += 1;
+            }
+        }
+    }
+    if extra > 0 {
+        found.push(format!("외 {extra}건"));
+    }
+    Some(found)
+}
+
+fn value_fits(value: &str, data_type: &str) -> bool {
+    let normalized = data_type.trim().to_ascii_lowercase();
+    let base = normalized
+        .split(['(', ' '])
+        .next()
+        .unwrap_or(normalized.as_str());
+    match base {
+        "smallint" | "integer" | "bigint" | "int" | "int2" | "int4" | "int8" | "tinyint"
+        | "mediumint" | "serial" | "bigserial" | "decimal" | "numeric" | "real" | "float"
+        | "float4" | "float8" | "double" | "money" | "number" | "binary_float"
+        | "binary_double" => looks_like_number(value),
+        "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "datetime" | "datetime2"
+        | "smalldatetime" => looks_like_datetime(value),
+        _ => true,
+    }
+}
+
+fn looks_like_number(value: &str) -> bool {
+    let trimmed = value.trim().replace(',', "");
+    if trimmed.is_empty() || trimmed == "-" || trimmed == "+" || trimmed == "." {
+        return false;
+    }
+    trimmed.parse::<f64>().is_ok()
+}
+
+fn looks_like_datetime(value: &str) -> bool {
+    let trimmed = value.trim();
+    let digits = trimmed.chars().filter(|c| c.is_ascii_digit()).count();
+    let unexpected = trimmed.chars().any(|c| {
+        !c.is_ascii_digit() && !matches!(c, '-' | '/' | ':' | ' ' | 'T' | 't' | 'Z' | 'z' | '.')
+    });
+    !unexpected && digits >= 6
+}
+
+fn log_cell(value: &str) -> String {
+    let flat: String = value
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(40)
+        .collect();
+    if value.chars().count() > 40 {
+        format!("{flat}...")
+    } else {
+        flat
+    }
 }
 
 const POSTGRES_COPY_NULL: &str = "\\N";
@@ -1511,7 +1760,8 @@ mod tests {
 
     #[test]
     fn positional_load_uses_destination_order_when_counts_match() {
-        let names = positional_column_names(3, &["id".into(), "name".into(), "qty".into()]).unwrap();
+        let names =
+            positional_column_names(3, &["id".into(), "name".into(), "qty".into()]).unwrap();
         assert_eq!(names, ["id", "name", "qty"]);
         assert!(positional_column_names(2, &["id".into(), "name".into(), "qty".into()]).is_err());
         assert!(positional_column_names(1, &[]).is_err());
@@ -1545,7 +1795,7 @@ mod tests {
         assert_eq!(quote_ident("oracle", "employees"), "\"EMPLOYEES\"");
         assert_eq!(
             create_table_sql("oracle", "\"HR\".\"T\"", "hr.t", &["id".into()], &[]),
-            "CREATE TABLE \"HR\".\"T\" (\"ID\" VARCHAR2(4000))"
+            "CREATE TABLE \"HR\".\"T\" (\"ID\" CLOB)"
         );
     }
 
@@ -1556,6 +1806,37 @@ mod tests {
         assert_eq!(parse_ident("XS$NULL").unwrap(), "XS$NULL");
         assert!(parse_ident("").is_err());
         assert!(parse_ident("drop;").is_err());
+    }
+
+    #[test]
+    fn oracle_swap_casts_clob_stage_to_destination_types() {
+        let rules = [
+            rule("QUES_NO", "VARCHAR"),
+            rule("QUES_GIST_CN", "CLOB"),
+            rule("LOAD_SN", "NUMBER(9,0)"),
+            rule("LOAD_DTM", "DATE"),
+        ];
+        let sql = oracle_insert_select_sql(
+            "\"FSC\".\"T\"",
+            "\"FSC\".\"BINTLLDABC\"",
+            &rules.iter().map(|item| item.name.clone()).collect::<Vec<_>>(),
+            &rules,
+        );
+        assert!(sql.contains("TO_CHAR(\"QUES_NO\")"));
+        assert!(sql.contains("\"QUES_GIST_CN\""));
+        assert!(!sql.contains("TO_CHAR(\"QUES_GIST_CN\")"));
+        assert!(sql.contains("TO_NUMBER(\"LOAD_SN\")"));
+        assert!(sql.contains("TO_DATE"));
+        assert!(sql.contains("YYYY-MM-DD HH24:MI:SS"));
+    }
+
+    fn rule(name: &str, data_type: &str) -> LoadColumnRule {
+        LoadColumnRule {
+            name: name.into(),
+            empty_as_null: false,
+            nullable: true,
+            data_type: data_type.into(),
+        }
     }
 
     #[test]
@@ -1672,5 +1953,51 @@ mod tests {
         };
         assert!(cell_is_null("__NULL__", &rule, Some("__NULL__")));
         assert!(!cell_is_null("", &rule, Some("__NULL__")));
+    }
+
+    #[test]
+    fn type_mismatch_detail_names_the_value_and_destination_type() {
+        let path = std::env::temp_dir().join(format!(
+            "bintl-type-mismatch-{}.csv",
+            std::process::id()
+        ));
+        std::fs::write(&path, "code,amt,day\nA01,서울,20261011\n").unwrap();
+        let rules = vec![
+            LoadColumnRule {
+                name: "CODE".into(),
+                empty_as_null: false,
+                nullable: true,
+                data_type: "VARCHAR2(20)".into(),
+            },
+            LoadColumnRule {
+                name: "AMT".into(),
+                empty_as_null: true,
+                nullable: true,
+                data_type: "NUMBER".into(),
+            },
+            LoadColumnRule {
+                name: "DAY".into(),
+                empty_as_null: true,
+                nullable: true,
+                data_type: "DATE".into(),
+            },
+        ];
+        let detail = type_mismatch_detail(&path, &rules, None, true);
+        assert!(detail.contains("임시 적재 컬럼 타입은 CLOB입니다."));
+        assert!(detail.contains("1행 컬럼 'AMT' 값 '서울'은 대상 타입 NUMBER과 맞지 않습니다."));
+        assert!(detail.contains("CODE=VARCHAR2(20)"));
+        assert!(detail.contains("AMT=NUMBER"));
+        assert!(detail.contains("DAY=DATE"));
+        assert!(!detail.contains("값 'A01'"));
+        assert!(!detail.contains("값 '20261011'"));
+        let kept = explain_if_type_mismatch(
+            ConnectError::Invalid("unique constraint".into()),
+            &path,
+            &rules,
+            None,
+            true,
+        );
+        assert_eq!(kept.to_string(), "unique constraint");
+        std::fs::remove_file(path).unwrap();
     }
 }

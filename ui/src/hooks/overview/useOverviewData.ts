@@ -65,7 +65,9 @@ export function useOverviewData() {
       setMineAssets({
         workspaces: mineWorkspaces.length,
         chips: catalog.chips.filter((chip) => chip.active).length,
-        datasets: datasets.datasets.filter((dataset) => mineWorkspaceIds.has(dataset.workspace_id)).length,
+        datasets: datasets.datasets.filter((dataset) =>
+          !dataset.workspace_id || mineWorkspaceIds.has(dataset.workspace_id),
+        ).length,
         connections: 0,
       });
       setSharedAssets({

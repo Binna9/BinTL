@@ -21,8 +21,8 @@ impl Store {
         sqlx::query(
             "INSERT INTO data_files
              (id, kind, filename, stored_path, size_bytes, delimiter, has_header,
-              row_count, created_at, updated_at, workspace_id, format)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              row_count, created_at, updated_at, workspace_id, folder_id, format)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                kind = excluded.kind,
                filename = excluded.filename,
@@ -32,6 +32,7 @@ impl Store {
                has_header = COALESCE(excluded.has_header, data_files.has_header),
                row_count = COALESCE(excluded.row_count, data_files.row_count),
                workspace_id = COALESCE(excluded.workspace_id, data_files.workspace_id),
+               folder_id = COALESCE(excluded.folder_id, data_files.folder_id),
                updated_at = excluded.updated_at",
         )
         .bind(&row.id)
@@ -44,7 +45,8 @@ impl Store {
         .bind(row.row_count)
         .bind(&now)
         .bind(&now)
-        .bind(row.workspace_id.as_deref().unwrap_or(DEFAULT_WORKSPACE_ID))
+        .bind(row.workspace_id.as_deref())
+        .bind(row.folder_id.as_deref())
         .bind(file_format(&row.filename, row.delimiter.as_deref()))
         .execute(&self.pool)
         .await?;
@@ -58,9 +60,9 @@ impl Store {
             .get_dataset(id)
             .await?
             .ok_or_else(|| StorageError::NotFound("dataset not found".into()))?;
-        if row.kind != "transform" {
+        if row.kind != "transform" && row.kind != "script" {
             return Err(StorageError::Invalid(
-                "only transform data files can be deleted here".into(),
+                "only transform or script data files can be deleted here".into(),
             ));
         }
         let dataset_ids = [id.to_string()];
@@ -423,6 +425,7 @@ impl Store {
                has_header = COALESCE(?, has_header),
                row_count = COALESCE(?, row_count),
                workspace_id = COALESCE(?, workspace_id),
+               folder_id = COALESCE(?, folder_id),
                updated_at = ?
              WHERE id = ?",
         )
@@ -432,7 +435,8 @@ impl Store {
         .bind(&row.delimiter)
         .bind(has_header)
         .bind(row.row_count)
-        .bind(row.workspace_id.as_deref().unwrap_or(DEFAULT_WORKSPACE_ID))
+        .bind(row.workspace_id.as_deref())
+        .bind(row.folder_id.as_deref())
         .bind(&now)
         .bind(id)
         .execute(&self.pool)
@@ -447,7 +451,7 @@ impl Store {
         scope: Option<&DataScope>,
     ) -> Result<Vec<DatasetRow>, StorageError> {
         let (extra, binds) = match scope {
-            Some(scope) => Self::workspace_scope_sql(scope, "d.workspace_id"),
+            Some(scope) => Self::catalog_scope_sql(scope, "d.folder_id", "d.workspace_id"),
             None => (String::new(), Vec::new()),
         };
         let sql = format!(
@@ -486,6 +490,40 @@ impl Store {
         .bind(id)
         .fetch_one(&self.pool)
         .await?)
+    }
+}
+
+impl Store {
+    /// A canvas may read a file on itself, a file in the same work category,
+    /// or any file owned through another workspace of the same user.
+    /// Placing a chip on this canvas and running it does not require the
+    /// input file's workspace stamp to match.
+    pub async fn dataset_serves_workspace(
+        &self,
+        dataset_id: &str,
+        workspace_id: &str,
+    ) -> Result<bool, StorageError> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM data_files d
+             JOIN workspaces w ON w.id = ?
+             WHERE d.id = ? AND d.deleted_at IS NULL
+               AND (
+                 d.workspace_id = w.id
+                 OR (w.folder_id IS NOT NULL AND d.folder_id = w.folder_id)
+                 OR (
+                   w.owner_user_id IS NOT NULL
+                   AND EXISTS (
+                     SELECT 1 FROM workspaces src
+                     WHERE src.id = d.workspace_id AND src.owner_user_id = w.owner_user_id
+                   )
+                 )
+               )",
+        )
+        .bind(workspace_id)
+        .bind(dataset_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count == 1)
     }
 }
 

@@ -2680,6 +2680,16 @@ export function WorkspacePage() {
       icon: StickyNote,
     },
   ];
+  const HeaderIcon = !focusChip ? FolderOpen
+    : focusChip.kind === "transform" ? Workflow
+      : focusChip.kind === "load" ? FileOutput
+        : focusChip.kind === "validation" ? ShieldCheck
+          : focusChip.kind === "sql" ? Terminal
+            : focusChip.kind === "script" ? Braces
+              : focusChip.kind === "serve" ? Globe
+                : focusChip.kind === "memo" ? StickyNote
+                  : DatabaseZap;
+
   const edgeTools = [
     {
       kind: "on_success" as const,
@@ -2800,26 +2810,22 @@ export function WorkspacePage() {
               <span
                 className={cn(
                   "flex h-8 w-10 shrink-0 items-center border-r border-border pr-3",
-                  focusChip
-                    ? focusChip.kind === "extract"
-                      ? "text-accent"
-                      : "text-success"
-                    : "text-text",
+                  focusChip ? "workspace-header-icon" : "text-text",
+                  focusChip?.kind === "extract" ? "is-extract"
+                    : focusChip?.kind === "load" ? "is-load"
+                      : focusChip?.kind === "validation" ? "is-validation"
+                        : focusChip?.kind === "sql" ? "is-sql"
+                          : focusChip?.kind === "script" ? "is-script"
+                            : focusChip?.kind === "serve" ? "is-serve"
+                              : focusChip?.kind === "memo" ? "is-memo"
+                                : focusChip ? "is-transform" : "",
                 )}
               >
-                {focusChip ? (
-                  focusChip.kind === "transform" ? (
-                    <Workflow className="size-[22px]" aria-hidden="true" />
-                  ) : (
-                    <DatabaseZap className="size-[22px]" aria-hidden="true" />
-                  )
-                ) : (
-                  <FolderOpen className="size-[22px]" aria-hidden="true" />
-                )}
+                <HeaderIcon className="size-[22px]" aria-hidden="true" />
               </span>
               <div className="min-w-0">
                 <p className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-                  {messages.workspace.title}
+                  {focusChip ? chipKindLabel(focusChip.kind, messages) : messages.workspace.title}
                 </p>
                 <div className="mt-0.5 flex min-w-0 items-center">
                   <h1 className="min-w-0 truncate text-sm font-semibold tracking-[-0.015em] text-text">

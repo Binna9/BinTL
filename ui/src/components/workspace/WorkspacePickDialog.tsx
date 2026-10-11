@@ -10,21 +10,25 @@ import type { Workspace, WorkspaceFolder } from "@/types/workspace";
 
 export function WorkspacePickDialog({
   open,
+  target = "workspace",
   value,
   onChange,
   onClose,
   onConfirm,
 }: {
   open: boolean;
+  target?: "workspace" | "folder";
   value: string;
-  onChange: (workspaceId: string) => void;
+  onChange: (id: string) => void;
   onClose: () => void;
   onConfirm: () => void;
 }) {
   const { messages } = useLanguage();
   const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const selected = workspaces.some((workspace) => workspace.id === value);
+  const selected = target === "folder"
+    ? folders.some((folder) => folder.id === value)
+    : workspaces.some((workspace) => workspace.id === value);
 
   useEffect(() => {
     if (!open) return;
@@ -46,7 +50,7 @@ export function WorkspacePickDialog({
   return (
     <AppDialog
       open={open}
-      title={messages.workspace.pickSaveTitle}
+      title={target === "folder" ? messages.workspace.pickFolderTitle : messages.workspace.pickSaveTitle}
       icon={<FolderTree className="size-4 text-accent" aria-hidden="true" />}
       zIndex={140}
       className="h-[min(40rem,88vh)] w-[min(38rem,94vw)]"
@@ -58,17 +62,20 @@ export function WorkspacePickDialog({
             {messages.common.cancel}
           </Button>
           <Button type="button" variant="primary" disabled={!selected} onClick={onConfirm}>
-            {messages.workspace.pickSaveConfirm}
+            {target === "folder" ? messages.workspace.pickFolderConfirm : messages.workspace.pickSaveConfirm}
           </Button>
         </>
       }
     >
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-        <p className="text-[12px] text-text-secondary">{messages.workspace.pickSaveHint}</p>
+        <p className="text-[12px] text-text-secondary">
+          {target === "folder" ? messages.workspace.pickFolderHint : messages.workspace.pickSaveHint}
+        </p>
         <WorkspaceTreePicker
           folders={folders}
           workspaces={workspaces}
           value={value}
+          selection={target}
           className="min-h-0 flex-1"
           onChange={onChange}
         />

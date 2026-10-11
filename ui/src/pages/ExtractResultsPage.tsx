@@ -20,7 +20,7 @@ import { MetaField } from "@/components/ui/meta-field";
 import { Panel } from "@/components/ui/panel";
 import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
 import { WorkspaceFileCatalog } from "@/components/workspace/WorkspaceFileCatalog";
-import { filterItemsByFileTree, type FileTreeSelection } from "@/features/workspace/fileWorkspaceTree";
+import { filterItemsByFileTree, folderForCatalogItem, type FileTreeSelection } from "@/features/workspace/fileWorkspaceTree";
 import { isExtractActive, useExtracts } from "@/hooks/extract/useExtracts";
 import { useWorkspaceTree } from "@/hooks/workspace/useWorkspaceTree";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -74,18 +74,26 @@ export function ExtractResultsPage() {
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  const placedExtracts = useMemo(
+    () =>
+      extracts.map((extract) => {
+        const folderId = folderForCatalogItem(extract.folder_id, extract.workspace_id, workspaces);
+        return folderId === (extract.folder_id ?? null) ? extract : { ...extract, folder_id: folderId };
+      }),
+    [extracts, workspaces],
+  );
   const visibleExtracts = useMemo(
-    () => filterItemsByFileTree(extracts, treeSelection, folders, workspaces),
-    [extracts, folders, treeSelection, workspaces],
+    () => filterItemsByFileTree(placedExtracts, treeSelection, folders, workspaces),
+    [placedExtracts, folders, treeSelection, workspaces],
   );
   const catalogFiles = useMemo(
     () =>
-      extracts.map((extract) => ({
+      placedExtracts.map((extract) => ({
         id: extract.id,
         name: extractFilename(extract),
-        workspace_id: extract.workspace_id,
+        folder_id: extract.folder_id,
       })),
-    [extracts],
+    [placedExtracts],
   );
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const paging = usePagination(
@@ -182,9 +190,9 @@ export function ExtractResultsPage() {
             activeFileId={previewing?.id}
             onSelect={setTreeSelection}
             onFileClick={(id) => {
-              const extract = extracts.find((item) => item.id === id);
+              const extract = placedExtracts.find((item) => item.id === id);
               if (!extract) return;
-              setTreeSelection({ type: "workspace", id: extract.workspace_id });
+              setTreeSelection(extract.folder_id ? { type: "folder", id: extract.folder_id } : { type: "all" });
               void openPreview(extract);
             }}
           />

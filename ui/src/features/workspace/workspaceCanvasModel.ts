@@ -441,10 +441,10 @@ export function canHaveDataEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
   );
 }
 
-/** Control wires set run order. Sinks cannot feed the ETL pipeline; SQL is the sequencing hatch. */
+/** Control wires set run order. A finished load may start the next extract. */
 export function canHaveControlEdge(fromKind: ChipKind, toKind: ChipKind): boolean {
   if (fromKind === "memo" || toKind === "memo") return false;
-  if (fromKind === "load") return toKind === "load" || toKind === "validation" || toKind === "sql";
+  if (fromKind === "load") return toKind === "load" || toKind === "validation" || toKind === "sql" || toKind === "extract";
   if (fromKind === "validation" || fromKind === "serve") return toKind === "sql";
   if (toKind === "extract") return fromKind === "extract" || fromKind === "sql";
   return true;
@@ -852,7 +852,7 @@ if (import.meta.env.DEV) {
   console.assert(!canHaveDataEdge("load", "transform"), "canvas: load may not feed transform");
   console.assert(!canHaveDataEdge("load", "load"), "canvas: load may not feed load");
   console.assert(canHaveControlEdge("extract", "load"), "canvas: extract may sequence load");
-  console.assert(!canHaveControlEdge("load", "extract"), "canvas: load may not sequence extract");
+  console.assert(canHaveControlEdge("load", "extract"), "canvas: load may sequence extract");
   console.assert(!canHaveControlEdge("validation", "load"), "canvas: validation is a sink");
   console.assert(canHaveControlEdge("sql", "extract"), "canvas: sql may sequence extract");
   console.assert(canHaveDataEdge("script", "transform"), "canvas: script may feed transform");
@@ -919,8 +919,8 @@ if (import.meta.env.DEV) {
     "canvas: on_error into data consumer",
   );
   console.assert(
-    edgeConnectIssue(load, extract, "on_success", []) === "kind",
-    "canvas: reverse control kind",
+    edgeConnectIssue(load, extract, "on_success", []) === null,
+    "canvas: load may sequence extract",
   );
   console.assert(
     edgeConnectIssue(extract, transform, "on_success", [wire("back", "transform", "extract", "always")]) === "cycle",

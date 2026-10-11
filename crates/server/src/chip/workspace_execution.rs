@@ -57,7 +57,12 @@ async fn require_input(
     id: &str,
 ) -> Result<(), AppError> {
     let dataset = access::require_dataset(&state.store, user, id).await?;
-    if dataset.workspace_id != workspace_id || dataset.status != "materialized" {
+    if dataset.status != "materialized"
+        || !state
+            .store
+            .dataset_serves_workspace(id, workspace_id)
+            .await?
+    {
         return Err(AppError::bad(
             "input dataset is not materialized in this workspace",
         ));
@@ -147,11 +152,18 @@ async fn prepare_config(
                     require_input(state, user, workspace_id, id).await?;
                 }
             } else {
-                // Connected loads do not use a recipe's previous dataset.
-                config["input_dataset_id"] = Value::Null;
                 crate::load::validate_load_config(&state.store, config.clone()).await?;
                 if incoming.is_empty() {
-                    return Err(AppError::bad("load input is not connected"));
+                    // No canvas wire: the file chosen on the load recipe is the input.
+                    let id = config["input_dataset_id"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| AppError::bad("load input is not connected"))?;
+                    require_input(state, user, workspace_id, id).await?;
+                } else {
+                    // A data edge wins over the file saved on the recipe.
+                    config["input_dataset_id"] = Value::Null;
                 }
             }
         }
@@ -378,7 +390,7 @@ pub(super) async fn execute(
                 .and_then(|edge| outputs.get(&edge.from_chip_id))
                 .map(String::as_str)
                 .or_else(|| {
-                    if chip.kind == "transform" || chip.kind == "script" {
+                    if matches!(chip.kind.as_str(), "transform" | "script" | "load") {
                         config["input_dataset_id"].as_str().or_else(|| {
                             config["inputs"]
                                 .as_array()

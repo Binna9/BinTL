@@ -18,11 +18,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 export const fileApi = {
   getFiles: () => httpRequest<FileListResponse>("/api/files"),
-  uploadFile: (file: File, filename?: string, workspaceId?: string) => {
+  uploadFile: (
+    file: File,
+    filename?: string,
+    folderId?: string,
+    delimiter?: string,
+    header = true,
+  ) => {
     const body = new FormData();
     const name = filename?.trim();
+    const separator = delimiter?.trim();
     if (name) body.append("filename", name);
-    if (workspaceId?.trim()) body.append("workspace_id", workspaceId.trim());
+    if (folderId?.trim()) body.append("folder_id", folderId.trim());
+    if (separator && separator !== "auto") body.append("delimiter", separator);
+    body.append("header", header ? "true" : "false");
     body.append("file", file);
     return httpRequest<StoredFile>("/api/files", { method: "POST", body });
   },
@@ -41,7 +50,7 @@ export const fileApi = {
       delimiter?: string;
       header?: boolean;
       addSequence?: boolean;
-      workspaceId?: string;
+      folderId?: string;
       onProgress?: (progress: WorkbookCommitProgress) => void;
     },
   ) => {
@@ -57,7 +66,7 @@ export const fileApi = {
           delimiter: options?.delimiter?.trim() || ",",
           header: options?.header ?? true,
           add_sequence: options?.addSequence ?? false,
-          ...(options?.workspaceId?.trim() ? { workspace_id: options.workspaceId.trim() } : {}),
+          ...(options?.folderId?.trim() ? { folder_id: options.folderId.trim() } : {}),
         }),
       },
       (event) => {

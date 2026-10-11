@@ -23,6 +23,7 @@ export interface Dataset {
   created_at: string;
   updated_at: string;
   workspace_id: string;
+  folder_id?: string | null;
   producer_chip_run_id: string | null;
   status?: "planned" | "materialized" | string;
   source_chip_id?: string | null;

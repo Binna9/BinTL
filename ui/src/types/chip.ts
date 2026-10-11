@@ -54,6 +54,8 @@ export interface Chip {
   name: string;
   kind: ChipKind;
   workspace_id?: string | null;
+  /** Canvases this chip is placed on. Empty means it is not on any workspace. */
+  workspace_ids?: string[];
   config: ChipConfig;
   binding?: ChipBinding | null;
   output?: ChipOutput | null;

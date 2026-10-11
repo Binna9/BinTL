@@ -8,16 +8,33 @@ export type FileTreeSelection =
 export interface CatalogFile {
   id: string;
   name: string;
-  workspace_id: string;
+  folder_id?: string | null;
 }
 
 const LAST_FILE_WORKSPACE_KEY = "bintl.last-file-workspace";
+const LAST_FILE_FOLDER_KEY = "bintl.last-file-folder";
 
 export function readLastFileWorkspace(): string {
   try {
     return localStorage.getItem(LAST_FILE_WORKSPACE_KEY) ?? "";
   } catch {
     return "";
+  }
+}
+
+export function readLastFileFolder(): string {
+  try {
+    return localStorage.getItem(LAST_FILE_FOLDER_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeLastFileFolder(id: string) {
+  try {
+    localStorage.setItem(LAST_FILE_FOLDER_KEY, id);
+  } catch {
+    // ponytail: private-mode storage can throw; picker still works without memory
   }
 }
 
@@ -44,45 +61,41 @@ export function descendantFolderIds(folders: WorkspaceFolder[], folderId: string
   return ids;
 }
 
-export function workspaceIdsUnderFolder(
-  folders: WorkspaceFolder[],
-  workspaces: Workspace[],
-  folderId: string,
-): Set<string> {
-  const folderIds = descendantFolderIds(folders, folderId);
-  return new Set(
-    workspaces
-      .filter((workspace) => workspace.folder_id != null && folderIds.has(workspace.folder_id))
-      .map((workspace) => workspace.id),
-  );
-}
-
-export function filterItemsByFileTree<T extends { workspace_id: string }>(
+export function filterItemsByFileTree<T extends { folder_id?: string | null }>(
   items: T[],
   selection: FileTreeSelection,
-  folders: WorkspaceFolder[],
+  _folders: WorkspaceFolder[],
   workspaces: Workspace[],
 ): T[] {
   if (selection.type === "all") return items;
   if (selection.type === "workspace") {
-    return items.filter((item) => item.workspace_id === selection.id);
+    const folderId = workspaces.find((workspace) => workspace.id === selection.id)?.folder_id ?? null;
+    return items.filter((item) => (item.folder_id ?? null) === folderId);
   }
-  const ids = workspaceIdsUnderFolder(folders, workspaces, selection.id);
-  return items.filter((item) => ids.has(item.workspace_id));
+  return items.filter((item) => item.folder_id === selection.id);
 }
 
-export function filesForWorkspace(files: CatalogFile[], workspaceId: string): CatalogFile[] {
-  return files.filter((file) => file.workspace_id === workspaceId);
+export function folderForCatalogItem(
+  folderId: string | null | undefined,
+  workspaceId: string | null | undefined,
+  workspaces: { id: string; folder_id?: string | null }[],
+): string | null {
+  if (folderId) return folderId;
+  if (!workspaceId) return null;
+  return workspaces.find((workspace) => workspace.id === workspaceId)?.folder_id ?? null;
+}
+
+export function filesForFolder(files: CatalogFile[], folderId: string | null): CatalogFile[] {
+  return files.filter((file) => (file.folder_id ?? null) === folderId);
 }
 
 export function fileCountForFolder(
   files: CatalogFile[],
-  folders: WorkspaceFolder[],
-  workspaces: Workspace[],
+  _folders: WorkspaceFolder[],
+  _workspaces: Workspace[],
   folderId: string,
 ): number {
-  const ids = workspaceIdsUnderFolder(folders, workspaces, folderId);
-  return files.filter((file) => ids.has(file.workspace_id)).length;
+  return filesForFolder(files, folderId).length;
 }
 
 function nameMatches(name: string, query: string) {
@@ -147,9 +160,9 @@ if (import.meta.env.DEV) {
     { id: "w3", name: "W3", layout: {}, version: 1, created_at: "", updated_at: "", folder_id: null },
   ];
   const items = [
-    { id: "f1", workspace_id: "w1" },
-    { id: "f2", workspace_id: "w2" },
-    { id: "f3", workspace_id: "w3" },
+    { id: "f1", folder_id: "b" },
+    { id: "f2", folder_id: "a" },
+    { id: "f3", folder_id: null },
   ];
   console.assert(
     filterItemsByFileTree(items, { type: "all" }, folders, workspaces).length === 3,
@@ -159,13 +172,13 @@ if (import.meta.env.DEV) {
     filterItemsByFileTree(items, { type: "workspace", id: "w1" }, folders, workspaces)
       .map((item) => item.id)
       .join(",") === "f1",
-    "file tree: workspace",
+    "file tree: workspace uses its category",
   );
   console.assert(
     filterItemsByFileTree(items, { type: "folder", id: "a" }, folders, workspaces)
       .map((item) => item.id)
-      .join(",") === "f1,f2",
-    "file tree: nested folder",
+      .join(",") === "f2",
+    "file tree: folder is direct",
   );
   console.assert(fileCountForFolder(items.map((item) => ({ ...item, name: item.id })), folders, workspaces, "b") === 1, "file tree: child folder count");
   const byWorkspace = filterCatalogTree(folders, workspaces, "w1");
@@ -173,4 +186,7 @@ if (import.meta.env.DEV) {
   const byFolder = filterCatalogTree(folders, workspaces, "A");
   console.assert(byFolder.folders.map((row) => row.id).join(",") === "a,b" && byFolder.workspaces.map((row) => row.id).join(",") === "w1,w2", "catalog tree: folder match keeps subtree");
   console.assert(filterCatalogTree(folders, workspaces, "nope").workspaces.length === 0, "catalog tree: empty");
+  console.assert(folderForCatalogItem(null, "w1", workspaces) === "b", "catalog: workspace file uses its folder");
+  console.assert(folderForCatalogItem("a", "w1", workspaces) === "a", "catalog: explicit folder wins");
+  console.assert(folderForCatalogItem(null, "", workspaces) === null, "catalog: unplaced file stays at the root");
 }

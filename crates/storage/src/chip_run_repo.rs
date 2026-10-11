@@ -28,9 +28,29 @@ impl Store {
             .bind(id).fetch_optional(&mut *tx).await?
             .ok_or_else(|| StorageError::Invalid("workspace step is not waiting".into()))?;
         for dataset_id in [input, source].into_iter().flatten() {
-            let valid: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_files WHERE id=? AND workspace_id=? AND deleted_at IS NULL")
-                .bind(dataset_id).bind(&workspace).fetch_one(&mut *tx).await?;
-            if valid != 1 {
+            let serves: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM data_files d
+                 JOIN workspaces w ON w.id = ?
+                 WHERE d.id = ? AND d.deleted_at IS NULL
+                   AND (
+                     d.workspace_id = w.id
+                     OR (w.folder_id IS NOT NULL AND d.folder_id = w.folder_id)
+                     OR (
+                       w.folder_id IS NULL AND d.folder_id IS NULL
+                       AND (
+                         d.workspace_id = w.id
+                         OR d.workspace_id IN (
+                           SELECT id FROM workspaces ow WHERE ow.owner_user_id = w.owner_user_id
+                         )
+                       )
+                     )
+                   )",
+            )
+            .bind(&workspace)
+            .bind(dataset_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if serves != 1 {
                 return Err(StorageError::Invalid(
                     "input dataset is unavailable in this workspace".into(),
                 ));
@@ -189,11 +209,11 @@ impl Store {
         }
         require_config_json(config_snapshot_json)?;
         if let Some(dataset_id) = input_dataset_id {
-            let dataset = self
+            let _dataset = self
                 .get_dataset(dataset_id)
                 .await?
                 .ok_or_else(|| StorageError::NotFound("input dataset not found".into()))?;
-            if dataset.workspace_id != workspace_id {
+            if !self.dataset_serves_workspace(dataset_id, workspace_id).await? {
                 return Err(StorageError::Invalid(
                     "input dataset belongs to another workspace".into(),
                 ));
@@ -643,6 +663,7 @@ impl Store {
                 created_at: now_rfc3339(),
                 updated_at: now_rfc3339(),
                 workspace_id: workspace_id.into(),
+                folder_id: None,
                 producer_chip_run_id: None,
                 table_name: String::new(),
                 connection_name: String::new(),
@@ -762,6 +783,11 @@ impl Store {
             .fetch_optional(&mut **tx)
             .await?
             .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let folder_id: Option<String> = sqlx::query_scalar("SELECT folder_id FROM workspaces WHERE id=?")
+            .bind(workspace_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .flatten();
         let now = now_rfc3339();
         let has_header_i64 = has_header.map(i64::from);
         // Try to insert a new data_files row keyed by stored_path. If another concurrent
@@ -770,9 +796,9 @@ impl Store {
         // to ensure we reference the correct dataset id (either existing or newly created).
         sqlx::query(
             "INSERT INTO data_files
-             (id, workspace_id, kind, format, filename, stored_path, size_bytes, delimiter, has_header,
+             (id, workspace_id, folder_id, kind, format, filename, stored_path, size_bytes, delimiter, has_header,
               row_count, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(stored_path) DO UPDATE SET
                kind = excluded.kind,
                filename = excluded.filename,
@@ -781,11 +807,13 @@ impl Store {
                has_header = COALESCE(excluded.has_header, data_files.has_header),
                row_count = COALESCE(excluded.row_count, data_files.row_count),
                workspace_id = excluded.workspace_id,
+               folder_id = excluded.folder_id,
                deleted_at = NULL,
                updated_at = excluded.updated_at",
         )
         .bind(&dataset_id)
         .bind(workspace_id)
+        .bind(&folder_id)
         .bind(kind)
         .bind(if filename.ends_with(".parquet") { "parquet" } else { "csv" })
         .bind(filename)

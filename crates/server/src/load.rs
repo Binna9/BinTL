@@ -89,10 +89,20 @@ async fn run_load(
         return Err(AppError::bad("input dataset is not materialized"));
     }
     let snapshot = serde_json::to_string(&config).map_err(|e| AppError::bad(e.to_string()))?;
+    let workspace_id = dataset.workspace_id.trim();
     let step = state
         .store
         .create_standalone_load_step(
-            &dataset.workspace_id,
+            if workspace_id.is_empty() {
+                None
+            } else {
+                Some(workspace_id)
+            },
+            if workspace_id.is_empty() {
+                dataset.folder_id.as_deref()
+            } else {
+                None
+            },
             Some(user.id()),
             &snapshot,
             &dataset.id,

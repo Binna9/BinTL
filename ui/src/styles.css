@@ -2333,41 +2333,49 @@ a {
   place-items: center;
 }
 
-.workspace-node-icon.is-extract {
+.workspace-node-icon.is-extract,
+.workspace-header-icon.is-extract {
   color: var(--theme-accent);
 }
 
-.workspace-node-icon.is-transform {
+.workspace-node-icon.is-transform,
+.workspace-header-icon.is-transform {
   color: var(--theme-success);
 }
 
-.workspace-node-icon.is-load {
+.workspace-node-icon.is-load,
+.workspace-header-icon.is-load {
   /* Make load icons use the brighter warning yellow, but no background — icon-only like extracts */
   color: #e5b95d; /* lighter warning yellow for icon stroke */
   background: transparent; /* remove background so only the icon color shows */
 }
 
-.workspace-node-icon.is-validation {
+.workspace-node-icon.is-validation,
+.workspace-header-icon.is-validation {
   color: #8b5cf6;
   background: transparent;
 }
 
-.workspace-node-icon.is-sql {
+.workspace-node-icon.is-sql,
+.workspace-header-icon.is-sql {
   color: #0ea5e9;
   background: transparent;
 }
 
-.workspace-node-icon.is-script {
+.workspace-node-icon.is-script,
+.workspace-header-icon.is-script {
   color: #d97706;
   background: transparent;
 }
 
-.workspace-node-icon.is-serve {
+.workspace-node-icon.is-serve,
+.workspace-header-icon.is-serve {
   color: #14b8a6;
   background: transparent;
 }
 
-.workspace-node-icon.is-memo {
+.workspace-node-icon.is-memo,
+.workspace-header-icon.is-memo {
   color: #f43f5e;
   background: transparent;
 }

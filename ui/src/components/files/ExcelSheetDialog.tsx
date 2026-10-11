@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { Select } from "@/components/ui/select";
 import { useLanguage } from "@/i18n/LanguageProvider";
-import { DELIMITER_VALUES, isValidDelimiter } from "@/lib/delimiter";
+import { COLON_PIPE_DELIMITER, DELIMITER_VALUES, isValidDelimiter } from "@/lib/delimiter";
 import { toastError } from "@/lib/notifications";
 import type {
   StagedWorkbook,
@@ -46,7 +46,7 @@ export function ExcelSheetDialog({
   const [addSequence, setAddSequence] = useState(false);
   const delimiterOptions = useMemo(
     () =>
-      DELIMITER_VALUES.map((value) => ({
+      [...DELIMITER_VALUES, COLON_PIPE_DELIMITER].map((value) => ({
         value,
         label: value === " " ? messages.format.space : value === "tab" ? "tab" : value,
       })),
@@ -128,7 +128,7 @@ export function ExcelSheetDialog({
             {messages.files.sheetDialogDescription}
           </p>
           <div className="mt-3 flex flex-wrap items-end gap-3">
-            <div className="w-48" title={messages.connectionsPage.delimiterTitle}>
+            <div className="w-48" title={messages.files.sheetDelimiterHint}>
               <FormField label={messages.common.delimiter}>
                 <Select
                   editable

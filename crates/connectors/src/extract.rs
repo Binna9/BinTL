@@ -79,10 +79,66 @@ const SNIFF_DELIMS: &[(&str, u8)] = &[
     ("^", b'^'),
 ];
 
+/// Source `.dat` / law-tool files separate fields with this, not a comma.
+pub const COLON_PIPE: &str = ":||";
+/// csv and polars only accept one byte. `:||` is rewritten to this on read.
+const COLON_PIPE_SENTINEL: u8 = 0x1f;
+
+pub fn is_colon_pipe(raw: &str) -> bool {
+    raw.trim() == COLON_PIPE
+}
+
+/// Replace `:||` with a single byte so the csv crate can parse the file.
+/// Quoting stays off: this format does not quote, and field text contains `"`.
+///
+/// ponytail: a field that itself contains `:||` is split. The source format
+/// does not escape the delimiter.
+pub fn rewrite_colon_pipe(bytes: &[u8]) -> Result<Vec<u8>, ConnectError> {
+    if bytes.contains(&COLON_PIPE_SENTINEL) {
+        return Err(ConnectError::Invalid(
+            "file contains a character reserved for the `:||` delimiter".into(),
+        ));
+    }
+    let pattern = COLON_PIPE.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index..].starts_with(pattern) {
+            out.push(COLON_PIPE_SENTINEL);
+            index += pattern.len();
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// ponytail: the first two rows both starting with a numeric id means there is
+/// no header. A header whose first cell is only digits would be treated as data.
+pub fn colon_pipe_has_header(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return true;
+    };
+    let mut rows = text
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r'))
+        .filter(|line| !line.trim().is_empty());
+    let (Some(first), Some(second)) = (rows.next(), rows.next()) else {
+        return true;
+    };
+    let digit_id = |row: &str| {
+        let lead = row.split(COLON_PIPE).next().unwrap_or("");
+        !lead.is_empty() && lead.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    !(digit_id(first) && digit_id(second))
+}
+
 /// Guess a delimiter from a text sample. Prefers a separator that splits most
 /// rows into the same number of columns (at least 2).
 pub fn sniff_delimiter(sample: &[u8]) -> Option<String> {
-    let sample = if sample.len() > 64 * 1024 {
+    let truncated = sample.len() > 64 * 1024;
+    let sample = if truncated {
         &sample[..64 * 1024]
     } else {
         sample
@@ -92,18 +148,31 @@ pub fn sniff_delimiter(sample: &[u8]) -> Option<String> {
         let Some((consistent, columns)) = score_delimiter(sample, *byte) else {
             continue;
         };
-        let better = match best {
-            None => true,
-            Some((best_consistent, best_columns, _)) => {
-                consistent > best_consistent
-                    || (consistent == best_consistent && columns > best_columns)
-            }
-        };
-        if better {
+        if prefer_delimiter(best, consistent, columns) {
             best = Some((consistent, columns, token));
         }
     }
+    if let Some((consistent, columns, total)) = score_colon_pipe(sample, truncated) {
+        // Each `:||` contains two `|` bytes, so a pipe sniff looks like more
+        // columns. A sample that splits evenly on `:||` is that delimiter.
+        if consistent == total {
+            return Some(COLON_PIPE.to_string());
+        }
+        if prefer_delimiter(best, consistent, columns) {
+            best = Some((consistent, columns, COLON_PIPE));
+        }
+    }
     best.map(|(_, _, token)| token.to_string())
+}
+
+fn prefer_delimiter(best: Option<(usize, usize, &str)>, consistent: usize, columns: usize) -> bool {
+    match best {
+        None => true,
+        Some((best_consistent, best_columns, _)) => {
+            consistent > best_consistent
+                || (consistent == best_consistent && columns > best_columns)
+        }
+    }
 }
 
 fn score_delimiter(sample: &[u8], delimiter: u8) -> Option<(usize, usize)> {
@@ -134,6 +203,43 @@ fn score_delimiter(sample: &[u8], delimiter: u8) -> Option<(usize, usize)> {
         return None;
     }
     Some((consistent, columns))
+}
+
+fn score_colon_pipe(sample: &[u8], truncated: bool) -> Option<(usize, usize, usize)> {
+    // A 64KB cut can land in the middle of a UTF-8 character. Keep only
+    // complete lines so `from_utf8` does not reject the whole sample.
+    let sample = if truncated || std::str::from_utf8(sample).is_err() {
+        let end = sample.iter().rposition(|byte| *byte == b'\n')?;
+        &sample[..=end]
+    } else {
+        sample
+    };
+    let text = std::str::from_utf8(sample).ok()?;
+    let mut lines: Vec<&str> = text
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r'))
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if truncated && !sample.ends_with(b"\n") {
+        lines.pop();
+    }
+    let widths: Vec<usize> = lines
+        .into_iter()
+        .take(24)
+        .map(|line| line.split(COLON_PIPE).count())
+        .collect();
+    if widths.len() < 2 {
+        return None;
+    }
+    let columns = *widths.iter().max()?;
+    if columns < 2 {
+        return None;
+    }
+    let consistent = widths.iter().filter(|width| **width == columns).count();
+    if consistent * 2 < widths.len() {
+        return None;
+    }
+    Some((consistent, columns, widths.len()))
 }
 
 /// Stream `SELECT *` into a delimited text file. Headers come from the table
@@ -445,6 +551,27 @@ mod tests {
     fn sniffs_comma_csv() {
         let sample = "a,b,c\n1,2,3\n4,5,6\n";
         assert_eq!(sniff_delimiter(sample.as_bytes()).as_deref(), Some(","));
+    }
+
+    #[test]
+    fn sniffs_colon_pipe_when_pipes_and_commas_are_inside_fields() {
+        let sample = "260151:||:||법률 | 시행령:||제2조,제3조\n260150:||:||여신:||제2조,제41조\n";
+        assert_eq!(sniff_delimiter(sample.as_bytes()).as_deref(), Some(":||"));
+        assert!(!colon_pipe_has_header(sample.as_bytes()));
+        let headed = "id:||name\n260151:||법률\n260150:||여신\n";
+        assert!(colon_pipe_has_header(headed.as_bytes()));
+        let rewritten = rewrite_colon_pipe(sample.as_bytes()).unwrap();
+        assert_eq!(rewritten.iter().filter(|byte| **byte == 0x1f).count(), 6);
+        assert_eq!(
+            sniff_delimiter(b"a:||b:||c\n1:||2:||3\n").as_deref(),
+            Some(":||")
+        );
+        let line = "12:||가 |\n2:||나\n";
+        let mut long = Vec::new();
+        while long.len() < 70_000 {
+            long.extend(line.as_bytes());
+        }
+        assert_eq!(sniff_delimiter(&long).as_deref(), Some(":||"));
     }
 
     #[test]

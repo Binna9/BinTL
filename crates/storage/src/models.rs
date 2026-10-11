@@ -121,7 +121,7 @@ pub(crate) const JOB_COLS: &str = "s.id, s.status, COALESCE(s.source_path, '') A
         s.output_path, s.definition_snapshot_json AS spec_json, s.error_message,
         s.queued_at AS created_at, s.started_at, s.finished_at, s.kind, s.transform_id,
         (SELECT i.data_file_id FROM execution_inputs i WHERE i.execution_step_id = s.id ORDER BY i.ordinal LIMIT 1) AS dataset_id,
-        e.workspace_id, s.output_rows AS row_count,
+        COALESCE(e.workspace_id, '') AS workspace_id, e.folder_id, s.output_rows AS row_count,
         COALESCE(
           (SELECT d.filename FROM data_files d WHERE d.id = s.id),
           (SELECT t.output_filename_template FROM transforms t WHERE t.id = s.transform_id)
@@ -142,6 +142,7 @@ pub struct JobRow {
     pub transform_id: Option<String>,
     pub dataset_id: Option<String>,
     pub workspace_id: String,
+    pub folder_id: Option<String>,
     pub row_count: Option<i64>,
     pub filename: Option<String>,
 }
@@ -162,6 +163,7 @@ pub struct DatasetRow {
     pub created_at: String,
     pub updated_at: String,
     pub workspace_id: String,
+    pub folder_id: Option<String>,
     pub producer_chip_run_id: Option<String>,
     pub table_name: String,
     pub connection_name: String,
@@ -174,7 +176,7 @@ pub struct DatasetRow {
 pub(crate) const DATASET_COLS: &str = "d.id, d.kind,
         NULL AS extract_id, d.filename, d.stored_path, d.size_bytes,
         d.delimiter, d.has_header, s.columns_json, d.row_count, d.inspected_at,
-        d.created_at, d.updated_at, d.workspace_id,
+        d.created_at, d.updated_at, COALESCE(d.workspace_id, '') AS workspace_id, d.folder_id,
         (SELECT eo.execution_step_id FROM execution_outputs eo
          WHERE eo.data_file_id = d.id LIMIT 1) AS producer_chip_run_id,
         'materialized' AS status, NULL AS source_chip_id, NULL AS consumer_chip_id,
@@ -193,6 +195,7 @@ pub struct DatasetUpsert {
     pub has_header: Option<bool>,
     pub row_count: Option<i64>,
     pub workspace_id: Option<String>,
+    pub folder_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -462,7 +465,7 @@ pub(crate) const CHIP_JOIN_COLS: &str = "c.id, c.owner_user_id, c.name, c.kind,
                  (SELECT revision FROM loads l WHERE l.id = c.load_id), c.revision, 1) AS revision,
         c.active, c.created_at, c.updated_at";
 pub(crate) const CHIP_RUN_COLS: &str =
-    "s.id, s.execution_id, e.source AS execution_source, s.chip_id, e.workspace_id, s.kind, s.status,
+    "s.id, s.execution_id, e.source AS execution_source, s.chip_id, COALESCE(e.workspace_id, '') AS workspace_id, s.kind, s.status,
         s.definition_snapshot_json AS config_snapshot_json,
         s.definition_revision AS revision_snapshot,
         (SELECT i.data_file_id FROM execution_inputs i WHERE i.execution_step_id = s.id ORDER BY i.ordinal LIMIT 1) AS input_dataset_id,
@@ -495,6 +498,7 @@ pub struct FileMeta {
     pub size: u64,
     pub stored_path: String,
     pub workspace_id: String,
+    pub folder_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -525,6 +529,7 @@ pub struct ExtractRow {
     pub sql_text: Option<String>,
     pub catalog_database: Option<String>,
     pub workspace_id: String,
+    pub folder_id: Option<String>,
     pub connection_name: String,
 }
 
@@ -541,7 +546,8 @@ pub(crate) const EXTRACT_COLS: &str =
         s.output_rows AS row_count, s.error_message, s.queued_at AS created_at,
         s.started_at, s.finished_at, json_extract(s.definition_snapshot_json, '$.sql_text') AS sql_text,
         json_extract(s.definition_snapshot_json, '$.catalog_database') AS catalog_database,
-        x.workspace_id, COALESCE(c.name, '') AS connection_name";
+        COALESCE(x.workspace_id, '') AS workspace_id, x.folder_id,
+        COALESCE(c.name, '') AS connection_name";
 
 fn serialize_http_auth<S: serde::Serializer>(
     raw: &Option<String>,

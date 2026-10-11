@@ -437,9 +437,24 @@ export function ScriptPage() {
     if (!canSave || busy) return;
     setBusy(true);
     try {
-      const target = workspaceId || await workspacePick.pick();
-      if (!target) return;
-      await saveToWorkspace(target);
+      if (!workspaceId) {
+        if (scriptBytes(files) > MAX_SCRIPT_BYTES) {
+          toastError(messages.workspace.scriptTooLarge);
+          return;
+        }
+        const title = name.trim() || messages.workspace.defaultScriptChipName(1);
+        const saved = editing && chip
+          ? await chipApi.update(chip.id, { name: title, config: configPayload() })
+          : await chipApi.register({ name: title, kind: "script", config: configPayload() });
+        setChip(saved);
+        setName(saved.name);
+        toastSuccess(messages.workspace.scriptChipSaved);
+        setRegisterOpen(false);
+        setPreviewOpen(false);
+        if (!editing) navigate("/chips");
+        return;
+      }
+      await saveToWorkspace(workspaceId);
     } catch (error) {
       toastError(
         isChipNameConflict(error)
@@ -463,45 +478,28 @@ export function ScriptPage() {
 
   async function exportResult() {
     if (!canExportResult) return;
-    const dest = await workspacePick.pick(selected?.workspace_id);
-    if (!dest) return;
+    const folderId = await workspacePick.pickFolder();
+    if (!folderId) return;
     setBusy(true);
     try {
-      const saved = await persistChip(dest);
-      if (!saved) return;
-      const queued = await chipApi.run(saved.id, {
-        workspace_id: dest,
-        input_dataset_id: storedDatasetId(inputs[0]?.dataset_id) || undefined,
+      const saved = await datasetApi.exportScript({
+        folderId,
+        files,
+        entry: SCRIPT_ENTRY,
+        inputs: inputs
+          .map((item) => ({ name: item.name, dataset_id: storedDatasetId(item.dataset_id) }))
+          .filter((item) => item.dataset_id),
+        outputFilename: outputName.trim() || (selected?.filename ? defaultScriptName(selected.filename) : undefined),
       });
-      let run = await chipApi.getRun(queued.id);
-      while (run.status === "queued" || run.status === "running") {
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-        run = await chipApi.getRun(run.id);
-      }
-      if (run.status !== "succeeded") {
-        toastError(messages.errors.runJob, run.error_message);
-        return;
-      }
-      if (!run.output_dataset_id) {
-        toastError(messages.errors.runJob);
-        return;
-      }
       const link = document.createElement("a");
-      link.href = datasetApi.getDownloadUrl(run.output_dataset_id);
+      link.href = datasetApi.getDownloadUrl(saved.id);
       link.rel = "noopener";
       document.body.appendChild(link);
       link.click();
       link.remove();
-      toastSuccess(messages.script.exportComplete, messages.script.exportDone(run.output_rows ?? preview?.row_count ?? 0));
+      toastSuccess(messages.script.exportComplete, messages.script.exportDone(saved.row_count ?? preview?.row_count ?? 0));
     } catch (error) {
-      toastError(
-        isChipNameConflict(error)
-          ? messages.workspace.duplicateChipName
-          : isWorkspaceVersionConflict(error)
-            ? messages.workspace.versionConflict
-            : messages.errors.runJob,
-        isChipNameConflict(error) || isWorkspaceVersionConflict(error) ? undefined : error,
-      );
+      toastError(messages.errors.runJob, error);
     } finally {
       setBusy(false);
     }

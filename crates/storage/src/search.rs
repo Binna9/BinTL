@@ -438,6 +438,18 @@ impl Store {
         } else {
             "/transform/clean".into()
         };
+        let (scope, workspace_id, owner_user_id) = if dataset.workspace_id.is_empty() {
+            let owner = match dataset.folder_id.as_deref() {
+                Some(folder_id) => self
+                    .get_folder(folder_id)
+                    .await?
+                    .map(|folder| folder.owner_user_id),
+                None => None,
+            };
+            ("user", None, owner)
+        } else {
+            ("workspace", Some(dataset.workspace_id.clone()), None)
+        };
         self.upsert_search_document(SearchDocInput {
             entity_type: "data_file",
             entity_id: dataset.id.clone(),
@@ -449,9 +461,9 @@ impl Store {
                 &dataset.kind,
             ]),
             route,
-            scope: "workspace",
-            workspace_id: Some(dataset.workspace_id.clone()),
-            owner_user_id: None,
+            scope,
+            workspace_id,
+            owner_user_id,
             updated_at: dataset.updated_at.clone(),
         })
         .await
@@ -506,6 +518,18 @@ impl Store {
             .clone()
             .or(extract.started_at.clone())
             .unwrap_or(extract.created_at.clone());
+        let (scope, workspace_id, owner_user_id) = if extract.workspace_id.is_empty() {
+            let owner = match extract.folder_id.as_deref() {
+                Some(folder_id) => self
+                    .get_folder(folder_id)
+                    .await?
+                    .map(|folder| folder.owner_user_id),
+                None => None,
+            };
+            ("user", None, owner)
+        } else {
+            ("workspace", Some(extract.workspace_id.clone()), None)
+        };
         self.upsert_search_document(SearchDocInput {
             entity_type: "extract",
             entity_id: extract.id.clone(),
@@ -518,9 +542,9 @@ impl Store {
                 extract.kind.as_str(),
             ]),
             route: "/extract_runs".into(),
-            scope: "workspace",
-            workspace_id: Some(extract.workspace_id.clone()),
-            owner_user_id: None,
+            scope,
+            workspace_id,
+            owner_user_id,
             updated_at,
         })
         .await

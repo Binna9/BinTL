@@ -424,11 +424,9 @@ fn validate_step(step: &Step) -> Result<(), EngineError> {
             delimiter,
             name,
             ..
-        } if column.trim().is_empty() || delimiter.is_empty() || name.trim().is_empty() => {
-            Err(EngineError::Spec(
-                "split needs column, delimiter, and name".into(),
-            ))
-        }
+        } if column.trim().is_empty() || delimiter.is_empty() || name.trim().is_empty() => Err(
+            EngineError::Spec("split needs column, delimiter, and name".into()),
+        ),
         Step::Split { index, .. } if *index < 0 => {
             Err(EngineError::Spec("split index must be >= 0".into()))
         }
@@ -639,7 +637,9 @@ impl PolarsEngine {
                 .map(|key| format!("extra: {}", key.join(" | "))),
         );
         samples.extend(mismatched.iter().take(20).map(|(key, value)| {
-            let other = target_map.get(*key).expect("mismatch requires a target row");
+            let other = target_map
+                .get(*key)
+                .expect("mismatch requires a target row");
             let diffs = compare_columns
                 .iter()
                 .zip(value.iter().zip(other.iter()))
@@ -741,9 +741,20 @@ impl PolarsEngine {
         Ok(dataframe_to_preview(df, None, limit).with_truncated(truncated))
     }
 
-    pub fn records_from_file(path: &Path, limit: usize) -> Result<Vec<serde_json::Value>, EngineError> {
+    pub fn records_from_file(
+        path: &Path,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>, EngineError> {
+        Self::records_from_file_spec(path, limit, &TransformSpec::identity())
+    }
+
+    pub fn records_from_file_spec(
+        path: &Path,
+        limit: usize,
+        spec: &TransformSpec,
+    ) -> Result<Vec<serde_json::Value>, EngineError> {
         let limit = limit.max(1);
-        let mut df = read_any(path, &TransformSpec::identity(), Some(limit))?;
+        let mut df = read_any(path, spec, Some(limit))?;
         if df.height() > limit {
             df = df.slice(0, limit);
         }
@@ -757,8 +768,12 @@ impl PolarsEngine {
     }
 
     pub fn open_records(path: &Path) -> Result<RecordTable, EngineError> {
+        Self::open_records_spec(path, &TransformSpec::identity())
+    }
+
+    pub fn open_records_spec(path: &Path, spec: &TransformSpec) -> Result<RecordTable, EngineError> {
         Ok(RecordTable {
-            df: read_any(path, &TransformSpec::identity(), None)?,
+            df: read_any(path, spec, None)?,
         })
     }
 }
@@ -773,7 +788,11 @@ impl RecordTable {
         self.df.height()
     }
 
-    pub fn slice(&self, offset: usize, limit: usize) -> Result<Vec<serde_json::Value>, EngineError> {
+    pub fn slice(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>, EngineError> {
         let height = self.df.height();
         if offset >= height || limit == 0 {
             return Ok(Vec::new());
@@ -1454,24 +1473,40 @@ fn read_any(
                 .finish()?
         }
         _ => {
-            let separator = match spec.delimiter() {
-                Some(raw) => parse_separator(raw)?,
-                None if ext == "tsv" => b'\t',
-                None => b',',
-            };
             let has_header = spec.has_header().unwrap_or(true);
-            let mut opts = CsvReadOptions::default()
-                .with_has_header(has_header)
-                .map_parse_options(|o| {
-                    // ponytail: extra fields beyond the header are dropped, same as upload preview (flexible CSV).
-                    o.with_separator(separator)
-                        .with_truncate_ragged_lines(true)
-                });
-            if let Some(n) = n_rows {
-                opts = opts.with_n_rows(Some(n));
+            if spec.delimiter() == Some(":||") {
+                let bytes = fs::read(path)?;
+                let rewritten = rewrite_colon_pipe(&bytes)?;
+                let mut opts = CsvReadOptions::default()
+                    .with_has_header(has_header)
+                    .map_parse_options(|o| {
+                        o.with_separator(0x1f)
+                            .with_quote_char(None)
+                            .with_truncate_ragged_lines(true)
+                    });
+                if let Some(n) = n_rows {
+                    opts = opts.with_n_rows(Some(n));
+                }
+                opts.into_reader_with_file_handle(std::io::Cursor::new(rewritten))
+                    .finish()?
+            } else {
+                let separator = match spec.delimiter() {
+                    Some(raw) => parse_separator(raw)?,
+                    None if ext == "tsv" => b'\t',
+                    None => b',',
+                };
+                let mut opts = CsvReadOptions::default()
+                    .with_has_header(has_header)
+                    .map_parse_options(|o| {
+                        // ponytail: extra fields beyond the header are dropped, same as upload preview (flexible CSV).
+                        o.with_separator(separator).with_truncate_ragged_lines(true)
+                    });
+                if let Some(n) = n_rows {
+                    opts = opts.with_n_rows(Some(n));
+                }
+                opts.try_into_reader_with_file_path(Some(path.to_path_buf()))?
+                    .finish()?
             }
-            opts.try_into_reader_with_file_path(Some(path.to_path_buf()))?
-                .finish()?
         }
     };
     Ok(df)
@@ -1570,6 +1605,30 @@ fn any_to_string(value: AnyValue<'_>) -> String {
     }
 }
 
+/// Same rewrite as `connectors::rewrite_colon_pipe`. Duplicated so engine stays
+/// free of sqlx / connectors.
+fn rewrite_colon_pipe(bytes: &[u8]) -> Result<Vec<u8>, EngineError> {
+    const SENTINEL: u8 = 0x1f;
+    const PATTERN: &[u8] = b":||";
+    if bytes.contains(&SENTINEL) {
+        return Err(EngineError::Spec(
+            "file contains a character reserved for the `:||` delimiter".into(),
+        ));
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index..].starts_with(PATTERN) {
+            out.push(SENTINEL);
+            index += PATTERN.len();
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Ok(out)
+}
+
 /// Same tokens as `connectors::parse_delimiter`. Duplicated so engine stays
 /// free of sqlx / connectors.
 fn parse_separator(raw: &str) -> Result<u8, EngineError> {
@@ -1638,6 +1697,27 @@ mod tests {
     }
 
     #[test]
+    fn write_records_keeps_appended_column_order() {
+        let dir = tmp("col-order");
+        let out = dir.join("out.parquet");
+        let rows = vec![serde_json::json!({
+            "QUES_NO": "260151",
+            "AUIN": "x",
+            "LOAD_SN": 1,
+            "LOAD_DTM": "2026-10-11 12:00:00"
+        })];
+        PolarsEngine::write_records(&rows, &out).unwrap();
+        let back = ParquetReader::new(fs::File::open(&out).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(
+            back.get_column_names(),
+            &["QUES_NO", "AUIN", "LOAD_SN", "LOAD_DTM"]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn record_table_slices_and_writer_concat() {
         let dir = tmp("batches");
         let src = dir.join("in.parquet");
@@ -1699,7 +1779,10 @@ mod tests {
             .unwrap();
         assert_eq!(back.column("id").unwrap().dtype(), &DataType::Int64);
         assert_eq!(back.column("when").unwrap().dtype(), &DataType::Date);
-        assert_eq!(back.column("amt").unwrap().dtype(), table.df.column("amt").unwrap().dtype());
+        assert_eq!(
+            back.column("amt").unwrap().dtype(),
+            table.df.column("amt").unwrap().dtype()
+        );
         assert_eq!(back.column("extra").unwrap().dtype(), &DataType::String);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1754,7 +1837,9 @@ mod tests {
         assert!(report
             .samples
             .iter()
-            .any(|sample| sample.contains("mismatch:") && sample.contains("amount") && sample.contains("vs")));
+            .any(|sample| sample.contains("mismatch:")
+                && sample.contains("amount")
+                && sample.contains("vs")));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1802,6 +1887,47 @@ mod tests {
             .unwrap();
         assert_eq!(back.height(), 2);
         assert_eq!(back.get_column_names(), &["id", "b"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn records_from_colon_pipe_keep_commas_inside_fields() {
+        let dir = tmp("script-colon");
+        let csv = dir.join("in.csv");
+        fs::write(
+            &csv,
+            "260151:||법률 | 시행령, \"인용\"\n260150:||여신\n",
+        )
+        .unwrap();
+        let spec = TransformSpec::identity().with_read(Some(":||".into()), Some(false));
+        let rows = PolarsEngine::records_from_file_spec(&csv, 10, &spec).unwrap();
+        assert_eq!(rows.len(), 2);
+        let first = rows[0].as_object().unwrap();
+        assert_eq!(first.len(), 2);
+        let joined = first
+            .values()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(joined.contains("260151"), "{joined}");
+        assert!(joined.contains(','), "{joined}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn colon_pipe_delimited_read() {
+        let dir = tmp("colon-pipe");
+        let csv = dir.join("in.csv");
+        fs::write(&csv, "a:||b\n법률 | 시행령, \"인용\":||제2조\n").unwrap();
+        let out = dir.join("out.parquet");
+        let mut spec = TransformSpec::identity();
+        spec.delimiter = Some(":||".into());
+        PolarsEngine.transform(&csv, &out, &spec).unwrap();
+        let back = ParquetReader::new(fs::File::open(&out).unwrap())
+            .finish()
+            .unwrap();
+        assert_eq!(back.height(), 1);
+        assert_eq!(back.get_column_names(), &["a", "b"]);
         let _ = fs::remove_dir_all(&dir);
     }
 

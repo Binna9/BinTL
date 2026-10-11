@@ -16,11 +16,20 @@ impl Store {
         add_sequence: bool,
         sql_text: Option<&str>,
         catalog_database: Option<&str>,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
+        folder_id: Option<&str>,
         output_filename: Option<&str>,
     ) -> Result<ExtractRow, StorageError> {
         let kind = validate_extract_kind(kind)?;
-        self.require_workspace(workspace_id).await?;
+        if let Some(workspace_id) = workspace_id {
+            self.require_workspace(workspace_id).await?;
+        } else if let Some(folder_id) = folder_id {
+            if self.get_folder(folder_id).await?.is_none() {
+                return Err(StorageError::NotFound("folder not found".into()));
+            }
+        } else {
+            return Err(StorageError::Invalid("folder_id required".into()));
+        }
         let _ = self
             .get_connection(connection_id)
             .await?
@@ -34,11 +43,12 @@ impl Store {
             "output_filename": output_filename}).to_string();
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO executions (id, workspace_id, source, status, created_at)
-            VALUES (?, ?, 'extract_page', 'queued', ?)",
+            "INSERT INTO executions (id, workspace_id, folder_id, source, status, created_at)
+            VALUES (?, ?, ?, 'extract_page', 'queued', ?)",
         )
         .bind(&execution_id)
         .bind(workspace_id)
+        .bind(folder_id)
         .bind(&created_at)
         .execute(&mut *tx)
         .await?;
@@ -70,7 +80,7 @@ impl Store {
         scope: Option<&DataScope>,
     ) -> Result<Vec<ExtractRow>, StorageError> {
         let (extra, binds) = match scope {
-            Some(scope) => Self::workspace_scope_sql(scope, "x.workspace_id"),
+            Some(scope) => Self::catalog_scope_sql(scope, "x.folder_id", "x.workspace_id"),
             None => (String::new(), Vec::new()),
         };
         let sql = format!(
@@ -213,15 +223,24 @@ impl Store {
             .ok()
             .map(|metadata| metadata.len() as i64);
         let linked = self.linked_chip_run_for_extract(id).await?;
+        let file_folder = if row.folder_id.is_some() {
+            row.folder_id.clone()
+        } else if row.workspace_id.is_empty() {
+            None
+        } else {
+            self.get_workspace(&row.workspace_id)
+                .await?
+                .and_then(|workspace| workspace.folder_id)
+        };
         let now = now_rfc3339();
         let mut tx = self.pool.begin().await?;
         let mut file_id = Uuid::new_v4().to_string();
         // Use upsert keyed by stored_path to avoid UNIQUE constraint failures when multiple
         // extract runs produce the same stored_path concurrently.
         sqlx::query(
-            "INSERT INTO data_files (id, workspace_id, kind, format, filename, stored_path,
+            "INSERT INTO data_files (id, workspace_id, folder_id, kind, format, filename, stored_path,
             size_bytes, row_count, delimiter, has_header, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(stored_path) DO UPDATE SET
                 kind = excluded.kind,
                 filename = excluded.filename,
@@ -229,12 +248,18 @@ impl Store {
                 delimiter = COALESCE(excluded.delimiter, data_files.delimiter),
                 has_header = COALESCE(excluded.has_header, data_files.has_header),
                 row_count = COALESCE(excluded.row_count, data_files.row_count),
-                workspace_id = excluded.workspace_id,
+                workspace_id = COALESCE(excluded.workspace_id, data_files.workspace_id),
+                folder_id = COALESCE(excluded.folder_id, data_files.folder_id),
                 deleted_at = NULL,
                 updated_at = excluded.updated_at",
         )
         .bind(&file_id)
-        .bind(&row.workspace_id)
+        .bind(if row.workspace_id.is_empty() {
+            None
+        } else {
+            Some(row.workspace_id.as_str())
+        })
+        .bind(&file_folder)
         .bind(&row.kind)
         .bind(if filename.ends_with(".parquet") {
             "parquet"
@@ -500,7 +525,8 @@ mod tests {
                 false,
                 Some("SELECT 1"),
                 None,
-                &workspace.id,
+                Some(&workspace.id),
+                None,
                 Some("orders.csv"),
             )
             .await

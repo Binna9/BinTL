@@ -138,6 +138,14 @@ impl Store {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        if folder_id.is_some() {
+            sqlx::query("UPDATE data_files SET folder_id = ?, updated_at = ? WHERE workspace_id = ?")
+                .bind(next_folder.as_deref())
+                .bind(now_rfc3339())
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
         search::sync_search_best_effort(self, "workspace", self.sync_search_workspace(id)).await;
         self.get_workspace(id)
             .await?
