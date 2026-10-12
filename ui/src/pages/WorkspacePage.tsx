@@ -29,6 +29,7 @@ import { cn } from "@/lib/cn";
 import { nextSequencedChipName } from "@/lib/chipSequence";
 import { parseExtractConfig } from "@/lib/chipDetail";
 import { layout } from "@/lib/layout";
+import { randomId } from "@/lib/randomId";
 import { showConfirm, toastError, toastSuccess } from "@/lib/notifications";
 import { datasetApi } from "@/services/transform/datasetApi";
 import { chipApi } from "@/services/chips/chipApi";
@@ -563,7 +564,7 @@ export function WorkspacePage() {
     const toPoint = positionsRef.current[toId] ?? fallbackPoint(0);
     const route = routeSides(fromPoint, toPoint);
     const created: ChipEdge = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       workspace_id: workspaceId,
       from_chip_id: fromId,
       to_chip_id: toId,
@@ -1378,7 +1379,7 @@ export function WorkspacePage() {
 
     if (!openClean) {
       const chip: Chip = {
-        id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+        id: `${DRAFT_CHIP_ID_PREFIX}${randomId()}`,
         owner_user_id: "",
         name,
         kind: "transform",
@@ -1428,7 +1429,7 @@ export function WorkspacePage() {
 
     if (!openEditor) {
       const chip: Chip = {
-        id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+        id: `${DRAFT_CHIP_ID_PREFIX}${randomId()}`,
         owner_user_id: "",
         name,
         kind: "script",
@@ -1469,7 +1470,7 @@ export function WorkspacePage() {
     if (!pendingPlace) return;
     const now = new Date().toISOString();
     const chip: Chip = {
-      id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+      id: `${DRAFT_CHIP_ID_PREFIX}${randomId()}`,
       owner_user_id: "",
       name: draft.name,
       kind: "load",
@@ -1491,7 +1492,7 @@ export function WorkspacePage() {
     if (!pendingPlace) return;
     const now = new Date().toISOString();
     const chip: Chip = {
-      id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+      id: `${DRAFT_CHIP_ID_PREFIX}${randomId()}`,
       owner_user_id: "",
       name: draft.name,
       kind: "validation",
@@ -1519,7 +1520,7 @@ export function WorkspacePage() {
     if (!pendingPlace) return;
     const now = new Date().toISOString();
     const chip: Chip = {
-      id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+      id: `${DRAFT_CHIP_ID_PREFIX}${randomId()}`,
       owner_user_id: "",
       name: draft.name,
       kind: "serve",
@@ -1545,7 +1546,7 @@ export function WorkspacePage() {
     if (!pendingPlace) return;
     const now = new Date().toISOString();
     const chip: Chip = {
-      id: `${DRAFT_CHIP_ID_PREFIX}${crypto.randomUUID()}`,
+      id: `${DRAFT_CHIP_ID_PREFIX}${randomId()}`,
       owner_user_id: "",
       name,
       kind: "memo",

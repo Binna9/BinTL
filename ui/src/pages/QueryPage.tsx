@@ -37,6 +37,7 @@ import { cn } from "@/lib/cn";
 import { extractSourceType, nextSequencedChipName } from "@/lib/chipSequence";
 import { DELIMITER_VALUES } from "@/lib/delimiter";
 import { layout } from "@/lib/layout";
+import { randomId } from "@/lib/randomId";
 import { toastError, toastSuccess } from "@/lib/notifications";
 import { selectableClass } from "@/lib/selectable";
 import { extractApi } from "@/services/extract/extractApi";
@@ -465,7 +466,7 @@ export function QueryPage() {
     setSearch("");
     setRunning(true);
     setInfo("");
-    const logId = crypto.randomUUID();
+    const logId = randomId();
     setQueryLogId(logId);
     setQueryLog(
       `${new Date().toISOString()}  info   started  preview_limit=${previewLimit}\n`,

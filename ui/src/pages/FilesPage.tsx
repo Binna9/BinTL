@@ -31,6 +31,7 @@ import { COLON_PIPE_DELIMITER, DELIMITER_VALUES } from "@/lib/delimiter";
 import { fmtBytes, fmtDelimiterGlyph } from "@/lib/format";
 import { setGlobalLoadingStatus } from "@/lib/globalLoading";
 import { layout } from "@/lib/layout";
+import { randomId } from "@/lib/randomId";
 import { usePagination } from "@/lib/pagination";
 import { showConfirm, toastDeleteError, toastError, toastSuccess } from "@/lib/notifications";
 import { fileApi } from "@/services/files/fileApi";
@@ -126,7 +127,7 @@ export function FilesPage() {
         const key = fileKey(file);
         if (seen.has(key)) continue;
         seen.add(key);
-        next.push({ id: crypto.randomUUID(), file, name: file.name });
+        next.push({ id: randomId(), file, name: file.name });
       }
       return next;
     });

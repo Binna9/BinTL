@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { cn } from "@/lib/cn";
+import { randomId } from "@/lib/randomId";
 import { isNotificationDialogOpen, showConfirm } from "@/lib/notifications";
 import { chipApi } from "@/services/chips/chipApi";
 import { workspaceApi } from "@/services/workspace/workspaceApi";
@@ -49,7 +50,7 @@ function isDraftId(id: string) {
 }
 
 function draftId() {
-  return `${DRAFT_PREFIX}${crypto.randomUUID()}`;
+  return `${DRAFT_PREFIX}${randomId()}`;
 }
 
 function folderPathLabel(

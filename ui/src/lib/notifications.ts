@@ -1,3 +1,4 @@
+import { randomId } from "@/lib/randomId";
 import { HttpError } from "@/services/httpClient";
 
 export type ToastStatus = "success" | "error" | "warning" | "info" | "default";
@@ -52,9 +53,7 @@ const pendingEvents: NotificationEvent[] = [];
 let openDialogCount = 0;
 
 function notificationId(): string {
-  return typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return randomId();
 }
 
 /** True while an alert/confirm from showAlert/showConfirm is on screen. */

@@ -1,4 +1,5 @@
 import type { Messages } from "@/i18n/ko";
+import { randomId } from "@/lib/randomId";
 import type { Chip, ChipEdge, ChipEdgeKind, ChipKind } from "@/types/chip";
 import type { WorkspaceFolder, WorkspaceLayout } from "@/types/workspace";
 
@@ -739,7 +740,7 @@ export function withCompanionSuccessEdges(
     const toPoint = positions[edge.to_chip_id] ?? fallbackPoint(0);
     const route = routeSides(fromPoint, toPoint);
     added.push({
-      id: crypto.randomUUID(),
+      id: randomId(),
       workspace_id: workspaceId,
       from_chip_id: edge.from_chip_id,
       to_chip_id: edge.to_chip_id,
@@ -785,7 +786,7 @@ export function attachHiddenDataEdges(
       const toPoint = positions[input.toId] ?? fallbackPoint(0);
       const route = routeSides(fromPoint, toPoint);
       return {
-        id: crypto.randomUUID(),
+        id: randomId(),
         workspace_id: workspaceId,
         from_chip_id: input.fromId,
         to_chip_id: input.toId,
