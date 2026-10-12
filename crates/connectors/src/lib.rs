@@ -41,7 +41,7 @@ use tokio_util::compat::TokioAsyncWriteCompatExt;
 pub enum ConnectError {
     #[error("{0}")]
     Invalid(String),
-    #[error("connect timeout")]
+    #[error("5초 안에 연결되지 않았습니다.")]
     Timeout,
     #[error(transparent)]
     Sqlx(sqlx::Error),
@@ -204,7 +204,12 @@ impl From<sqlx::Error> for ConnectError {
     }
 }
 
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn map_sqlx_error(error: sqlx::Error) -> ConnectError {
+    if matches!(error, sqlx::Error::PoolTimedOut) {
+        return ConnectError::Timeout;
+    }
     if postgres_non_utf8_protocol(&error.to_string()) {
         return ConnectError::Invalid(
             "Postgres 로그인에 실패했습니다. 사용자, 비밀번호, 데이터베이스를 확인하세요. 자세한 원인은 서버 로그를 보세요.".into(),
@@ -236,7 +241,7 @@ pub(crate) async fn pg_pool(c: &LiveConnection) -> Result<Pool<Postgres>, Connec
         .ssl_mode(ssl);
     Ok(PgPoolOptions::new()
         .max_connections(1)
-        .acquire_timeout(Duration::from_secs(8))
+        .acquire_timeout(CONNECT_TIMEOUT)
         .connect_with(opts)
         .await?)
 }
@@ -256,7 +261,7 @@ pub(crate) async fn my_pool(c: &LiveConnection) -> Result<Pool<MySql>, ConnectEr
         .ssl_mode(ssl);
     Ok(MySqlPoolOptions::new()
         .max_connections(1)
-        .acquire_timeout(Duration::from_secs(8))
+        .acquire_timeout(CONNECT_TIMEOUT)
         .connect_with(opts)
         .await?)
 }
@@ -273,10 +278,17 @@ pub(crate) async fn sqlite_pool(c: &LiveConnection) -> Result<Pool<Sqlite>, Conn
     let opts = SqliteConnectOptions::new()
         .filename(sqlite_path(c))
         .create_if_missing(false);
-    Ok(SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(opts)
-        .await?)
+    match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts),
+    )
+    .await
+    {
+        Ok(pool) => Ok(pool?),
+        Err(_) => Err(ConnectError::Timeout),
+    }
 }
 
 pub(crate) async fn mssql_client(
@@ -294,8 +306,17 @@ pub(crate) async fn mssql_client(
     } else {
         EncryptionLevel::NotSupported
     });
+    match tokio::time::timeout(CONNECT_TIMEOUT, connect_mssql(config)).await {
+        Ok(client) => client,
+        Err(_) => Err(ConnectError::Timeout),
+    }
+}
+
+async fn connect_mssql(
+    config: Config,
+) -> Result<Client<tokio_util::compat::Compat<TcpStream>>, ConnectError> {
     let addr = config.get_addr();
-    let tcp = tokio::time::timeout(Duration::from_secs(8), TcpStream::connect(addr))
+    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
         .map_err(|_| ConnectError::Timeout)??;
     tcp.set_nodelay(true)?;

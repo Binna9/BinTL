@@ -6,7 +6,7 @@ use storage::LiveConnection;
 
 use crate::{quote_ident, sql_lit, ConnectError, LoadColumnRule};
 
-const LOGIN_TIMEOUT_SEC: u32 = 8;
+const LOGIN_TIMEOUT_SEC: u32 = 5;
 const BATCH_ROWS: usize = 500;
 const MAX_TEXT: usize = 4096;
 
@@ -178,19 +178,45 @@ fn open_conn(c: &LiveConnection) -> Result<Connection<'static>, ConnectError> {
     .map_err(map_odbc)
 }
 
+enum Opened {
+    Odbc(Connection<'static>),
+    Jdbc(crate::tibero_jdbc::JdbcConn),
+}
+
+fn open_timed(c: &LiveConnection) -> Result<Opened, ConnectError> {
+    let c = c.clone();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    // ponytail: ODBC/JDBC often ignore login timeout, so this thread can outlive
+    // the 5s wait. The caller still returns. Upgrade: drop the thread once the
+    // driver honors LOGIN_TIMEOUT_SEC.
+    std::thread::Builder::new()
+        .name("bintl-connect".into())
+        .spawn(move || {
+            let opened = if vendor(&c.driver) == "tibero" {
+                crate::tibero_jdbc::open(&c).map(Opened::Jdbc)
+            } else {
+                open_conn(&c).map(Opened::Odbc)
+            };
+            let _ = tx.send(opened);
+        })
+        .map_err(|error| ConnectError::Invalid(error.to_string()))?;
+    match rx.recv_timeout(crate::CONNECT_TIMEOUT) {
+        Ok(opened) => opened,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(ConnectError::Timeout),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(ConnectError::Invalid(
+            "연결 시도가 중간에 끊겼습니다.".into(),
+        )),
+    }
+}
+
 /// Sync ODBC (Oracle) or JDBC (Tibero) on a Tokio worker. Callers stay on the async path.
 pub(crate) fn with_conn<T>(
     c: &LiveConnection,
     f: impl FnOnce(&OraConn<'_>) -> Result<T, ConnectError>,
 ) -> Result<T, ConnectError> {
-    tokio::task::block_in_place(|| {
-        if vendor(&c.driver) == "tibero" {
-            let conn = crate::tibero_jdbc::open(c)?;
-            f(&OraConn::Jdbc(conn))
-        } else {
-            let conn = open_conn(c)?;
-            f(&OraConn::Odbc(conn))
-        }
+    tokio::task::block_in_place(|| match open_timed(c)? {
+        Opened::Odbc(conn) => f(&OraConn::Odbc(conn)),
+        Opened::Jdbc(conn) => f(&OraConn::Jdbc(conn)),
     })
 }
 

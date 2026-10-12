@@ -180,7 +180,7 @@ pub async fn ping_http(connection: &LiveConnection) -> Result<(), ConnectError> 
         request = apply_access_token(request, connection, &tokens.access);
     }
     let response = request
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(crate::CONNECT_TIMEOUT)
         .send()
         .await
         .map_err(|error| ConnectError::Invalid(format!("http request failed: {error}")))?;
@@ -547,7 +547,7 @@ async fn send_auth_json(
     kind: &str,
 ) -> Result<Value, ConnectError> {
     let response = request
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(crate::CONNECT_TIMEOUT)
         .send()
         .await
         .map_err(|error| ConnectError::Invalid(format!("http {kind} failed: {error}")))?;

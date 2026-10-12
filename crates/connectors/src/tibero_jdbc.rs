@@ -7,7 +7,7 @@ use storage::LiveConnection;
 
 use crate::ConnectError;
 
-const LOGIN_TIMEOUT_SEC: i32 = 8;
+const LOGIN_TIMEOUT_SEC: i32 = 5;
 const JAR_NAME: &str = "tbjdbc17-7.2.6.jar";
 const MAVEN_JAR_URL: &str =
     "https://repo1.maven.org/maven2/com/tmaxtibero/tbjdbc17/7.2.6/tbjdbc17-7.2.6.jar";

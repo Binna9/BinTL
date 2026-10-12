@@ -3,7 +3,6 @@ use std::path::Path;
 
 use csv::WriterBuilder;
 use futures_util::TryStreamExt;
-use sqlx::postgres::PgPoolCopyExt;
 use storage::LiveConnection;
 use tokio::io::AsyncWriteExt;
 
@@ -332,20 +331,26 @@ pub(crate) async fn copy_postgres_to_file(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = pg_pool(c).await?;
-    let mut stream = pool.copy_out_raw(copy_sql).await?;
-    let mut out = tokio::fs::File::create(dest).await?;
-    let mut counter = CsvRecordCounter::new(quote);
-    while let Some(chunk) = stream.try_next().await? {
-        out.write_all(&chunk).await?;
-        counter.push(&chunk);
-        let n = counter.data_rows(header);
-        if n > 0 {
-            tick_progress(on_progress, n);
+    let mut conn = pool.acquire().await?;
+    let n = {
+        let mut stream = conn.copy_out_raw(copy_sql).await?;
+        let mut out = tokio::fs::File::create(dest).await?;
+        let mut counter = CsvRecordCounter::new(quote);
+        while let Some(chunk) = stream.try_next().await? {
+            out.write_all(&chunk).await?;
+            counter.push(&chunk);
+            let n = counter.data_rows(header);
+            if n > 0 {
+                tick_progress(on_progress, n);
+            }
         }
-    }
-    out.flush().await?;
+        out.flush().await?;
+        counter.data_rows(header)
+    };
+    // Pool::close waits while this connection is still checked out.
+    let _ = conn.close().await;
     pool.close().await;
-    Ok(counter.data_rows(header))
+    Ok(n)
 }
 
 struct CsvRecordCounter {
@@ -416,15 +421,20 @@ async fn stream_pg(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = pg_pool(c).await?;
+    let mut conn = pool.acquire().await?;
     let sql = format!("SELECT * FROM {q}");
-    let mut stream = sqlx::query(&sql).fetch(&pool);
-    let mut n = 0u64;
-    while let Some(row) = stream.try_next().await? {
-        n += 1;
-        let rec: Vec<String> = (0..ncols).map(|i| stringify_pg(&row, i)).collect();
-        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
-        tick_progress(on_progress, n);
-    }
+    let n = {
+        let mut stream = sqlx::query(&sql).fetch(&mut *conn);
+        let mut n = 0u64;
+        while let Some(row) = stream.try_next().await? {
+            n += 1;
+            let rec: Vec<String> = (0..ncols).map(|i| stringify_pg(&row, i)).collect();
+            wtr.write_record(&with_sequence(add_sequence, n, rec))?;
+            tick_progress(on_progress, n);
+        }
+        n
+    };
+    let _ = conn.close().await;
     pool.close().await;
     Ok(n)
 }
@@ -438,15 +448,20 @@ async fn stream_my(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = my_pool(c).await?;
+    let mut conn = pool.acquire().await?;
     let sql = format!("SELECT * FROM {q}");
-    let mut stream = sqlx::query(&sql).fetch(&pool);
-    let mut n = 0u64;
-    while let Some(row) = stream.try_next().await? {
-        n += 1;
-        let rec: Vec<String> = (0..ncols).map(|i| stringify_my(&row, i)).collect();
-        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
-        tick_progress(on_progress, n);
-    }
+    let n = {
+        let mut stream = sqlx::query(&sql).fetch(&mut *conn);
+        let mut n = 0u64;
+        while let Some(row) = stream.try_next().await? {
+            n += 1;
+            let rec: Vec<String> = (0..ncols).map(|i| stringify_my(&row, i)).collect();
+            wtr.write_record(&with_sequence(add_sequence, n, rec))?;
+            tick_progress(on_progress, n);
+        }
+        n
+    };
+    let _ = conn.close().await;
     pool.close().await;
     Ok(n)
 }
@@ -460,15 +475,20 @@ async fn stream_sqlite(
     on_progress: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> Result<u64, ConnectError> {
     let pool = sqlite_pool(c).await?;
+    let mut conn = pool.acquire().await?;
     let sql = format!("SELECT * FROM {q}");
-    let mut stream = sqlx::query(&sql).fetch(&pool);
-    let mut n = 0u64;
-    while let Some(row) = stream.try_next().await? {
-        n += 1;
-        let rec: Vec<String> = (0..ncols).map(|i| stringify_sqlite(&row, i)).collect();
-        wtr.write_record(&with_sequence(add_sequence, n, rec))?;
-        tick_progress(on_progress, n);
-    }
+    let n = {
+        let mut stream = sqlx::query(&sql).fetch(&mut *conn);
+        let mut n = 0u64;
+        while let Some(row) = stream.try_next().await? {
+            n += 1;
+            let rec: Vec<String> = (0..ncols).map(|i| stringify_sqlite(&row, i)).collect();
+            wtr.write_record(&with_sequence(add_sequence, n, rec))?;
+            tick_progress(on_progress, n);
+        }
+        n
+    };
+    let _ = conn.close().await;
     pool.close().await;
     Ok(n)
 }
